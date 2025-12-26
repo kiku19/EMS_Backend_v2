@@ -32,6 +32,8 @@ const staffSchema = new mongoose.Schema({
   // Login credentials
   username: { type: String, unique: true, sparse: true },
   password: { type: String }, // In production, hash this!
+  // Hierarchy
+  reporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
 
 // Class Schema - with class teacher reference

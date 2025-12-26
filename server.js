@@ -46,7 +46,7 @@ app.post('/api/auth/login', async (req, res) => {
 // ============ STAFF ROUTES ============
 app.get('/api/staff', async (req, res) => {
   try {
-    const staff = await Staff.find().sort({ createdAt: 1 });
+    const staff = await Staff.find().populate('reporterId', 'name').sort({ createdAt: 1 });
     const formatted = await Promise.all(staff.map(async s => {
       const assignedClass = await Class.findOne({ classTeacherId: s._id });
       return {
@@ -56,6 +56,8 @@ app.get('/api/staff', async (req, res) => {
         password: s.password, // Include password for admin to view
         assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
         assignedClassId: assignedClass?._id,
+        reporterId: s.reporterId?._id,
+        reporterName: s.reporterId?.name,
       };
     }));
     res.json(formatted);
@@ -67,7 +69,7 @@ app.get('/api/staff', async (req, res) => {
 
 app.get('/api/staff/:id', async (req, res) => {
   try {
-    const staff = await Staff.findById(req.params.id);
+    const staff = await Staff.findById(req.params.id).populate('reporterId', 'name');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
     const assignedClass = await Class.findOne({ classTeacherId: staff._id });
     res.json({
@@ -85,6 +87,8 @@ app.get('/api/staff/:id', async (req, res) => {
       password: staff.password, // Include for admin to view/edit
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
+      reporterId: staff.reporterId?._id,
+      reporterName: staff.reporterId?.name,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -93,8 +97,16 @@ app.get('/api/staff/:id', async (req, res) => {
 
 app.post('/api/staff', async (req, res) => {
   try {
-    const { name, role, department, status, phone, email, joinDate, address, assignedClassId } = req.body;
+    const { name, role, department, status, phone, email, joinDate, address, assignedClassId, reporterId } = req.body;
     const code = await getNextStaffCode();
+    
+    // Validate circular reference
+    if (reporterId) {
+      const reporter = await Staff.findById(reporterId);
+      if (!reporter) {
+        return res.status(400).json({ error: 'Reporter not found' });
+      }
+    }
     
     // Auto-generate username from email or code
     const username = email ? email.split('@')[0].toLowerCase() : code.toLowerCase();
@@ -104,6 +116,7 @@ app.post('/api/staff', async (req, res) => {
     const staff = new Staff({
       code, name, role, department, status: status || 'active',
       phone, email, joinDate, address, username, password,
+      reporterId: reporterId || null,
     });
     await staff.save();
     
@@ -129,6 +142,7 @@ app.post('/api/staff', async (req, res) => {
       password, // Return the generated password so admin can share it
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
+      reporterId: staff.reporterId,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -137,14 +151,41 @@ app.post('/api/staff', async (req, res) => {
 
 app.put('/api/staff/:id', async (req, res) => {
   try {
-    const { name, role, department, status, phone, email, joinDate, address, assignedClassId, username, password } = req.body;
+    const { name, role, department, status, phone, email, joinDate, address, assignedClassId, username, password, reporterId } = req.body;
+    
+    // Validate circular reference if reporterId is being updated
+    if (reporterId !== undefined && reporterId !== null) {
+      // Check if reporter exists
+      const reporter = await Staff.findById(reporterId);
+      if (!reporter) {
+        return res.status(400).json({ error: 'Reporter not found' });
+      }
+      
+      // Check for circular reference
+      const checkCircular = async (currentId, targetId, visited = new Set()) => {
+        if (currentId === targetId) return true;
+        if (visited.has(currentId)) return false;
+        visited.add(currentId);
+        
+        const current = await Staff.findById(currentId);
+        if (!current || !current.reporterId) return false;
+        
+        return checkCircular(current.reporterId.toString(), targetId, visited);
+      };
+      
+      const hasCircular = await checkCircular(reporterId, req.params.id);
+      if (hasCircular) {
+        return res.status(400).json({ error: 'Cannot assign reporter: This would create a circular reference' });
+      }
+    }
     
     // Build update object - only include password if provided
     const updateData = { name, role, department, status, phone, email, joinDate, address };
     if (username) updateData.username = username;
     if (password) updateData.password = password;
+    if (reporterId !== undefined) updateData.reporterId = reporterId || null;
     
-    const staff = await Staff.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    const staff = await Staff.findByIdAndUpdate(req.params.id, updateData, { new: true }).populate('reporterId', 'name');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
     
     // Update class assignment
@@ -159,6 +200,8 @@ app.put('/api/staff/:id', async (req, res) => {
       ...staff.toObject(),
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
+      reporterId: staff.reporterId?._id,
+      reporterName: staff.reporterId?.name,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
