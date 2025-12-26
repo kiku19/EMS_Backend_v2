@@ -177,12 +177,64 @@ const counterSchema = new mongoose.Schema({
   seq: { type: Number, default: 0 }
 });
 
+// Intake Form Schema
+const intakeFormSchema = new mongoose.Schema({
+  formName: { type: String, required: true },
+  formType: { type: String, default: 'staff' }, // 'staff', 'student', 'parent'
+  fields: { type: mongoose.Schema.Types.Mixed, default: [] }, // Store as flexible array of objects
+  status: { type: String, default: 'active' }, // 'active', 'inactive', 'archived'
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+}, { timestamps: true, strict: false });
+
+// Form Assignment Schema
+const formAssignmentSchema = new mongoose.Schema({
+  formId: { type: mongoose.Schema.Types.ObjectId, ref: 'IntakeForm', required: true },
+  assignedToEmail: String,
+  assignedToPhone: String,
+  assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  status: { type: String, default: 'pending' }, // 'pending', 'in_progress', 'submitted', 'approved', 'rejected'
+  accessToken: { type: String, unique: true, required: true },
+  expiresAt: Date,
+  assignedAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+// Form Submission Schema
+const formSubmissionSchema = new mongoose.Schema({
+  assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FormAssignment', required: true },
+  formId: { type: mongoose.Schema.Types.ObjectId, ref: 'IntakeForm', required: true },
+  submissionData: mongoose.Schema.Types.Mixed, // All form field responses
+  submittedByEmail: String,
+  submittedByPhone: String,
+  submittedAt: { type: Date, default: Date.now },
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  reviewedAt: Date,
+  reviewStatus: { type: String, default: 'pending' }, // 'pending', 'approved', 'rejected'
+  reviewNotes: String,
+  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Populated after approval
+}, { timestamps: true });
+
+// Notification Schema
+const notificationSchema = new mongoose.Schema({
+  userEmail: String,
+  userPhone: String,
+  notificationType: String, // 'form_assignment', 'form_reminder', 'form_approved', 'form_rejected'
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  data: mongoose.Schema.Types.Mixed, // Additional data (form_id, assignment_id, etc.)
+  isRead: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
 export const Attendance = mongoose.model('Attendance', attendanceSchema);
 export const Timetable = mongoose.model('Timetable', timetableSchema);
 export const Counter = mongoose.model('Counter', counterSchema);
+export const IntakeForm = mongoose.model('IntakeForm', intakeFormSchema);
+export const FormAssignment = mongoose.model('FormAssignment', formAssignmentSchema);
+export const FormSubmission = mongoose.model('FormSubmission', formSubmissionSchema);
+export const Notification = mongoose.model('Notification', notificationSchema);
 
 // Helper to get next staff code
 export async function getNextStaffCode() {
