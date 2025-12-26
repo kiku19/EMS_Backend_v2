@@ -6,7 +6,17 @@ import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetab
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Configure CORS to allow requests from Vercel frontend
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://school-dashboard-ivory.vercel.app'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 await connectDB();
