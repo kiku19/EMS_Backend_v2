@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import mongoose from './database.js';
-import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification } from './database.js';
+import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, getNextReceiptNumber, getNextRefundNumber } from './database.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({
   origin: [
     'http://localhost:5173',
+    'http://localhost:5174',
     'http://localhost:3000',
     'https://school-dashboard-ivory.vercel.app'
   ],
@@ -726,6 +727,501 @@ app.delete('/api/timetable/:classId', async (req, res) => {
     const { academicYear } = req.query;
     await Timetable.findOneAndDelete({ classId, academicYear: academicYear || '2024-25' });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ FEE MANAGEMENT ROUTES ============
+
+// Get all payments with student details
+app.get('/api/fees/payments', async (req, res) => {
+  try {
+    const { studentId, classId, academicYear, startDate, endDate } = req.query;
+    const query = {};
+    
+    if (studentId) query.studentId = studentId;
+    if (classId) query.classId = classId;
+    if (academicYear) query.academicYear = academicYear;
+    if (startDate && endDate) {
+      query.paymentDate = { $gte: startDate, $lte: endDate };
+    }
+    
+    const payments = await FeePayment.find(query)
+      .populate('studentId', 'name rollNo admissionId')
+      .populate('classId', 'name section')
+      .populate('collectedBy', 'name')
+      .sort({ paymentDate: -1, createdAt: -1 });
+    
+    res.json(payments);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get payment by ID
+app.get('/api/fees/payments/:id', async (req, res) => {
+  try {
+    const payment = await FeePayment.findById(req.params.id)
+      .populate('studentId', 'name rollNo admissionId parentName parentPhone')
+      .populate('classId', 'name section')
+      .populate('collectedBy', 'name');
+    
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    
+    res.json(payment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create new payment
+app.post('/api/fees/payments', async (req, res) => {
+  try {
+    const {
+      studentId,
+      classId,
+      academicYear,
+      paymentDate,
+      amount,
+      paymentMode,
+      feeHeads,
+      transactionId,
+      chequeNumber,
+      bankName,
+      lateFee,
+      discount,
+      collectedBy,
+      remarks
+    } = req.body;
+    
+    // Generate receipt number
+    const receiptNumber = await getNextReceiptNumber();
+    
+    const payment = new FeePayment({
+      studentId,
+      classId,
+      academicYear: academicYear || '2024-25',
+      receiptNumber,
+      paymentDate,
+      amount,
+      paymentMode,
+      feeHeads,
+      transactionId,
+      chequeNumber,
+      bankName,
+      lateFee: lateFee || 0,
+      discount: discount || 0,
+      status: 'completed',
+      collectedBy,
+      remarks
+    });
+    
+    await payment.save();
+    
+    // Update student fee status if all fees are paid
+    // This is a simplified check - in production, you'd calculate total pending
+    await Student.findByIdAndUpdate(studentId, { feeStatus: 'paid' });
+    
+    const populatedPayment = await FeePayment.findById(payment._id)
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section')
+      .populate('collectedBy', 'name');
+    
+    res.status(201).json(populatedPayment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update payment
+app.put('/api/fees/payments/:id', async (req, res) => {
+  try {
+    const payment = await FeePayment.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    )
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section')
+      .populate('collectedBy', 'name');
+    
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    
+    res.json(payment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete payment
+app.delete('/api/fees/payments/:id', async (req, res) => {
+  try {
+    const result = await FeePayment.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Payment not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get fee defaulters
+app.get('/api/fees/defaulters', async (req, res) => {
+  try {
+    const { classId, academicYear } = req.query;
+    
+    // Get all students with pending fee status
+    const query = { feeStatus: 'pending', status: 'active' };
+    if (classId) query.classId = classId;
+    if (academicYear) query.academicYear = academicYear;
+    
+    const students = await Student.find(query)
+      .populate('classId', 'name section')
+      .sort({ classId: 1, rollNo: 1 });
+    
+    // For each student, calculate pending amount and days overdue
+    const defaulters = await Promise.all(students.map(async (student) => {
+      // Get total payments made
+      const payments = await FeePayment.find({ studentId: student._id, academicYear: academicYear || '2024-25' });
+      const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+      
+      // Get fee structure for the class (simplified - using fixed amount)
+      // In production, fetch from FeeStructure collection
+      const totalAnnualFee = 60000; // Example: 5000/month * 12 months
+      const pendingAmount = totalAnnualFee - totalPaid;
+      
+      // Calculate days overdue (simplified - assuming due date is 5th of each month)
+      const today = new Date();
+      const currentMonth = today.getMonth();
+      const dueDate = new Date(today.getFullYear(), currentMonth, 5);
+      const daysOverdue = Math.max(0, Math.floor((today - dueDate) / (1000 * 60 * 60 * 24)));
+      
+      return {
+        id: student._id,
+        student: student.name,
+        admissionId: student.admissionId,
+        rollNo: student.rollNo,
+        class: student.classId ? `${student.classId.name} ${student.classId.section}` : '',
+        classId: student.classId?._id,
+        phone: student.parentPhone,
+        email: student.parentEmail,
+        pending: pendingAmount > 0 ? pendingAmount : 0,
+        paid: totalPaid,
+        dueDate: dueDate.toISOString().split('T')[0],
+        days: daysOverdue,
+        lastPayment: payments.length > 0 ? payments[0].paymentDate : null
+      };
+    }));
+    
+    // Filter out students with no pending amount
+    const actualDefaulters = defaulters.filter(d => d.pending > 0);
+    
+    res.json(actualDefaulters);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get student payment summary
+app.get('/api/fees/students/:studentId/summary', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { academicYear } = req.query;
+    
+    const student = await Student.findById(studentId).populate('classId', 'name section');
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+    
+    // Get all payments
+    const payments = await FeePayment.find({
+      studentId,
+      academicYear: academicYear || '2024-25'
+    }).sort({ paymentDate: -1 });
+    
+    const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+    
+    // Get fee structure (simplified)
+    const totalAnnualFee = 60000;
+    const pending = totalAnnualFee - totalPaid;
+    
+    res.json({
+      student: {
+        id: student._id,
+        name: student.name,
+        admissionId: student.admissionId,
+        class: student.classId ? `${student.classId.name} ${student.classId.section}` : '',
+        parentName: student.parentName,
+        parentPhone: student.parentPhone
+      },
+      summary: {
+        totalAnnualFee,
+        totalPaid,
+        pending: pending > 0 ? pending : 0,
+        status: pending > 0 ? 'pending' : 'paid'
+      },
+      payments
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ REFUND ROUTES ============
+
+// Get all refunds
+app.get('/api/fees/refunds', async (req, res) => {
+  try {
+    const { studentId, status, academicYear } = req.query;
+    const query = {};
+    
+    if (studentId) query.studentId = studentId;
+    if (status) query.status = status;
+    if (academicYear) query.academicYear = academicYear;
+    
+    const refunds = await FeeRefund.find(query)
+      .populate('studentId', 'name rollNo admissionId')
+      .populate('classId', 'name section')
+      .populate('requestedBy', 'name')
+      .populate('approvedBy', 'name')
+      .populate('processedBy', 'name')
+      .sort({ createdAt: -1 });
+    
+    res.json(refunds);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get refund by ID
+app.get('/api/fees/refunds/:id', async (req, res) => {
+  try {
+    const refund = await FeeRefund.findById(req.params.id)
+      .populate('studentId', 'name rollNo admissionId parentName parentPhone')
+      .populate('classId', 'name section')
+      .populate('originalPaymentId')
+      .populate('requestedBy', 'name')
+      .populate('approvedBy', 'name')
+      .populate('processedBy', 'name');
+    
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    
+    res.json(refund);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create new refund request
+app.post('/api/fees/refunds', async (req, res) => {
+  try {
+    const {
+      studentId,
+      classId,
+      academicYear,
+      refundDate,
+      amount,
+      reason,
+      originalPaymentId,
+      refundMode,
+      transactionId,
+      chequeNumber,
+      bankName,
+      accountNumber,
+      requestedBy,
+      remarks
+    } = req.body;
+    
+    // Generate refund number
+    const refundNumber = await getNextRefundNumber();
+    
+    const refund = new FeeRefund({
+      studentId,
+      classId,
+      academicYear: academicYear || '2024-25',
+      refundNumber,
+      refundDate,
+      amount,
+      reason,
+      originalPaymentId,
+      refundMode,
+      transactionId,
+      chequeNumber,
+      bankName,
+      accountNumber,
+      requestedBy,
+      status: 'pending',
+      remarks
+    });
+    
+    await refund.save();
+    
+    const populatedRefund = await FeeRefund.findById(refund._id)
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section')
+      .populate('requestedBy', 'name');
+    
+    res.status(201).json(populatedRefund);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Approve refund
+app.put('/api/fees/refunds/:id/approve', async (req, res) => {
+  try {
+    const { approvedBy, remarks } = req.body;
+    
+    const refund = await FeeRefund.findByIdAndUpdate(
+      req.params.id,
+      {
+        status: 'approved',
+        approvedBy,
+        approvedAt: new Date(),
+        remarks: remarks || refund.remarks
+      },
+      { new: true }
+    )
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section')
+      .populate('approvedBy', 'name');
+    
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    
+    res.json(refund);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Process refund (mark as completed)
+app.put('/api/fees/refunds/:id/process', async (req, res) => {
+  try {
+    const { processedBy, transactionId, remarks } = req.body;
+    
+    const refund = await FeeRefund.findByIdAndUpdate(
+      req.params.id,
+      {
+        status: 'processed',
+        processedBy,
+        processedAt: new Date(),
+        transactionId: transactionId || refund.transactionId,
+        remarks: remarks || refund.remarks
+      },
+      { new: true }
+    )
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section')
+      .populate('processedBy', 'name');
+    
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    
+    res.json(refund);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reject refund
+app.put('/api/fees/refunds/:id/reject', async (req, res) => {
+  try {
+    const { approvedBy, rejectionReason } = req.body;
+    
+    const refund = await FeeRefund.findByIdAndUpdate(
+      req.params.id,
+      {
+        status: 'rejected',
+        approvedBy,
+        approvedAt: new Date(),
+        rejectionReason
+      },
+      { new: true }
+    )
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section')
+      .populate('approvedBy', 'name');
+    
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    
+    res.json(refund);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update refund
+app.put('/api/fees/refunds/:id', async (req, res) => {
+  try {
+    const refund = await FeeRefund.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    )
+      .populate('studentId', 'name rollNo')
+      .populate('classId', 'name section');
+    
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    
+    res.json(refund);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete refund
+app.delete('/api/fees/refunds/:id', async (req, res) => {
+  try {
+    const result = await FeeRefund.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Refund not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ FEE STRUCTURE ROUTES ============
+
+// Get fee structure for a class
+app.get('/api/fees/structure/:classId', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { academicYear } = req.query;
+    
+    const structure = await FeeStructure.findOne({
+      classId,
+      academicYear: academicYear || '2024-25'
+    }).populate('classId', 'name section');
+    
+    if (!structure) {
+      // Return default structure if not found
+      return res.json({
+        classId,
+        academicYear: academicYear || '2024-25',
+        feeHeads: [
+          { name: 'Tuition Fee', amount: 5000, frequency: 'monthly', mandatory: true },
+          { name: 'Transport Fee', amount: 2000, frequency: 'monthly', mandatory: false },
+          { name: 'Library Fee', amount: 500, frequency: 'annual', mandatory: true },
+        ],
+        totalAnnualFee: 60000
+      });
+    }
+    
+    res.json(structure);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create or update fee structure
+app.post('/api/fees/structure', async (req, res) => {
+  try {
+    const { classId, academicYear, feeHeads, totalAnnualFee } = req.body;
+    
+    const structure = await FeeStructure.findOneAndUpdate(
+      { classId, academicYear: academicYear || '2024-25' },
+      { classId, academicYear: academicYear || '2024-25', feeHeads, totalAnnualFee },
+      { upsert: true, new: true }
+    ).populate('classId', 'name section');
+    
+    res.json(structure);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1678,6 +2174,379 @@ app.put('/api/notifications/read-all', async (req, res) => {
     
     await Notification.updateMany(query, { isRead: true });
     
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ FRONT DESK ROUTES ============
+
+// Visitors
+app.get('/api/front-desk/visitors', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const query = date ? { date } : {};
+    const visitors = await Visitor.find(query).sort({ checkInTime: -1 });
+    res.json(visitors);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/front-desk/visitors/today', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const visitors = await Visitor.find({ date: today }).sort({ checkInTime: -1 });
+    res.json(visitors);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/front-desk/visitors', async (req, res) => {
+  try {
+    const visitor = new Visitor(req.body);
+    await visitor.save();
+    res.status(201).json(visitor);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/visitors/:id', async (req, res) => {
+  try {
+    const visitor = await Visitor.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!visitor) return res.status(404).json({ error: 'Visitor not found' });
+    res.json(visitor);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/visitors/:id/checkout', async (req, res) => {
+  try {
+    const { checkOutTime } = req.body;
+    const visitor = await Visitor.findByIdAndUpdate(
+      req.params.id,
+      { checkOutTime, status: 'checked-out' },
+      { new: true }
+    );
+    if (!visitor) return res.status(404).json({ error: 'Visitor not found' });
+    res.json(visitor);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/front-desk/visitors/:id', async (req, res) => {
+  try {
+    const result = await Visitor.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Visitor not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admissions
+app.get('/api/front-desk/admissions', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const query = status ? { status } : {};
+    const admissions = await Admission.find(query)
+      .populate('assignedTeacher', 'name')
+      .populate('decisionBy', 'name')
+      .sort({ createdAt: -1 });
+    res.json(admissions);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/front-desk/admissions/:id', async (req, res) => {
+  try {
+    const admission = await Admission.findById(req.params.id)
+      .populate('assignedTeacher', 'name')
+      .populate('decisionBy', 'name');
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    res.json(admission);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/front-desk/admissions', async (req, res) => {
+  try {
+    const admission = new Admission(req.body);
+    await admission.save();
+    res.status(201).json(admission);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/admissions/:id', async (req, res) => {
+  try {
+    const admission = await Admission.findByIdAndUpdate(req.params.id, req.body, { new: true })
+      .populate('assignedTeacher', 'name')
+      .populate('decisionBy', 'name');
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    res.json(admission);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/front-desk/admissions/:id', async (req, res) => {
+  try {
+    const result = await Admission.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Admission not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Gate Passes
+app.get('/api/front-desk/gate-passes', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const query = date ? { date } : {};
+    const gatePasses = await GatePass.find(query).sort({ outTime: -1 });
+    res.json(gatePasses);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/front-desk/gate-passes/today', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const gatePasses = await GatePass.find({ date: today }).sort({ outTime: -1 });
+    res.json(gatePasses);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/front-desk/gate-passes', async (req, res) => {
+  try {
+    const gatePass = new GatePass(req.body);
+    await gatePass.save();
+    
+    // If notify parent is checked and person is student, send notification
+    if (req.body.notifyParent && req.body.personType === 'student') {
+      const student = await Student.findById(req.body.personId);
+      if (student && student.parentPhone) {
+        const notification = new Notification({
+          userPhone: student.parentPhone,
+          notificationType: 'gate_pass',
+          title: 'Gate Pass Issued',
+          message: `Gate pass issued for ${req.body.personName}. Out time: ${req.body.outTime}`,
+          data: { gatePassId: gatePass._id },
+        });
+        await notification.save();
+      }
+    }
+    
+    res.status(201).json(gatePass);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/gate-passes/:id', async (req, res) => {
+  try {
+    const gatePass = await GatePass.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!gatePass) return res.status(404).json({ error: 'Gate pass not found' });
+    res.json(gatePass);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/front-desk/gate-passes/:id', async (req, res) => {
+  try {
+    const result = await GatePass.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Gate pass not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Appointments
+app.get('/api/front-desk/appointments', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const query = status ? { status } : {};
+    const appointments = await Appointment.find(query).sort({ fromDateTime: -1 });
+    res.json(appointments);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/front-desk/appointments/:id', async (req, res) => {
+  try {
+    const appointment = await Appointment.findById(req.params.id);
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+    res.json(appointment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/front-desk/appointments', async (req, res) => {
+  try {
+    const appointment = new Appointment(req.body);
+    await appointment.save();
+    res.status(201).json(appointment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/appointments/:id', async (req, res) => {
+  try {
+    const appointment = await Appointment.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+    res.json(appointment);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/front-desk/appointments/:id', async (req, res) => {
+  try {
+    const result = await Appointment.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Appointment not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Feedbacks
+app.get('/api/front-desk/feedbacks', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const query = status ? { status } : {};
+    const feedbacks = await Feedback.find(query)
+      .populate('assignedStaff', 'name')
+      .sort({ createdAt: -1 });
+    res.json(feedbacks);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/front-desk/feedbacks/:id', async (req, res) => {
+  try {
+    const feedback = await Feedback.findById(req.params.id).populate('assignedStaff', 'name');
+    if (!feedback) return res.status(404).json({ error: 'Feedback not found' });
+    res.json(feedback);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/front-desk/feedbacks', async (req, res) => {
+  try {
+    const feedback = new Feedback(req.body);
+    await feedback.save();
+    
+    // If notify staff is checked, send notification
+    if (req.body.notifyStaff && req.body.assignedStaff) {
+      const staff = await Staff.findById(req.body.assignedStaff);
+      if (staff) {
+        const notification = new Notification({
+          userEmail: staff.email,
+          userPhone: staff.phone,
+          notificationType: 'feedback_assigned',
+          title: 'New Feedback Assigned',
+          message: `You have been assigned a new feedback from ${req.body.name}`,
+          data: { feedbackId: feedback._id },
+        });
+        await notification.save();
+      }
+    }
+    
+    res.status(201).json(feedback);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/feedbacks/:id', async (req, res) => {
+  try {
+    const feedback = await Feedback.findByIdAndUpdate(req.params.id, req.body, { new: true })
+      .populate('assignedStaff', 'name');
+    if (!feedback) return res.status(404).json({ error: 'Feedback not found' });
+    res.json(feedback);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/front-desk/feedbacks/:id', async (req, res) => {
+  try {
+    const result = await Feedback.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Feedback not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Call Logs
+app.get('/api/front-desk/call-logs', async (req, res) => {
+  try {
+    const callLogs = await CallLog.find()
+      .populate('loggedBy', 'name')
+      .sort({ dateTime: -1 });
+    res.json(callLogs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/front-desk/call-logs/:id', async (req, res) => {
+  try {
+    const callLog = await CallLog.findById(req.params.id).populate('loggedBy', 'name');
+    if (!callLog) return res.status(404).json({ error: 'Call log not found' });
+    res.json(callLog);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/front-desk/call-logs', async (req, res) => {
+  try {
+    const callLog = new CallLog(req.body);
+    await callLog.save();
+    res.status(201).json(callLog);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/front-desk/call-logs/:id', async (req, res) => {
+  try {
+    const callLog = await CallLog.findByIdAndUpdate(req.params.id, req.body, { new: true })
+      .populate('loggedBy', 'name');
+    if (!callLog) return res.status(404).json({ error: 'Call log not found' });
+    res.json(callLog);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/front-desk/call-logs/:id', async (req, res) => {
+  try {
+    const result = await CallLog.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Call log not found' });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

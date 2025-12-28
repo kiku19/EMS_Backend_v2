@@ -225,6 +225,187 @@ const notificationSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
+// Visitor Schema
+const visitorSchema = new mongoose.Schema({
+  visitorName: { type: String, required: true },
+  phoneNumber: String,
+  date: { type: String, required: true },
+  checkInTime: { type: String, required: true },
+  checkOutTime: String,
+  reasonForVisit: String,
+  concernedPerson: String,
+  status: { type: String, default: 'checked-in' }, // 'checked-in', 'checked-out'
+}, { timestamps: true });
+
+// Admission Schema
+const admissionSchema = new mongoose.Schema({
+  studentName: { type: String, required: true },
+  dateOfBirth: String,
+  parentName: String,
+  phoneNumber: String,
+  email: String,
+  classApplyingFor: String,
+  assessmentRequired: { type: Boolean, default: false },
+  assignedTeacher: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  testDate: String,
+  testTime: String,
+  testResult: String, // 'cleared', 'failed', 'pending'
+  dateOfInquiry: { type: String, default: () => new Date().toISOString().split('T')[0] },
+  source: String, // 'walk-in', 'call', 'website', 'reference'
+  status: { type: String, default: 'inquiry-logged' }, // inquiry-logged, form-sent, form-submitted, documents-verified, test-scheduled, test-cleared/failed/no-show, admission-approved/rejected, fee-paid, student-admitted
+  admissionDecision: String, // 'approved', 'rejected', 'pending'
+  decisionRemarks: String,
+  decisionBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+}, { timestamps: true });
+
+// Gate Pass Schema
+const gatePassSchema = new mongoose.Schema({
+  personType: { type: String, required: true }, // 'staff', 'student'
+  personId: { type: mongoose.Schema.Types.ObjectId, refPath: 'personType' },
+  personName: { type: String, required: true },
+  leavingWith: String,
+  permittedBy: String,
+  outTime: { type: String, required: true },
+  date: { type: String, required: true },
+  notifyParent: { type: Boolean, default: false },
+  status: { type: String, default: 'active' },
+}, { timestamps: true });
+
+// Appointment Schema
+const appointmentSchema = new mongoose.Schema({
+  visitorName: { type: String, required: true },
+  phoneNumber: String,
+  purpose: String,
+  fromDateTime: { type: String, required: true },
+  toDateTime: { type: String, required: true },
+  meetingWith: String,
+  notes: String,
+  status: { type: String, default: 'scheduled' }, // 'scheduled', 'completed', 'cancelled'
+}, { timestamps: true });
+
+// Feedback Schema
+const feedbackSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  phoneNumber: String,
+  date: { type: String, default: () => new Date().toISOString().split('T')[0] },
+  category: String,
+  assignedStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  notifyStaff: { type: Boolean, default: false },
+  status: { type: String, default: 'open' }, // 'open', 'resolved'
+  notes: String,
+}, { timestamps: true });
+
+// Call Log Schema
+const callLogSchema = new mongoose.Schema({
+  callerName: String,
+  phoneNumber: String,
+  dateTime: { type: String, required: true },
+  purpose: String,
+  intent: String,
+  keyNotes: String,
+  summary: String,
+  title: String,
+  transcription: String,
+  recordingUrl: String,
+  loggedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+}, { timestamps: true });
+
+// Fee Structure Schema - defines fee amounts for classes
+const feeStructureSchema = new mongoose.Schema({
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  academicYear: { type: String, default: '2024-25' },
+  feeHeads: [{
+    name: String, // 'Tuition Fee', 'Transport Fee', etc.
+    amount: Number,
+    frequency: String, // 'monthly', 'quarterly', 'annual', 'one-time'
+    mandatory: { type: Boolean, default: true },
+  }],
+  totalAnnualFee: Number,
+}, { timestamps: true });
+
+feeStructureSchema.index({ classId: 1, academicYear: 1 }, { unique: true });
+
+// Fee Payment Schema - records individual payments
+const feePaymentSchema = new mongoose.Schema({
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  academicYear: { type: String, default: '2024-25' },
+  receiptNumber: { type: String, unique: true, required: true },
+  
+  // Payment Details
+  paymentDate: { type: String, required: true },
+  amount: { type: Number, required: true },
+  paymentMode: { type: String, required: true }, // 'cash', 'cheque', 'online', 'card'
+  
+  // Fee Heads Breakdown
+  feeHeads: [{
+    name: String,
+    amount: Number,
+    month: String, // For monthly fees
+    period: String, // For quarterly/annual fees
+  }],
+  
+  // Transaction Details
+  transactionId: String, // For online/card payments
+  chequeNumber: String, // For cheque payments
+  bankName: String,
+  
+  // Late Fee
+  lateFee: { type: Number, default: 0 },
+  discount: { type: Number, default: 0 },
+  
+  // Status
+  status: { type: String, default: 'completed' }, // 'completed', 'pending', 'failed'
+  
+  // Collected By
+  collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  
+  // Notes
+  remarks: String,
+}, { timestamps: true });
+
+feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
+
+// Fee Refund Schema
+const feeRefundSchema = new mongoose.Schema({
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  academicYear: { type: String, default: '2024-25' },
+  refundNumber: { type: String, unique: true, required: true },
+  
+  // Refund Details
+  refundDate: { type: String, required: true },
+  amount: { type: Number, required: true },
+  reason: { type: String, required: true },
+  
+  // Original Payment Reference
+  originalPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeePayment' },
+  
+  // Refund Method
+  refundMode: { type: String, required: true }, // 'cash', 'cheque', 'bank_transfer'
+  transactionId: String,
+  chequeNumber: String,
+  bankName: String,
+  accountNumber: String,
+  
+  // Approval Workflow
+  requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  requestedAt: { type: Date, default: Date.now },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  approvedAt: Date,
+  processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  processedAt: Date,
+  
+  // Status
+  status: { type: String, default: 'pending' }, // 'pending', 'approved', 'processed', 'rejected'
+  
+  // Notes
+  remarks: String,
+  rejectionReason: String,
+}, { timestamps: true });
+
+feeRefundSchema.index({ studentId: 1, refundDate: 1 });
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
@@ -235,6 +416,15 @@ export const IntakeForm = mongoose.model('IntakeForm', intakeFormSchema);
 export const FormAssignment = mongoose.model('FormAssignment', formAssignmentSchema);
 export const FormSubmission = mongoose.model('FormSubmission', formSubmissionSchema);
 export const Notification = mongoose.model('Notification', notificationSchema);
+export const Visitor = mongoose.model('Visitor', visitorSchema);
+export const Admission = mongoose.model('Admission', admissionSchema);
+export const GatePass = mongoose.model('GatePass', gatePassSchema);
+export const Appointment = mongoose.model('Appointment', appointmentSchema);
+export const Feedback = mongoose.model('Feedback', feedbackSchema);
+export const CallLog = mongoose.model('CallLog', callLogSchema);
+export const FeeStructure = mongoose.model('FeeStructure', feeStructureSchema);
+export const FeePayment = mongoose.model('FeePayment', feePaymentSchema);
+export const FeeRefund = mongoose.model('FeeRefund', feeRefundSchema);
 
 // Helper to get next staff code
 export async function getNextStaffCode() {
@@ -244,6 +434,28 @@ export async function getNextStaffCode() {
     { new: true, upsert: true }
   );
   return `EMP${String(counter.seq).padStart(3, '0')}`;
+}
+
+// Helper to get next receipt number
+export async function getNextReceiptNumber() {
+  const counter = await Counter.findByIdAndUpdate(
+    'receiptNumber',
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  const year = new Date().getFullYear();
+  return `RCP-${year}-${String(counter.seq).padStart(6, '0')}`;
+}
+
+// Helper to get next refund number
+export async function getNextRefundNumber() {
+  const counter = await Counter.findByIdAndUpdate(
+    'refundNumber',
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  const year = new Date().getFullYear();
+  return `RFD-${year}-${String(counter.seq).padStart(6, '0')}`;
 }
 
 export default mongoose;
