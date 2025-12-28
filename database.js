@@ -406,6 +406,21 @@ const feeRefundSchema = new mongoose.Schema({
 
 feeRefundSchema.index({ studentId: 1, refundDate: 1 });
 
+// Substitution Schema - for teacher substitutions
+const substitutionSchema = new mongoose.Schema({
+  date: { type: String, required: true }, // YYYY-MM-DD format
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  period: { type: String, required: true }, // Period number (1-8)
+  absentTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Teacher who is absent
+  substituteTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true }, // Substitute teacher
+  reason: String, // Reason for substitution (leave, sick, etc.)
+  type: { type: String, enum: ['auto', 'manual'], default: 'manual' }, // Auto-assigned or manual
+  status: { type: String, enum: ['pending', 'confirmed', 'completed'], default: 'confirmed' },
+  notes: String,
+}, { timestamps: true });
+
+substitutionSchema.index({ date: 1, classId: 1, period: 1 });
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
@@ -425,6 +440,7 @@ export const CallLog = mongoose.model('CallLog', callLogSchema);
 export const FeeStructure = mongoose.model('FeeStructure', feeStructureSchema);
 export const FeePayment = mongoose.model('FeePayment', feePaymentSchema);
 export const FeeRefund = mongoose.model('FeeRefund', feeRefundSchema);
+export const Substitution = mongoose.model('Substitution', substitutionSchema);
 
 // Helper to get next staff code
 export async function getNextStaffCode() {

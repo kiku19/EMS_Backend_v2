@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import mongoose from './database.js';
-import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, getNextReceiptNumber, getNextRefundNumber } from './database.js';
+import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber } from './database.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -729,6 +729,117 @@ app.delete('/api/timetable/:classId', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ SUBSTITUTION ROUTES ============
+// Get substitutions for a date
+app.get('/api/substitutions', async (req, res) => {
+  try {
+    const { date, classId, teacherId } = req.query;
+    const filter = {};
+    
+    if (date) filter.date = date;
+    if (classId) filter.classId = classId;
+    if (teacherId) {
+      filter.$or = [
+        { absentTeacherId: teacherId },
+        { substituteTeacherId: teacherId }
+      ];
+    }
+    
+    const substitutions = await Substitution.find(filter)
+      .populate('classId', 'name section')
+      .populate('absentTeacherId', 'name department')
+      .populate('substituteTeacherId', 'name department')
+      .sort({ date: -1, period: 1 });
+    
+    res.json(substitutions);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create substitution
+app.post('/api/substitutions', async (req, res) => {
+  try {
+    const {
+      date,
+      classId,
+      period,
+      absentTeacherId,
+      substituteTeacherId,
+      reason,
+      type,
+      notes
+    } = req.body;
+    
+    // Check if substitution already exists for this class and period
+    const existing = await Substitution.findOne({ date, classId, period });
+    if (existing) {
+      return res.status(400).json({ 
+        message: 'Substitution already exists for this class and period' 
+      });
+    }
+    
+    const substitution = new Substitution({
+      date,
+      classId,
+      period,
+      absentTeacherId,
+      substituteTeacherId,
+      reason,
+      type: type || 'manual',
+      notes
+    });
+    
+    await substitution.save();
+    
+    const populated = await Substitution.findById(substitution._id)
+      .populate('classId', 'name section')
+      .populate('absentTeacherId', 'name department')
+      .populate('substituteTeacherId', 'name department');
+    
+    res.status(201).json(populated);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update substitution
+app.put('/api/substitutions/:id', async (req, res) => {
+  try {
+    const { substituteTeacherId, reason, status, notes } = req.body;
+    
+    const substitution = await Substitution.findByIdAndUpdate(
+      req.params.id,
+      { substituteTeacherId, reason, status, notes },
+      { new: true, runValidators: true }
+    )
+      .populate('classId', 'name section')
+      .populate('absentTeacherId', 'name department')
+      .populate('substituteTeacherId', 'name department');
+    
+    if (!substitution) {
+      return res.status(404).json({ message: 'Substitution not found' });
+    }
+    
+    res.json(substitution);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete substitution
+app.delete('/api/substitutions/:id', async (req, res) => {
+  try {
+    const result = await Substitution.findByIdAndDelete(req.params.id);
+    if (!result) {
+      return res.status(404).json({ message: 'Substitution not found' });
+    }
+    res.json({ message: 'Substitution deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
