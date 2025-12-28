@@ -819,9 +819,22 @@ app.post('/api/fees/payments', async (req, res) => {
     
     await payment.save();
     
-    // Update student fee status if all fees are paid
-    // This is a simplified check - in production, you'd calculate total pending
-    await Student.findByIdAndUpdate(studentId, { feeStatus: 'paid' });
+    // Calculate total paid and update student fee status
+    const allPayments = await FeePayment.find({ 
+      studentId, 
+      academicYear: academicYear || '2024-25',
+      status: 'completed'
+    });
+    const totalPaid = allPayments.reduce((sum, p) => sum + p.amount, 0);
+    const totalAnnualFee = 60000; // Should be fetched from FeeStructure
+    const pendingAmount = totalAnnualFee - totalPaid;
+    
+    // Update student fee status
+    await Student.findByIdAndUpdate(studentId, { 
+      feeStatus: pendingAmount <= 0 ? 'paid' : 'pending' 
+    });
+    
+    console.log(`Payment created: ${receiptNumber}, Total paid: ${totalPaid}, Pending: ${pendingAmount}`);
     
     const populatedPayment = await FeePayment.findById(payment._id)
       .populate('studentId', 'name rollNo')
@@ -830,6 +843,7 @@ app.post('/api/fees/payments', async (req, res) => {
     
     res.status(201).json(populatedPayment);
   } catch (err) {
+    console.error('Error creating payment:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -870,8 +884,8 @@ app.get('/api/fees/defaulters', async (req, res) => {
   try {
     const { classId, academicYear } = req.query;
     
-    // Get all students with pending fee status
-    const query = { feeStatus: 'pending', status: 'active' };
+    // Get all active students (not just those with pending status)
+    const query = { status: 'active' };
     if (classId) query.classId = classId;
     if (academicYear) query.academicYear = academicYear;
     
@@ -879,10 +893,17 @@ app.get('/api/fees/defaulters', async (req, res) => {
       .populate('classId', 'name section')
       .sort({ classId: 1, rollNo: 1 });
     
+    console.log(`Found ${students.length} active students for defaulters check`);
+    
     // For each student, calculate pending amount and days overdue
     const defaulters = await Promise.all(students.map(async (student) => {
       // Get total payments made
-      const payments = await FeePayment.find({ studentId: student._id, academicYear: academicYear || '2024-25' });
+      const payments = await FeePayment.find({ 
+        studentId: student._id, 
+        academicYear: academicYear || '2024-25',
+        status: 'completed'
+      }).sort({ paymentDate: -1 });
+      
       const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
       
       // Get fee structure for the class (simplified - using fixed amount)
@@ -901,7 +922,7 @@ app.get('/api/fees/defaulters', async (req, res) => {
         student: student.name,
         admissionId: student.admissionId,
         rollNo: student.rollNo,
-        class: student.classId ? `${student.classId.name} ${student.classId.section}` : '',
+        class: student.classId ? `${student.classId.name.replace('Class ', '')} ${student.classId.section}` : '',
         classId: student.classId?._id,
         phone: student.parentPhone,
         email: student.parentEmail,
@@ -916,8 +937,10 @@ app.get('/api/fees/defaulters', async (req, res) => {
     // Filter out students with no pending amount
     const actualDefaulters = defaulters.filter(d => d.pending > 0);
     
+    console.log(`Returning ${actualDefaulters.length} defaulters`);
     res.json(actualDefaulters);
   } catch (err) {
+    console.error('Error fetching defaulters:', err);
     res.status(500).json({ error: err.message });
   }
 });
