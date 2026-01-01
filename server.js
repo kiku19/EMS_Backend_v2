@@ -1,10 +1,32 @@
 import express from 'express';
+import dotenv from 'dotenv';
 import cors from 'cors';
 import mongoose from './database.js';
-import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber } from './database.js';
+import { v2 as cloudinary } from 'cloudinary';
+import multer from 'multer';
+import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber, AdmissionFormConfig, AdmissionIdConfig, RollNumberConfig, DocumentConfig, getNextAdmissionId, getNextRollNumber } from './database.js';
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// Configure Multer
+const storage = multer.memoryStorage();
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
+});
 
 // Configure CORS to allow requests from Vercel frontend
 app.use(cors({
@@ -38,10 +60,10 @@ app.post('/api/auth/login', async (req, res) => {
     const { phone, password } = req.body;
     const staff = await Staff.findOne({ phone, password, status: 'active' });
     if (!staff) return res.status(401).json({ error: 'Invalid credentials' });
-    
+
     // Get classes where this staff is class teacher
     const classes = await Class.find({ classTeacherId: staff._id });
-    
+
     res.json({
       id: staff._id,
       code: staff.code,
@@ -52,6 +74,255 @@ app.post('/api/auth/login', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ UPLOAD ROUTE ============
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  console.log('📤 Upload request received');
+  try {
+    if (!req.file) {
+      console.log('❌ No file in request');
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    console.log('📄 File received:', req.file.originalname, 'Size:', req.file.size, 'bytes', 'Type:', req.file.mimetype);
+
+    // Check file size
+    if (req.file.size > 10 * 1024 * 1024) {
+      console.log('❌ File too large:', req.file.size);
+      return res.status(400).json({ error: 'File size exceeds 10MB limit' });
+    }
+
+    // Convert buffer to Base64
+    const b64 = Buffer.from(req.file.buffer).toString('base64');
+    let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
+
+    // Try Cloudinary upload, fallback to base64 if it fails
+    try {
+      console.log('☁️ Attempting Cloudinary upload...');
+      
+      // Determine resource type based on mime type
+      let resourceType = 'auto';
+      if (req.file.mimetype === 'application/pdf') {
+        resourceType = 'raw'; // PDFs use 'raw' type
+      } else if (req.file.mimetype.startsWith('image/')) {
+        resourceType = 'image';
+      } else if (req.file.mimetype.startsWith('video/')) {
+        resourceType = 'video';
+      } else {
+        resourceType = 'raw'; // Default to raw for other documents
+      }
+      
+      console.log('📄 File type:', req.file.mimetype, '→ Resource type:', resourceType);
+      
+      const uploadOptions = {
+        resource_type: resourceType,
+        folder: 'school_documents',
+        public_id: `doc_${Date.now()}_${req.file.originalname.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        timeout: 60000 // 60 second timeout
+      };
+      
+      const result = await cloudinary.uploader.upload(dataURI, uploadOptions);
+
+      console.log('✅ Cloudinary upload successful:', result.secure_url);
+      
+      // Use URL as-is - simple and works
+      let finalUrl = result.secure_url;
+      
+      console.log('✅ Final URL:', finalUrl);
+      
+      res.json({
+        url: finalUrl,
+        public_id: result.public_id,
+        name: req.file.originalname,
+        size: (result.bytes / 1024).toFixed(1) + ' KB',
+        format: result.format,
+        resource_type: result.resource_type
+      });
+    } catch (cloudinaryError) {
+      console.warn('⚠️ Cloudinary upload failed, using base64 fallback:', cloudinaryError.message);
+      console.error('Cloudinary error details:', cloudinaryError);
+      
+      // Fallback: return base64 data URI
+      res.json({
+        url: dataURI,
+        public_id: `local_${Date.now()}`,
+        name: req.file.originalname,
+        size: (req.file.size / 1024).toFixed(1) + ' KB',
+        format: req.file.mimetype
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Upload Error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({
+      error: 'Upload failed: ' + (error.message || 'Unknown error'),
+      details: error.message
+    });
+  }
+});
+
+// ============ DOCUMENT MANAGEMENT ROUTES ============
+// Add document to student
+app.post('/api/students/:id/documents', async (req, res) => {
+  try {
+    console.log('📄 Adding document to student:', req.params.id);
+    console.log('📄 Document data:', JSON.stringify(req.body, null, 2));
+    
+    const { name, type, url, uploadDate } = req.body;
+    
+    const newDoc = {
+      id: new mongoose.Types.ObjectId().toString(), // Generate unique ID
+      name,
+      type,
+      url,
+      uploadDate: uploadDate || new Date().toISOString(),
+      size: req.body.size || 'Unknown',
+      date: new Date().toLocaleDateString()
+    };
+    
+    // Use direct MongoDB update to bypass Mongoose schema caching issues
+    const result = await Student.collection.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(req.params.id) },
+      { $push: { documents: newDoc } },
+      { returnDocument: 'after' }
+    );
+    
+    if (!result) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+    
+    console.log('✅ Document added successfully');
+    console.log('✅ Total documents now:', result.documents?.length || 0);
+    console.log('✅ New document:', newDoc);
+    
+    res.json({ 
+      success: true, 
+      documents: result.documents || []
+    });
+  } catch (error) {
+    console.error('❌ Error adding document:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete document from student
+app.delete('/api/students/:id/documents/:docIndex', async (req, res) => {
+  try {
+    console.log('🗑️ DELETE request - Student ID:', req.params.id, 'Doc Index:', req.params.docIndex);
+    
+    // Use direct MongoDB query to avoid Mongoose caching issues
+    const student = await Student.collection.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
+    
+    if (!student) {
+      console.log('❌ Student not found');
+      return res.status(404).json({ error: 'Student not found' });
+    }
+    
+    console.log('📄 Student found, documents array:', student.documents);
+    console.log('📄 Documents count:', student.documents?.length || 0);
+    
+    const docIndex = parseInt(req.params.docIndex);
+    console.log('📄 Parsed docIndex:', docIndex);
+    console.log('📄 Document at index:', student.documents?.[docIndex]);
+    
+    if (student.documents && student.documents[docIndex]) {
+      const deletedDoc = student.documents[docIndex];
+      console.log('✅ Deleting document:', deletedDoc.name || deletedDoc);
+      
+      // Remove the document at the specified index
+      student.documents.splice(docIndex, 1);
+      
+      // Update using direct MongoDB
+      const result = await Student.collection.findOneAndUpdate(
+        { _id: new mongoose.Types.ObjectId(req.params.id) },
+        { $set: { documents: student.documents } },
+        { returnDocument: 'after' }
+      );
+      
+      console.log('✅ Document deleted, remaining:', result.documents?.length || 0);
+      res.json({ success: true, documents: result.documents || [] });
+    } else {
+      console.log('❌ Document not found at index', docIndex);
+      console.log('❌ Available indices: 0 to', (student.documents?.length || 0) - 1);
+      res.status(404).json({ error: 'Document not found' });
+    }
+  } catch (error) {
+    console.error('❌ Delete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update student photo
+app.put('/api/students/:id/photo', async (req, res) => {
+  try {
+    console.log('📸 Updating photo for student:', req.params.id);
+    console.log('📸 Photo URL:', req.body.photo);
+    
+    const { photo } = req.body;
+    
+    // Use direct MongoDB update
+    const result = await Student.collection.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(req.params.id) },
+      { $set: { photo } },
+      { returnDocument: 'after' }
+    );
+    
+    if (!result) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+    
+    console.log('✅ Photo updated successfully');
+    
+    res.json({ 
+      success: true, 
+      photo: result.photo 
+    });
+  } catch (error) {
+    console.error('❌ Error updating photo:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fix corrupted documents field (migration endpoint)
+app.post('/api/students/:id/fix-documents', async (req, res) => {
+  try {
+    console.log('🔧 Fixing documents field for student:', req.params.id);
+    
+    // Get the student
+    const student = await Student.findById(req.params.id);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    // Fix documents: add IDs to documents that don't have them, remove corrupted ones
+    const fixedDocuments = (student.documents || [])
+      .filter(doc => doc.url && doc.name) // Remove corrupted documents
+      .map(doc => ({
+        ...doc,
+        id: doc.id || new mongoose.Types.ObjectId().toString(), // Add ID if missing
+        date: doc.date || new Date(doc.uploadDate || Date.now()).toLocaleDateString(),
+        size: doc.size || 'Unknown'
+      }));
+    
+    // Update using direct MongoDB
+    const result = await Student.collection.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(req.params.id) },
+      { $set: { documents: fixedDocuments } },
+      { returnDocument: 'after' }
+    );
+    
+    console.log('✅ Documents field fixed:', fixedDocuments.length, 'valid documents');
+    res.json({ 
+      success: true, 
+      message: 'Documents field fixed',
+      documents: result.documents || []
+    });
+  } catch (error) {
+    console.error('❌ Error fixing documents:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -85,7 +356,7 @@ app.get('/api/staff/:id', async (req, res) => {
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
     const assignedClass = await Class.findOne({ classTeacherId: staff._id });
     res.json({
-      id: staff._id, 
+      id: staff._id,
       code: staff.code,
       name: staff.name,
       role: staff.role,
@@ -111,7 +382,7 @@ app.post('/api/staff', async (req, res) => {
   try {
     const { name, role, department, status, phone, email, joinDate, address, assignedClassId, reporterId } = req.body;
     const code = await getNextStaffCode();
-    
+
     // Validate circular reference
     if (reporterId) {
       const reporter = await Staff.findById(reporterId);
@@ -119,28 +390,28 @@ app.post('/api/staff', async (req, res) => {
         return res.status(400).json({ error: 'Reporter not found' });
       }
     }
-    
+
     // Auto-generate username from email or code
     const username = email ? email.split('@')[0].toLowerCase() : code.toLowerCase();
     // Auto-generate random password
     const password = generatePassword(8);
-    
+
     const staff = new Staff({
       code, name, role, department, status: status || 'active',
       phone, email, joinDate, address, username, password,
       reporterId: reporterId || null,
     });
     await staff.save();
-    
+
     // If class teacher, assign to class
     if (role === 'Teacher' && assignedClassId) {
       await Class.findByIdAndUpdate(assignedClassId, { classTeacherId: staff._id });
     }
-    
+
     const assignedClass = assignedClassId ? await Class.findById(assignedClassId) : null;
-    
-    res.status(201).json({ 
-      id: staff._id, 
+
+    res.status(201).json({
+      id: staff._id,
       code: staff.code,
       name: staff.name,
       role: staff.role,
@@ -164,7 +435,7 @@ app.post('/api/staff', async (req, res) => {
 app.put('/api/staff/:id', async (req, res) => {
   try {
     const { name, role, department, status, phone, email, joinDate, address, assignedClassId, username, password, reporterId } = req.body;
-    
+
     // Validate circular reference if reporterId is being updated
     if (reporterId !== undefined && reporterId !== null) {
       // Check if reporter exists
@@ -172,43 +443,43 @@ app.put('/api/staff/:id', async (req, res) => {
       if (!reporter) {
         return res.status(400).json({ error: 'Reporter not found' });
       }
-      
+
       // Check for circular reference
       const checkCircular = async (currentId, targetId, visited = new Set()) => {
         if (currentId === targetId) return true;
         if (visited.has(currentId)) return false;
         visited.add(currentId);
-        
+
         const current = await Staff.findById(currentId);
         if (!current || !current.reporterId) return false;
-        
+
         return checkCircular(current.reporterId.toString(), targetId, visited);
       };
-      
+
       const hasCircular = await checkCircular(reporterId, req.params.id);
       if (hasCircular) {
         return res.status(400).json({ error: 'Cannot assign reporter: This would create a circular reference' });
       }
     }
-    
+
     // Build update object - only include password if provided
     const updateData = { name, role, department, status, phone, email, joinDate, address };
     if (username) updateData.username = username;
     if (password) updateData.password = password;
     if (reporterId !== undefined) updateData.reporterId = reporterId || null;
-    
+
     const staff = await Staff.findByIdAndUpdate(req.params.id, updateData, { new: true }).populate('reporterId', 'name');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
-    
+
     // Update class assignment
     await Class.updateMany({ classTeacherId: staff._id }, { $unset: { classTeacherId: 1 } });
     if (assignedClassId) {
       await Class.findByIdAndUpdate(assignedClassId, { classTeacherId: staff._id });
     }
-    
+
     const assignedClass = await Class.findOne({ classTeacherId: staff._id });
-    res.json({ 
-      id: staff._id, 
+    res.json({
+      id: staff._id,
       ...staff.toObject(),
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
@@ -227,14 +498,14 @@ app.put('/api/staff/:id/credentials', async (req, res) => {
     if (!username && !password) {
       return res.status(400).json({ error: 'Username or password required' });
     }
-    
+
     const updateData = {};
     if (username) updateData.username = username;
     if (password) updateData.password = password;
-    
+
     const staff = await Staff.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
-    
+
     res.json({ success: true, username: staff.username });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -259,7 +530,7 @@ app.get('/api/classes', async (req, res) => {
     const { teacherId } = req.query;
     const query = teacherId ? { classTeacherId: teacherId } : {};
     const classes = await Class.find(query).populate('classTeacherId', 'name').sort({ name: 1, section: 1 });
-    
+
     const formatted = await Promise.all(classes.map(async c => {
       const studentCount = await Student.countDocuments({ classId: c._id });
       return {
@@ -352,7 +623,7 @@ app.get('/api/students', async (req, res) => {
         classId: s.classId?._id,
         class: classInfo,
         className: s.classId ? `${s.classId.name} ${s.classId.section}` : null,
-        
+
         // Personal Information
         gender: s.gender,
         dateOfBirth: s.dateOfBirth,
@@ -361,12 +632,12 @@ app.get('/api/students', async (req, res) => {
         religion: s.religion,
         category: s.category,
         motherTongue: s.motherTongue,
-        
+
         // Contact Information
         phone: s.phone,
         email: s.email,
         address: s.address,
-        
+
         // Parent Information
         parentName: s.parentName,
         parentPhone: s.parentPhone,
@@ -375,26 +646,26 @@ app.get('/api/students', async (req, res) => {
         parentOccupation: s.parentOccupation,
         alternatePhone: s.alternatePhone,
         parents: s.parents,
-        
+
         // Academic Information
         previousSchool: s.previousSchool,
         tcNumber: s.tcNumber,
         mediumOfInstruction: s.mediumOfInstruction,
         house: s.house,
-        
+
         // Health & Safety
         medicalConditions: s.medicalConditions,
         emergencyContactName: s.emergencyContactName,
         emergencyContactPhone: s.emergencyContactPhone,
-        
+
         // Requirements
         transportRequired: s.transportRequired,
         hostelRequired: s.hostelRequired,
-        
+
         // Status
         feeStatus: s.feeStatus,
         status: s.status,
-        
+
         // Documents
         documents: s.documents,
         photo: s.photo,
@@ -406,18 +677,52 @@ app.get('/api/students', async (req, res) => {
   }
 });
 
+// Generate next admission ID (MUST be before /:id route)
+app.get('/api/students/next-admission-id', async (req, res) => {
+  try {
+    console.log('🔄 Generating next admission ID...');
+    const admissionId = await getNextAdmissionId();
+    console.log('✅ Generated admission ID:', admissionId);
+    res.json({ admissionId });
+  } catch (err) {
+    console.error('❌ Error generating admission ID:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/students/:id', async (req, res) => {
   try {
-    const student = await Student.findById(req.params.id).populate('classId', 'name section');
+    console.log('📖 GET /api/students/:id -', req.params.id);
+    
+    // Use direct MongoDB query to bypass Mongoose schema issues
+    const student = await Student.collection.findOne({ 
+      _id: new mongoose.Types.ObjectId(req.params.id) 
+    });
+    
     if (!student) return res.status(404).json({ error: 'Student not found' });
-    const classInfo = student.classId ? `${student.classId.name.replace('Class ', '')}-${student.classId.section}` : null;
+    
+    // Get class info if classId exists
+    let classInfo = null;
+    let className = null;
+    if (student.classId) {
+      const classDoc = await Class.findById(student.classId);
+      if (classDoc) {
+        classInfo = `${classDoc.name.replace('Class ', '')}-${classDoc.section}`;
+        className = `${classDoc.name} ${classDoc.section}`;
+      }
+    }
+    
+    console.log('📖 Student documents:', student.documents);
+    console.log('📸 Student photo:', student.photo);
+    
     res.json({
       id: student._id,
-      ...student.toObject(),
+      ...student,
       class: classInfo,
-      className: student.classId ? `${student.classId.name} ${student.classId.section}` : null,
+      className: className,
     });
   } catch (err) {
+    console.error('❌ Error fetching student:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -431,7 +736,7 @@ app.post('/api/students', async (req, res) => {
       academicYear: req.body.academicYear,
       rollNo: req.body.rollNo,
       classId: req.body.classId,
-      
+
       // Personal Information
       gender: req.body.gender,
       dateOfBirth: req.body.dateOfBirth,
@@ -441,12 +746,12 @@ app.post('/api/students', async (req, res) => {
       category: req.body.category,
       motherTongue: req.body.motherTongue,
       aadhaarNumber: req.body.aadhaarNumber,
-      
+
       // Contact Information
       phone: req.body.phone,
       email: req.body.email,
       address: req.body.address,
-      
+
       // Parent Information
       parentName: req.body.parentName,
       parentPhone: req.body.parentPhone,
@@ -455,33 +760,49 @@ app.post('/api/students', async (req, res) => {
       parentOccupation: req.body.parentOccupation,
       alternatePhone: req.body.alternatePhone,
       parents: req.body.parents || [],
-      
+
       // Academic Information
       previousSchool: req.body.previousSchool,
       tcNumber: req.body.tcNumber,
       mediumOfInstruction: req.body.mediumOfInstruction,
       house: req.body.house,
-      
+
       // Health & Safety
       medicalConditions: req.body.medicalConditions,
       emergencyContactName: req.body.emergencyContactName,
       emergencyContactPhone: req.body.emergencyContactPhone,
-      
+
       // Requirements
       transportRequired: req.body.transportRequired || false,
       hostelRequired: req.body.hostelRequired || false,
-      
+
       // Status
       feeStatus: req.body.feeStatus || 'pending',
       status: req.body.status || 'active',
-      
+
       // Photo
       photo: req.body.photo,
-      
+
       // Documents
       documents: req.body.documents || []
     };
-    
+
+    // Remove undefined values and empty objects to prevent MongoDB cast errors
+    Object.keys(studentData).forEach(key => {
+      if (studentData[key] === undefined) {
+        delete studentData[key];
+      }
+      // Remove empty objects (like photo: {})
+      if (typeof studentData[key] === 'object' && 
+          studentData[key] !== null && 
+          !Array.isArray(studentData[key]) && 
+          Object.keys(studentData[key]).length === 0) {
+        delete studentData[key];
+      }
+    });
+
+    console.log('📝 Student data after cleanup:', JSON.stringify(studentData, null, 2));
+
     const student = new Student(studentData);
     await student.save();
     res.status(201).json({ id: student._id, ...student.toObject() });
@@ -492,6 +813,14 @@ app.post('/api/students', async (req, res) => {
 
 app.put('/api/students/:id', async (req, res) => {
   try {
+    console.log('📝 PUT /api/students/:id - Request body:', JSON.stringify(req.body, null, 2));
+    console.log('📝 Documents field type:', typeof req.body.documents);
+    console.log('📝 Documents field is array:', Array.isArray(req.body.documents));
+    
+    if (req.body.documents) {
+      console.log('📝 Documents field value:', JSON.stringify(req.body.documents, null, 2));
+    }
+    
     const updateData = {
       // Basic Information
       name: req.body.name,
@@ -499,7 +828,7 @@ app.put('/api/students/:id', async (req, res) => {
       academicYear: req.body.academicYear,
       rollNo: req.body.rollNo,
       classId: req.body.classId,
-      
+
       // Personal Information
       gender: req.body.gender,
       dateOfBirth: req.body.dateOfBirth,
@@ -509,12 +838,12 @@ app.put('/api/students/:id', async (req, res) => {
       category: req.body.category,
       motherTongue: req.body.motherTongue,
       aadhaarNumber: req.body.aadhaarNumber,
-      
+
       // Contact Information
       phone: req.body.phone,
       email: req.body.email,
       address: req.body.address,
-      
+
       // Parent Information
       parentName: req.body.parentName,
       parentPhone: req.body.parentPhone,
@@ -523,49 +852,59 @@ app.put('/api/students/:id', async (req, res) => {
       parentOccupation: req.body.parentOccupation,
       alternatePhone: req.body.alternatePhone,
       parents: req.body.parents,
-      
+
       // Academic Information
       previousSchool: req.body.previousSchool,
       tcNumber: req.body.tcNumber,
       mediumOfInstruction: req.body.mediumOfInstruction,
       house: req.body.house,
-      
+
       // Health & Safety
       medicalConditions: req.body.medicalConditions,
       emergencyContactName: req.body.emergencyContactName,
       emergencyContactPhone: req.body.emergencyContactPhone,
-      
+
       // Requirements
       transportRequired: req.body.transportRequired,
       hostelRequired: req.body.hostelRequired,
-      
+
       // Status
       feeStatus: req.body.feeStatus,
       status: req.body.status,
-      
+
       // Photo
       photo: req.body.photo,
-      
-      // Documents
-      documents: req.body.documents
+
+      // Documents - ensure it's an array
+      documents: Array.isArray(req.body.documents) ? req.body.documents : undefined
     };
-    
+
     // Remove undefined values
     Object.keys(updateData).forEach(key => {
       if (updateData[key] === undefined) {
         delete updateData[key];
       }
+      // Also remove empty objects (like photo: {})
+      if (typeof updateData[key] === 'object' && updateData[key] !== null && !Array.isArray(updateData[key]) && Object.keys(updateData[key]).length === 0) {
+        delete updateData[key];
+      }
     });
-    
+
+    console.log('📝 Update data after cleanup:', JSON.stringify(updateData, null, 2));
+    console.log('📸 Photo URL being saved:', updateData.photo);
+
     const student = await Student.findByIdAndUpdate(
       req.params.id,
-      updateData,
-      { new: true }
+      { $set: updateData },
+      { new: true, runValidators: false }
     );
-    
+
     if (!student) return res.status(404).json({ error: 'Student not found' });
+    console.log('✅ Student updated successfully');
+    console.log('📸 Photo in updated student:', student.photo);
     res.json({ id: student._id, ...student.toObject() });
   } catch (err) {
+    console.error('❌ Error updating student:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -637,13 +976,13 @@ app.get('/api/timetable/:classId', async (req, res) => {
     const { academicYear } = req.query;
     const query = { classId };
     if (academicYear) query.academicYear = academicYear;
-    
+
     const timetable = await Timetable.findOne(query).populate('schedule.Monday.teacherId schedule.Tuesday.teacherId schedule.Wednesday.teacherId schedule.Thursday.teacherId schedule.Friday.teacherId schedule.Saturday.teacherId', 'name');
-    
+
     if (!timetable) {
       return res.json(null);
     }
-    
+
     res.json({
       id: timetable._id,
       classId: timetable.classId,
@@ -660,13 +999,13 @@ app.get('/api/timetable/:classId', async (req, res) => {
 app.post('/api/timetable', async (req, res) => {
   try {
     const { classId, academicYear, periods, schedule } = req.body;
-    
+
     const timetable = await Timetable.findOneAndUpdate(
       { classId, academicYear: academicYear || '2024-25' },
       { classId, academicYear: academicYear || '2024-25', periods, schedule },
       { upsert: true, new: true }
     );
-    
+
     res.json({
       id: timetable._id,
       classId: timetable.classId,
@@ -684,18 +1023,18 @@ app.put('/api/timetable/:classId/slot', async (req, res) => {
   try {
     const { classId } = req.params;
     const { day, periodIndex, subject, teacherId, room, academicYear } = req.body;
-    
+
     const updatePath = `schedule.${day}.${periodIndex}`;
     const timetable = await Timetable.findOneAndUpdate(
       { classId, academicYear: academicYear || '2024-25' },
-      { 
-        $set: { 
+      {
+        $set: {
           [updatePath]: { subject, teacherId, room }
         }
       },
       { new: true, upsert: true }
     );
-    
+
     res.json({ success: true, timetable });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -707,13 +1046,13 @@ app.put('/api/timetable/:classId/periods', async (req, res) => {
   try {
     const { classId } = req.params;
     const { periods, academicYear } = req.body;
-    
+
     const timetable = await Timetable.findOneAndUpdate(
       { classId, academicYear: academicYear || '2024-25' },
       { periods },
       { new: true, upsert: true }
     );
-    
+
     res.json({ success: true, periods: timetable.periods });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -738,7 +1077,7 @@ app.get('/api/substitutions', async (req, res) => {
   try {
     const { date, classId, teacherId } = req.query;
     const filter = {};
-    
+
     if (date) filter.date = date;
     if (classId) filter.classId = classId;
     if (teacherId) {
@@ -747,13 +1086,13 @@ app.get('/api/substitutions', async (req, res) => {
         { substituteTeacherId: teacherId }
       ];
     }
-    
+
     const substitutions = await Substitution.find(filter)
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name department')
       .populate('substituteTeacherId', 'name department')
       .sort({ date: -1, period: 1 });
-    
+
     res.json(substitutions);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -773,15 +1112,15 @@ app.post('/api/substitutions', async (req, res) => {
       type,
       notes
     } = req.body;
-    
+
     // Check if substitution already exists for this class and period
     const existing = await Substitution.findOne({ date, classId, period });
     if (existing) {
-      return res.status(400).json({ 
-        message: 'Substitution already exists for this class and period' 
+      return res.status(400).json({
+        message: 'Substitution already exists for this class and period'
       });
     }
-    
+
     const substitution = new Substitution({
       date,
       classId,
@@ -792,14 +1131,14 @@ app.post('/api/substitutions', async (req, res) => {
       type: type || 'manual',
       notes
     });
-    
+
     await substitution.save();
-    
+
     const populated = await Substitution.findById(substitution._id)
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name department')
       .populate('substituteTeacherId', 'name department');
-    
+
     res.status(201).json(populated);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -810,7 +1149,7 @@ app.post('/api/substitutions', async (req, res) => {
 app.put('/api/substitutions/:id', async (req, res) => {
   try {
     const { substituteTeacherId, reason, status, notes } = req.body;
-    
+
     const substitution = await Substitution.findByIdAndUpdate(
       req.params.id,
       { substituteTeacherId, reason, status, notes },
@@ -819,11 +1158,11 @@ app.put('/api/substitutions/:id', async (req, res) => {
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name department')
       .populate('substituteTeacherId', 'name department');
-    
+
     if (!substitution) {
       return res.status(404).json({ message: 'Substitution not found' });
     }
-    
+
     res.json(substitution);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -850,20 +1189,20 @@ app.get('/api/fees/payments', async (req, res) => {
   try {
     const { studentId, classId, academicYear, startDate, endDate } = req.query;
     const query = {};
-    
+
     if (studentId) query.studentId = studentId;
     if (classId) query.classId = classId;
     if (academicYear) query.academicYear = academicYear;
     if (startDate && endDate) {
       query.paymentDate = { $gte: startDate, $lte: endDate };
     }
-    
+
     const payments = await FeePayment.find(query)
       .populate('studentId', 'name rollNo admissionId')
       .populate('classId', 'name section')
       .populate('collectedBy', 'name')
       .sort({ paymentDate: -1, createdAt: -1 });
-    
+
     res.json(payments);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -877,9 +1216,9 @@ app.get('/api/fees/payments/:id', async (req, res) => {
       .populate('studentId', 'name rollNo admissionId parentName parentPhone')
       .populate('classId', 'name section')
       .populate('collectedBy', 'name');
-    
+
     if (!payment) return res.status(404).json({ error: 'Payment not found' });
-    
+
     res.json(payment);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -905,10 +1244,10 @@ app.post('/api/fees/payments', async (req, res) => {
       collectedBy,
       remarks
     } = req.body;
-    
+
     // Generate receipt number
     const receiptNumber = await getNextReceiptNumber();
-    
+
     const payment = new FeePayment({
       studentId,
       classId,
@@ -927,31 +1266,31 @@ app.post('/api/fees/payments', async (req, res) => {
       collectedBy,
       remarks
     });
-    
+
     await payment.save();
-    
+
     // Calculate total paid and update student fee status
-    const allPayments = await FeePayment.find({ 
-      studentId, 
+    const allPayments = await FeePayment.find({
+      studentId,
       academicYear: academicYear || '2024-25',
       status: 'completed'
     });
     const totalPaid = allPayments.reduce((sum, p) => sum + p.amount, 0);
     const totalAnnualFee = 60000; // Should be fetched from FeeStructure
     const pendingAmount = totalAnnualFee - totalPaid;
-    
+
     // Update student fee status
-    await Student.findByIdAndUpdate(studentId, { 
-      feeStatus: pendingAmount <= 0 ? 'paid' : 'pending' 
+    await Student.findByIdAndUpdate(studentId, {
+      feeStatus: pendingAmount <= 0 ? 'paid' : 'pending'
     });
-    
+
     console.log(`Payment created: ${receiptNumber}, Total paid: ${totalPaid}, Pending: ${pendingAmount}`);
-    
+
     const populatedPayment = await FeePayment.findById(payment._id)
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('collectedBy', 'name');
-    
+
     res.status(201).json(populatedPayment);
   } catch (err) {
     console.error('Error creating payment:', err);
@@ -970,9 +1309,9 @@ app.put('/api/fees/payments/:id', async (req, res) => {
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('collectedBy', 'name');
-    
+
     if (!payment) return res.status(404).json({ error: 'Payment not found' });
-    
+
     res.json(payment);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -994,40 +1333,40 @@ app.delete('/api/fees/payments/:id', async (req, res) => {
 app.get('/api/fees/defaulters', async (req, res) => {
   try {
     const { classId, academicYear } = req.query;
-    
+
     // Get all active students (not just those with pending status)
     const query = { status: 'active' };
     if (classId) query.classId = classId;
     if (academicYear) query.academicYear = academicYear;
-    
+
     const students = await Student.find(query)
       .populate('classId', 'name section')
       .sort({ classId: 1, rollNo: 1 });
-    
+
     console.log(`Found ${students.length} active students for defaulters check`);
-    
+
     // For each student, calculate pending amount and days overdue
     const defaulters = await Promise.all(students.map(async (student) => {
       // Get total payments made
-      const payments = await FeePayment.find({ 
-        studentId: student._id, 
+      const payments = await FeePayment.find({
+        studentId: student._id,
         academicYear: academicYear || '2024-25',
         status: 'completed'
       }).sort({ paymentDate: -1 });
-      
+
       const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
-      
+
       // Get fee structure for the class (simplified - using fixed amount)
       // In production, fetch from FeeStructure collection
       const totalAnnualFee = 60000; // Example: 5000/month * 12 months
       const pendingAmount = totalAnnualFee - totalPaid;
-      
+
       // Calculate days overdue (simplified - assuming due date is 5th of each month)
       const today = new Date();
       const currentMonth = today.getMonth();
       const dueDate = new Date(today.getFullYear(), currentMonth, 5);
       const daysOverdue = Math.max(0, Math.floor((today - dueDate) / (1000 * 60 * 60 * 24)));
-      
+
       return {
         id: student._id,
         student: student.name,
@@ -1044,10 +1383,10 @@ app.get('/api/fees/defaulters', async (req, res) => {
         lastPayment: payments.length > 0 ? payments[0].paymentDate : null
       };
     }));
-    
+
     // Filter out students with no pending amount
     const actualDefaulters = defaulters.filter(d => d.pending > 0);
-    
+
     console.log(`Returning ${actualDefaulters.length} defaulters`);
     res.json(actualDefaulters);
   } catch (err) {
@@ -1061,22 +1400,22 @@ app.get('/api/fees/students/:studentId/summary', async (req, res) => {
   try {
     const { studentId } = req.params;
     const { academicYear } = req.query;
-    
+
     const student = await Student.findById(studentId).populate('classId', 'name section');
     if (!student) return res.status(404).json({ error: 'Student not found' });
-    
+
     // Get all payments
     const payments = await FeePayment.find({
       studentId,
       academicYear: academicYear || '2024-25'
     }).sort({ paymentDate: -1 });
-    
+
     const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
-    
+
     // Get fee structure (simplified)
     const totalAnnualFee = 60000;
     const pending = totalAnnualFee - totalPaid;
-    
+
     res.json({
       student: {
         id: student._id,
@@ -1106,11 +1445,11 @@ app.get('/api/fees/refunds', async (req, res) => {
   try {
     const { studentId, status, academicYear } = req.query;
     const query = {};
-    
+
     if (studentId) query.studentId = studentId;
     if (status) query.status = status;
     if (academicYear) query.academicYear = academicYear;
-    
+
     const refunds = await FeeRefund.find(query)
       .populate('studentId', 'name rollNo admissionId')
       .populate('classId', 'name section')
@@ -1118,7 +1457,7 @@ app.get('/api/fees/refunds', async (req, res) => {
       .populate('approvedBy', 'name')
       .populate('processedBy', 'name')
       .sort({ createdAt: -1 });
-    
+
     res.json(refunds);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1135,9 +1474,9 @@ app.get('/api/fees/refunds/:id', async (req, res) => {
       .populate('requestedBy', 'name')
       .populate('approvedBy', 'name')
       .populate('processedBy', 'name');
-    
+
     if (!refund) return res.status(404).json({ error: 'Refund not found' });
-    
+
     res.json(refund);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1163,10 +1502,10 @@ app.post('/api/fees/refunds', async (req, res) => {
       requestedBy,
       remarks
     } = req.body;
-    
+
     // Generate refund number
     const refundNumber = await getNextRefundNumber();
-    
+
     const refund = new FeeRefund({
       studentId,
       classId,
@@ -1185,14 +1524,14 @@ app.post('/api/fees/refunds', async (req, res) => {
       status: 'pending',
       remarks
     });
-    
+
     await refund.save();
-    
+
     const populatedRefund = await FeeRefund.findById(refund._id)
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('requestedBy', 'name');
-    
+
     res.status(201).json(populatedRefund);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1203,7 +1542,7 @@ app.post('/api/fees/refunds', async (req, res) => {
 app.put('/api/fees/refunds/:id/approve', async (req, res) => {
   try {
     const { approvedBy, remarks } = req.body;
-    
+
     const refund = await FeeRefund.findByIdAndUpdate(
       req.params.id,
       {
@@ -1217,9 +1556,9 @@ app.put('/api/fees/refunds/:id/approve', async (req, res) => {
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('approvedBy', 'name');
-    
+
     if (!refund) return res.status(404).json({ error: 'Refund not found' });
-    
+
     res.json(refund);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1230,7 +1569,7 @@ app.put('/api/fees/refunds/:id/approve', async (req, res) => {
 app.put('/api/fees/refunds/:id/process', async (req, res) => {
   try {
     const { processedBy, transactionId, remarks } = req.body;
-    
+
     const refund = await FeeRefund.findByIdAndUpdate(
       req.params.id,
       {
@@ -1245,9 +1584,9 @@ app.put('/api/fees/refunds/:id/process', async (req, res) => {
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('processedBy', 'name');
-    
+
     if (!refund) return res.status(404).json({ error: 'Refund not found' });
-    
+
     res.json(refund);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1258,7 +1597,7 @@ app.put('/api/fees/refunds/:id/process', async (req, res) => {
 app.put('/api/fees/refunds/:id/reject', async (req, res) => {
   try {
     const { approvedBy, rejectionReason } = req.body;
-    
+
     const refund = await FeeRefund.findByIdAndUpdate(
       req.params.id,
       {
@@ -1272,9 +1611,9 @@ app.put('/api/fees/refunds/:id/reject', async (req, res) => {
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('approvedBy', 'name');
-    
+
     if (!refund) return res.status(404).json({ error: 'Refund not found' });
-    
+
     res.json(refund);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1291,9 +1630,9 @@ app.put('/api/fees/refunds/:id', async (req, res) => {
     )
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section');
-    
+
     if (!refund) return res.status(404).json({ error: 'Refund not found' });
-    
+
     res.json(refund);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1318,12 +1657,12 @@ app.get('/api/fees/structure/:classId', async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear } = req.query;
-    
+
     const structure = await FeeStructure.findOne({
       classId,
       academicYear: academicYear || '2024-25'
     }).populate('classId', 'name section');
-    
+
     if (!structure) {
       // Return default structure if not found
       return res.json({
@@ -1337,7 +1676,7 @@ app.get('/api/fees/structure/:classId', async (req, res) => {
         totalAnnualFee: 60000
       });
     }
-    
+
     res.json(structure);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1348,13 +1687,13 @@ app.get('/api/fees/structure/:classId', async (req, res) => {
 app.post('/api/fees/structure', async (req, res) => {
   try {
     const { classId, academicYear, feeHeads, totalAnnualFee } = req.body;
-    
+
     const structure = await FeeStructure.findOneAndUpdate(
       { classId, academicYear: academicYear || '2024-25' },
       { classId, academicYear: academicYear || '2024-25', feeHeads, totalAnnualFee },
       { upsert: true, new: true }
     ).populate('classId', 'name section');
-    
+
     res.json(structure);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1364,6 +1703,295 @@ app.post('/api/fees/structure', async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', database: 'mongodb', timestamp: new Date().toISOString() });
+});
+
+// ============ ADMISSION CONFIGURATION ROUTES ============
+
+// Get admission form field configuration
+app.get('/api/settings/admission-form-config', async (req, res) => {
+  try {
+    const { fieldType } = req.query;
+    const query = fieldType ? { fieldType } : {};
+    const configs = await AdmissionFormConfig.find(query).sort({ fieldOrder: 1 });
+    res.json(configs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create or update field configuration
+app.post('/api/settings/admission-form-config', async (req, res) => {
+  try {
+    const { fieldName, fieldType, isVisible, isMandatory, autoGenerate, defaultValue, fieldOrder } = req.body;
+
+    const config = await AdmissionFormConfig.findOneAndUpdate(
+      { fieldName, fieldType },
+      { fieldName, fieldType, isVisible, isMandatory, autoGenerate, defaultValue, fieldOrder },
+      { upsert: true, new: true }
+    );
+
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk update field configurations
+app.put('/api/settings/admission-form-config/bulk', async (req, res) => {
+  try {
+    const { configs } = req.body;
+
+    const operations = configs.map(config => ({
+      updateOne: {
+        filter: { fieldName: config.fieldName, fieldType: config.fieldType },
+        update: config,
+        upsert: true
+      }
+    }));
+
+    await AdmissionFormConfig.bulkWrite(operations);
+
+    const updated = await AdmissionFormConfig.find().sort({ fieldOrder: 1 });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete field configuration
+app.delete('/api/settings/admission-form-config/:id', async (req, res) => {
+  try {
+    const result = await AdmissionFormConfig.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Configuration not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get admission ID configuration
+app.get('/api/settings/admission-id-config', async (req, res) => {
+  try {
+    let config = await AdmissionIdConfig.findOne();
+
+    // Create default if doesn't exist
+    if (!config) {
+      config = new AdmissionIdConfig({
+        prefix: 'ADM',
+        yearFormat: 'YYYY',
+        separator: '-',
+        numberPadding: 4,
+        startingNumber: 1,
+        currentNumber: 0,
+        resetFrequency: 'yearly'
+      });
+      await config.save();
+    }
+
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update admission ID configuration
+app.put('/api/settings/admission-id-config', async (req, res) => {
+  try {
+    const { prefix, yearFormat, separator, numberPadding, startingNumber, resetFrequency } = req.body;
+
+    let config = await AdmissionIdConfig.findOne();
+
+    if (!config) {
+      config = new AdmissionIdConfig({
+        prefix,
+        yearFormat,
+        separator,
+        numberPadding,
+        startingNumber,
+        currentNumber: 0,
+        resetFrequency
+      });
+    } else {
+      config.prefix = prefix;
+      config.yearFormat = yearFormat;
+      config.separator = separator;
+      config.numberPadding = numberPadding;
+      config.startingNumber = startingNumber;
+      config.resetFrequency = resetFrequency;
+    }
+
+    await config.save();
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate preview of admission ID
+app.post('/api/settings/admission-id-config/preview', async (req, res) => {
+  try {
+    const { prefix, yearFormat, separator, numberPadding, currentNumber } = req.body;
+
+    const now = new Date();
+    let admissionId = prefix || 'ADM';
+
+    if (yearFormat && yearFormat !== 'none') {
+      if (separator) admissionId += separator;
+      admissionId += yearFormat === 'YYYY' ? now.getFullYear() : String(now.getFullYear()).slice(-2);
+    }
+
+    if (separator) admissionId += separator;
+    admissionId += String(currentNumber || 1).padStart(numberPadding || 4, '0');
+
+    res.json({ preview: admissionId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ ROLL NUMBER CONFIGURATION ROUTES ============
+
+// Get roll number configuration
+app.get('/api/settings/roll-number-config', async (req, res) => {
+  try {
+    let config = await RollNumberConfig.findOne();
+    if (!config) {
+      config = new RollNumberConfig({
+        format: 'sequential',
+        startingNumber: 1,
+        resetPerClass: true
+      });
+      await config.save();
+    }
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update roll number configuration
+app.put('/api/settings/roll-number-config', async (req, res) => {
+  try {
+    const { format, startingNumber, resetPerClass } = req.body;
+
+    let config = await RollNumberConfig.findOne();
+    if (!config) {
+      config = new RollNumberConfig();
+    }
+
+    config.format = format;
+    config.startingNumber = startingNumber;
+    config.resetPerClass = resetPerClass;
+
+    await config.save();
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get next roll number for a class
+app.get('/api/classes/:classId/next-roll-number', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const nextRollNo = await getNextRollNumber(classId);
+    res.json({ rollNumber: nextRollNo });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get document configuration
+app.get('/api/settings/document-config', async (req, res) => {
+  try {
+    const configs = await DocumentConfig.find().sort({ displayOrder: 1 });
+
+    // Return default if empty
+    if (configs.length === 0) {
+      return res.json([
+        { documentName: 'Birth Certificate', isRequired: true, uploadType: 'single', allowedFormats: ['pdf', 'jpg', 'png'], maxFileSize: 5242880, displayOrder: 1, description: 'Student birth certificate' },
+        { documentName: 'Transfer Certificate', isRequired: false, uploadType: 'single', allowedFormats: ['pdf', 'jpg', 'png'], maxFileSize: 5242880, displayOrder: 2, description: 'TC from previous school' },
+        { documentName: 'Aadhaar Card', isRequired: false, uploadType: 'front-back', allowedFormats: ['pdf', 'jpg', 'png'], maxFileSize: 5242880, displayOrder: 3, description: 'Aadhaar card (front and back)' },
+        { documentName: 'Student Photograph', isRequired: true, uploadType: 'single', allowedFormats: ['jpg', 'png'], maxFileSize: 2097152, displayOrder: 4, description: 'Passport size photo' },
+        { documentName: 'Other Documents', isRequired: false, uploadType: 'multiple', allowedFormats: ['pdf', 'jpg', 'png'], maxFileSize: 5242880, displayOrder: 5, description: 'Any other relevant documents' }
+      ]);
+    }
+
+    res.json(configs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create or update document configuration
+app.post('/api/settings/document-config', async (req, res) => {
+  try {
+    const { documentName, isRequired, uploadType, allowedFormats, maxFileSize, displayOrder, description } = req.body;
+
+    const config = new DocumentConfig({
+      documentName,
+      isRequired,
+      uploadType,
+      allowedFormats,
+      maxFileSize,
+      displayOrder,
+      description
+    });
+
+    await config.save();
+    res.status(201).json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update document configuration
+app.put('/api/settings/document-config/:id', async (req, res) => {
+  try {
+    const config = await DocumentConfig.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+
+    if (!config) return res.status(404).json({ error: 'Configuration not found' });
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk update document configurations
+app.put('/api/settings/document-config/bulk', async (req, res) => {
+  try {
+    const { configs } = req.body;
+
+    const operations = configs.map(config => ({
+      updateOne: {
+        filter: { _id: config.id || config._id },
+        update: config,
+        upsert: false
+      }
+    }));
+
+    await DocumentConfig.bulkWrite(operations);
+
+    const updated = await DocumentConfig.find().sort({ displayOrder: 1 });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete document configuration
+app.delete('/api/settings/document-config/:id', async (req, res) => {
+  try {
+    const result = await DocumentConfig.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Configuration not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
@@ -1385,16 +2013,16 @@ app.get('/api/intake-forms', async (req, res) => {
     const query = {};
     if (type) query.formType = type;
     if (status) query.status = status;
-    
+
     const forms = await IntakeForm.find(query)
       .populate('createdBy', 'name')
       .sort({ createdAt: -1 });
-    
+
     // Get assignment and submission counts for each form
     const formatted = await Promise.all(forms.map(async form => {
       const assignmentCount = await FormAssignment.countDocuments({ formId: form._id });
       const submissionCount = await FormSubmission.countDocuments({ formId: form._id });
-      
+
       return {
         id: form._id,
         formName: form.formName,
@@ -1407,7 +2035,7 @@ app.get('/api/intake-forms', async (req, res) => {
         submissionCount,
       };
     }));
-    
+
     res.json(formatted);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1418,7 +2046,7 @@ app.get('/api/intake-forms/:id', async (req, res) => {
   try {
     const form = await IntakeForm.findById(req.params.id).populate('createdBy', 'name');
     if (!form) return res.status(404).json({ error: 'Form not found' });
-    
+
     res.json({
       id: form._id,
       formName: form.formName,
@@ -1436,12 +2064,12 @@ app.get('/api/intake-forms/:id', async (req, res) => {
 app.post('/api/intake-forms', async (req, res) => {
   try {
     const { formName, formType, fields, status, createdBy } = req.body;
-    
+
     // Debug logging
     console.log('Received fields type:', typeof fields);
     console.log('Received fields is Array:', Array.isArray(fields));
     console.log('Received fields:', JSON.stringify(fields, null, 2));
-    
+
     const form = new IntakeForm({
       formName,
       formType: formType || 'staff',
@@ -1450,9 +2078,9 @@ app.post('/api/intake-forms', async (req, res) => {
       // Only set createdBy if it's a valid ObjectId, otherwise leave it undefined
       ...(createdBy && mongoose.Types.ObjectId.isValid(createdBy) ? { createdBy } : {}),
     });
-    
+
     await form.save();
-    
+
     res.status(201).json({
       id: form._id,
       formName: form.formName,
@@ -1470,15 +2098,15 @@ app.post('/api/intake-forms', async (req, res) => {
 app.put('/api/intake-forms/:id', async (req, res) => {
   try {
     const { formName, formType, fields, status } = req.body;
-    
+
     const form = await IntakeForm.findByIdAndUpdate(
       req.params.id,
       { formName, formType, fields, status },
       { new: true }
     );
-    
+
     if (!form) return res.status(404).json({ error: 'Form not found' });
-    
+
     res.json({
       id: form._id,
       formName: form.formName,
@@ -1500,13 +2128,13 @@ app.delete('/api/intake-forms/:id', async (req, res) => {
       await IntakeForm.findByIdAndUpdate(req.params.id, { status: 'archived' });
       return res.json({ success: true, archived: true });
     }
-    
+
     // Delete form and its assignments
     await FormAssignment.deleteMany({ formId: req.params.id });
     const result = await IntakeForm.findByIdAndDelete(req.params.id);
-    
+
     if (!result) return res.status(404).json({ error: 'Form not found' });
-    
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1517,21 +2145,21 @@ app.post('/api/intake-forms/:id/duplicate', async (req, res) => {
   try {
     const originalForm = await IntakeForm.findById(req.params.id);
     if (!originalForm) return res.status(404).json({ error: 'Form not found' });
-    
+
     console.log('Duplicating form:', originalForm.formName);
     console.log('Original fields type:', typeof originalForm.fields);
     console.log('Original fields is Array:', Array.isArray(originalForm.fields));
-    
+
     // Generate a unique name with numbered suffix
     let baseName = originalForm.formName;
     // Remove existing " (Copy)" or " Copy X" suffixes
     baseName = baseName.replace(/\s*\(Copy\)(\s*\(Copy\))*/g, '').replace(/\s*Copy\s*\d*$/g, '').trim();
-    
+
     // Find existing copies to determine the next number
     const existingCopies = await IntakeForm.find({
       formName: new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( Copy \\d+)?$`)
     });
-    
+
     let copyNumber = 1;
     const existingNumbers = existingCopies
       .map(f => {
@@ -1539,13 +2167,13 @@ app.post('/api/intake-forms/:id/duplicate', async (req, res) => {
         return match ? parseInt(match[1]) : (f.formName === baseName ? 0 : null);
       })
       .filter(n => n !== null);
-    
+
     if (existingNumbers.length > 0) {
       copyNumber = Math.max(...existingNumbers) + 1;
     }
-    
+
     const newFormName = `${baseName} Copy ${copyNumber}`;
-    
+
     const newForm = new IntakeForm({
       formName: newFormName,
       formType: originalForm.formType,
@@ -1554,9 +2182,9 @@ app.post('/api/intake-forms/:id/duplicate', async (req, res) => {
       // Only set createdBy if it's a valid ObjectId, otherwise leave it undefined
       ...(req.body.createdBy && mongoose.Types.ObjectId.isValid(req.body.createdBy) ? { createdBy: req.body.createdBy } : {}),
     });
-    
+
     await newForm.save();
-    
+
     res.status(201).json({
       id: newForm._id,
       formName: newForm.formName,
@@ -1575,30 +2203,30 @@ app.post('/api/intake-forms/:id/assign', async (req, res) => {
   try {
     const { emails, phones, expiresInDays, assignedBy } = req.body;
     const formId = req.params.id;
-    
+
     // Validate formId
     if (!mongoose.Types.ObjectId.isValid(formId)) {
       return res.status(400).json({ error: 'Invalid form ID' });
     }
-    
+
     const form = await IntakeForm.findById(formId);
     if (!form) return res.status(404).json({ error: 'Form not found' });
-    
+
     // Validate assignedBy if provided
     if (assignedBy && !mongoose.Types.ObjectId.isValid(assignedBy)) {
       return res.status(400).json({ error: 'Invalid assignedBy ID' });
     }
-    
+
     const assignments = [];
     const recipients = [];
-    
+
     // Process emails
     if (emails && emails.length > 0) {
       for (const email of emails) {
         const accessToken = generateAccessToken();
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + (expiresInDays || 30));
-        
+
         const assignment = new FormAssignment({
           formId,
           assignedToEmail: email.trim(),
@@ -1606,11 +2234,11 @@ app.post('/api/intake-forms/:id/assign', async (req, res) => {
           accessToken,
           expiresAt,
         });
-        
+
         await assignment.save();
         assignments.push(assignment);
         recipients.push(email.trim());
-        
+
         // Create notification
         const notification = new Notification({
           userEmail: email.trim(),
@@ -1627,14 +2255,14 @@ app.post('/api/intake-forms/:id/assign', async (req, res) => {
         await notification.save();
       }
     }
-    
+
     // Process phones
     if (phones && phones.length > 0) {
       for (const phone of phones) {
         const accessToken = generateAccessToken();
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + (expiresInDays || 30));
-        
+
         const assignment = new FormAssignment({
           formId,
           assignedToPhone: phone.trim(),
@@ -1642,11 +2270,11 @@ app.post('/api/intake-forms/:id/assign', async (req, res) => {
           accessToken,
           expiresAt,
         });
-        
+
         await assignment.save();
         assignments.push(assignment);
         recipients.push(phone.trim());
-        
+
         // Create notification
         const notification = new Notification({
           userPhone: phone.trim(),
@@ -1663,7 +2291,7 @@ app.post('/api/intake-forms/:id/assign', async (req, res) => {
         await notification.save();
       }
     }
-    
+
     res.status(201).json({
       success: true,
       assignmentCount: assignments.length,
@@ -1685,12 +2313,12 @@ app.get('/api/form-assignments', async (req, res) => {
     const query = {};
     if (formId) query.formId = formId;
     if (status) query.status = status;
-    
+
     const assignments = await FormAssignment.find(query)
       .populate('formId', 'formName formType')
       .populate('assignedBy', 'name')
       .sort({ assignedAt: -1 });
-    
+
     const formatted = assignments.map(a => ({
       id: a._id,
       formName: a.formId?.formName,
@@ -1702,7 +2330,7 @@ app.get('/api/form-assignments', async (req, res) => {
       expiresAt: a.expiresAt,
       assignedAt: a.assignedAt,
     }));
-    
+
     res.json(formatted);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1714,9 +2342,9 @@ app.get('/api/form-assignments/:id', async (req, res) => {
     const assignment = await FormAssignment.findById(req.params.id)
       .populate('formId')
       .populate('assignedBy', 'name');
-    
+
     if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
-    
+
     res.json({
       id: assignment._id,
       form: assignment.formId,
@@ -1736,7 +2364,7 @@ app.put('/api/form-assignments/:id/resend', async (req, res) => {
   try {
     const assignment = await FormAssignment.findById(req.params.id).populate('formId', 'formName');
     if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
-    
+
     // Create new notification
     const notification = new Notification({
       userEmail: assignment.assignedToEmail,
@@ -1752,7 +2380,7 @@ app.put('/api/form-assignments/:id/resend', async (req, res) => {
       },
     });
     await notification.save();
-    
+
     res.json({ success: true, message: 'Notification resent' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1763,7 +2391,7 @@ app.delete('/api/form-assignments/:id', async (req, res) => {
   try {
     const result = await FormAssignment.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ error: 'Assignment not found' });
-    
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1777,12 +2405,12 @@ app.get('/api/form-submissions', async (req, res) => {
     const query = {};
     if (formId) query.formId = formId;
     if (reviewStatus) query.reviewStatus = reviewStatus;
-    
+
     const submissions = await FormSubmission.find(query)
       .populate('formId', 'formName formType')
       .populate('reviewedBy', 'name')
       .sort({ submittedAt: -1 });
-    
+
     const formatted = submissions.map(s => ({
       id: s._id,
       formName: s.formId?.formName,
@@ -1794,7 +2422,7 @@ app.get('/api/form-submissions', async (req, res) => {
       reviewedAt: s.reviewedAt,
       staffId: s.staffId,
     }));
-    
+
     res.json(formatted);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1808,9 +2436,9 @@ app.get('/api/form-submissions/:id', async (req, res) => {
       .populate('assignmentId')
       .populate('reviewedBy', 'name')
       .populate('staffId');
-    
+
     if (!submission) return res.status(404).json({ error: 'Submission not found' });
-    
+
     res.json({
       id: submission._id,
       form: submission.formId,
@@ -1835,19 +2463,19 @@ app.put('/api/form-submissions/:id/review', async (req, res) => {
     const submission = await FormSubmission.findById(req.params.id)
       .populate('formId')
       .populate('assignmentId');
-    
+
     if (!submission) return res.status(404).json({ error: 'Submission not found' });
-    
+
     submission.reviewStatus = status;
     submission.reviewNotes = notes;
     submission.reviewedBy = reviewedBy;
     submission.reviewedAt = new Date();
-    
+
     // If approved, create staff record
     if (status === 'approved') {
       const form = submission.formId;
       const data = submission.submissionData;
-      
+
       // Map form fields to staff data
       const staffData = {
         code: await getNextStaffCode(),
@@ -1860,19 +2488,19 @@ app.put('/api/form-submissions/:id/review', async (req, res) => {
         joinDate: data.dateOfJoining,
         address: data.address,
       };
-      
+
       // Auto-generate credentials
       staffData.username = data.email ? data.email.split('@')[0].toLowerCase() : staffData.code.toLowerCase();
       staffData.password = generatePassword(8);
-      
+
       const newStaff = new Staff(staffData);
       await newStaff.save();
-      
+
       submission.staffId = newStaff._id;
-      
+
       // Update assignment status
       await FormAssignment.findByIdAndUpdate(submission.assignmentId._id, { status: 'approved' });
-      
+
       // Create approval notification
       const notification = new Notification({
         userEmail: submission.submittedByEmail,
@@ -1892,7 +2520,7 @@ app.put('/api/form-submissions/:id/review', async (req, res) => {
     } else if (status === 'rejected') {
       // Update assignment status
       await FormAssignment.findByIdAndUpdate(submission.assignmentId._id, { status: 'rejected' });
-      
+
       // Create rejection notification
       const notification = new Notification({
         userEmail: submission.submittedByEmail,
@@ -1908,9 +2536,9 @@ app.put('/api/form-submissions/:id/review', async (req, res) => {
       });
       await notification.save();
     }
-    
+
     await submission.save();
-    
+
     res.json({
       success: true,
       submission: {
@@ -1930,7 +2558,7 @@ app.delete('/api/form-submissions/:id', async (req, res) => {
   try {
     const result = await FormSubmission.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ error: 'Submission not found' });
-    
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1944,24 +2572,24 @@ app.get('/api/public/form-assignment/:token', async (req, res) => {
   try {
     const assignment = await FormAssignment.findOne({ accessToken: req.params.token })
       .populate('formId');
-    
+
     if (!assignment) return res.status(404).json({ error: 'Invalid or expired token' });
-    
+
     // Check if expired
     if (new Date() > assignment.expiresAt) {
       return res.status(410).json({ error: 'This form link has expired' });
     }
-    
+
     // Check if already submitted
     const existingSubmission = await FormSubmission.findOne({ assignmentId: assignment._id });
     if (existingSubmission) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Form already submitted',
         submissionId: existingSubmission._id,
         status: existingSubmission.reviewStatus,
       });
     }
-    
+
     res.json({
       id: assignment._id,
       form: {
@@ -1982,23 +2610,23 @@ app.get('/api/public/form-assignment/:token', async (req, res) => {
 app.post('/api/public/form-submission/:token', async (req, res) => {
   try {
     const { submissionData } = req.body;
-    
+
     const assignment = await FormAssignment.findOne({ accessToken: req.params.token })
       .populate('formId');
-    
+
     if (!assignment) return res.status(404).json({ error: 'Invalid or expired token' });
-    
+
     // Check if expired
     if (new Date() > assignment.expiresAt) {
       return res.status(410).json({ error: 'This form link has expired' });
     }
-    
+
     // Check if already submitted
     const existingSubmission = await FormSubmission.findOne({ assignmentId: assignment._id });
     if (existingSubmission) {
       return res.status(400).json({ error: 'Form already submitted' });
     }
-    
+
     // Create submission
     const submission = new FormSubmission({
       assignmentId: assignment._id,
@@ -2007,13 +2635,13 @@ app.post('/api/public/form-submission/:token', async (req, res) => {
       submittedByEmail: assignment.assignedToEmail,
       submittedByPhone: assignment.assignedToPhone,
     });
-    
+
     await submission.save();
-    
+
     // Update assignment status
     assignment.status = 'submitted';
     await assignment.save();
-    
+
     // Create notification for admin
     const notification = new Notification({
       notificationType: 'form_submission',
@@ -2026,7 +2654,7 @@ app.post('/api/public/form-submission/:token', async (req, res) => {
       },
     });
     await notification.save();
-    
+
     res.status(201).json({
       success: true,
       submissionId: submission._id,
@@ -2041,19 +2669,19 @@ app.post('/api/public/form-submission/:token', async (req, res) => {
 app.get('/api/public/form-submission/:token/status', async (req, res) => {
   try {
     const assignment = await FormAssignment.findOne({ accessToken: req.params.token });
-    
+
     if (!assignment) return res.status(404).json({ error: 'Invalid token' });
-    
+
     const submission = await FormSubmission.findOne({ assignmentId: assignment._id })
       .populate('formId', 'formName');
-    
+
     if (!submission) {
       return res.json({
         status: 'not_submitted',
         message: 'Form not yet submitted',
       });
     }
-    
+
     res.json({
       status: submission.reviewStatus,
       submittedAt: submission.submittedAt,
@@ -2268,14 +2896,14 @@ app.get('/api/notifications', async (req, res) => {
   try {
     const { email, phone } = req.query;
     const query = {};
-    
+
     if (email) query.userEmail = email;
     if (phone) query.userPhone = phone;
-    
+
     const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .limit(50);
-    
+
     res.json(notifications);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2289,9 +2917,9 @@ app.put('/api/notifications/:id/read', async (req, res) => {
       { isRead: true },
       { new: true }
     );
-    
+
     if (!notification) return res.status(404).json({ error: 'Notification not found' });
-    
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2302,12 +2930,12 @@ app.put('/api/notifications/read-all', async (req, res) => {
   try {
     const { email, phone } = req.body;
     const query = {};
-    
+
     if (email) query.userEmail = email;
     if (phone) query.userPhone = phone;
-    
+
     await Notification.updateMany(query, { isRead: true });
-    
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2468,7 +3096,7 @@ app.post('/api/front-desk/gate-passes', async (req, res) => {
   try {
     const gatePass = new GatePass(req.body);
     await gatePass.save();
-    
+
     // If notify parent is checked and person is student, send notification
     if (req.body.notifyParent && req.body.personType === 'student') {
       const student = await Student.findById(req.body.personId);
@@ -2483,7 +3111,7 @@ app.post('/api/front-desk/gate-passes', async (req, res) => {
         await notification.save();
       }
     }
-    
+
     res.status(201).json(gatePass);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2590,7 +3218,7 @@ app.post('/api/front-desk/feedbacks', async (req, res) => {
   try {
     const feedback = new Feedback(req.body);
     await feedback.save();
-    
+
     // If notify staff is checked, send notification
     if (req.body.notifyStaff && req.body.assignedStaff) {
       const staff = await Staff.findById(req.body.assignedStaff);
@@ -2606,7 +3234,7 @@ app.post('/api/front-desk/feedbacks', async (req, res) => {
         await notification.save();
       }
     }
-    
+
     res.status(201).json(feedback);
   } catch (err) {
     res.status(500).json({ error: err.message });

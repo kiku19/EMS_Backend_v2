@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
+const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
 
 export async function connectDB() {
   try {
@@ -52,7 +52,7 @@ const studentSchema = new mongoose.Schema({
   academicYear: { type: String, default: '2024-25' },
   rollNo: Number,
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  
+
   // Personal Information
   gender: String,
   dateOfBirth: String,
@@ -61,12 +61,12 @@ const studentSchema = new mongoose.Schema({
   religion: String,
   category: String,
   motherTongue: String,
-  
+
   // Contact Information
   phone: String,
   email: String,
   address: String,
-  
+
   // Parent/Guardian Information
   parentName: String,
   parentPhone: String,
@@ -74,7 +74,7 @@ const studentSchema = new mongoose.Schema({
   parentRelationship: String,
   parentOccupation: String,
   alternatePhone: String,
-  
+
   // Additional Parents (stored as array)
   parents: [{
     name: String,
@@ -83,26 +83,26 @@ const studentSchema = new mongoose.Schema({
     email: String,
     occupation: String
   }],
-  
+
   // Academic Information
   previousSchool: String,
   tcNumber: String,
   mediumOfInstruction: String,
   house: String,
-  
+
   // Health & Safety
   medicalConditions: String,
   emergencyContactName: String,
   emergencyContactPhone: String,
-  
+
   // Requirements
   transportRequired: { type: Boolean, default: false },
   hostelRequired: { type: Boolean, default: false },
-  
+
   // Status
   feeStatus: { type: String, default: 'pending' },
   status: { type: String, default: 'active' },
-  
+
   // Documents (stored as references or URLs)
   documents: [{
     name: String,
@@ -110,7 +110,7 @@ const studentSchema = new mongoose.Schema({
     url: String,
     uploadDate: Date
   }],
-  
+
   photo: String,
 }, { timestamps: true });
 
@@ -176,6 +176,47 @@ const counterSchema = new mongoose.Schema({
   _id: String,
   seq: { type: Number, default: 0 }
 });
+
+// Admission Form Configuration Schema
+const admissionFormConfigSchema = new mongoose.Schema({
+  fieldName: { type: String, required: true },
+  fieldType: { type: String, enum: ['student', 'staff'], default: 'student' },
+  isVisible: { type: Boolean, default: true },
+  isMandatory: { type: Boolean, default: false },
+  autoGenerate: { type: Boolean, default: false },
+  defaultValue: String,
+  fieldOrder: { type: Number, default: 0 },
+}, { timestamps: true });
+
+// Admission ID Configuration Schema
+const admissionIdConfigSchema = new mongoose.Schema({
+  prefix: { type: String, default: 'ADM' },
+  yearFormat: { type: String, enum: ['YYYY', 'YY', 'none'], default: 'YYYY' },
+  separator: { type: String, enum: ['-', '/', '_', ''], default: '-' },
+  numberPadding: { type: Number, default: 4 },
+  startingNumber: { type: Number, default: 1 },
+  currentNumber: { type: Number, default: 0 },
+  resetFrequency: { type: String, enum: ['yearly', 'monthly', 'never'], default: 'yearly' },
+  lastResetDate: Date,
+}, { timestamps: true });
+
+// Roll Number Configuration Schema
+const rollNumberConfigSchema = new mongoose.Schema({
+  format: { type: String, enum: ['sequential', 'class-based'], default: 'sequential' },
+  startingNumber: { type: Number, default: 1 },
+  resetPerClass: { type: Boolean, default: true },
+}, { timestamps: true });
+
+// Document Configuration Schema
+const documentConfigSchema = new mongoose.Schema({
+  documentName: { type: String, required: true },
+  isRequired: { type: Boolean, default: false },
+  uploadType: { type: String, enum: ['single', 'multiple', 'front-back'], default: 'single' },
+  allowedFormats: [{ type: String }],
+  maxFileSize: { type: Number, default: 5242880 }, // 5MB in bytes
+  displayOrder: { type: Number, default: 0 },
+  description: String,
+}, { timestamps: true });
 
 // Intake Form Schema
 const intakeFormSchema = new mongoose.Schema({
@@ -331,12 +372,12 @@ const feePaymentSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   academicYear: { type: String, default: '2024-25' },
   receiptNumber: { type: String, unique: true, required: true },
-  
+
   // Payment Details
   paymentDate: { type: String, required: true },
   amount: { type: Number, required: true },
   paymentMode: { type: String, required: true }, // 'cash', 'cheque', 'online', 'card'
-  
+
   // Fee Heads Breakdown
   feeHeads: [{
     name: String,
@@ -344,22 +385,22 @@ const feePaymentSchema = new mongoose.Schema({
     month: String, // For monthly fees
     period: String, // For quarterly/annual fees
   }],
-  
+
   // Transaction Details
   transactionId: String, // For online/card payments
   chequeNumber: String, // For cheque payments
   bankName: String,
-  
+
   // Late Fee
   lateFee: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
-  
+
   // Status
   status: { type: String, default: 'completed' }, // 'completed', 'pending', 'failed'
-  
+
   // Collected By
   collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  
+
   // Notes
   remarks: String,
 }, { timestamps: true });
@@ -372,22 +413,22 @@ const feeRefundSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   academicYear: { type: String, default: '2024-25' },
   refundNumber: { type: String, unique: true, required: true },
-  
+
   // Refund Details
   refundDate: { type: String, required: true },
   amount: { type: Number, required: true },
   reason: { type: String, required: true },
-  
+
   // Original Payment Reference
   originalPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeePayment' },
-  
+
   // Refund Method
   refundMode: { type: String, required: true }, // 'cash', 'cheque', 'bank_transfer'
   transactionId: String,
   chequeNumber: String,
   bankName: String,
   accountNumber: String,
-  
+
   // Approval Workflow
   requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   requestedAt: { type: Date, default: Date.now },
@@ -395,10 +436,10 @@ const feeRefundSchema = new mongoose.Schema({
   approvedAt: Date,
   processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   processedAt: Date,
-  
+
   // Status
   status: { type: String, default: 'pending' }, // 'pending', 'approved', 'processed', 'rejected'
-  
+
   // Notes
   remarks: String,
   rejectionReason: String,
@@ -441,6 +482,10 @@ export const FeeStructure = mongoose.model('FeeStructure', feeStructureSchema);
 export const FeePayment = mongoose.model('FeePayment', feePaymentSchema);
 export const FeeRefund = mongoose.model('FeeRefund', feeRefundSchema);
 export const Substitution = mongoose.model('Substitution', substitutionSchema);
+export const AdmissionFormConfig = mongoose.model('AdmissionFormConfig', admissionFormConfigSchema);
+export const AdmissionIdConfig = mongoose.model('AdmissionIdConfig', admissionIdConfigSchema);
+export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberConfigSchema);
+export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
 
 // Helper to get next staff code
 export async function getNextStaffCode() {
@@ -472,6 +517,88 @@ export async function getNextRefundNumber() {
   );
   const year = new Date().getFullYear();
   return `RFD-${year}-${String(counter.seq).padStart(6, '0')}`;
+}
+
+// Helper to get next admission ID based on configuration
+export async function getNextAdmissionId() {
+  console.log('📋 Fetching admission ID config from database...');
+  let config = await AdmissionIdConfig.findOne();
+
+  // Create default config if doesn't exist
+  if (!config) {
+    console.log('⚠️ No config found, creating default...');
+    config = new AdmissionIdConfig({
+      prefix: 'ADM',
+      yearFormat: 'YYYY',
+      separator: '-',
+      numberPadding: 4,
+      startingNumber: 1,
+      currentNumber: 0,
+      resetFrequency: 'yearly'
+    });
+    await config.save();
+    console.log('✅ Default config created:', config.toObject());
+  } else {
+    console.log('✅ Config found:', config.toObject());
+  }
+
+  // Check if reset is needed
+  const now = new Date();
+  const shouldReset = config.resetFrequency !== 'never' && (
+    !config.lastResetDate ||
+    (config.resetFrequency === 'yearly' && now.getFullYear() > new Date(config.lastResetDate).getFullYear()) ||
+    (config.resetFrequency === 'monthly' && (now.getFullYear() > new Date(config.lastResetDate).getFullYear() || now.getMonth() > new Date(config.lastResetDate).getMonth()))
+  );
+
+  if (shouldReset) {
+    console.log('🔄 Resetting counter...');
+    config.currentNumber = config.startingNumber;
+    config.lastResetDate = now;
+  } else {
+    config.currentNumber += 1;
+  }
+
+  await config.save();
+  console.log('💾 Config saved with currentNumber:', config.currentNumber);
+
+  // Build admission ID
+  let admissionId = config.prefix;
+
+  if (config.yearFormat !== 'none') {
+    if (config.separator) admissionId += config.separator;
+    admissionId += config.yearFormat === 'YYYY' ? now.getFullYear() : String(now.getFullYear()).slice(-2);
+  }
+
+  if (config.separator) admissionId += config.separator;
+  admissionId += String(config.currentNumber).padStart(config.numberPadding, '0');
+
+  console.log('🎯 Final admission ID:', admissionId);
+  return admissionId;
+}
+
+// Helper to get next roll number for a class
+export async function getNextRollNumber(classId) {
+  console.log('📋 Fetching roll number config and class students...');
+  let config = await RollNumberConfig.findOne();
+
+  // Create default config if doesn't exist
+  if (!config) {
+    console.log('⚠️ No roll number config found, creating default...');
+    config = new RollNumberConfig({
+      format: 'sequential',
+      startingNumber: 1,
+      resetPerClass: true
+    });
+    await config.save();
+    console.log('✅ Default roll number config created');
+  }
+
+  // Get count of students in the class
+  const studentCount = await Student.countDocuments({ classId });
+  const nextRollNo = config.startingNumber + studentCount;
+
+  console.log('🎯 Next roll number:', nextRollNo);
+  return nextRollNo;
 }
 
 export default mongoose;
