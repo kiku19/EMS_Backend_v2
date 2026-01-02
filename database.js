@@ -102,6 +102,15 @@ const studentSchema = new mongoose.Schema({
   // Status
   feeStatus: { type: String, default: 'pending' },
   status: { type: String, default: 'active' },
+  
+  // Fee Details
+  feeDetails: {
+    totalFee: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0 },
+    balanceAmount: { type: Number, default: 0 },
+    discountApplied: { type: Number, default: 0 },
+    lastPaymentDate: String
+  },
 
   // Documents (stored as references or URLs)
   documents: [{
@@ -351,17 +360,119 @@ const callLogSchema = new mongoose.Schema({
   loggedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
 
+// School Settings Schema - school-wide configuration
+const schoolSettingsSchema = new mongoose.Schema({
+  academicYear: { type: String, default: '2024-25' },
+  currentSession: { type: String, default: '2024-25' },
+  
+  // Fee Collection Configuration
+  feeCollection: {
+    collectionMode: { type: String, enum: ['term', 'monthly', 'quarterly', 'yearly', 'custom'], default: 'term' },
+    numberOfTerms: { type: Number, default: 2 },
+    terms: [{
+      name: String,
+      startDate: String,
+      endDate: String,
+      dueDate: String
+    }],
+    customDurations: [{
+      name: String,
+      months: [Number]
+    }]
+  },
+  
+  lateFee: {
+    enabled: { type: Boolean, default: false },
+    amount: { type: Number, default: 0 },
+    gracePeriodDays: { type: Number, default: 7 },
+    maxLateFee: { type: Number, default: 1000 }
+  },
+  
+  discount: {
+    enabled: { type: Boolean, default: true },
+    requireApproval: { type: Boolean, default: true },
+    maxDiscountPercentage: { type: Number, default: 10 },
+    allowedDiscounts: [{
+      name: String,
+      percentage: Number,
+      requiresApproval: Boolean
+    }]
+  },
+  
+  receipt: {
+    prefix: { type: String, default: 'RCP' },
+    startingNumber: { type: Number, default: 1001 },
+    currentNumber: { type: Number, default: 1001 }
+  },
+  
+  paymentModes: [{
+    name: String,
+    enabled: Boolean
+  }]
+}, { timestamps: true });
+
+// Fee Template Schema - reusable fee structures
+const feeTemplateSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  description: String,
+  section: { type: String, required: true },
+  applicableFor: [{
+    classGrade: String,
+    applicable: Boolean
+  }],
+  
+  feeHeads: [{
+    name: { type: String, required: true },
+    category: { type: String, enum: ['Academic', 'Transport', 'Extra-curricular', 'Hostel', 'Other'], default: 'Academic' },
+    amount: { type: Number, required: true },
+    frequency: { type: String, enum: ['monthly', 'quarterly', 'term', 'yearly', 'one-time'], default: 'yearly' },
+    mandatory: { type: Boolean, default: true },
+    applicableTerms: [Number],
+    dueDay: { type: Number, default: 10 },
+    refundable: { type: Boolean, default: false }
+  }],
+  
+  totalAnnualFee: { type: Number, required: true },
+  discounts: [{
+    name: String,
+    percentage: Number,
+    conditions: String
+  }],
+  isActive: { type: Boolean, default: true },
+  academicYear: { type: String, default: '2024-25' }
+}, { timestamps: true });
+
 // Fee Structure Schema - defines fee amounts for classes
 const feeStructureSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   academicYear: { type: String, default: '2024-25' },
+  templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeTemplate' },
+  
   feeHeads: [{
-    name: String, // 'Tuition Fee', 'Transport Fee', etc.
+    name: String,
+    category: String,
     amount: Number,
-    frequency: String, // 'monthly', 'quarterly', 'annual', 'one-time'
+    frequency: String,
     mandatory: { type: Boolean, default: true },
+    applicableTerms: [Number],
+    dueDay: Number,
+    refundable: Boolean
   }],
+  
+  collectionSchedule: {
+    mode: { type: String, enum: ['term', 'monthly', 'quarterly', 'yearly', 'custom'], default: 'term' },
+    installments: [{
+      name: String,
+      dueDate: String,
+      amount: Number,
+      status: { type: String, enum: ['pending', 'partial', 'paid', 'overdue'], default: 'pending' }
+    }]
+  },
+  
   totalAnnualFee: Number,
+  isCustomized: { type: Boolean, default: false },
+  appliedDate: Date,
+  appliedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }]
 }, { timestamps: true });
 
 feeStructureSchema.index({ classId: 1, academicYear: 1 }, { unique: true });
@@ -478,6 +589,8 @@ export const GatePass = mongoose.model('GatePass', gatePassSchema);
 export const Appointment = mongoose.model('Appointment', appointmentSchema);
 export const Feedback = mongoose.model('Feedback', feedbackSchema);
 export const CallLog = mongoose.model('CallLog', callLogSchema);
+export const SchoolSettings = mongoose.model('SchoolSettings', schoolSettingsSchema);
+export const FeeTemplate = mongoose.model('FeeTemplate', feeTemplateSchema);
 export const FeeStructure = mongoose.model('FeeStructure', feeStructureSchema);
 export const FeePayment = mongoose.model('FeePayment', feePaymentSchema);
 export const FeeRefund = mongoose.model('FeeRefund', feeRefundSchema);
