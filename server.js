@@ -120,7 +120,9 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         resource_type: resourceType,
         folder: 'school_documents',
         public_id: `doc_${Date.now()}_${req.file.originalname.replace(/[^a-zA-Z0-9]/g, '_')}`,
-        timeout: 60000 // 60 second timeout
+        timeout: 60000, // 60 second timeout
+        type: 'upload', // Ensure it's a regular upload, not authenticated
+        access_mode: 'public' // Make sure the file is publicly accessible
       };
       
       const result = await cloudinary.uploader.upload(dataURI, uploadOptions);
