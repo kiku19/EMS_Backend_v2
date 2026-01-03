@@ -29,9 +29,55 @@ const staffSchema = new mongoose.Schema({
   email: String,
   joinDate: String,
   address: String,
+  
+  // Personal Details
+  dob: String,
+  gender: String,
+  fatherName: String,
+  bloodGroup: String,
+  maritalStatus: String,
+  employmentType: String,
+  emergencyContact: String,
+  emergencyPhone: String,
+  whatsappNumber: String,
+  
+  // Documents
+  picture: String, // URL to profile picture
+  idDocuments: [String], // URLs to ID documents
+  
+  // Qualifications
+  professionalQualifications: [{
+    name: String,
+    year: String,
+    documents: [String] // URLs to certificates
+  }],
+  totalExperience: String,
+  previousOrganization: String,
+  qualificationDocs: [String], // URLs to qualification documents
+  
+  // Staff Info
+  staffNumber: String,
+  staffType: String,
+  expertise: String,
+  assignedClasses: [String],
+  isClassTeacher: Boolean,
+  classTeacherOf: String,
+  
+  // Bank & Salary
+  accountNumber: String,
+  ifscCode: String,
+  bankName: String,
+  branchName: String,
+  salaryTemplate: String,
+  salaryBreakdown: [{
+    component: String,
+    amount: Number
+  }],
+  
   // Login credentials
   username: { type: String, unique: true, sparse: true },
   password: { type: String }, // In production, hash this!
+  
   // Hierarchy
   reporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
@@ -573,6 +619,11 @@ const substitutionSchema = new mongoose.Schema({
 
 substitutionSchema.index({ date: 1, classId: 1, period: 1 });
 
+// Chat Models - Import from separate files
+import Message from './models/Message.js';
+import Conversation from './models/Conversation.js';
+import UserPresence from './models/UserPresence.js';
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
@@ -599,6 +650,9 @@ export const AdmissionFormConfig = mongoose.model('AdmissionFormConfig', admissi
 export const AdmissionIdConfig = mongoose.model('AdmissionIdConfig', admissionIdConfigSchema);
 export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberConfigSchema);
 export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
+
+// Export chat models
+export { Message, Conversation, UserPresence };
 
 // Helper to get next staff code
 export async function getNextStaffCode() {

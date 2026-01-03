@@ -1,16 +1,40 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import { createServer } from 'http';
+import { Server as SocketIOServer } from 'socket.io';
 import mongoose from './database.js';
 import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
 import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber, AdmissionFormConfig, AdmissionIdConfig, RollNumberConfig, DocumentConfig, getNextAdmissionId, getNextRollNumber, SchoolSettings, FeeTemplate } from './database.js';
+import messageRoutes from './routes/messages.js';
+import { initializeChatHandlers } from './socket/chatHandler.js';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Create HTTP server and wrap Express app
+const httpServer = createServer(app);
+
+// Initialize Socket.IO with CORS
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:3000',
+      'https://school-dashboard-ivory.vercel.app'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+  },
+  transports: ['websocket', 'polling']
+});
+
+console.log('✅ Socket.IO initialized');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -40,9 +64,20 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+
+// Increase body size limit to handle large file uploads (50MB)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 await connectDB();
+
+// Initialize Socket.IO chat handlers
+initializeChatHandlers(io);
+console.log('✅ Chat handlers initialized');
+
+// Mount message routes
+app.use('/api/messages', messageRoutes);
+console.log('✅ Message routes mounted');
 
 // Helper function to generate random password
 function generatePassword(length = 8) {
@@ -57,8 +92,19 @@ function generatePassword(length = 8) {
 // ============ AUTH ROUTES ============
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { phone, password } = req.body;
-    const staff = await Staff.findOne({ phone, password, status: 'active' });
+    const { phone, email, password } = req.body;
+    
+    // Allow login with either phone or email
+    let query = { password, status: 'active' };
+    if (phone) {
+      query.phone = phone;
+    } else if (email) {
+      query.email = email;
+    } else {
+      return res.status(400).json({ error: 'Phone or email is required' });
+    }
+    
+    const staff = await Staff.findOne(query);
     if (!staff) return res.status(401).json({ error: 'Invalid credentials' });
 
     // Get classes where this staff is class teacher
@@ -70,6 +116,7 @@ app.post('/api/auth/login', async (req, res) => {
       name: staff.name,
       role: staff.role,
       email: staff.email,
+      phone: staff.phone,
       classes: classes.map(c => ({ id: c._id, name: c.name, section: c.section })),
     });
   } catch (err) {
@@ -382,7 +429,21 @@ app.get('/api/staff/:id', async (req, res) => {
 
 app.post('/api/staff', async (req, res) => {
   try {
-    const { name, role, department, status, phone, email, joinDate, address, assignedClassId, reporterId } = req.body;
+    const {
+      name, role, department, status, phone, email, joinDate, address, assignedClassId, reporterId,
+      // Personal Details
+      dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
+      emergencyContact, emergencyPhone, whatsappNumber,
+      // Documents
+      picture, idDocuments,
+      // Qualifications
+      professionalQualifications, totalExperience, previousOrganization, qualificationDocs,
+      // Staff Info
+      staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
+      // Bank & Salary
+      accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
+    } = req.body;
+    
     const code = await getNextStaffCode();
 
     // Validate circular reference
@@ -399,14 +460,26 @@ app.post('/api/staff', async (req, res) => {
     const password = generatePassword(8);
 
     const staff = new Staff({
-      code, name, role, department, status: status || 'active',
+      code, name, role: role || staffType, department: department || expertise, 
+      status: status || 'active',
       phone, email, joinDate, address, username, password,
       reporterId: reporterId || null,
+      // Personal Details
+      dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
+      emergencyContact, emergencyPhone, whatsappNumber,
+      // Documents
+      picture, idDocuments,
+      // Qualifications
+      professionalQualifications, totalExperience, previousOrganization, qualificationDocs,
+      // Staff Info
+      staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
+      // Bank & Salary
+      accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
     });
     await staff.save();
 
     // If class teacher, assign to class
-    if (role === 'Teacher' && assignedClassId) {
+    if ((role === 'Teacher' || staffType === 'Teaching') && assignedClassId) {
       await Class.findByIdAndUpdate(assignedClassId, { classTeacherId: staff._id });
     }
 
@@ -428,6 +501,13 @@ app.post('/api/staff', async (req, res) => {
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
       reporterId: staff.reporterId,
+      // Return all the new fields
+      dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
+      emergencyContact, emergencyPhone, whatsappNumber,
+      picture, idDocuments,
+      professionalQualifications, totalExperience, previousOrganization, qualificationDocs,
+      staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
+      accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1996,8 +2076,9 @@ app.delete('/api/settings/document-config/:id', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+httpServer.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🔌 Socket.IO ready for connections`);
 });
 
 
