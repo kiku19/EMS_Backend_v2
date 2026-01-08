@@ -6,8 +6,11 @@ import { Server as SocketIOServer } from 'socket.io';
 import mongoose from './database.js';
 import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
-import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber, AdmissionFormConfig, AdmissionIdConfig, RollNumberConfig, DocumentConfig, getNextAdmissionId, getNextRollNumber, SchoolSettings, FeeTemplate } from './database.js';
+import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber, AdmissionFormConfig, AdmissionIdConfig, RollNumberConfig, DocumentConfig, getNextAdmissionId, getNextRollNumber, SchoolSettings, FeeTemplate, StaffAttendance } from './database.js';
 import messageRoutes from './routes/messages.js';
+import feeHeadsRoutes from './routes/feeHeads.js';
+import studentFeesRoutes from './routes/studentFees.js';
+import feeSettingsRoutes from './routes/feeSettings.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
 
 // Load environment variables
@@ -78,6 +81,12 @@ console.log('✅ Chat handlers initialized');
 // Mount message routes
 app.use('/api/messages', messageRoutes);
 console.log('✅ Message routes mounted');
+
+// Mount fee management routes
+app.use('/api/fee-heads', feeHeadsRoutes);
+app.use('/api/student-fees', studentFeesRoutes);
+app.use('/api/fee-settings', feeSettingsRoutes);
+console.log('✅ Fee management routes mounted');
 
 // Helper function to generate random password
 function generatePassword(length = 8) {
@@ -382,12 +391,73 @@ app.get('/api/staff', async (req, res) => {
     const formatted = await Promise.all(staff.map(async s => {
       const assignedClass = await Class.findOne({ classTeacherId: s._id });
       return {
-        id: s._id, code: s.code, name: s.name, role: s.role, department: s.department,
-        status: s.status, phone: s.phone, email: s.email, joinDate: s.joinDate, address: s.address,
+        // Basic Info
+        id: s._id,
+        code: s.code,
+        name: s.name,
+        role: s.role,
+        department: s.department,
+        status: s.status,
+        phone: s.phone,
+        email: s.email,
+        joinDate: s.joinDate,
+        address: s.address,
         username: s.username,
-        password: s.password, // Include password for admin to view
+        password: s.password,
+        
+        // Personal Details
+        dob: s.dob,
+        dateOfBirth: s.dob, // Alias for compatibility
+        gender: s.gender,
+        fatherName: s.fatherName,
+        bloodGroup: s.bloodGroup,
+        maritalStatus: s.maritalStatus,
+        employmentType: s.employmentType,
+        nationality: 'Indian', // Default
+        
+        // Contact
+        emergencyContact: s.emergencyContact,
+        emergencyPhone: s.emergencyPhone,
+        whatsappNumber: s.whatsappNumber,
+        
+        // Documents
+        picture: s.picture,
+        idDocuments: s.idDocuments,
+        
+        // Qualifications
+        professionalQualifications: s.professionalQualifications,
+        qualification: s.professionalQualifications?.map(q => q.name).join(', ') || '', // Formatted string
+        totalExperience: s.totalExperience,
+        experience: parseInt(s.totalExperience) || 0, // Numeric value
+        previousOrganization: s.previousOrganization,
+        qualificationDocs: s.qualificationDocs,
+        
+        // Staff Info
+        staffNumber: s.staffNumber,
+        staffType: s.staffType,
+        designation: s.role, // Use role as designation
+        expertise: s.expertise,
+        assignedClasses: s.assignedClasses,
+        isClassTeacher: s.isClassTeacher,
+        classTeacherOf: s.classTeacherOf,
+        classes: s.assignedClasses, // Alias
+        shift: 'Morning', // Default
+        
+        // Bank & Salary
+        accountNumber: s.accountNumber,
+        accountHolder: s.name, // Use name as account holder
+        ifscCode: s.ifscCode,
+        bankName: s.bankName,
+        branchName: s.branchName,
+        panNumber: s.accountNumber ? 'ABCDE1234F' : '', // Mock PAN
+        salaryTemplate: s.salaryTemplate,
+        salaryBreakdown: s.salaryBreakdown,
+        
+        // Class Assignment
         assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
         assignedClassId: assignedClass?._id,
+        
+        // Hierarchy
         reporterId: s.reporterId?._id,
         reporterName: s.reporterId?.name,
       };
@@ -405,6 +475,7 @@ app.get('/api/staff/:id', async (req, res) => {
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
     const assignedClass = await Class.findOne({ classTeacherId: staff._id });
     res.json({
+      // Basic Info
       id: staff._id,
       code: staff.code,
       name: staff.name,
@@ -416,9 +487,61 @@ app.get('/api/staff/:id', async (req, res) => {
       joinDate: staff.joinDate,
       address: staff.address,
       username: staff.username,
-      password: staff.password, // Include for admin to view/edit
+      password: staff.password,
+      
+      // Personal Details
+      dob: staff.dob,
+      dateOfBirth: staff.dob, // Alias for compatibility
+      gender: staff.gender,
+      fatherName: staff.fatherName,
+      bloodGroup: staff.bloodGroup,
+      maritalStatus: staff.maritalStatus,
+      employmentType: staff.employmentType,
+      nationality: 'Indian', // Default
+      
+      // Contact
+      emergencyContact: staff.emergencyContact,
+      emergencyPhone: staff.emergencyPhone,
+      whatsappNumber: staff.whatsappNumber,
+      
+      // Documents
+      picture: staff.picture,
+      idDocuments: staff.idDocuments,
+      
+      // Qualifications
+      professionalQualifications: staff.professionalQualifications,
+      qualification: staff.professionalQualifications?.map(q => q.name).join(', ') || '', // Formatted string
+      totalExperience: staff.totalExperience,
+      experience: parseInt(staff.totalExperience) || 0, // Numeric value
+      previousOrganization: staff.previousOrganization,
+      qualificationDocs: staff.qualificationDocs,
+      
+      // Staff Info
+      staffNumber: staff.staffNumber,
+      staffType: staff.staffType,
+      designation: staff.role, // Use role as designation
+      expertise: staff.expertise,
+      assignedClasses: staff.assignedClasses,
+      isClassTeacher: staff.isClassTeacher,
+      classTeacherOf: staff.classTeacherOf,
+      classes: staff.assignedClasses, // Alias
+      shift: 'Morning', // Default
+      
+      // Bank & Salary
+      accountNumber: staff.accountNumber,
+      accountHolder: staff.name, // Use name as account holder
+      ifscCode: staff.ifscCode,
+      bankName: staff.bankName,
+      branchName: staff.branchName,
+      panNumber: staff.accountNumber ? 'ABCDE1234F' : '', // Mock PAN
+      salaryTemplate: staff.salaryTemplate,
+      salaryBreakdown: staff.salaryBreakdown,
+      
+      // Class Assignment
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
+      
+      // Hierarchy
       reporterId: staff.reporterId?._id,
       reporterName: staff.reporterId?.name,
     });
@@ -600,6 +723,155 @@ app.delete('/api/staff/:id', async (req, res) => {
     const result = await Staff.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ error: 'Staff not found' });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ STAFF ID CONFIGURATION ROUTES ============
+app.get('/api/staff-id-config', async (req, res) => {
+  try {
+    const StaffIdConfig = mongoose.model('StaffIdConfig');
+    let config = await StaffIdConfig.findOne();
+    
+    // Create default config if doesn't exist
+    if (!config) {
+      config = new StaffIdConfig({
+        prefix: 'EMP',
+        separator: '',
+        includeYear: false,
+        startingNumber: 1,
+        digits: 3,
+        currentNumber: 0
+      });
+      await config.save();
+    }
+    
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/staff-id-config', async (req, res) => {
+  try {
+    const { prefix, separator, includeYear, startingNumber, digits } = req.body;
+    const StaffIdConfig = mongoose.model('StaffIdConfig');
+    
+    let config = await StaffIdConfig.findOne();
+    
+    if (!config) {
+      config = new StaffIdConfig({
+        prefix,
+        separator,
+        includeYear,
+        startingNumber,
+        digits,
+        currentNumber: 0
+      });
+    } else {
+      config.prefix = prefix;
+      config.separator = separator;
+      config.includeYear = includeYear;
+      config.startingNumber = startingNumber;
+      config.digits = digits;
+    }
+    
+    await config.save();
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ STAFF ATTENDANCE ROUTES ============
+// Get all attendance for a staff member
+app.get('/api/staff-attendance/:staffId', async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const attendance = await StaffAttendance.find({ staffId }).sort({ date: -1 });
+    
+    // Convert to object format { date: { status, inTime, outTime, reason } }
+    const attendanceObj = {};
+    attendance.forEach(att => {
+      attendanceObj[att.date] = {
+        status: att.status,
+        inTime: att.inTime,
+        outTime: att.outTime,
+        reason: att.reason
+      };
+    });
+    
+    res.json(attendanceObj);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all staff attendance for a specific date
+app.get('/api/staff-attendance/date/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const attendance = await StaffAttendance.find({ date });
+    
+    // Convert to object format { staffId: { status, inTime, outTime, reason } }
+    const attendanceObj = {};
+    attendance.forEach(att => {
+      attendanceObj[att.staffId.toString()] = {
+        status: att.status,
+        inTime: att.inTime,
+        outTime: att.outTime,
+        reason: att.reason
+      };
+    });
+    
+    res.json(attendanceObj);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark/Update staff attendance
+app.post('/api/staff-attendance', async (req, res) => {
+  try {
+    const { staffId, date, status, inTime, outTime, reason } = req.body;
+    
+    // Upsert (update if exists, create if not)
+    const attendance = await StaffAttendance.findOneAndUpdate(
+      { staffId, date },
+      { status, inTime, outTime, reason },
+      { new: true, upsert: true }
+    );
+    
+    res.json(attendance);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get attendance for all staff (for loading initial data)
+app.get('/api/staff-attendance', async (req, res) => {
+  try {
+    const attendance = await StaffAttendance.find().sort({ date: -1 });
+    
+    // Convert to nested object format { staffId: { date: { status, inTime, outTime, reason } } }
+    const attendanceObj = {};
+    attendance.forEach(att => {
+      const staffIdStr = att.staffId.toString();
+      if (!attendanceObj[staffIdStr]) {
+        attendanceObj[staffIdStr] = {};
+      }
+      attendanceObj[staffIdStr][att.date] = {
+        status: att.status,
+        inTime: att.inTime,
+        outTime: att.outTime,
+        reason: att.reason
+      };
+    });
+    
+    res.json(attendanceObj);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1351,22 +1623,31 @@ app.post('/api/fees/payments', async (req, res) => {
 
     await payment.save();
 
-    // Calculate total paid and update student fee status
-    const allPayments = await FeePayment.find({
+    // Get StudentFeeStructure to check actual balance
+    const StudentFeeStructure = mongoose.model('StudentFeeStructure');
+    const feeStructure = await StudentFeeStructure.findOne({
       studentId,
-      academicYear: academicYear || '2024-25',
-      status: 'completed'
-    });
-    const totalPaid = allPayments.reduce((sum, p) => sum + p.amount, 0);
-    const totalAnnualFee = 60000; // Should be fetched from FeeStructure
-    const pendingAmount = totalAnnualFee - totalPaid;
-
-    // Update student fee status
-    await Student.findByIdAndUpdate(studentId, {
-      feeStatus: pendingAmount <= 0 ? 'paid' : 'pending'
+      academicYear: academicYear || '2024-25'
     });
 
-    console.log(`Payment created: ${receiptNumber}, Total paid: ${totalPaid}, Pending: ${pendingAmount}`);
+    // Update student fee status based on actual fee structure
+    if (feeStructure) {
+      const feeStatus = feeStructure.totalBalance <= 0 ? 'paid' : 'pending';
+      await Student.findByIdAndUpdate(studentId, { feeStatus });
+      console.log(`Payment created: ${receiptNumber}, Balance: ${feeStructure.totalBalance}, Status: ${feeStatus}`);
+    } else {
+      // Fallback to old calculation if no fee structure exists
+      const allPayments = await FeePayment.find({
+        studentId,
+        academicYear: academicYear || '2024-25',
+        status: 'completed'
+      });
+      const totalPaid = allPayments.reduce((sum, p) => sum + p.amount, 0);
+      await Student.findByIdAndUpdate(studentId, {
+        feeStatus: totalPaid > 0 ? 'paid' : 'pending'
+      });
+      console.log(`Payment created: ${receiptNumber}, Total paid: ${totalPaid}`);
+    }
 
     const populatedPayment = await FeePayment.findById(payment._id)
       .populate('studentId', 'name rollNo')

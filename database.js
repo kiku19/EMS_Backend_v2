@@ -624,6 +624,21 @@ import Message from './models/Message.js';
 import Conversation from './models/Conversation.js';
 import UserPresence from './models/UserPresence.js';
 
+// Fee Management Models - Import from separate files
+import FeeHead from './models/FeeHead.js';
+import StudentFeeStructure from './models/StudentFeeStructure.js';
+import FeeConsession from './models/FeeConsession.js';
+import LateFeeRule from './models/LateFeeRule.js';
+import FeeRule from './models/FeeRule.js';
+import PaymentMethodConfig from './models/PaymentMethodConfig.js';
+import FeeCollectionPeriod from './models/FeeCollectionPeriod.js';
+
+// Staff ID Configuration Model
+import StaffIdConfig from './models/StaffIdConfig.js';
+
+// Staff Attendance Model
+import StaffAttendance from './models/StaffAttendance.js';
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
@@ -654,14 +669,54 @@ export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSch
 // Export chat models
 export { Message, Conversation, UserPresence };
 
+// Export fee management models
+export { FeeHead, StudentFeeStructure, FeeConsession, LateFeeRule, FeeRule, PaymentMethodConfig, FeeCollectionPeriod };
+
+// Export staff ID config model
+export { StaffIdConfig };
+
+// Export staff attendance model
+export { StaffAttendance };
+
 // Helper to get next staff code
 export async function getNextStaffCode() {
-  const counter = await Counter.findByIdAndUpdate(
-    'staffCode',
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true }
-  );
-  return `EMP${String(counter.seq).padStart(3, '0')}`;
+  console.log('📋 Fetching staff ID config from database...');
+  let config = await StaffIdConfig.findOne();
+
+  // Create default config if doesn't exist
+  if (!config) {
+    console.log('⚠️ No staff ID config found, creating default...');
+    config = new StaffIdConfig({
+      prefix: 'EMP',
+      separator: '',
+      includeYear: false,
+      startingNumber: 1,
+      digits: 3,
+      currentNumber: 0
+    });
+    await config.save();
+    console.log('✅ Default staff ID config created:', config.toObject());
+  } else {
+    console.log('✅ Staff ID config found:', config.toObject());
+  }
+
+  // Increment current number
+  config.currentNumber += 1;
+  await config.save();
+  console.log('💾 Config saved with currentNumber:', config.currentNumber);
+
+  // Build staff ID
+  const { prefix, separator, includeYear, digits, currentNumber } = config;
+  const paddedNumber = String(currentNumber).padStart(digits, '0');
+  const year = new Date().getFullYear();
+  
+  let staffId = prefix;
+  if (separator) staffId += separator;
+  if (includeYear) staffId += year + (separator || '');
+  staffId += paddedNumber;
+
+  console.log('🎯 Final staff ID:', staffId);
+  return staffId;
 }
 
 // Helper to get next receipt number
