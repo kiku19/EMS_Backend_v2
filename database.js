@@ -638,6 +638,8 @@ import StaffIdConfig from './models/StaffIdConfig.js';
 
 // Staff Attendance Model
 import StaffAttendance from './models/StaffAttendance.js';
+import UserPermission from './models/UserPermission.js';
+import PermissionRequest from './models/PermissionRequest.js';
 
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
@@ -677,6 +679,9 @@ export { StaffIdConfig };
 
 // Export staff attendance model
 export { StaffAttendance };
+
+// Export permission models
+export { UserPermission, PermissionRequest };
 
 // Helper to get next staff code
 export async function getNextStaffCode() {
