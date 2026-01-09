@@ -15,25 +15,65 @@ const staffAttendanceSchema = new mongoose.Schema({
     enum: ['present', 'absent', 'leave', 'halfday', 'unmarked'],
     default: 'unmarked'
   },
-  inTime: { 
-    type: String, 
-    default: '-' 
+  checkInTime: String,
+  checkOutTime: String,
+  reason: String, // For absent, leave, halfday
+  
+  // Mobile app integration fields
+  checkInLocation: {
+    latitude: Number,
+    longitude: Number,
+    address: String
   },
-  outTime: { 
-    type: String, 
-    default: '-' 
+  checkOutLocation: {
+    latitude: Number,
+    longitude: Number,
+    address: String
   },
-  reason: { 
-    type: String, 
-    default: '' 
+  checkInMethod: {
+    type: String,
+    enum: ['manual', 'mobile', 'biometric', 'admin'],
+    default: 'manual'
   },
-  markedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Staff' 
+  checkOutMethod: {
+    type: String,
+    enum: ['manual', 'mobile', 'biometric', 'admin'],
+    default: 'manual'
   },
+  
+  // Leave application (from mobile app)
+  leaveApplication: {
+    appliedAt: Date,
+    leaveType: String, // 'sick', 'casual', 'emergency', 'personal'
+    startDate: String,
+    endDate: String,
+    numberOfDays: Number,
+    approvalStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending'
+    },
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+    approvedAt: Date,
+    rejectionReason: String
+  },
+  
+  // Regularization (from admin dashboard)
+  regularization: {
+    regularizedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+    regularizedAt: Date,
+    previousStatus: String,
+    regularizationReason: String
+  },
+  
+  // Metadata
+  markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
 
-// Compound index to ensure one attendance record per staff per date
+// Compound index for efficient queries
 staffAttendanceSchema.index({ staffId: 1, date: 1 }, { unique: true });
+staffAttendanceSchema.index({ date: 1 });
+staffAttendanceSchema.index({ status: 1 });
 
 export default mongoose.model('StaffAttendance', staffAttendanceSchema);

@@ -11,6 +11,8 @@ import messageRoutes from './routes/messages.js';
 import feeHeadsRoutes from './routes/feeHeads.js';
 import studentFeesRoutes from './routes/studentFees.js';
 import feeSettingsRoutes from './routes/feeSettings.js';
+import staffAttendanceRoutes from './routes/staffAttendance.js';
+import payrollRoutes from './routes/payroll.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
 
 // Load environment variables
@@ -87,6 +89,14 @@ app.use('/api/fee-heads', feeHeadsRoutes);
 app.use('/api/student-fees', studentFeesRoutes);
 app.use('/api/fee-settings', feeSettingsRoutes);
 console.log('✅ Fee management routes mounted');
+
+// Mount staff attendance routes
+app.use('/api/staff-attendance', staffAttendanceRoutes);
+console.log('✅ Staff attendance routes mounted');
+
+// Payroll routes
+app.use('/api/payroll', payrollRoutes);
+console.log('✅ Payroll routes mounted');
 
 // Helper function to generate random password
 function generatePassword(length = 8) {
@@ -683,14 +693,32 @@ app.put('/api/staff/:id', async (req, res) => {
     }
 
     const assignedClass = await Class.findOne({ classTeacherId: staff._id });
-    res.json({
+    
+    const responseData = {
       id: staff._id,
       ...staff.toObject(),
       assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
       assignedClassId: assignedClass?._id,
       reporterId: staff.reporterId?._id,
       reporterName: staff.reporterId?.name,
+    };
+    
+    // Broadcast staff update to all connected clients via Socket.IO
+    io.emit('staff_updated', {
+      staffId: staff._id.toString(),
+      name: staff.name,
+      role: staff.role,
+      department: staff.department,
+      status: staff.status,
+      phone: staff.phone,
+      email: staff.email,
+      picture: staff.picture,
+      timestamp: new Date()
     });
+    
+    console.log(`📢 Broadcasting staff update for ${staff.name} (${staff._id})`);
+    
+    res.json(responseData);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -715,6 +743,27 @@ app.put('/api/staff/:id/credentials', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Test endpoint to manually trigger socket event
+app.post('/api/test/socket-event', (req, res) => {
+  console.log('🧪 TEST: Manually triggering staff_updated event');
+  console.log('🧪 Connected clients:', io.engine.clientsCount);
+  
+  io.emit('staff_updated', {
+    staffId: '123',
+    name: 'Test User',
+    role: 'Teacher',
+    department: 'Math',
+    status: 'active',
+    phone: '1234567890',
+    email: 'test@test.com',
+    picture: null,
+    timestamp: new Date()
+  });
+  
+  console.log('✅ Test event emitted');
+  res.json({ success: true, message: 'Test event emitted', clients: io.engine.clientsCount });
 });
 
 app.delete('/api/staff/:id', async (req, res) => {
@@ -845,6 +894,19 @@ app.post('/api/staff-attendance', async (req, res) => {
       { new: true, upsert: true }
     );
     
+    // Broadcast attendance update
+    io.emit('attendance_updated', {
+      type: 'staff',
+      staffId,
+      date,
+      status,
+      inTime,
+      outTime,
+      reason,
+      timestamp: new Date()
+    });
+    console.log(`📢 Broadcasting staff attendance update for ${staffId} on ${date}`);
+    
     res.json(attendance);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -932,6 +994,17 @@ app.put('/api/classes/:id', async (req, res) => {
       { name, section, classTeacherId, subjects, academicYear }, { new: true }
     );
     if (!cls) return res.status(404).json({ error: 'Class not found' });
+    
+    // Broadcast class update
+    io.emit('class_updated', {
+      classId: cls._id.toString(),
+      name: cls.name,
+      section: cls.section,
+      classTeacherId: cls.classTeacherId,
+      timestamp: new Date()
+    });
+    console.log(`📢 Broadcasting class update for ${cls.name} ${cls.section}`);
+    
     res.json({ id: cls._id, ...cls.toObject() });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1256,6 +1329,19 @@ app.put('/api/students/:id', async (req, res) => {
     if (!student) return res.status(404).json({ error: 'Student not found' });
     console.log('✅ Student updated successfully');
     console.log('📸 Photo in updated student:', student.photo);
+    
+    // Broadcast student update to all connected clients
+    io.emit('student_updated', {
+      studentId: student._id.toString(),
+      name: student.name,
+      classId: student.classId,
+      rollNo: student.rollNo,
+      photo: student.photo,
+      status: student.status,
+      timestamp: new Date()
+    });
+    console.log(`📢 Broadcasting student update for ${student.name} (${student._id})`);
+    
     res.json({ id: student._id, ...student.toObject() });
   } catch (err) {
     console.error('❌ Error updating student:', err);
@@ -1283,6 +1369,18 @@ app.post('/api/attendance', async (req, res) => {
       { studentId, classId, date, status, markedBy },
       { upsert: true, new: true }
     );
+    
+    // Broadcast attendance update
+    io.emit('attendance_updated', {
+      type: 'student',
+      studentId,
+      classId,
+      date,
+      status,
+      timestamp: new Date()
+    });
+    console.log(`📢 Broadcasting student attendance update for ${studentId} on ${date}`);
+    
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1301,6 +1399,17 @@ app.post('/api/attendance/bulk', async (req, res) => {
       }
     }));
     await Attendance.bulkWrite(ops);
+    
+    // Broadcast bulk attendance update
+    io.emit('attendance_bulk_updated', {
+      type: 'student',
+      classId,
+      date,
+      count: attendance.length,
+      timestamp: new Date()
+    });
+    console.log(`📢 Broadcasting bulk attendance update for class ${classId} on ${date}`);
+    
     res.json({ success: true, count: attendance.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1653,6 +1762,17 @@ app.post('/api/fees/payments', async (req, res) => {
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('collectedBy', 'name');
+
+    // Broadcast fee payment
+    io.emit('fee_payment_created', {
+      paymentId: payment._id.toString(),
+      studentId: payment.studentId,
+      amount: payment.amount,
+      receiptNumber: payment.receiptNumber,
+      paymentDate: payment.paymentDate,
+      timestamp: new Date()
+    });
+    console.log(`📢 Broadcasting fee payment for student ${payment.studentId}`);
 
     res.status(201).json(populatedPayment);
   } catch (err) {
