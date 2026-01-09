@@ -98,6 +98,15 @@ console.log('✅ Staff attendance routes mounted');
 app.use('/api/payroll', payrollRoutes);
 console.log('✅ Payroll routes mounted');
 
+// Permission routes
+import permissionRoutes from './routes/permissions.js';
+app.use('/api/permissions', permissionRoutes);
+console.log('✅ Permission routes mounted');
+
+// Make io and Staff available to routes
+app.locals.io = io;
+app.locals.Staff = Staff;
+
 // Helper function to generate random password
 function generatePassword(length = 8) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
