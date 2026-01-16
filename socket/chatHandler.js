@@ -57,11 +57,30 @@ export function initializeChatHandlers(io) {
           message: 'Successfully authenticated' 
         });
 
-        // Broadcast user online status
-        io.emit('user_status', { 
-          userId, 
-          status: 'online',
-          timestamp: new Date()
+        // Broadcast user online status - FIXED: Only to relevant users
+        const userConversations = await Conversation.find({
+          participants: { $elemMatch: { userId: userId } }
+        }).populate('participants.userId', '_id');
+        
+        const relevantUserIds = new Set();
+        userConversations.forEach(conv => {
+          conv.participants.forEach(p => {
+            if (p.userId._id.toString() !== userId) {
+              relevantUserIds.add(p.userId._id.toString());
+            }
+          });
+        });
+        
+        // Emit to relevant users only
+        Array.from(relevantUserIds).forEach(relevantUserId => {
+          const userSocketId = activeUsers.get(relevantUserId);
+          if (userSocketId) {
+            io.to(userSocketId).emit('user_status', {
+              userId: userId,
+              status: 'online',
+              timestamp: new Date()
+            });
+          }
         });
 
         console.log(`✅ User authenticated: ${userId} (${userType})`);
@@ -200,8 +219,8 @@ export function initializeChatHandlers(io) {
           }
         }
 
-        // Emit to conversation room
-        io.to(`conversation:${conversation._id}`).emit('new_message', {
+        // Emit to conversation room - FIXED: Use socket.to() to exclude sender
+        socket.to(`conversation:${conversation._id}`).emit('new_message', {
           message: {
             id: message._id,
             conversationId: conversation._id,
@@ -242,7 +261,7 @@ export function initializeChatHandlers(io) {
       }
     });
 
-    // Typing indicator
+    // Typing indicator - FIXED: Add auto-clear timeout
     socket.on('typing', async (data) => {
       try {
         const { conversationId, isTyping } = data;
@@ -254,9 +273,34 @@ export function initializeChatHandlers(io) {
             typingUsers.set(conversationId, new Set());
           }
           typingUsers.get(conversationId).add(socket.userId);
+          
+          // Auto-clear typing after 3 seconds - NEW
+          if (socket.typingTimeout) {
+            clearTimeout(socket.typingTimeout);
+          }
+          socket.typingTimeout = setTimeout(() => {
+            if (typingUsers.has(conversationId)) {
+              typingUsers.get(conversationId).delete(socket.userId);
+              if (typingUsers.get(conversationId).size === 0) {
+                typingUsers.delete(conversationId);
+              }
+            }
+            socket.to(`conversation:${conversationId}`).emit('user_typing', {
+              conversationId,
+              userId: socket.userId,
+              isTyping: false
+            });
+          }, 3000);
         } else {
           if (typingUsers.has(conversationId)) {
             typingUsers.get(conversationId).delete(socket.userId);
+            if (typingUsers.get(conversationId).size === 0) {
+              typingUsers.delete(conversationId);
+            }
+          }
+          if (socket.typingTimeout) {
+            clearTimeout(socket.typingTimeout);
+            socket.typingTimeout = null;
           }
         }
 
@@ -329,21 +373,51 @@ export function initializeChatHandlers(io) {
       }
     });
 
-    // Disconnect
+    // Disconnect - FIXED: Clean up typing users and ensure cleanup always happens
     socket.on('disconnect', async () => {
       try {
         if (socket.userId) {
           // Remove from active users
           activeUsers.delete(socket.userId);
 
+          // Clean up typing indicators for this user
+          typingUsers.forEach((typingSet, conversationId) => {
+            if (typingSet.has(socket.userId)) {
+              typingSet.delete(socket.userId);
+              // If set is empty, remove it
+              if (typingSet.size === 0) {
+                typingUsers.delete(conversationId);
+              }
+            }
+          });
+
           // Update presence
           await UserPresence.setOffline(socket.userId);
 
-          // Broadcast user offline status
-          io.emit('user_status', {
-            userId: socket.userId,
-            status: 'offline',
-            lastSeen: new Date()
+          // Broadcast user offline status - FIXED: Only to relevant users
+          const userConversations = await Conversation.find({
+            participants: socket.userId
+          }).populate('participants', '_id');
+          
+          const relevantUserIds = new Set();
+          userConversations.forEach(conv => {
+            conv.participants.forEach(p => {
+              if (p._id.toString() !== socket.userId) {
+                relevantUserIds.add(p._id.toString());
+              }
+            });
+          });
+          
+          // Emit to relevant users only
+          Array.from(relevantUserIds).forEach(userId => {
+            const userSocketId = activeUsers.get(userId);
+            if (userSocketId) {
+              io.to(userSocketId).emit('user_status', {
+                userId: socket.userId,
+                status: 'offline',
+                lastSeen: new Date()
+              });
+            }
           });
 
           console.log(`👋 User disconnected: ${socket.userId}`);
@@ -352,7 +426,33 @@ export function initializeChatHandlers(io) {
         console.error('❌ Disconnect error:', error);
       }
     });
+
+    // Handle socket errors to ensure cleanup
+    socket.on('error', (error) => {
+      console.error('❌ Socket error:', error);
+      // Trigger disconnect cleanup
+      socket.disconnect(true);
+    });
   });
+
+  // Periodic cleanup of stale data (every 5 minutes)
+  setInterval(() => {
+    try {
+      console.log('🧹 Running periodic cleanup...');
+      
+      // Clean up empty typing user sets
+      typingUsers.forEach((typingSet, conversationId) => {
+        if (typingSet.size === 0) {
+          typingUsers.delete(conversationId);
+        }
+      });
+
+      // Log current state for monitoring
+      console.log(`📊 Active users: ${activeUsers.size}, Active conversations with typing: ${typingUsers.size}`);
+    } catch (error) {
+      console.error('❌ Cleanup error:', error);
+    }
+  }, 5 * 60 * 1000); // 5 minutes
 }
 
 export { activeUsers, typingUsers };

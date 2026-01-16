@@ -12,13 +12,21 @@ async function seed() {
   await Counter.create({ _id: 'staffCode', seq: 5 });
 
   // Create 5 teachers with login credentials
-  const teachers = await Staff.insertMany([
+  // Use .save() instead of insertMany to trigger password hashing
+  const teachersData = [
     { code: 'EMP001', name: 'Rajesh Kumar', role: 'Teacher', department: 'Mathematics', status: 'active', phone: '9876543210', email: 'rajesh@school.com', username: 'rajesh', password: 'password123' },
     { code: 'EMP002', name: 'Priya Singh', role: 'Teacher', department: 'English', status: 'active', phone: '9876543211', email: 'priya@school.com', username: 'priya', password: 'password123' },
     { code: 'EMP003', name: 'Amit Verma', role: 'Teacher', department: 'Science', status: 'active', phone: '9876543212', email: 'amit@school.com', username: 'amit', password: 'password123' },
     { code: 'EMP004', name: 'Sunita Devi', role: 'Teacher', department: 'Hindi', status: 'active', phone: '9876543213', email: 'sunita@school.com', username: 'sunita', password: 'password123' },
     { code: 'EMP005', name: 'Vikram Patel', role: 'Admin', department: 'Administration', status: 'active', phone: '9876543214', email: 'vikram@school.com', username: 'vikram', password: 'password123' },
-  ]);
+  ];
+  
+  const teachers = [];
+  for (const teacherData of teachersData) {
+    const teacher = new Staff(teacherData);
+    await teacher.save(); // This will trigger the pre-save hook to hash the password
+    teachers.push(teacher);
+  }
   console.log(`Created ${teachers.length} staff members`);
 
 

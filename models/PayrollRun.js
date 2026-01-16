@@ -50,7 +50,17 @@ const payrollRunSchema = new mongoose.Schema({
   },
   completedAt: Date,
   errorLog: [String],
-  notes: String
+  notes: String,
+  // Concurrent run prevention
+  isProcessing: {
+    type: Boolean,
+    default: false
+  },
+  processingLockExpiresAt: Date,
+  processingLockedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }
 }, {
   timestamps: true
 });

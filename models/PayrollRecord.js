@@ -93,7 +93,18 @@ const payrollRecordSchema = new mongoose.Schema({
     ref: 'User'
   },
   failureReason: String,
-  notes: String
+  notes: String,
+  // Payment reversal tracking
+  reversalHistory: [{
+    reversedAt: Date,
+    reversedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    reason: String,
+    previousStatus: String,
+    previousPaymentDate: Date
+  }]
 }, {
   timestamps: true
 });

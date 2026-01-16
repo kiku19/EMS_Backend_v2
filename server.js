@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
+import { rateLimit } from 'express-rate-limit';
 import mongoose from './database.js';
 import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
@@ -14,9 +15,14 @@ import feeSettingsRoutes from './routes/feeSettings.js';
 import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
+import { validate, schemas } from './middleware/validation.js';
+import { validateEnvironment, config } from './config/environment.js';
+import { authenticate, requireAdmin as authRequireAdmin, generateToken } from './middleware/auth.js';
+import { checkPermission, requireAdmin as permRequireAdmin } from './middleware/permissions.js';
 
-// Load environment variables
+// Load and validate environment variables
 dotenv.config();
+validateEnvironment();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -24,15 +30,10 @@ const PORT = process.env.PORT || 3001;
 // Create HTTP server and wrap Express app
 const httpServer = createServer(app);
 
-// Initialize Socket.IO with CORS
+// Initialize Socket.IO with CORS - FIXED: Use environment variables
 const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:3000',
-      'https://school-dashboard-ivory.vercel.app'
-    ],
+    origin: config.corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
   },
@@ -41,12 +42,17 @@ const io = new SocketIOServer(httpServer, {
 
 console.log('✅ Socket.IO initialized');
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+// Configure Cloudinary - FIXED: Validate configuration
+if (config.cloudinary.configured) {
+  cloudinary.config({
+    cloud_name: config.cloudinary.cloudName,
+    api_key: config.cloudinary.apiKey,
+    api_secret: config.cloudinary.apiSecret
+  });
+  console.log('✅ Cloudinary configured');
+} else {
+  console.warn('⚠️ Cloudinary not configured. File uploads will use base64 fallback.');
+}
 
 // Configure Multer
 const storage = multer.memoryStorage();
@@ -57,14 +63,9 @@ const upload = multer({
   }
 });
 
-// Configure CORS to allow requests from Vercel frontend
+// Configure CORS - FIXED: Use environment variables
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000',
-    'https://school-dashboard-ivory.vercel.app'
-  ],
+  origin: config.corsOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -74,7 +75,40 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-await connectDB();
+// Rate limiting - ADDED for security
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 login attempts per windowMs
+  message: 'Too many login attempts, please try again later.',
+  skipSuccessfulRequests: true, // Don't count successful requests
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 50, // Limit each IP to 50 uploads per hour
+  message: 'Too many file uploads, please try again later.',
+});
+
+// Apply rate limiting to all routes
+app.use('/api/', limiter);
+
+// Connect to database with error handling
+try {
+  await connectDB();
+} catch (error) {
+  console.error('❌ Failed to start server: Database connection failed');
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
+}
 
 // Initialize Socket.IO chat handlers
 initializeChatHandlers(io);
@@ -118,12 +152,17 @@ function generatePassword(length = 8) {
 }
 
 // ============ AUTH ROUTES ============
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, validate(schemas.login), async (req, res) => {
   try {
     const { phone, email, password } = req.body;
     
-    // Allow login with either phone or email
-    let query = { password, status: 'active' };
+    // Validate input
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+    
+    // Build query for phone or email (don't include password in query!)
+    let query = { status: 'active' };
     if (phone) {
       query.phone = phone;
     } else if (email) {
@@ -132,11 +171,23 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Phone or email is required' });
     }
     
+    // Find staff by phone/email only
     const staff = await Staff.findOne(query);
-    if (!staff) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!staff) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Compare password using bcrypt
+    const isPasswordValid = await staff.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     // Get classes where this staff is class teacher
     const classes = await Class.find({ classTeacherId: staff._id });
+
+    // Generate JWT token
+    const token = generateToken(staff._id.toString(), staff.role);
 
     res.json({
       id: staff._id,
@@ -146,14 +197,16 @@ app.post('/api/auth/login', async (req, res) => {
       email: staff.email,
       phone: staff.phone,
       classes: classes.map(c => ({ id: c._id, name: c.name, section: c.section })),
+      token // Return JWT token for authentication
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
 
 // ============ UPLOAD ROUTE ============
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', authenticate, uploadLimiter, upload.single('file'), async (req, res) => {
   console.log('📤 Upload request received');
   try {
     if (!req.file) {
@@ -221,13 +274,16 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       console.warn('⚠️ Cloudinary upload failed, using base64 fallback:', cloudinaryError.message);
       console.error('Cloudinary error details:', cloudinaryError);
       
-      // Fallback: return base64 data URI
+      // FIXED: Proper error notification
+      // Fallback: return base64 data URI with warning
       res.json({
         url: dataURI,
         public_id: `local_${Date.now()}`,
         name: req.file.originalname,
         size: (req.file.size / 1024).toFixed(1) + ' KB',
-        format: req.file.mimetype
+        format: req.file.mimetype,
+        warning: 'File uploaded locally. Cloud storage failed.',
+        cloudinaryError: cloudinaryError.message
       });
     }
 
@@ -242,8 +298,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 });
 
 // ============ DOCUMENT MANAGEMENT ROUTES ============
-// Add document to student
-app.post('/api/students/:id/documents', async (req, res) => {
+// Add document to student - FIXED: Use Mongoose methods
+app.post('/api/students/:id/documents', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
     console.log('📄 Adding document to student:', req.params.id);
     console.log('📄 Document data:', JSON.stringify(req.body, null, 2));
@@ -260,24 +316,24 @@ app.post('/api/students/:id/documents', async (req, res) => {
       date: new Date().toLocaleDateString()
     };
     
-    // Use direct MongoDB update to bypass Mongoose schema caching issues
-    const result = await Student.collection.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(req.params.id) },
+    // Use Mongoose findByIdAndUpdate with atomic operation
+    const student = await Student.findByIdAndUpdate(
+      req.params.id,
       { $push: { documents: newDoc } },
-      { returnDocument: 'after' }
+      { new: true, runValidators: true }
     );
     
-    if (!result) {
+    if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
     
     console.log('✅ Document added successfully');
-    console.log('✅ Total documents now:', result.documents?.length || 0);
+    console.log('✅ Total documents now:', student.documents?.length || 0);
     console.log('✅ New document:', newDoc);
     
     res.json({ 
       success: true, 
-      documents: result.documents || []
+      documents: student.documents || []
     });
   } catch (error) {
     console.error('❌ Error adding document:', error);
@@ -285,47 +341,25 @@ app.post('/api/students/:id/documents', async (req, res) => {
   }
 });
 
-// Delete document from student
-app.delete('/api/students/:id/documents/:docIndex', async (req, res) => {
+// Delete document from student - FIXED: Use document ID with Mongoose
+app.delete('/api/students/:id/documents/:docId', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
-    console.log('🗑️ DELETE request - Student ID:', req.params.id, 'Doc Index:', req.params.docIndex);
+    console.log('🗑️ DELETE request - Student ID:', req.params.id, 'Doc ID:', req.params.docId);
     
-    // Use direct MongoDB query to avoid Mongoose caching issues
-    const student = await Student.collection.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
+    // Use Mongoose findByIdAndUpdate with atomic $pull operation
+    const student = await Student.findByIdAndUpdate(
+      req.params.id,
+      { $pull: { documents: { id: req.params.docId } } },
+      { new: true }
+    );
     
     if (!student) {
       console.log('❌ Student not found');
       return res.status(404).json({ error: 'Student not found' });
     }
     
-    console.log('📄 Student found, documents array:', student.documents);
-    console.log('📄 Documents count:', student.documents?.length || 0);
-    
-    const docIndex = parseInt(req.params.docIndex);
-    console.log('📄 Parsed docIndex:', docIndex);
-    console.log('📄 Document at index:', student.documents?.[docIndex]);
-    
-    if (student.documents && student.documents[docIndex]) {
-      const deletedDoc = student.documents[docIndex];
-      console.log('✅ Deleting document:', deletedDoc.name || deletedDoc);
-      
-      // Remove the document at the specified index
-      student.documents.splice(docIndex, 1);
-      
-      // Update using direct MongoDB
-      const result = await Student.collection.findOneAndUpdate(
-        { _id: new mongoose.Types.ObjectId(req.params.id) },
-        { $set: { documents: student.documents } },
-        { returnDocument: 'after' }
-      );
-      
-      console.log('✅ Document deleted, remaining:', result.documents?.length || 0);
-      res.json({ success: true, documents: result.documents || [] });
-    } else {
-      console.log('❌ Document not found at index', docIndex);
-      console.log('❌ Available indices: 0 to', (student.documents?.length || 0) - 1);
-      res.status(404).json({ error: 'Document not found' });
-    }
+    console.log('✅ Document deleted, remaining:', student.documents?.length || 0);
+    res.json({ success: true, documents: student.documents || [] });
   } catch (error) {
     console.error('❌ Delete error:', error);
     res.status(500).json({ error: error.message });
@@ -333,21 +367,21 @@ app.delete('/api/students/:id/documents/:docIndex', async (req, res) => {
 });
 
 // Update student photo
-app.put('/api/students/:id/photo', async (req, res) => {
+app.put('/api/students/:id/photo', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
     console.log('📸 Updating photo for student:', req.params.id);
     console.log('📸 Photo URL:', req.body.photo);
     
     const { photo } = req.body;
     
-    // Use direct MongoDB update
-    const result = await Student.collection.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(req.params.id) },
-      { $set: { photo } },
-      { returnDocument: 'after' }
+    // Use Mongoose findByIdAndUpdate
+    const student = await Student.findByIdAndUpdate(
+      req.params.id,
+      { photo },
+      { new: true, runValidators: true }
     );
     
-    if (!result) {
+    if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
     
@@ -355,7 +389,7 @@ app.put('/api/students/:id/photo', async (req, res) => {
     
     res.json({ 
       success: true, 
-      photo: result.photo 
+      photo: student.photo 
     });
   } catch (error) {
     console.error('❌ Error updating photo:', error);
@@ -404,7 +438,8 @@ app.post('/api/students/:id/fix-documents', async (req, res) => {
 });
 
 // ============ STAFF ROUTES ============
-app.get('/api/staff', async (req, res) => {
+// All staff routes require authentication and appropriate permissions
+app.get('/api/staff', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const staff = await Staff.find().populate('reporterId', 'name').sort({ createdAt: 1 });
     const formatted = await Promise.all(staff.map(async s => {
@@ -422,7 +457,7 @@ app.get('/api/staff', async (req, res) => {
         joinDate: s.joinDate,
         address: s.address,
         username: s.username,
-        password: s.password,
+        // password: REMOVED - Never expose password hashes to frontend
         
         // Personal Details
         dob: s.dob,
@@ -488,7 +523,7 @@ app.get('/api/staff', async (req, res) => {
 });
 
 
-app.get('/api/staff/:id', async (req, res) => {
+app.get('/api/staff/:id', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const staff = await Staff.findById(req.params.id).populate('reporterId', 'name');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
@@ -506,7 +541,7 @@ app.get('/api/staff/:id', async (req, res) => {
       joinDate: staff.joinDate,
       address: staff.address,
       username: staff.username,
-      password: staff.password,
+      // Don't return hashed password
       
       // Personal Details
       dob: staff.dob,
@@ -516,7 +551,7 @@ app.get('/api/staff/:id', async (req, res) => {
       bloodGroup: staff.bloodGroup,
       maritalStatus: staff.maritalStatus,
       employmentType: staff.employmentType,
-      nationality: 'Indian', // Default
+      nationality: staff.nationality || null,
       
       // Contact
       emergencyContact: staff.emergencyContact,
@@ -544,7 +579,7 @@ app.get('/api/staff/:id', async (req, res) => {
       isClassTeacher: staff.isClassTeacher,
       classTeacherOf: staff.classTeacherOf,
       classes: staff.assignedClasses, // Alias
-      shift: 'Morning', // Default
+      shift: staff.shift || null,
       
       // Bank & Salary
       accountNumber: staff.accountNumber,
@@ -552,7 +587,7 @@ app.get('/api/staff/:id', async (req, res) => {
       ifscCode: staff.ifscCode,
       bankName: staff.bankName,
       branchName: staff.branchName,
-      panNumber: staff.accountNumber ? 'ABCDE1234F' : '', // Mock PAN
+      panNumber: staff.panNumber || null,
       salaryTemplate: staff.salaryTemplate,
       salaryBreakdown: staff.salaryBreakdown,
       
@@ -564,22 +599,35 @@ app.get('/api/staff/:id', async (req, res) => {
       reporterId: staff.reporterId?._id,
       reporterName: staff.reporterId?.name,
     });
+    
+    // Send paginated response
+    res.json({
+      data: formatted,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
+        totalItems: total,
+        itemsPerPage: limitNum,
+        hasNextPage: pageNum < Math.ceil(total / limitNum),
+        hasPrevPage: pageNum > 1
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/staff', async (req, res) => {
+app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validate(schemas.createStaff), async (req, res) => {
   try {
     const {
       name, role, department, status, phone, email, joinDate, address, assignedClassId, reporterId,
       // Personal Details
       dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
-      emergencyContact, emergencyPhone, whatsappNumber,
+      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber,
       // Documents
       picture, idDocuments,
       // Qualifications
-      professionalQualifications, totalExperience, previousOrganization, qualificationDocs,
+      professionalQualifications, totalExperience, previousOrganization, roleInOrganization, qualificationDocs, customDocuments,
       // Staff Info
       staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
       // Bank & Salary
@@ -608,11 +656,11 @@ app.post('/api/staff', async (req, res) => {
       reporterId: reporterId || null,
       // Personal Details
       dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
-      emergencyContact, emergencyPhone, whatsappNumber,
+      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber,
       // Documents
       picture, idDocuments,
       // Qualifications
-      professionalQualifications, totalExperience, previousOrganization, qualificationDocs,
+      professionalQualifications, totalExperience, previousOrganization, roleInOrganization, qualificationDocs, customDocuments,
       // Staff Info
       staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
       // Bank & Salary
@@ -645,9 +693,9 @@ app.post('/api/staff', async (req, res) => {
       reporterId: staff.reporterId,
       // Return all the new fields
       dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
-      emergencyContact, emergencyPhone, whatsappNumber,
+      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber,
       picture, idDocuments,
-      professionalQualifications, totalExperience, previousOrganization, qualificationDocs,
+      professionalQualifications, totalExperience, previousOrganization, roleInOrganization, qualificationDocs, customDocuments,
       staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
       accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
     });
@@ -656,7 +704,7 @@ app.post('/api/staff', async (req, res) => {
   }
 });
 
-app.put('/api/staff/:id', async (req, res) => {
+app.put('/api/staff/:id', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { name, role, department, status, phone, email, joinDate, address, assignedClassId, username, password, reporterId } = req.body;
 
@@ -668,8 +716,15 @@ app.put('/api/staff/:id', async (req, res) => {
         return res.status(400).json({ error: 'Reporter not found' });
       }
 
-      // Check for circular reference
-      const checkCircular = async (currentId, targetId, visited = new Set()) => {
+      // Check for circular reference - FIXED: Added max depth limit to prevent stack overflow
+      const MAX_HIERARCHY_DEPTH = 10;
+      
+      const checkCircular = async (currentId, targetId, visited = new Set(), depth = 0) => {
+        // Prevent infinite recursion - max 10 levels of hierarchy
+        if (depth > MAX_HIERARCHY_DEPTH) {
+          throw new Error('Maximum hierarchy depth exceeded. Cannot create hierarchy deeper than 10 levels.');
+        }
+        
         if (currentId === targetId) return true;
         if (visited.has(currentId)) return false;
         visited.add(currentId);
@@ -677,20 +732,30 @@ app.put('/api/staff/:id', async (req, res) => {
         const current = await Staff.findById(currentId);
         if (!current || !current.reporterId) return false;
 
-        return checkCircular(current.reporterId.toString(), targetId, visited);
+        return checkCircular(current.reporterId.toString(), targetId, visited, depth + 1);
       };
 
-      const hasCircular = await checkCircular(reporterId, req.params.id);
-      if (hasCircular) {
-        return res.status(400).json({ error: 'Cannot assign reporter: This would create a circular reference' });
+      try {
+        const hasCircular = await checkCircular(reporterId, req.params.id);
+        if (hasCircular) {
+          return res.status(400).json({ error: 'Cannot assign reporter: This would create a circular reference' });
+        }
+      } catch (hierarchyError) {
+        return res.status(400).json({ error: hierarchyError.message });
       }
     }
 
     // Build update object - only include password if provided
     const updateData = { name, role, department, status, phone, email, joinDate, address };
     if (username) updateData.username = username;
-    if (password) updateData.password = password;
     if (reporterId !== undefined) updateData.reporterId = reporterId || null;
+    
+    // If password is provided, we need to hash it manually since findByIdAndUpdate bypasses pre-save hooks
+    if (password) {
+      const bcrypt = await import('bcrypt');
+      const salt = await bcrypt.genSalt(10);
+      updateData.password = await bcrypt.hash(password, salt);
+    }
 
     const staff = await Staff.findByIdAndUpdate(req.params.id, updateData, { new: true }).populate('reporterId', 'name');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
@@ -734,7 +799,7 @@ app.put('/api/staff/:id', async (req, res) => {
 });
 
 // Update staff credentials
-app.put('/api/staff/:id/credentials', async (req, res) => {
+app.put('/api/staff/:id/credentials', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username && !password) {
@@ -743,7 +808,13 @@ app.put('/api/staff/:id/credentials', async (req, res) => {
 
     const updateData = {};
     if (username) updateData.username = username;
-    if (password) updateData.password = password;
+    
+    // Hash password if provided
+    if (password) {
+      const bcrypt = await import('bcrypt');
+      const salt = await bcrypt.genSalt(10);
+      updateData.password = await bcrypt.hash(password, salt);
+    }
 
     const staff = await Staff.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
@@ -775,7 +846,7 @@ app.post('/api/test/socket-event', (req, res) => {
   res.json({ success: true, message: 'Test event emitted', clients: io.engine.clientsCount });
 });
 
-app.delete('/api/staff/:id', async (req, res) => {
+app.delete('/api/staff/:id', authenticate, checkPermission('staff', 'delete'), async (req, res) => {
   try {
     await Class.updateMany({ classTeacherId: req.params.id }, { $unset: { classTeacherId: 1 } });
     const result = await Staff.findByIdAndDelete(req.params.id);
@@ -950,7 +1021,7 @@ app.get('/api/staff-attendance', async (req, res) => {
 
 
 // ============ CLASS ROUTES ============
-app.get('/api/classes', async (req, res) => {
+app.get('/api/classes', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { teacherId } = req.query;
     const query = teacherId ? { classTeacherId: teacherId } : {};
@@ -985,7 +1056,7 @@ app.get('/api/classes/:id', async (req, res) => {
   }
 });
 
-app.post('/api/classes', async (req, res) => {
+app.post('/api/classes', authenticate, checkPermission('classes', 'create'), async (req, res) => {
   try {
     const { name, section, classTeacherId, subjects, academicYear } = req.body;
     const cls = new Class({ name, section, classTeacherId, subjects, academicYear });
@@ -996,7 +1067,7 @@ app.post('/api/classes', async (req, res) => {
   }
 });
 
-app.put('/api/classes/:id', async (req, res) => {
+app.put('/api/classes/:id', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { name, section, classTeacherId, subjects, academicYear } = req.body;
     const cls = await Class.findByIdAndUpdate(req.params.id,
@@ -1020,7 +1091,7 @@ app.put('/api/classes/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/classes/:id', async (req, res) => {
+app.delete('/api/classes/:id', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const studentCount = await Student.countDocuments({ classId: req.params.id });
     if (studentCount > 0) return res.status(400).json({ error: 'Cannot delete class with students' });
@@ -1043,11 +1114,29 @@ app.get('/api/classes/:id/students', async (req, res) => {
 
 
 // ============ STUDENT ROUTES ============
-app.get('/api/students', async (req, res) => {
+// All student routes require authentication and appropriate permissions
+app.get('/api/students', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
-    const { classId } = req.query;
+    const { classId, page = 1, limit = 50 } = req.query;
+    
+    // Parse pagination parameters
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+    
+    // Build query
     const query = classId ? { classId } : {};
-    const students = await Student.find(query).populate('classId', 'name section').sort({ rollNo: 1 });
+    
+    // Get total count for pagination
+    const total = await Student.countDocuments(query);
+    
+    // Fetch paginated students
+    const students = await Student.find(query)
+      .populate('classId', 'name section')
+      .sort({ rollNo: 1 })
+      .limit(limitNum)
+      .skip(skip);
+    
     const formatted = students.map(s => {
       const classInfo = s.classId ? `${s.classId.name.replace('Class ', '')}-${s.classId.section}` : null;
       return {
@@ -1107,7 +1196,19 @@ app.get('/api/students', async (req, res) => {
         photo: s.photo,
       };
     });
-    res.json(formatted);
+    
+    // Send paginated response
+    res.json({
+      data: formatted,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
+        totalItems: total,
+        itemsPerPage: limitNum,
+        hasNextPage: pageNum < Math.ceil(total / limitNum),
+        hasPrevPage: pageNum > 1
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1126,26 +1227,23 @@ app.get('/api/students/next-admission-id', async (req, res) => {
   }
 });
 
-app.get('/api/students/:id', async (req, res) => {
+app.get('/api/students/:id', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
     console.log('📖 GET /api/students/:id -', req.params.id);
     
-    // Use direct MongoDB query to bypass Mongoose schema issues
-    const student = await Student.collection.findOne({ 
-      _id: new mongoose.Types.ObjectId(req.params.id) 
-    });
+    // Use Mongoose findById with populate
+    const student = await Student.findById(req.params.id).populate('classId', 'name section');
     
-    if (!student) return res.status(404).json({ error: 'Student not found' });
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
     
-    // Get class info if classId exists
+    // Format class info
     let classInfo = null;
     let className = null;
     if (student.classId) {
-      const classDoc = await Class.findById(student.classId);
-      if (classDoc) {
-        classInfo = `${classDoc.name.replace('Class ', '')}-${classDoc.section}`;
-        className = `${classDoc.name} ${classDoc.section}`;
-      }
+      classInfo = `${student.classId.name.replace('Class ', '')}-${student.classId.section}`;
+      className = `${student.classId.name} ${student.classId.section}`;
     }
     
     console.log('📖 Student documents:', student.documents);
@@ -1153,7 +1251,7 @@ app.get('/api/students/:id', async (req, res) => {
     
     res.json({
       id: student._id,
-      ...student,
+      ...student.toObject(),
       class: classInfo,
       className: className,
     });
@@ -1163,7 +1261,7 @@ app.get('/api/students/:id', async (req, res) => {
   }
 });
 
-app.post('/api/students', async (req, res) => {
+app.post('/api/students', authenticate, checkPermission('students', 'create'), validate(schemas.createStudent), async (req, res) => {
   try {
     const studentData = {
       // Basic Information
@@ -1247,7 +1345,7 @@ app.post('/api/students', async (req, res) => {
   }
 });
 
-app.put('/api/students/:id', async (req, res) => {
+app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
     console.log('📝 PUT /api/students/:id - Request body:', JSON.stringify(req.body, null, 2));
     console.log('📝 Documents field type:', typeof req.body.documents);
@@ -1358,7 +1456,7 @@ app.put('/api/students/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/students/:id', async (req, res) => {
+app.delete('/api/students/:id', authenticate, checkPermission('students', 'delete'), async (req, res) => {
   try {
     const result = await Student.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ error: 'Student not found' });
@@ -1370,7 +1468,7 @@ app.delete('/api/students/:id', async (req, res) => {
 
 
 // ============ ATTENDANCE ROUTES ============
-app.post('/api/attendance', async (req, res) => {
+app.post('/api/attendance', authenticate, checkPermission('attendance', 'create'), async (req, res) => {
   try {
     const { studentId, classId, date, status, markedBy } = req.body;
     await Attendance.findOneAndUpdate(
@@ -1657,7 +1755,7 @@ app.delete('/api/substitutions/:id', async (req, res) => {
 // ============ FEE MANAGEMENT ROUTES ============
 
 // Get all payments with student details
-app.get('/api/fees/payments', async (req, res) => {
+app.get('/api/fees/payments', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { studentId, classId, academicYear, startDate, endDate } = req.query;
     const query = {};
@@ -1698,7 +1796,7 @@ app.get('/api/fees/payments/:id', async (req, res) => {
 });
 
 // Create new payment
-app.post('/api/fees/payments', async (req, res) => {
+app.post('/api/fees/payments', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
     const {
       studentId,
@@ -1933,7 +2031,7 @@ app.get('/api/fees/students/:studentId/summary', async (req, res) => {
 // ============ REFUND ROUTES ============
 
 // Get all refunds
-app.get('/api/fees/refunds', async (req, res) => {
+app.get('/api/fees/refunds', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { studentId, status, academicYear } = req.query;
     const query = {};
@@ -1976,7 +2074,7 @@ app.get('/api/fees/refunds/:id', async (req, res) => {
 });
 
 // Create new refund request
-app.post('/api/fees/refunds', async (req, res) => {
+app.post('/api/fees/refunds', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
     const {
       studentId,
@@ -2030,18 +2128,25 @@ app.post('/api/fees/refunds', async (req, res) => {
   }
 });
 
-// Approve refund
+// Approve refund - FIXED: Fetch refund first, then update
 app.put('/api/fees/refunds/:id/approve', async (req, res) => {
   try {
     const { approvedBy, remarks } = req.body;
 
+    // First, fetch the existing refund
+    const existingRefund = await FeeRefund.findById(req.params.id);
+    if (!existingRefund) {
+      return res.status(404).json({ error: 'Refund not found' });
+    }
+
+    // Update with fallback to existing values
     const refund = await FeeRefund.findByIdAndUpdate(
       req.params.id,
       {
         status: 'approved',
         approvedBy,
         approvedAt: new Date(),
-        remarks: remarks || refund.remarks
+        remarks: remarks || existingRefund.remarks
       },
       { new: true }
     )
@@ -2049,35 +2154,38 @@ app.put('/api/fees/refunds/:id/approve', async (req, res) => {
       .populate('classId', 'name section')
       .populate('approvedBy', 'name');
 
-    if (!refund) return res.status(404).json({ error: 'Refund not found' });
-
     res.json(refund);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Process refund (mark as completed)
+// Process refund (mark as completed) - FIXED: Fetch refund first, then update
 app.put('/api/fees/refunds/:id/process', async (req, res) => {
   try {
     const { processedBy, transactionId, remarks } = req.body;
 
+    // First, fetch the existing refund
+    const existingRefund = await FeeRefund.findById(req.params.id);
+    if (!existingRefund) {
+      return res.status(404).json({ error: 'Refund not found' });
+    }
+
+    // Update with fallback to existing values
     const refund = await FeeRefund.findByIdAndUpdate(
       req.params.id,
       {
         status: 'processed',
         processedBy,
         processedAt: new Date(),
-        transactionId: transactionId || refund.transactionId,
-        remarks: remarks || refund.remarks
+        transactionId: transactionId || existingRefund.transactionId,
+        remarks: remarks || existingRefund.remarks
       },
       { new: true }
     )
       .populate('studentId', 'name rollNo')
       .populate('classId', 'name section')
       .populate('processedBy', 'name');
-
-    if (!refund) return res.status(404).json({ error: 'Refund not found' });
 
     res.json(refund);
   } catch (err) {
@@ -2200,7 +2308,7 @@ app.get('/api/health', (req, res) => {
 // ============ ADMISSION CONFIGURATION ROUTES ============
 
 // Get admission form field configuration
-app.get('/api/settings/admission-form-config', async (req, res) => {
+app.get('/api/settings/admission-form-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { fieldType } = req.query;
     const query = fieldType ? { fieldType } : {};
@@ -2212,7 +2320,7 @@ app.get('/api/settings/admission-form-config', async (req, res) => {
 });
 
 // Create or update field configuration
-app.post('/api/settings/admission-form-config', async (req, res) => {
+app.post('/api/settings/admission-form-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { fieldName, fieldType, isVisible, isMandatory, autoGenerate, defaultValue, fieldOrder } = req.body;
 
@@ -2229,7 +2337,7 @@ app.post('/api/settings/admission-form-config', async (req, res) => {
 });
 
 // Bulk update field configurations
-app.put('/api/settings/admission-form-config/bulk', async (req, res) => {
+app.put('/api/settings/admission-form-config/bulk', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { configs } = req.body;
 
@@ -2251,7 +2359,7 @@ app.put('/api/settings/admission-form-config/bulk', async (req, res) => {
 });
 
 // Delete field configuration
-app.delete('/api/settings/admission-form-config/:id', async (req, res) => {
+app.delete('/api/settings/admission-form-config/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const result = await AdmissionFormConfig.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ error: 'Configuration not found' });
@@ -2262,7 +2370,7 @@ app.delete('/api/settings/admission-form-config/:id', async (req, res) => {
 });
 
 // Get admission ID configuration
-app.get('/api/settings/admission-id-config', async (req, res) => {
+app.get('/api/settings/admission-id-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     let config = await AdmissionIdConfig.findOne();
 
@@ -2287,7 +2395,7 @@ app.get('/api/settings/admission-id-config', async (req, res) => {
 });
 
 // Update admission ID configuration
-app.put('/api/settings/admission-id-config', async (req, res) => {
+app.put('/api/settings/admission-id-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { prefix, yearFormat, separator, numberPadding, startingNumber, resetFrequency } = req.body;
 
@@ -2320,7 +2428,7 @@ app.put('/api/settings/admission-id-config', async (req, res) => {
 });
 
 // Generate preview of admission ID
-app.post('/api/settings/admission-id-config/preview', async (req, res) => {
+app.post('/api/settings/admission-id-config/preview', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { prefix, yearFormat, separator, numberPadding, currentNumber } = req.body;
 
@@ -2344,7 +2452,7 @@ app.post('/api/settings/admission-id-config/preview', async (req, res) => {
 // ============ ROLL NUMBER CONFIGURATION ROUTES ============
 
 // Get roll number configuration
-app.get('/api/settings/roll-number-config', async (req, res) => {
+app.get('/api/settings/roll-number-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     let config = await RollNumberConfig.findOne();
     if (!config) {
@@ -2362,7 +2470,7 @@ app.get('/api/settings/roll-number-config', async (req, res) => {
 });
 
 // Update roll number configuration
-app.put('/api/settings/roll-number-config', async (req, res) => {
+app.put('/api/settings/roll-number-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { format, startingNumber, resetPerClass } = req.body;
 
@@ -2394,7 +2502,7 @@ app.get('/api/classes/:classId/next-roll-number', async (req, res) => {
 });
 
 // Get document configuration
-app.get('/api/settings/document-config', async (req, res) => {
+app.get('/api/settings/document-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const configs = await DocumentConfig.find().sort({ displayOrder: 1 });
 
@@ -2416,7 +2524,7 @@ app.get('/api/settings/document-config', async (req, res) => {
 });
 
 // Create or update document configuration
-app.post('/api/settings/document-config', async (req, res) => {
+app.post('/api/settings/document-config', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { documentName, isRequired, uploadType, allowedFormats, maxFileSize, displayOrder, description } = req.body;
 
@@ -2438,7 +2546,7 @@ app.post('/api/settings/document-config', async (req, res) => {
 });
 
 // Update document configuration
-app.put('/api/settings/document-config/:id', async (req, res) => {
+app.put('/api/settings/document-config/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const config = await DocumentConfig.findByIdAndUpdate(
       req.params.id,
@@ -2454,7 +2562,7 @@ app.put('/api/settings/document-config/:id', async (req, res) => {
 });
 
 // Bulk update document configurations
-app.put('/api/settings/document-config/bulk', async (req, res) => {
+app.put('/api/settings/document-config/bulk', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { configs } = req.body;
 
@@ -2476,7 +2584,7 @@ app.put('/api/settings/document-config/bulk', async (req, res) => {
 });
 
 // Delete document configuration
-app.delete('/api/settings/document-config/:id', async (req, res) => {
+app.delete('/api/settings/document-config/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const result = await DocumentConfig.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ error: 'Configuration not found' });
@@ -3190,7 +3298,7 @@ app.get('/api/public/form-submission/:token/status', async (req, res) => {
 // ============ SETTINGS ROUTES ============
 
 // School Settings
-app.get('/api/settings/school', async (req, res) => {
+app.get('/api/settings/school', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // Return default school settings - in production, store in database
     res.json({
@@ -3209,7 +3317,7 @@ app.get('/api/settings/school', async (req, res) => {
   }
 });
 
-app.put('/api/settings/school', async (req, res) => {
+app.put('/api/settings/school', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, save to database
     res.json({ success: true, settings: req.body });
@@ -3219,7 +3327,7 @@ app.put('/api/settings/school', async (req, res) => {
 });
 
 // Holidays
-app.get('/api/settings/holidays', async (req, res) => {
+app.get('/api/settings/holidays', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // Return default holidays - in production, store in database
     res.json([
@@ -3231,7 +3339,7 @@ app.get('/api/settings/holidays', async (req, res) => {
   }
 });
 
-app.post('/api/settings/holidays', async (req, res) => {
+app.post('/api/settings/holidays', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, save to database
     res.status(201).json({ success: true, holiday: req.body });
@@ -3240,7 +3348,7 @@ app.post('/api/settings/holidays', async (req, res) => {
   }
 });
 
-app.put('/api/settings/holidays/:id', async (req, res) => {
+app.put('/api/settings/holidays/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, update in database
     res.json({ success: true, holiday: req.body });
@@ -3249,7 +3357,7 @@ app.put('/api/settings/holidays/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/settings/holidays/:id', async (req, res) => {
+app.delete('/api/settings/holidays/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, delete from database
     res.json({ success: true });
@@ -3259,7 +3367,7 @@ app.delete('/api/settings/holidays/:id', async (req, res) => {
 });
 
 // Leave Types
-app.get('/api/settings/leave-types', async (req, res) => {
+app.get('/api/settings/leave-types', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // Return default leave types - in production, store in database
     res.json([
@@ -3272,7 +3380,7 @@ app.get('/api/settings/leave-types', async (req, res) => {
   }
 });
 
-app.post('/api/settings/leave-types', async (req, res) => {
+app.post('/api/settings/leave-types', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, save to database
     res.status(201).json({ success: true, leaveType: req.body });
@@ -3281,7 +3389,7 @@ app.post('/api/settings/leave-types', async (req, res) => {
   }
 });
 
-app.put('/api/settings/leave-types/:id', async (req, res) => {
+app.put('/api/settings/leave-types/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, update in database
     res.json({ success: true, leaveType: req.body });
@@ -3290,7 +3398,7 @@ app.put('/api/settings/leave-types/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/settings/leave-types/:id', async (req, res) => {
+app.delete('/api/settings/leave-types/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, delete from database
     res.json({ success: true });
@@ -3300,7 +3408,7 @@ app.delete('/api/settings/leave-types/:id', async (req, res) => {
 });
 
 // Fee Heads
-app.get('/api/settings/fee-heads', async (req, res) => {
+app.get('/api/settings/fee-heads', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // Return default fee heads - in production, store in database
     res.json([
@@ -3313,7 +3421,7 @@ app.get('/api/settings/fee-heads', async (req, res) => {
   }
 });
 
-app.post('/api/settings/fee-heads', async (req, res) => {
+app.post('/api/settings/fee-heads', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, save to database
     res.status(201).json({ success: true, feeHead: req.body });
@@ -3322,7 +3430,7 @@ app.post('/api/settings/fee-heads', async (req, res) => {
   }
 });
 
-app.put('/api/settings/fee-heads/:id', async (req, res) => {
+app.put('/api/settings/fee-heads/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, update in database
     res.json({ success: true, feeHead: req.body });
@@ -3331,7 +3439,7 @@ app.put('/api/settings/fee-heads/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/settings/fee-heads/:id', async (req, res) => {
+app.delete('/api/settings/fee-heads/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, delete from database
     res.json({ success: true });
@@ -3341,7 +3449,7 @@ app.delete('/api/settings/fee-heads/:id', async (req, res) => {
 });
 
 // Subjects
-app.get('/api/settings/subjects', async (req, res) => {
+app.get('/api/settings/subjects', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // Return default subjects - in production, store in database
     res.json([
@@ -3356,7 +3464,7 @@ app.get('/api/settings/subjects', async (req, res) => {
   }
 });
 
-app.post('/api/settings/subjects', async (req, res) => {
+app.post('/api/settings/subjects', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, save to database
     res.status(201).json({ success: true, subject: req.body });
@@ -3365,7 +3473,7 @@ app.post('/api/settings/subjects', async (req, res) => {
   }
 });
 
-app.put('/api/settings/subjects/:id', async (req, res) => {
+app.put('/api/settings/subjects/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, update in database
     res.json({ success: true, subject: req.body });
@@ -3374,7 +3482,7 @@ app.put('/api/settings/subjects/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/settings/subjects/:id', async (req, res) => {
+app.delete('/api/settings/subjects/:id', authenticate, authRequireAdmin, async (req, res) => {
   try {
     // In production, delete from database
     res.json({ success: true });
@@ -3382,6 +3490,99 @@ app.delete('/api/settings/subjects/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============ PAYROLL SETTINGS ROUTES ============
+
+// Get payroll settings
+app.get('/api/settings/payroll', authenticate, authRequireAdmin, async (req, res) => {
+  try {
+    let settings = await SchoolSettings.findOne();
+    if (!settings) {
+      settings = await SchoolSettings.create({});
+    }
+    res.json({ success: true, data: settings.payroll || { disburseDate: 1 } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update payroll settings
+app.put('/api/settings/payroll', authenticate, authRequireAdmin, async (req, res) => {
+  try {
+    const { disburseDate } = req.body;
+
+    // Validate disburse date
+    if (!disburseDate || disburseDate < 1 || disburseDate > 31) {
+      return res.status(400).json({ error: 'Disburse date must be between 1 and 31' });
+    }
+
+    let settings = await SchoolSettings.findOne();
+    if (!settings) {
+      settings = await SchoolSettings.create({
+        payroll: { disburseDate }
+      });
+    } else {
+      settings.payroll = { disburseDate };
+      await settings.save();
+    }
+
+    res.json({ success: true, data: settings.payroll });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get payroll reminder (checks if reminder should be shown)
+app.get('/api/settings/payroll/reminder', authenticate, async (req, res) => {
+  try {
+    const settings = await SchoolSettings.findOne();
+    if (!settings || !settings.payroll || !settings.payroll.disburseDate) {
+      return res.json({ shouldShow: false, message: '' });
+    }
+
+    const disburseDate = settings.payroll.disburseDate;
+    const today = new Date();
+    const currentDay = today.getDate();
+    const daysUntilDisburse = calculateDaysUntilDisbursement(currentDay, disburseDate);
+
+    // Show reminder 5 days before disbursement date
+    if (daysUntilDisburse === 5 || daysUntilDisburse === 4 || daysUntilDisburse === 3 ||
+        daysUntilDisburse === 2 || daysUntilDisburse === 1 || daysUntilDisburse === 0) {
+      const message = daysUntilDisburse === 0
+        ? `Payroll disbursement is today (${getOrdinal(disburseDate)} of the month). Ensure all payroll records are processed.`
+        : `Payroll disbursement in ${daysUntilDisburse} day${daysUntilDisburse > 1 ? 's' : ''} (${getOrdinal(disburseDate)} of the month). Prepare payroll records.`;
+
+      return res.json({
+        shouldShow: true,
+        message,
+        disburseDate,
+        daysRemaining: daysUntilDisburse
+      });
+    }
+
+    res.json({ shouldShow: false, message: '' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper function to calculate days until disbursement
+function calculateDaysUntilDisbursement(currentDay, disburseDate) {
+  if (currentDay <= disburseDate) {
+    return disburseDate - currentDay;
+  } else {
+    // Disbursement date has passed this month, calculate for next month
+    const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+    return (daysInMonth - currentDay) + disburseDate;
+  }
+}
+
+// Helper function to get ordinal suffix
+function getOrdinal(n) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
 
 // ============ NOTIFICATIONS ROUTES ============
 

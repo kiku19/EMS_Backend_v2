@@ -8,13 +8,45 @@ const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb
 export async function connectDB() {
   try {
     mongoose.set('strictQuery', false);
+    
+    // Add connection event listeners
+    mongoose.connection.on('connected', () => {
+      console.log('✅ MongoDB connected successfully');
+    });
+    
+    mongoose.connection.on('error', (err) => {
+      console.error('❌ MongoDB connection error:', err);
+    });
+    
+    mongoose.connection.on('disconnected', () => {
+      console.warn('⚠️ MongoDB disconnected');
+    });
+    
+    // Graceful shutdown
+    process.on('SIGINT', async () => {
+      await mongoose.connection.close();
+      console.log('MongoDB connection closed through app termination');
+      process.exit(0);
+    });
+    
     await mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
+      maxPoolSize: 10,
+      minPoolSize: 2,
+      socketTimeoutMS: 45000,
     });
-    console.log('Connected to MongoDB');
+    
+    console.log('Connected to MongoDB:', MONGODB_URI.replace(/\/\/.*@/, '//***@')); // Hide credentials in log
   } catch (error) {
-    console.error('MongoDB connection error:', error.message);
-    process.exit(1);
+    console.error('❌ MongoDB connection error:', error.message);
+    console.error('MongoDB URI (sanitized):', MONGODB_URI.replace(/\/\/.*@/, '//***@'));
+    
+    // Don't exit immediately in development, allow retry
+    if (process.env.NODE_ENV === 'production') {
+      process.exit(1);
+    } else {
+      console.warn('⚠️ Running in development mode without database connection');
+    }
   }
 }
 
@@ -39,6 +71,11 @@ const staffSchema = new mongoose.Schema({
   employmentType: String,
   emergencyContact: String,
   emergencyPhone: String,
+  emergencyContacts: [{
+    name: String,
+    relationship: String,
+    phone: String
+  }],
   whatsappNumber: String,
   
   // Documents
@@ -53,7 +90,9 @@ const staffSchema = new mongoose.Schema({
   }],
   totalExperience: String,
   previousOrganization: String,
+  roleInOrganization: String,
   qualificationDocs: [String], // URLs to qualification documents
+  customDocuments: [String], // URLs to custom documents
   
   // Staff Info
   staffNumber: String,
@@ -68,6 +107,7 @@ const staffSchema = new mongoose.Schema({
   ifscCode: String,
   bankName: String,
   branchName: String,
+  salary: { type: Number, default: 0 }, // Base salary for payroll
   salaryTemplate: String,
   salaryBreakdown: [{
     component: String,
@@ -76,11 +116,37 @@ const staffSchema = new mongoose.Schema({
   
   // Login credentials
   username: { type: String, unique: true, sparse: true },
-  password: { type: String }, // In production, hash this!
+  password: { type: String, required: true }, // Hashed with bcrypt
   
   // Hierarchy
   reporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
+
+// Hash password before saving
+import bcrypt from 'bcrypt';
+
+staffSchema.pre('save', async function(next) {
+  // Only hash the password if it has been modified (or is new)
+  if (!this.isModified('password')) return next();
+  
+  try {
+    // Generate salt and hash password
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Method to compare password for login
+staffSchema.methods.comparePassword = async function(candidatePassword) {
+  try {
+    return await bcrypt.compare(candidatePassword, this.password);
+  } catch (error) {
+    throw error;
+  }
+};
 
 // Class Schema - with class teacher reference
 const classSchema = new mongoose.Schema({
@@ -107,6 +173,7 @@ const studentSchema = new mongoose.Schema({
   religion: String,
   category: String,
   motherTongue: String,
+  aadhaarNumber: String,
 
   // Contact Information
   phone: String,
@@ -410,7 +477,7 @@ const callLogSchema = new mongoose.Schema({
 const schoolSettingsSchema = new mongoose.Schema({
   academicYear: { type: String, default: '2024-25' },
   currentSession: { type: String, default: '2024-25' },
-  
+
   // Fee Collection Configuration
   feeCollection: {
     collectionMode: { type: String, enum: ['term', 'monthly', 'quarterly', 'yearly', 'custom'], default: 'term' },
@@ -426,14 +493,14 @@ const schoolSettingsSchema = new mongoose.Schema({
       months: [Number]
     }]
   },
-  
+
   lateFee: {
     enabled: { type: Boolean, default: false },
     amount: { type: Number, default: 0 },
     gracePeriodDays: { type: Number, default: 7 },
     maxLateFee: { type: Number, default: 1000 }
   },
-  
+
   discount: {
     enabled: { type: Boolean, default: true },
     requireApproval: { type: Boolean, default: true },
@@ -444,17 +511,22 @@ const schoolSettingsSchema = new mongoose.Schema({
       requiresApproval: Boolean
     }]
   },
-  
+
   receipt: {
     prefix: { type: String, default: 'RCP' },
     startingNumber: { type: Number, default: 1001 },
     currentNumber: { type: Number, default: 1001 }
   },
-  
+
   paymentModes: [{
     name: String,
     enabled: Boolean
-  }]
+  }],
+
+  // Payroll Configuration
+  payroll: {
+    disburseDate: { type: Number, default: 1, min: 1, max: 31 }
+  }
 }, { timestamps: true });
 
 // Fee Template Schema - reusable fee structures
