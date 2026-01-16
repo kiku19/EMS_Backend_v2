@@ -9,9 +9,9 @@ dotenv.config();
 
 /**
  * Required environment variables
+ * Note: MONGO_URI can also be MONGODB_URI (Render uses MONGODB_URI)
  */
 const REQUIRED_ENV_VARS = [
-  'MONGO_URI',
   'PORT',
 ];
 
@@ -45,6 +45,11 @@ export function validateEnvironment() {
     if (!process.env[varName]) {
       errors.push(`Missing required environment variable: ${varName}`);
     }
+  }
+
+  // Check for MongoDB URI (either MONGO_URI or MONGODB_URI)
+  if (!process.env.MONGO_URI && !process.env.MONGODB_URI) {
+    errors.push('Missing required environment variable: MONGO_URI or MONGODB_URI');
   }
 
   // Check optional variables and set defaults
