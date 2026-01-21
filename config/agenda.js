@@ -3,7 +3,7 @@ import Agenda from 'agenda';
 // Initialize Agenda with MongoDB connection
 const agenda = new Agenda({
   db: {
-    address: process.env.MONGO_URI || 'mongodb://localhost:27017/ems',
+    address: process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/ems',
     collection: process.env.AGENDA_DB_COLLECTION || 'jobs'
   },
   processEvery: process.env.AGENDA_PROCESS_EVERY || '5 seconds',
