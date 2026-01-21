@@ -142,7 +142,12 @@ router.get('/conversations/:conversationId/messages', async (req, res) => {
       status: msg.status,
       readAt: msg.readAt,
       createdAt: msg.createdAt,
-      replyTo: msg.replyTo
+      replyTo: msg.replyTo,
+      pinned: msg.pinned || false,
+      pinnedBy: msg.pinnedBy || [],
+      reactions: msg.reactions || [],
+      isEdited: msg.isEdited || false,
+      forwardedFrom: msg.forwardedFrom || null
     }));
 
     res.json(formattedMessages);
@@ -211,7 +216,7 @@ router.post('/conversations', async (req, res) => {
 });
 
 // Send message (REST fallback)
-router.post('/messages', async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const {
       conversationId,
@@ -223,14 +228,17 @@ router.post('/messages', async (req, res) => {
       type = 'text',
       fileUrl,
       fileName,
-      fileSize
+      fileSize,
+      replyTo,
+      forwardedFrom
     } = req.body;
 
     if (!conversationId || !senderId || !receiverId || !content) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const message = await Message.create({
+    // Build message data
+    const messageData = {
       conversationId,
       senderId,
       senderModel,
@@ -242,9 +250,28 @@ router.post('/messages', async (req, res) => {
       fileName,
       fileSize,
       status: 'sent'
-    });
+    };
+
+    // Handle replyTo - extract just the ID if it's an object
+    if (replyTo) {
+      if (typeof replyTo === 'object' && replyTo.messageId) {
+        messageData.replyTo = replyTo.messageId;
+      } else if (typeof replyTo === 'string') {
+        messageData.replyTo = replyTo;
+      }
+    }
+
+    // Handle forwardedFrom
+    if (forwardedFrom) {
+      messageData.forwardedFrom = forwardedFrom;
+    }
+
+    const message = await Message.create(messageData);
 
     await message.populate('senderId', 'name photo');
+    if (message.replyTo) {
+      await message.populate('replyTo');
+    }
 
     // Update conversation
     const conversation = await Conversation.findById(conversationId);
@@ -270,7 +297,14 @@ router.post('/messages', async (req, res) => {
       content: message.content,
       type: message.type,
       status: message.status,
-      createdAt: message.createdAt
+      createdAt: message.createdAt,
+      replyTo: message.replyTo ? {
+        messageId: message.replyTo._id,
+        content: message.replyTo.content,
+        senderId: message.replyTo.senderId,
+        senderName: message.replyTo.senderId?.name || 'Unknown'
+      } : null,
+      forwardedFrom: message.forwardedFrom
     });
   } catch (error) {
     console.error('❌ Send message error:', error);
@@ -279,7 +313,7 @@ router.post('/messages', async (req, res) => {
 });
 
 // Mark messages as read
-router.put('/messages/read', async (req, res) => {
+router.put('/read', async (req, res) => {
   try {
     const { conversationId, userId } = req.body;
 
@@ -313,7 +347,7 @@ router.put('/messages/read', async (req, res) => {
 });
 
 // Delete message
-router.delete('/messages/:messageId', async (req, res) => {
+router.delete('/:messageId', async (req, res) => {
   try {
     const { messageId } = req.params;
     const { userId } = req.query;
@@ -345,7 +379,7 @@ router.delete('/messages/:messageId', async (req, res) => {
 });
 
 // Search messages
-router.get('/messages/search', async (req, res) => {
+router.get('/search', async (req, res) => {
   try {
     const { userId, query, limit = 20 } = req.query;
 
@@ -410,6 +444,440 @@ router.get('/presence/online', async (req, res) => {
     res.json(onlineUsers);
   } catch (error) {
     console.error('❌ Get online users error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ ENHANCED MESSAGE ACTIONS ============
+
+// Edit message
+router.put('/:messageId/edit', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { content, userId } = req.body;
+
+    if (!content || !userId) {
+      return res.status(400).json({ error: 'content and userId are required' });
+    }
+
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    // Check if sender is editing
+    if (message.senderId.toString() !== userId) {
+      return res.status(403).json({ error: 'Only sender can edit message' });
+    }
+
+    // Save edit history
+    message.editHistory.push({
+      content: message.content,
+      editedAt: new Date(),
+      editedBy: userId
+    });
+
+    // Update content
+    message.content = content;
+    message.isEdited = true;
+
+    await message.save();
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`conversation:${message.conversationId}`).emit('message_edited', {
+      messageId: message._id,
+      content: message.content,
+      isEdited: message.isEdited,
+      editHistory: message.editHistory
+    });
+
+    res.json(message);
+  } catch (error) {
+    console.error('❌ Edit message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// React to message
+router.post('/:messageId/react', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { emoji, userId, userModel } = req.body;
+
+    if (!emoji || !userId || !userModel) {
+      return res.status(400).json({ error: 'emoji, userId, and userModel are required' });
+    }
+
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    // Check if user already reacted with this emoji
+    const existingReactionIndex = message.reactions.findIndex(
+      r => r.userId.toString() === userId && r.emoji === emoji
+    );
+
+    if (existingReactionIndex >= 0) {
+      // Remove reaction
+      message.reactions.splice(existingReactionIndex, 1);
+    } else {
+      // Add reaction
+      message.reactions.push({
+        emoji,
+        userId,
+        userModel,
+        createdAt: new Date()
+      });
+    }
+
+    await message.save();
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`conversation:${message.conversationId}`).emit('message_reacted', {
+      messageId: message._id,
+      reactions: message.reactions
+    });
+
+    res.json({ reactions: message.reactions });
+  } catch (error) {
+    console.error('❌ React to message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reply to message
+router.post('/:messageId/reply', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { content, senderId, senderModel, receiverId, receiverModel } = req.body;
+
+    if (!content || !senderId) {
+      return res.status(400).json({ error: 'content and senderId are required' });
+    }
+
+    const originalMessage = await Message.findById(messageId);
+
+    if (!originalMessage) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    // Create reply message
+    const reply = new Message({
+      conversationId: originalMessage.conversationId,
+      senderId,
+      senderModel,
+      receiverId,
+      receiverModel,
+      content,
+      type: 'text',
+      replyTo: messageId
+    });
+
+    await reply.save();
+
+    // Update conversation last message
+    await Conversation.findByIdAndUpdate(originalMessage.conversationId, {
+      lastMessage: {
+        content: `↩️ ${content.substring(0, 50)}...`,
+        senderId,
+        timestamp: new Date()
+      }
+    });
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`conversation:${originalMessage.conversationId}`).emit('new_message', reply);
+
+    res.json(reply);
+  } catch (error) {
+    console.error('❌ Reply to message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Forward message
+router.post('/:messageId/forward', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { conversationIds, senderId, senderModel } = req.body;
+
+    if (!conversationIds || !Array.isArray(conversationIds) || conversationIds.length === 0) {
+      return res.status(400).json({ error: 'conversationIds array is required' });
+    }
+
+    const originalMessage = await Message.findById(messageId);
+
+    if (!originalMessage) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    const forwardedMessages = [];
+
+    for (const conversationId of conversationIds) {
+      // Get conversation to find receiver
+      const conversation = await Conversation.findById(conversationId);
+
+      if (!conversation) continue;
+
+      // Find other participant
+      const otherParticipant = conversation.participants.find(
+        p => p.userId.toString() !== senderId
+      );
+
+      if (!otherParticipant) continue;
+
+      // Create forwarded message
+      const forwarded = new Message({
+        conversationId,
+        senderId,
+        senderModel,
+        receiverId: otherParticipant.userId,
+        receiverModel: otherParticipant.userModel,
+        content: originalMessage.content,
+        type: originalMessage.type,
+        fileUrl: originalMessage.fileUrl,
+        fileName: originalMessage.fileName,
+        fileSize: originalMessage.fileSize,
+        forwardedFrom: {
+          messageId: originalMessage._id,
+          conversationId: originalMessage.conversationId,
+          forwardedBy: senderId,
+          originalSenderName: null // Will be populated
+        }
+      });
+
+      await forwarded.save();
+
+      // Update conversation last message
+      await Conversation.findByIdAndUpdate(conversationId, {
+        lastMessage: {
+          content: `↪️ ${originalMessage.content.substring(0, 50)}...`,
+          senderId,
+          timestamp: new Date()
+        }
+      });
+
+      // Emit Socket.IO event
+      const io = req.app.get('io');
+      io.to(`conversation:${conversationId}`).emit('new_message', forwarded);
+
+      forwardedMessages.push(forwarded);
+    }
+
+    res.json(forwardedMessages);
+  } catch (error) {
+    console.error('❌ Forward message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pin/unpin message
+router.post('/:messageId/pin', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { userId, pinned } = req.body;
+
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    message.pinned = pinned !== undefined ? pinned : true;
+
+    if (pinned && !message.pinnedBy.includes(userId)) {
+      message.pinnedBy.push(userId);
+    } else if (!pinned) {
+      message.pinnedBy = message.pinnedBy.filter(id => id.toString() !== userId);
+    }
+
+    await message.save();
+
+    // Update conversation pinned messages
+    const conversation = await Conversation.findById(message.conversationId);
+
+    if (conversation) {
+      const existingPinIndex = conversation.pinnedMessages.findIndex(
+        pm => pm.messageId.toString() === messageId
+      );
+
+      if (pinned && existingPinIndex === -1) {
+        conversation.pinnedMessages.push({
+          messageId,
+          pinnedBy: userId,
+          pinnedAt: new Date()
+        });
+      } else if (!pinned && existingPinIndex >= 0) {
+        conversation.pinnedMessages.splice(existingPinIndex, 1);
+      }
+
+      await conversation.save();
+    }
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`conversation:${message.conversationId}`).emit('message_pinned', {
+      messageId,
+      pinned: message.pinned,
+      pinnedBy: userId
+    });
+
+    res.json({ pinned: message.pinned });
+  } catch (error) {
+    console.error('❌ Pin message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get pinned messages in conversation
+router.get('/conversations/:conversationId/pinned-messages', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+
+    const conversation = await Conversation.findById(conversationId)
+      .populate('pinnedMessages.messageId')
+      .lean();
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    res.json(conversation.pinnedMessages || []);
+  } catch (error) {
+    console.error('❌ Get pinned messages error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pin/unpin conversation
+router.post('/conversations/:conversationId/pin', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { userId, pinned } = req.body;
+
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const existingPinIndex = conversation.pinnedBy.findIndex(
+      p => p.userId.toString() === userId
+    );
+
+    if (pinned && existingPinIndex === -1) {
+      conversation.pinnedBy.push({
+        userId,
+        pinnedAt: new Date()
+      });
+    } else if (!pinned && existingPinIndex >= 0) {
+      conversation.pinnedBy.splice(existingPinIndex, 1);
+    }
+
+    await conversation.save();
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`user:${userId}`).emit('conversation_pinned', {
+      conversationId,
+      pinned: conversation.pinnedBy.some(p => p.userId.toString() === userId)
+    });
+
+    res.json({ pinned: conversation.pinnedBy.some(p => p.userId.toString() === userId) });
+  } catch (error) {
+    console.error('❌ Pin conversation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Mute/unmute conversation
+router.post('/conversations/:conversationId/mute', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { userId, muted, mutedUntil } = req.body;
+
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const existingMuteIndex = conversation.mutedBy.findIndex(
+      m => m.userId.toString() === userId
+    );
+
+    if (muted && existingMuteIndex === -1) {
+      conversation.mutedBy.push({
+        userId,
+        mutedUntil: mutedUntil ? new Date(mutedUntil) : null
+      });
+    } else if (!muted && existingMuteIndex >= 0) {
+      conversation.mutedBy.splice(existingMuteIndex, 1);
+    }
+
+    await conversation.save();
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`user:${userId}`).emit('conversation_muted', {
+      conversationId,
+      muted: conversation.mutedBy.some(m => m.userId.toString() === userId)
+    });
+
+    res.json({ muted: conversation.mutedBy.some(m => m.userId.toString() === userId) });
+  } catch (error) {
+    console.error('❌ Mute conversation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete conversation
+router.delete('/conversations/:conversationId', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { userId } = req.body;
+
+    const conversation = await Conversation.findById(conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    // Add to deletedBy
+    if (!conversation.deletedBy) {
+      conversation.deletedBy = [];
+    }
+
+    const alreadyDeleted = conversation.deletedBy.some(
+      d => d.userId.toString() === userId
+    );
+
+    if (!alreadyDeleted) {
+      conversation.deletedBy.push({
+        userId,
+        deletedAt: new Date()
+      });
+
+      // If all participants deleted, mark as deleted
+      if (conversation.deletedBy.length >= conversation.participants.length) {
+        conversation.isDeleted = true;
+      }
+
+      await conversation.save();
+    }
+
+    // Emit Socket.IO event
+    const io = req.app.get('io');
+    io.to(`user:${userId}`).emit('conversation_deleted', { conversationId });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Delete conversation error:', error);
     res.status(500).json({ error: error.message });
   }
 });

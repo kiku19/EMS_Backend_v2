@@ -134,7 +134,7 @@ export function initializeChatHandlers(io) {
     // Send message
     socket.on('send_message', async (data) => {
       try {
-        const { conversationId, receiverId, receiverModel, content, type = 'text', fileUrl, fileName, fileSize } = data;
+        const { conversationId, receiverId, receiverModel, content, type = 'text', fileUrl, fileName, fileSize, replyTo, forwardedFrom } = data;
         
         if (!socket.userId) {
           socket.emit('error', { message: 'Not authenticated' });
@@ -185,7 +185,7 @@ export function initializeChatHandlers(io) {
         }
 
         // Create message
-        const message = await Message.create({
+        const messageData = {
           conversationId: conversation._id,
           senderId: socket.userId,
           senderModel: socket.userModel,
@@ -197,10 +197,29 @@ export function initializeChatHandlers(io) {
           fileName,
           fileSize,
           status: 'sent'
-        });
+        };
 
-        // Populate sender info
+        // Handle replyTo - extract just the ID if it's an object
+        if (replyTo) {
+          if (typeof replyTo === 'object' && replyTo.messageId) {
+            messageData.replyTo = replyTo.messageId;
+          } else if (typeof replyTo === 'string') {
+            messageData.replyTo = replyTo;
+          }
+        }
+
+        // Handle forwardedFrom
+        if (forwardedFrom) {
+          messageData.forwardedFrom = forwardedFrom;
+        }
+
+        const message = await Message.create(messageData);
+
+        // Populate sender info and replyTo
         await message.populate('senderId', 'name photo');
+        if (message.replyTo) {
+          await message.populate('replyTo');
+        }
 
         // Update conversation last message
         conversation.lastMessage = {
@@ -219,23 +238,35 @@ export function initializeChatHandlers(io) {
           }
         }
 
-        // Emit to conversation room - FIXED: Use socket.to() to exclude sender
-        socket.to(`conversation:${conversation._id}`).emit('new_message', {
-          message: {
-            id: message._id,
-            conversationId: conversation._id,
-            senderId: message.senderId._id,
-            senderName: message.senderId.name,
-            senderAvatar: message.senderId.photo,
-            content: message.content,
-            type: message.type,
-            fileUrl: message.fileUrl,
-            fileName: message.fileName,
-            fileSize: message.fileSize,
-            status: message.status,
-            createdAt: message.createdAt
-          }
-        });
+        // Emit to conversation room (including sender so they get the confirmed message)
+        const socketMessage = {
+          id: message._id,
+          conversationId: conversation._id,
+          senderId: message.senderId._id,
+          senderName: message.senderId.name,
+          senderAvatar: message.senderId.photo,
+          content: message.content,
+          type: message.type,
+          fileUrl: message.fileUrl,
+          fileName: message.fileName,
+          fileSize: message.fileSize,
+          status: message.status,
+          createdAt: message.createdAt,
+          replyTo: message.replyTo ? {
+            messageId: message.replyTo._id,
+            content: message.replyTo.content,
+            senderId: message.replyTo.senderId,
+            senderName: message.replyTo.senderId?.name || 'Unknown'
+          } : null,
+          forwardedFrom: message.forwardedFrom,
+          pinned: message.pinned || false,
+          pinnedBy: message.pinnedBy || [],
+          reactions: message.reactions || [],
+          isEdited: message.isEdited || false
+        };
+
+        // Emit to entire conversation room (includes sender)
+        io.to(`conversation:${conversation._id}`).emit('new_message', { message: socketMessage });
 
         // Emit to receiver's personal room (for notification)
         const receiverUserId = conversation.participants.find(

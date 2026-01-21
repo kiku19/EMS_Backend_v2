@@ -43,6 +43,41 @@ const conversationSchema = new mongoose.Schema({
   mutedBy: [{
     userId: mongoose.Schema.Types.ObjectId,
     mutedUntil: Date
+  }],
+
+  // NEW: Pinned conversations
+  pinnedBy: [{
+    userId: mongoose.Schema.Types.ObjectId,
+    pinnedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+
+  // NEW: Pinned messages in this conversation
+  pinnedMessages: [{
+    messageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message'
+    },
+    pinnedBy: mongoose.Schema.Types.ObjectId,
+    pinnedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+
+  // NEW: Deleted conversations
+  isDeleted: {
+    type: Boolean,
+    default: false
+  },
+  deletedBy: [{
+    type: mongoose.Schema.Types.ObjectId,
+    deletedAt: {
+      type: Date,
+      default: Date.now
+    }
   }]
 }, {
   timestamps: true

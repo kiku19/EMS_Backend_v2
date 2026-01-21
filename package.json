@@ -12,6 +12,7 @@
     "populate-staff": "node populate-staff-fields.js"
   },
   "dependencies": {
+    "agenda": "^5.0.0",
     "bcrypt": "^5.1.1",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
@@ -22,6 +23,9 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.3",
     "multer": "^2.0.2",
+    "node-fetch": "^2.7.0",
+    "nodemailer": "^7.0.12",
+    "peer": "^1.0.2",
     "socket.io": "^4.8.3"
   }
 }

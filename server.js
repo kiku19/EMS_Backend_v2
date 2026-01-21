@@ -7,13 +7,20 @@ import { rateLimit } from 'express-rate-limit';
 import mongoose from './database.js';
 import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
-import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber, AdmissionFormConfig, AdmissionIdConfig, RollNumberConfig, DocumentConfig, getNextAdmissionId, getNextRollNumber, SchoolSettings, FeeTemplate, StaffAttendance } from './database.js';
+import { connectDB, Staff, Student, Class, Attendance, getNextStaffCode, Timetable, Exam, Result, IntakeForm, FormAssignment, FormSubmission, Notification, Visitor, Admission, GatePass, Appointment, Feedback, CallLog, FeeStructure, FeePayment, FeeRefund, Substitution, getNextReceiptNumber, getNextRefundNumber, AdmissionFormConfig, AdmissionIdConfig, RollNumberConfig, DocumentConfig, getNextAdmissionId, getNextRollNumber, SchoolSettings, FeeTemplate, StaffAttendance, StudentFeeStructure, Remark } from './database.js';
 import messageRoutes from './routes/messages.js';
 import feeHeadsRoutes from './routes/feeHeads.js';
 import studentFeesRoutes from './routes/studentFees.js';
 import feeSettingsRoutes from './routes/feeSettings.js';
 import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
+import announcementRoutes from './routes/announcements.js';
+import reminderRoutes from './routes/reminders.js';
+import notificationRoutes from './routes/notifications.js';
+import callRoutes from './routes/calls.js';
+import visitorsRoutes from './routes/visitors.js';
+import gatePassesRoutes from './routes/gatePasses.js';
+import frontDeskRoutes from './routes/frontDesk.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
 import { validate, schemas } from './middleware/validation.js';
 import { validateEnvironment, config } from './config/environment.js';
@@ -39,6 +46,9 @@ const io = new SocketIOServer(httpServer, {
   },
   transports: ['websocket', 'polling']
 });
+
+// Attach io instance to Express app so routes can access it
+app.set('io', io);
 
 console.log('✅ Socket.IO initialized');
 
@@ -136,6 +146,19 @@ console.log('✅ Payroll routes mounted');
 import permissionRoutes from './routes/permissions.js';
 app.use('/api/permissions', permissionRoutes);
 console.log('✅ Permission routes mounted');
+
+// Messages Module routes
+app.use('/api/announcements', announcementRoutes);
+app.use('/api/reminders', reminderRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/calls', callRoutes);
+console.log('✅ Messages module routes mounted');
+
+// Front Desk Module routes
+app.use('/api/visitors', visitorsRoutes);
+app.use('/api/gate-passes', gatePassesRoutes);
+app.use('/api/front-desk', frontDeskRoutes);
+console.log('✅ Front Desk module routes mounted');
 
 // Make io and Staff available to routes
 app.locals.io = io;
@@ -303,36 +326,46 @@ app.post('/api/students/:id/documents', authenticate, checkPermission('students'
   try {
     console.log('📄 Adding document to student:', req.params.id);
     console.log('📄 Document data:', JSON.stringify(req.body, null, 2));
-    
-    const { name, type, url, uploadDate } = req.body;
-    
+
+    const { name, type, url, uploadDate, category, front, back } = req.body;
+
     const newDoc = {
       id: new mongoose.Types.ObjectId().toString(), // Generate unique ID
       name,
       type,
-      url,
+      category: category || type,
       uploadDate: uploadDate || new Date().toISOString(),
       size: req.body.size || 'Unknown',
       date: new Date().toLocaleDateString()
     };
-    
+
+    // Handle front/back documents
+    if (front && back) {
+      newDoc.front = { url: front.url, uploadDate: front.uploadDate || new Date().toISOString() };
+      newDoc.back = { url: back.url, uploadDate: back.uploadDate || new Date().toISOString() };
+    } else if (url) {
+      // Legacy support for single file uploads
+      newDoc.url = url;
+      newDoc.uploadDate = uploadDate || new Date().toISOString();
+    }
+
     // Use Mongoose findByIdAndUpdate with atomic operation
     const student = await Student.findByIdAndUpdate(
       req.params.id,
       { $push: { documents: newDoc } },
       { new: true, runValidators: true }
     );
-    
+
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
-    
+
     console.log('✅ Document added successfully');
     console.log('✅ Total documents now:', student.documents?.length || 0);
     console.log('✅ New document:', newDoc);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       documents: student.documents || []
     });
   } catch (error) {
@@ -472,7 +505,9 @@ app.get('/api/staff', authenticate, checkPermission('staff', 'view'), async (req
         // Contact
         emergencyContact: s.emergencyContact,
         emergencyPhone: s.emergencyPhone,
+        emergencyContacts: s.emergencyContacts || [],
         whatsappNumber: s.whatsappNumber,
+        isWhatsapp: s.isWhatsapp || false,
         
         // Documents
         picture: s.picture,
@@ -490,7 +525,6 @@ app.get('/api/staff', authenticate, checkPermission('staff', 'view'), async (req
         staffNumber: s.staffNumber,
         staffType: s.staffType,
         designation: s.role, // Use role as designation
-        expertise: s.expertise,
         assignedClasses: s.assignedClasses,
         isClassTeacher: s.isClassTeacher,
         classTeacherOf: s.classTeacherOf,
@@ -504,6 +538,7 @@ app.get('/api/staff', authenticate, checkPermission('staff', 'view'), async (req
         bankName: s.bankName,
         branchName: s.branchName,
         panNumber: s.accountNumber ? 'ABCDE1234F' : '', // Mock PAN
+        salary: s.salary || 0,
         salaryTemplate: s.salaryTemplate,
         salaryBreakdown: s.salaryBreakdown,
         
@@ -556,7 +591,9 @@ app.get('/api/staff/:id', authenticate, checkPermission('staff', 'view'), async 
       // Contact
       emergencyContact: staff.emergencyContact,
       emergencyPhone: staff.emergencyPhone,
+      emergencyContacts: staff.emergencyContacts || [],
       whatsappNumber: staff.whatsappNumber,
+      isWhatsapp: staff.isWhatsapp || false,
       
       // Documents
       picture: staff.picture,
@@ -574,7 +611,6 @@ app.get('/api/staff/:id', authenticate, checkPermission('staff', 'view'), async 
       staffNumber: staff.staffNumber,
       staffType: staff.staffType,
       designation: staff.role, // Use role as designation
-      expertise: staff.expertise,
       assignedClasses: staff.assignedClasses,
       isClassTeacher: staff.isClassTeacher,
       classTeacherOf: staff.classTeacherOf,
@@ -588,6 +624,7 @@ app.get('/api/staff/:id', authenticate, checkPermission('staff', 'view'), async 
       bankName: staff.bankName,
       branchName: staff.branchName,
       panNumber: staff.panNumber || null,
+      salary: staff.salary || 0,
       salaryTemplate: staff.salaryTemplate,
       salaryBreakdown: staff.salaryBreakdown,
       
@@ -623,15 +660,15 @@ app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validat
       name, role, department, status, phone, email, joinDate, address, assignedClassId, reporterId,
       // Personal Details
       dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
-      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber,
+      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber, isWhatsapp,
       // Documents
       picture, idDocuments,
       // Qualifications
       professionalQualifications, totalExperience, previousOrganization, roleInOrganization, qualificationDocs, customDocuments,
       // Staff Info
-      staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
+      staffNumber, staffType, assignedClasses, isClassTeacher, classTeacherOf,
       // Bank & Salary
-      accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
+      accountNumber, ifscCode, bankName, branchName, salary, salaryTemplate, salaryBreakdown
     } = req.body;
     
     const code = await getNextStaffCode();
@@ -650,30 +687,41 @@ app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validat
     const password = generatePassword(8);
 
     const staff = new Staff({
-      code, name, role: role || staffType, department: department || expertise, 
+      code, name,
+      // Use role if provided, otherwise use staffType (they have the same values now)
+      role: role || staffType,
+      department: department || expertise,
       status: status || 'active',
       phone, email, joinDate, address, username, password,
       reporterId: reporterId || null,
       // Personal Details
       dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
-      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber,
+      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber, isWhatsapp,
       // Documents
       picture, idDocuments,
       // Qualifications
       professionalQualifications, totalExperience, previousOrganization, roleInOrganization, qualificationDocs, customDocuments,
       // Staff Info
-      staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
+      staffNumber, staffType, assignedClasses, isClassTeacher, classTeacherOf,
       // Bank & Salary
-      accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
+      accountNumber, ifscCode, bankName, branchName, salary, salaryTemplate, salaryBreakdown
     });
     await staff.save();
 
     // If class teacher, assign to class
-    if ((role === 'Teacher' || staffType === 'Teaching') && assignedClassId) {
-      await Class.findByIdAndUpdate(assignedClassId, { classTeacherId: staff._id });
+    if (isClassTeacher && classTeacherOf) {
+      // Parse classTeacherOf (e.g., "10-A") into name and section
+      const classMatch = classTeacherOf.match(/^(\d+)-([A-Za-z]+)$/);
+      if (classMatch) {
+        const [, className, section] = classMatch;
+        const targetClass = await Class.findOne({ name: className, section: section.toUpperCase() });
+        if (targetClass) {
+          await Class.findByIdAndUpdate(targetClass._id, { classTeacherId: staff._id });
+        }
+      }
     }
 
-    const assignedClass = assignedClassId ? await Class.findById(assignedClassId) : null;
+    const assignedClass = (isClassTeacher && classTeacherOf) ? await Class.findOne({ name: classTeacherOf.split('-')[0], section: classTeacherOf.split('-')[1]?.toUpperCase() }) : null;
 
     res.status(201).json({
       id: staff._id,
@@ -693,11 +741,11 @@ app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validat
       reporterId: staff.reporterId,
       // Return all the new fields
       dob, gender, fatherName, bloodGroup, maritalStatus, employmentType,
-      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber,
+      emergencyContact, emergencyPhone, emergencyContacts, whatsappNumber, isWhatsapp,
       picture, idDocuments,
       professionalQualifications, totalExperience, previousOrganization, roleInOrganization, qualificationDocs, customDocuments,
-      staffNumber, staffType, expertise, assignedClasses, isClassTeacher, classTeacherOf,
-      accountNumber, ifscCode, bankName, branchName, salaryTemplate, salaryBreakdown
+      staffNumber, staffType, assignedClasses, isClassTeacher, classTeacherOf,
+      accountNumber, ifscCode, bankName, branchName, salary, salaryTemplate, salaryBreakdown
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -909,6 +957,245 @@ app.put('/api/staff-id-config', async (req, res) => {
     
     await config.save();
     res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ SCHOOL SETTINGS ROUTES ============
+app.get('/api/school-settings', async (req, res) => {
+  try {
+    const SchoolSettings = mongoose.model('SchoolSettings');
+    let settings = await SchoolSettings.findOne();
+
+    // Create default settings if doesn't exist
+    if (!settings) {
+      settings = new SchoolSettings({
+        name: 'My School',
+        address: '',
+        phone: '',
+        email: '',
+        website: '',
+        academicYear: '2024-25',
+        logo: ''
+      });
+      await settings.save();
+    }
+
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/school-settings', async (req, res) => {
+  try {
+    const SchoolSettings = mongoose.model('SchoolSettings');
+    let settings = await SchoolSettings.findOne();
+
+    if (!settings) {
+      settings = new SchoolSettings(req.body);
+    } else {
+      Object.assign(settings, req.body);
+    }
+
+    await settings.save();
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ FEE TEMPLATES ROUTES ============
+app.get('/api/fee-templates', async (req, res) => {
+  try {
+    const FeeTemplate = mongoose.model('FeeTemplate');
+    const templates = await FeeTemplate.find().sort({ name: 1 });
+    res.json(templates);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/fee-templates/:id', async (req, res) => {
+  try {
+    const FeeTemplate = mongoose.model('FeeTemplate');
+    const template = await FeeTemplate.findById(req.params.id);
+    if (!template) return res.status(404).json({ error: 'Fee template not found' });
+    res.json(template);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/fee-templates', async (req, res) => {
+  try {
+    const FeeTemplate = mongoose.model('FeeTemplate');
+    const template = new FeeTemplate(req.body);
+    await template.save();
+    res.status(201).json(template);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/fee-templates/:id', async (req, res) => {
+  try {
+    const FeeTemplate = mongoose.model('FeeTemplate');
+    const template = await FeeTemplate.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!template) return res.status(404).json({ error: 'Fee template not found' });
+    res.json(template);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/fee-templates/:id', async (req, res) => {
+  try {
+    const FeeTemplate = mongoose.model('FeeTemplate');
+    const template = await FeeTemplate.findByIdAndDelete(req.params.id);
+    if (!template) return res.status(404).json({ error: 'Fee template not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ FEE STRUCTURE ROUTES ============
+app.get('/api/fee-structure/class/:classId', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { academicYear } = req.query;
+
+    const StudentFeeStructure = mongoose.model('StudentFeeStructure');
+    const feeStructures = await StudentFeeStructure.find({
+      classId,
+      academicYear: academicYear || '2024-25'
+    }).populate('studentId', 'name admissionId rollNo');
+
+    res.json(feeStructures);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/fee-structure', async (req, res) => {
+  try {
+    const { classId, academicYear, name, description } = req.body;
+
+    const StudentFeeStructure = mongoose.model('StudentFeeStructure');
+
+    // Check if structure already exists
+    const existing = await StudentFeeStructure.findOne({
+      classId,
+      academicYear: academicYear || '2024-25'
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'Fee structure already exists for this class and year' });
+    }
+
+    const structure = new StudentFeeStructure({
+      classId,
+      academicYear: academicYear || '2024-25',
+      name,
+      description,
+      feeHeads: []
+    });
+
+    await structure.save();
+    res.status(201).json(structure);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/fee-structure/apply-to-students', async (req, res) => {
+  try {
+    const { classId, academicYear, feeStructureId } = req.body;
+
+    const StudentFeeStructure = mongoose.model('StudentFeeStructure');
+    const templateStructure = await StudentFeeStructure.findById(feeStructureId);
+
+    if (!templateStructure) {
+      return res.status(404).json({ error: 'Fee structure template not found' });
+    }
+
+    // Get all students in the class
+    const students = await Student.find({
+      classId,
+      academicYear: academicYear || '2024-25'
+    });
+
+    let appliedCount = 0;
+
+    for (const student of students) {
+      // Check if student already has fee structure
+      const existing = await StudentFeeStructure.findOne({
+        studentId: student._id,
+        academicYear: academicYear || '2024-25'
+      });
+
+      if (!existing) {
+        // Create fee structure for student based on template
+        const newStructure = new StudentFeeStructure({
+          studentId: student._id,
+          classId,
+          academicYear: academicYear || '2024-25',
+          feeHeads: templateStructure.feeHeads.map(fh => ({
+            ...fh.toObject(),
+            paidAmount: 0,
+            balanceAmount: fh.amount,
+            status: 'pending'
+          }))
+        });
+
+        newStructure.totalFee = newStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
+        newStructure.totalPaid = 0;
+        newStructure.totalBalance = newStructure.totalFee;
+        newStructure.overallStatus = 'pending';
+
+        await newStructure.save();
+        appliedCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Fee structure applied to ${appliedCount} students`,
+      appliedCount
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/students/class/:classId/fee-status', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { academicYear } = req.query;
+
+    const StudentFeeStructure = mongoose.model('StudentFeeStructure');
+    const feeStructures = await StudentFeeStructure.find({
+      classId,
+      academicYear: academicYear || '2024-25'
+    }).populate('studentId', 'name admissionId rollNo');
+
+    const result = feeStructures.map(fs => ({
+      studentId: fs.studentId._id,
+      studentName: fs.studentId.name,
+      admissionId: fs.studentId.admissionId,
+      rollNo: fs.studentId.rollNo,
+      totalFee: fs.totalFee,
+      totalPaid: fs.totalPaid,
+      totalBalance: fs.totalBalance,
+      overallStatus: fs.overallStatus
+    }));
+
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1171,12 +1458,11 @@ app.get('/api/students', authenticate, checkPermission('students', 'view'), asyn
         parentOccupation: s.parentOccupation,
         alternatePhone: s.alternatePhone,
         parents: s.parents,
+        siblings: s.siblings,
 
         // Academic Information
         previousSchool: s.previousSchool,
         tcNumber: s.tcNumber,
-        mediumOfInstruction: s.mediumOfInstruction,
-        house: s.house,
 
         // Health & Safety
         medicalConditions: s.medicalConditions,
@@ -1190,6 +1476,10 @@ app.get('/api/students', authenticate, checkPermission('students', 'view'), asyn
         // Status
         feeStatus: s.feeStatus,
         status: s.status,
+
+        // Pinning
+        isPinned: s.isPinned,
+        pinnedAt: s.pinnedAt,
 
         // Documents
         documents: s.documents,
@@ -1261,8 +1551,72 @@ app.get('/api/students/:id', authenticate, checkPermission('students', 'view'), 
   }
 });
 
+// Get fee summary for a student
+app.get('/api/students/:id/fee-summary', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { academicYear } = req.query;
+    const year = academicYear || '2024-25';
+
+    console.log('💰 Getting fee summary for student:', req.params.id, 'academicYear:', year);
+
+    // Find fee structure for this student
+    const feeStructure = await StudentFeeStructure.findOne({
+      studentId: req.params.id,
+      academicYear: year
+    }).populate('feeHeads.feeHeadId');
+
+    if (!feeStructure) {
+      // Return empty fee structure if none exists
+      return res.json({
+        totalFee: 0,
+        totalPaid: 0,
+        totalPending: 0,
+        totalDiscount: 0,
+        collectionMode: 'term',
+        nextDueDate: null,
+        pendingDuesByPeriod: {},
+        feeHeads: [],
+        overallStatus: 'pending'
+      });
+    }
+
+    // Calculate pending dues by period (if frequency info is available)
+    const pendingDuesByPeriod = {};
+    feeStructure.feeHeads.forEach(fh => {
+      if (fh.balanceAmount > 0) {
+        const period = fh.frequency || 'onetime';
+        pendingDuesByPeriod[period] = (pendingDuesByPeriod[period] || 0) + fh.balanceAmount;
+      }
+    });
+
+    res.json({
+      totalFee: feeStructure.totalFee,
+      totalPaid: feeStructure.totalPaid,
+      totalPending: feeStructure.totalBalance,
+      totalDiscount: feeStructure.discountApplied || 0,
+      collectionMode: 'term',
+      nextDueDate: feeStructure.nextDueDate || null,
+      pendingDuesByPeriod,
+      feeHeads: feeStructure.feeHeads,
+      overallStatus: feeStructure.overallStatus
+    });
+  } catch (err) {
+    console.error('❌ Error fetching fee summary:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/students', authenticate, checkPermission('students', 'create'), validate(schemas.createStudent), async (req, res) => {
   try {
+    // Process whatsapp number from form data
+    // Form sends: phone (mobile), and separate parents array with isWhatsapp flags
+    // Store primary parent's whatsapp preference in parents array
+    const processedParents = (req.body.parents || []).map(parent => ({
+      ...parent,
+      // Keep isWhatsapp flag in parent object for reference
+      isWhatsapp: parent.isWhatsapp || false
+    }));
+
     const studentData = {
       // Basic Information
       name: req.body.name,
@@ -1285,6 +1639,9 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
       phone: req.body.phone,
       email: req.body.email,
       address: req.body.address,
+      city: req.body.city,
+      state: req.body.state,
+      zipCode: req.body.zipCode,
 
       // Parent Information
       parentName: req.body.parentName,
@@ -1293,13 +1650,12 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
       parentRelationship: req.body.parentRelationship,
       parentOccupation: req.body.parentOccupation,
       alternatePhone: req.body.alternatePhone,
-      parents: req.body.parents || [],
+      parents: processedParents,
+      siblings: req.body.siblings,
 
       // Academic Information
       previousSchool: req.body.previousSchool,
       tcNumber: req.body.tcNumber,
-      mediumOfInstruction: req.body.mediumOfInstruction,
-      house: req.body.house,
 
       // Health & Safety
       medicalConditions: req.body.medicalConditions,
@@ -1309,6 +1665,8 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
       // Requirements
       transportRequired: req.body.transportRequired || false,
       hostelRequired: req.body.hostelRequired || false,
+      isWhatsapp: req.body.isWhatsapp || false,
+      whatsappNumber: req.body.whatsappNumber,
 
       // Status
       feeStatus: req.body.feeStatus || 'pending',
@@ -1339,6 +1697,67 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
 
     const student = new Student(studentData);
     await student.save();
+
+    // Auto-initialize fee structure for the new student
+    try {
+      // Check if fee structure already exists
+      const existingFeeStructure = await StudentFeeStructure.findOne({
+        studentId: student._id,
+        academicYear: student.academicYear || '2024-25'
+      });
+
+      if (!existingFeeStructure) {
+        // Get class information
+        const classInfo = await Class.findById(student.classId);
+        if (classInfo) {
+          // Extract class number from class name (e.g., "Class 10" -> "10")
+          const classNumber = classInfo.name.replace('Class ', '');
+
+          // Find FeeHead model to get applicable fee heads
+          const FeeHead = mongoose.model('FeeHead');
+          const applicableFeeHeads = await FeeHead.find({
+            applicableClasses: classNumber,
+            academicYear: student.academicYear || '2024-25',
+            isActive: true
+          });
+
+          console.log(`📋 Found ${applicableFeeHeads.length} applicable fee heads for class ${classNumber}`);
+
+          // Create fee structure
+          const feeStructure = new StudentFeeStructure({
+            studentId: student._id,
+            classId: student.classId,
+            academicYear: student.academicYear || '2024-25',
+            feeHeads: applicableFeeHeads.map(fh => ({
+              feeHeadId: fh._id,
+              name: fh.name,
+              category: fh.category,
+              amount: fh.amount,
+              mandatory: fh.mandatory,
+              frequency: fh.frequency,
+              paidAmount: 0,
+              balanceAmount: fh.amount,
+              status: 'pending'
+            }))
+          });
+
+          // Calculate totals
+          feeStructure.totalFee = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
+          feeStructure.totalPaid = 0;
+          feeStructure.totalBalance = feeStructure.totalFee;
+          feeStructure.overallStatus = 'pending';
+
+          await feeStructure.save();
+          console.log(`✅ Fee structure auto-initialized for student ${student.name}`);
+        }
+      } else {
+        console.log(`ℹ️ Fee structure already exists for student ${student.name}`);
+      }
+    } catch (feeError) {
+      // Log fee initialization error but don't fail student creation
+      console.error('⚠️ Error auto-initializing fee structure:', feeError);
+    }
+
     res.status(201).json({ id: student._id, ...student.toObject() });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1350,11 +1769,17 @@ app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), 
     console.log('📝 PUT /api/students/:id - Request body:', JSON.stringify(req.body, null, 2));
     console.log('📝 Documents field type:', typeof req.body.documents);
     console.log('📝 Documents field is array:', Array.isArray(req.body.documents));
-    
+
     if (req.body.documents) {
       console.log('📝 Documents field value:', JSON.stringify(req.body.documents, null, 2));
     }
-    
+
+    // Process parents array to preserve isWhatsapp flags
+    const processedParents = req.body.parents ? (req.body.parents || []).map(parent => ({
+      ...parent,
+      isWhatsapp: parent.isWhatsapp || false
+    })) : undefined;
+
     const updateData = {
       // Basic Information
       name: req.body.name,
@@ -1377,6 +1802,9 @@ app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), 
       phone: req.body.phone,
       email: req.body.email,
       address: req.body.address,
+      city: req.body.city,
+      state: req.body.state,
+      zipCode: req.body.zipCode,
 
       // Parent Information
       parentName: req.body.parentName,
@@ -1385,13 +1813,12 @@ app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), 
       parentRelationship: req.body.parentRelationship,
       parentOccupation: req.body.parentOccupation,
       alternatePhone: req.body.alternatePhone,
-      parents: req.body.parents,
+      parents: processedParents,
+      siblings: req.body.siblings,
 
       // Academic Information
       previousSchool: req.body.previousSchool,
       tcNumber: req.body.tcNumber,
-      mediumOfInstruction: req.body.mediumOfInstruction,
-      house: req.body.house,
 
       // Health & Safety
       medicalConditions: req.body.medicalConditions,
@@ -1401,6 +1828,8 @@ app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), 
       // Requirements
       transportRequired: req.body.transportRequired,
       hostelRequired: req.body.hostelRequired,
+      isWhatsapp: req.body.isWhatsapp,
+      whatsappNumber: req.body.whatsappNumber,
 
       // Status
       feeStatus: req.body.feeStatus,
@@ -1462,6 +1891,351 @@ app.delete('/api/students/:id', authenticate, checkPermission('students', 'delet
     if (!result) return res.status(404).json({ error: 'Student not found' });
     res.json({ success: true });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pin student
+app.put('/api/students/:id/pin', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const student = await Student.findByIdAndUpdate(
+      req.params.id,
+      { isPinned: true, pinnedAt: new Date() },
+      { new: true }
+    );
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+    res.json({ isPinned: true, pinnedAt: student.pinnedAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unpin student
+app.put('/api/students/:id/unpin', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const student = await Student.findByIdAndUpdate(
+      req.params.id,
+      { isPinned: false, pinnedAt: null },
+      { new: true }
+    );
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+    res.json({ isPinned: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ STUDENT REMARKS ROUTES ============
+// Get all remarks for a student
+app.get('/api/students/:id/remarks', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { category } = req.query;
+    const query = { studentId: req.params.id };
+    if (category && category !== 'all') {
+      query.category = category;
+    }
+
+    const remarks = await Remark.find(query)
+      .populate('authorId', 'name role')
+      .sort({ date: -1 });
+
+    res.json(remarks);
+  } catch (err) {
+    console.error('❌ Error fetching remarks:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new remark
+app.post('/api/students/:id/remarks', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const { title, description, category, sentToParent } = req.body;
+
+    // Get user info from token (if available)
+    const authorId = req.user?.id || null;
+    const authorName = req.user?.name || 'System';
+
+    const remark = new Remark({
+      studentId: req.params.id,
+      title,
+      description,
+      category: category || 'general',
+      sentToParent: sentToParent || false,
+      sentDate: sentToParent ? new Date() : null,
+      authorId,
+      authorName
+    });
+
+    await remark.save();
+    console.log(`✅ Remark created for student ${req.params.id}`);
+
+    res.status(201).json(remark);
+  } catch (err) {
+    console.error('❌ Error creating remark:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update a remark
+app.put('/api/students/:id/remarks/:remarkId', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const { title, description, category, sentToParent } = req.body;
+
+    const updateData = {
+      title,
+      description,
+      category,
+      sentToParent
+    };
+
+    // If marking as sent to parent, update sentDate
+    if (sentToParent && !req.body.existingSentStatus) {
+      updateData.sentDate = new Date();
+    }
+
+    const remark = await Remark.findOneAndUpdate(
+      { _id: req.params.remarkId, studentId: req.params.id },
+      updateData,
+      { new: true }
+    );
+
+    if (!remark) {
+      return res.status(404).json({ error: 'Remark not found' });
+    }
+
+    console.log(`✅ Remark updated: ${req.params.remarkId}`);
+    res.json(remark);
+  } catch (err) {
+    console.error('❌ Error updating remark:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a remark
+app.delete('/api/students/:id/remarks/:remarkId', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const remark = await Remark.findOneAndDelete({
+      _id: req.params.remarkId,
+      studentId: req.params.id
+    });
+
+    if (!remark) {
+      return res.status(404).json({ error: 'Remark not found' });
+    }
+
+    console.log(`✅ Remark deleted: ${req.params.remarkId}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting remark:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ EXAM ROUTES ============
+// Get all exams
+app.get('/api/exams', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { classId, academicYear, examType, status } = req.query;
+    const query = {};
+    if (classId) query.classId = classId;
+    if (academicYear) query.academicYear = academicYear;
+    if (examType) query.examType = examType;
+    if (status) query.status = status;
+
+    const exams = await Exam.find(query)
+      .populate('classId', 'name section')
+      .populate('subjects.subjectId', 'name')
+      .populate('createdBy', 'name')
+      .sort({ startDate: -1 });
+
+    res.json(exams);
+  } catch (err) {
+    console.error('❌ Error fetching exams:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get exam by ID
+app.get('/api/exams/:id', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const exam = await Exam.findById(req.params.id)
+      .populate('classId', 'name section')
+      .populate('subjects.subjectId', 'name')
+      .populate('createdBy', 'name');
+
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    res.json(exam);
+  } catch (err) {
+    console.error('❌ Error fetching exam:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create exam
+app.post('/api/exams', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const exam = new Exam(req.body);
+    await exam.save();
+    const populated = await Exam.findById(exam._id)
+      .populate('classId', 'name section')
+      .populate('subjects.subjectId', 'name')
+      .populate('createdBy', 'name');
+    res.status(201).json(populated);
+  } catch (err) {
+    console.error('❌ Error creating exam:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update exam
+app.put('/api/exams/:id', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const exam = await Exam.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    ).populate('classId', 'name section')
+     .populate('subjects.subjectId', 'name');
+
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    res.json(exam);
+  } catch (err) {
+    console.error('❌ Error updating exam:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete exam
+app.delete('/api/exams/:id', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const exam = await Exam.findByIdAndDelete(req.params.id);
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+    // Also delete all results for this exam
+    await Result.deleteMany({ examId: req.params.id });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting exam:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============ RESULT ROUTES ============
+// Get results for a student
+app.get('/api/students/:id/results', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { academicYear } = req.query;
+    const query = { studentId: req.params.id };
+    if (academicYear) query.academicYear = academicYear;
+
+    const results = await Result.find(query)
+      .populate('examId', 'name examType startDate endDate')
+      .populate('classId', 'name section')
+      .sort({ createdAt: -1 });
+
+    res.json(results);
+  } catch (err) {
+    console.error('❌ Error fetching results:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get results for an exam
+app.get('/api/exams/:id/results', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const results = await Result.find({ examId: req.params.id })
+      .populate('studentId', 'name admissionId rollNo photo')
+      .populate('classId', 'name section')
+      .sort({ percentage: -1 });
+
+    res.json(results);
+  } catch (err) {
+    console.error('❌ Error fetching exam results:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create or update result
+app.post('/api/results', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const { examId, studentId, marks, totalMarksObtained, totalMaxMarks, percentage, grade, status, remarks, isPublished } = req.body;
+
+    // Calculate percentage if not provided
+    let calcPercentage = percentage;
+    if (!calcPercentage && totalMaxMarks > 0) {
+      calcPercentage = (totalMarksObtained / totalMaxMarks) * 100;
+    }
+
+    const result = await Result.findOneAndUpdate(
+      { examId, studentId },
+      {
+        examId,
+        studentId,
+        marks,
+        totalMarksObtained,
+        totalMaxMarks,
+        percentage: calcPercentage,
+        grade,
+        status,
+        remarks,
+        isPublished
+      },
+      { upsert: true, new: true }
+    ).populate('examId', 'name examType')
+     .populate('studentId', 'name');
+
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('❌ Error saving result:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk create/update results
+app.post('/api/results/bulk', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const { results } = req.body;
+
+    const operations = results.map(result => ({
+      updateOne: {
+        filter: { examId: result.examId, studentId: result.studentId },
+        update: result,
+        upsert: true
+      }
+    }));
+
+    await Result.bulkWrite(operations);
+
+    res.json({ success: true, count: results.length });
+  } catch (err) {
+    console.error('❌ Error bulk saving results:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Publish/unpublish results
+app.put('/api/exams/:id/publish-results', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+  try {
+    const { publish } = req.body;
+
+    await Result.updateMany(
+      { examId: req.params.id },
+      { isPublished: publish }
+    );
+
+    res.json({ success: true, published: publish });
+  } catch (err) {
+    console.error('❌ Error publishing results:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2594,9 +3368,18 @@ app.delete('/api/settings/document-config/:id', authenticate, authRequireAdmin, 
   }
 });
 
-httpServer.listen(PORT, () => {
+// Start server
+httpServer.listen(PORT, async () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`🔌 Socket.IO ready for connections`);
+
+  // Start Agenda job scheduler
+  try {
+    const { startAgenda } = await import('./config/agenda.js');
+    await startAgenda();
+  } catch (error) {
+    console.error('⚠️  Agenda scheduler failed to start:', error.message);
+  }
 });
 
 

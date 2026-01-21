@@ -77,10 +77,15 @@ const staffSchema = new mongoose.Schema({
     phone: String
   }],
   whatsappNumber: String,
+  isWhatsapp: { type: Boolean, default: false },
   
   // Documents
   picture: String, // URL to profile picture
-  idDocuments: [String], // URLs to ID documents
+  idDocuments: [{
+    type: String, // Document type (Aadhar Card, PAN Card, etc.)
+    url: String, // Document URL
+    name: String // Original file name
+  }], // Array of ID document objects with metadata
   
   // Qualifications
   professionalQualifications: [{
@@ -97,7 +102,6 @@ const staffSchema = new mongoose.Schema({
   // Staff Info
   staffNumber: String,
   staffType: String,
-  expertise: String,
   assignedClasses: [String],
   isClassTeacher: Boolean,
   classTeacherOf: String,
@@ -179,6 +183,9 @@ const studentSchema = new mongoose.Schema({
   phone: String,
   email: String,
   address: String,
+  city: String,
+  state: String,
+  zipCode: String,
 
   // Parent/Guardian Information
   parentName: String,
@@ -197,11 +204,16 @@ const studentSchema = new mongoose.Schema({
     occupation: String
   }],
 
+  // Siblings (only siblings in the same school)
+  siblings: [{
+    name: { type: String, required: true },
+    inSameSchool: { type: Boolean, default: true },
+    classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' }
+  }],
+
   // Academic Information
   previousSchool: String,
   tcNumber: String,
-  mediumOfInstruction: String,
-  house: String,
 
   // Health & Safety
   medicalConditions: String,
@@ -215,7 +227,11 @@ const studentSchema = new mongoose.Schema({
   // Status
   feeStatus: { type: String, default: 'pending' },
   status: { type: String, default: 'active' },
-  
+
+  // Pinning
+  isPinned: { type: Boolean, default: false },
+  pinnedAt: { type: Date },
+
   // Fee Details
   feeDetails: {
     totalFee: { type: Number, default: 0 },
@@ -229,6 +245,10 @@ const studentSchema = new mongoose.Schema({
   documents: [{
     name: String,
     type: String,
+    category: String, // birthCertificate, tc, aadhaar, etc.
+    front: { url: String, uploadDate: Date },
+    back: { url: String, uploadDate: Date },
+    // Legacy support for old single-file documents
     url: String,
     uploadDate: Date
   }],
@@ -246,6 +266,59 @@ const attendanceSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 attendanceSchema.index({ studentId: 1, date: 1 }, { unique: true });
+
+// Exam Schema
+const examSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  examType: { type: String, required: true }, // unit-test, midterm, final, annual
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  academicYear: { type: String, required: true, default: '2024-25' },
+  startDate: { type: Date, required: true },
+  endDate: { type: Date, required: true },
+  totalMarks: { type: Number, default: 100 },
+  passingMarks: { type: Number, default: 33 },
+  subjects: [{
+    subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
+    subjectName: String,
+    date: Date,
+    startTime: String,
+    endTime: String,
+    maxMarks: { type: Number, default: 100 },
+    passingMarks: { type: Number, default: 33 }
+  }],
+  status: { type: String, default: 'scheduled' }, // scheduled, ongoing, completed, cancelled
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
+}, { timestamps: true });
+
+// Result Schema
+const resultSchema = new mongoose.Schema({
+  examId: { type: mongoose.Schema.Types.ObjectId, ref: 'Exam', required: true },
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  academicYear: { type: String, required: true },
+  marks: [{
+    subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
+    subjectName: String,
+    marksObtained: Number,
+    maxMarks: Number,
+    passingMarks: Number,
+    grade: String,
+    remarks: String
+  }],
+  totalMarksObtained: { type: Number, default: 0 },
+  totalMaxMarks: { type: Number, default: 0 },
+  percentage: { type: Number, default: 0 },
+  grade: String,
+  rank: Number,
+  status: { type: String, default: 'passed' }, // passed, failed, promoted
+  remarks: String,
+  isPublished: { type: Boolean, default: false }
+}, { timestamps: true });
+
+// Compound indexes for efficient queries
+resultSchema.index({ examId: 1, studentId: 1 }, { unique: true });
+resultSchema.index({ studentId: 1, academicYear: 1 });
+resultSchema.index({ examId: 1, classId: 1 });
 
 // Timetable Schema
 const timetableSchema = new mongoose.Schema({
@@ -374,18 +447,6 @@ const formSubmissionSchema = new mongoose.Schema({
   reviewStatus: { type: String, default: 'pending' }, // 'pending', 'approved', 'rejected'
   reviewNotes: String,
   staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Populated after approval
-}, { timestamps: true });
-
-// Notification Schema
-const notificationSchema = new mongoose.Schema({
-  userEmail: String,
-  userPhone: String,
-  notificationType: String, // 'form_assignment', 'form_reminder', 'form_approved', 'form_rejected'
-  title: { type: String, required: true },
-  message: { type: String, required: true },
-  data: mongoose.Schema.Types.Mixed, // Additional data (form_id, assignment_id, etc.)
-  isRead: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
 // Visitor Schema
@@ -695,12 +756,16 @@ substitutionSchema.index({ date: 1, classId: 1, period: 1 });
 import Message from './models/Message.js';
 import Conversation from './models/Conversation.js';
 import UserPresence from './models/UserPresence.js';
+import Notification from './models/Notification.js';
 
 // Fee Management Models - Import from separate files
 import FeeHead from './models/FeeHead.js';
 import StudentFeeStructure from './models/StudentFeeStructure.js';
 import FeeConsession from './models/FeeConsession.js';
 import LateFeeRule from './models/LateFeeRule.js';
+
+// Student Remarks Model
+import Remark from './models/Remark.js';
 import FeeRule from './models/FeeRule.js';
 import PaymentMethodConfig from './models/PaymentMethodConfig.js';
 import FeeCollectionPeriod from './models/FeeCollectionPeriod.js';
@@ -713,19 +778,28 @@ import StaffAttendance from './models/StaffAttendance.js';
 import UserPermission from './models/UserPermission.js';
 import PermissionRequest from './models/PermissionRequest.js';
 
+// Front Office Models (Enhanced)
+import Visitor from './models/Visitor.js';
+import GatePass from './models/GatePass.js';
+
+// Import announcements and reminders models
+import Announcement from './models/Announcement.js';
+import AnnouncementRecipient from './models/AnnouncementRecipient.js';
+import Reminder from './models/Reminder.js';
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
 export const Attendance = mongoose.model('Attendance', attendanceSchema);
+export const Exam = mongoose.model('Exam', examSchema);
+export const Result = mongoose.model('Result', resultSchema);
 export const Timetable = mongoose.model('Timetable', timetableSchema);
 export const Counter = mongoose.model('Counter', counterSchema);
 export const IntakeForm = mongoose.model('IntakeForm', intakeFormSchema);
 export const FormAssignment = mongoose.model('FormAssignment', formAssignmentSchema);
 export const FormSubmission = mongoose.model('FormSubmission', formSubmissionSchema);
-export const Notification = mongoose.model('Notification', notificationSchema);
-export const Visitor = mongoose.model('Visitor', visitorSchema);
+// Visitor and GatePass are imported from enhanced models
 export const Admission = mongoose.model('Admission', admissionSchema);
-export const GatePass = mongoose.model('GatePass', gatePassSchema);
 export const Appointment = mongoose.model('Appointment', appointmentSchema);
 export const Feedback = mongoose.model('Feedback', feedbackSchema);
 export const CallLog = mongoose.model('CallLog', callLogSchema);
@@ -741,10 +815,16 @@ export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberCon
 export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
 
 // Export chat models
-export { Message, Conversation, UserPresence };
+export { Message, Conversation, UserPresence, Notification };
+
+// Export front office models (Enhanced)
+export { Visitor, GatePass };
 
 // Export fee management models
 export { FeeHead, StudentFeeStructure, FeeConsession, LateFeeRule, FeeRule, PaymentMethodConfig, FeeCollectionPeriod };
+
+// Export remarks model
+export { Remark };
 
 // Export staff ID config model
 export { StaffIdConfig };
@@ -754,6 +834,9 @@ export { StaffAttendance };
 
 // Export permission models
 export { UserPermission, PermissionRequest };
+
+// Export announcements and reminders models
+export { Announcement, AnnouncementRecipient, Reminder };
 
 // Helper to get next staff code
 export async function getNextStaffCode() {

@@ -57,6 +57,79 @@ const messageSchema = new mongoose.Schema({
   replyTo: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Message'
+  },
+
+  // NEW: Message editing
+  isEdited: {
+    type: Boolean,
+    default: false
+  },
+  editHistory: [{
+    content: String,
+    editedAt: {
+      type: Date,
+      default: Date.now
+    },
+    editedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true
+    }
+  }],
+
+  // NEW: Message reactions
+  reactions: [{
+    emoji: {
+      type: String,
+      required: true
+    },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true
+    },
+    userModel: {
+      type: String,
+      enum: ['Staff', 'Student'],
+      required: true
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+
+  // NEW: Forward message support
+  forwardedFrom: {
+    messageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message'
+    },
+    conversationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Conversation'
+    },
+    forwardedBy: {
+      type: mongoose.Schema.Types.ObjectId
+    },
+    originalSenderName: String
+  },
+
+  // NEW: Pinned messages
+  pinned: {
+    type: Boolean,
+    default: false
+  },
+  pinnedBy: [{
+    type: mongoose.Schema.Types.ObjectId
+  }],
+
+  // NEW: Voice message support
+  duration: {
+    type: Number,
+    default: 0 // in seconds
+  },
+  waveform: {
+    type: [Number], // Array of numbers for visualization
+    default: []
   }
 }, {
   timestamps: true
