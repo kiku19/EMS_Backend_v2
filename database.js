@@ -124,6 +124,13 @@ const staffSchema = new mongoose.Schema({
   
   // Hierarchy
   reporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  
+  // Timetable Management - Teacher Assignments
+  teacherAssignments: [{
+    subject: { type: String, required: true },
+    classes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
+    createdAt: { type: Date, default: Date.now }
+  }]
 }, { timestamps: true });
 
 // Hash password before saving
@@ -152,6 +159,10 @@ staffSchema.methods.comparePassword = async function(candidatePassword) {
   }
 };
 
+// Indexes for Staff model
+staffSchema.index({ 'teacherAssignments.subject': 1 });
+staffSchema.index({ 'teacherAssignments.classes': 1 });
+
 // Class Schema - with class teacher reference
 const classSchema = new mongoose.Schema({
   name: { type: String, required: true }, // e.g., "Class 10"
@@ -159,6 +170,34 @@ const classSchema = new mongoose.Schema({
   classTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   subjects: [String],
   academicYear: { type: String, default: '2024-25' },
+
+  // Strength management
+  strengthLimit: {
+    current: { type: Number, default: 40 },
+    default: { type: Number, default: 40 },
+    adjustments: [{
+      newLimit: Number,
+      reason: String,
+      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+      date: { type: Date, default: Date.now }
+    }]
+  },
+
+  // Academic and attendance tracking
+  averageAttendance: { type: Number, default: 0, min: 0, max: 100 },
+  averageAcademicPerformance: { type: Number, default: 0, min: 0, max: 100 },
+  rating: { type: Number, default: 3, min: 1, max: 5 },
+
+  // Chapter progress references
+  chapterProgress: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ChapterProgress' }],
+
+  // Room assignment
+  room: String,
+  block: String,
+  
+  // Timetable Management - Class Settings
+  classTag: { type: String }, // Free-text tag for class identification
+  assignedSubjects: [{ type: String }] // Subjects assigned to this class
 }, { timestamps: true });
 
 // Student Schema - linked to class with comprehensive fields
@@ -334,37 +373,142 @@ const timetableSchema = new mongoose.Schema({
     Monday: [{
       subject: String,
       teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String
+      room: String,
+      // Timetable Management - Metadata
+      lastModified: { type: Date, default: Date.now },
+      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
     }],
     Tuesday: [{
       subject: String,
       teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String
+      room: String,
+      lastModified: { type: Date, default: Date.now },
+      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
     }],
     Wednesday: [{
       subject: String,
       teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String
+      room: String,
+      lastModified: { type: Date, default: Date.now },
+      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
     }],
     Thursday: [{
       subject: String,
       teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String
+      room: String,
+      lastModified: { type: Date, default: Date.now },
+      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
     }],
     Friday: [{
       subject: String,
       teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String
+      room: String,
+      lastModified: { type: Date, default: Date.now },
+      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
     }],
     Saturday: [{
       subject: String,
       teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String
+      room: String,
+      lastModified: { type: Date, default: Date.now },
+      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
     }]
-  }
+  },
+  // Timetable Management - Version Control
+  version: { type: Number, default: 1 },
+  lastSyncedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
 timetableSchema.index({ classId: 1, academicYear: 1 }, { unique: true });
+// Indexes for teacher queries in schedule
+timetableSchema.index({ 'schedule.Monday.teacherId': 1 });
+timetableSchema.index({ 'schedule.Tuesday.teacherId': 1 });
+timetableSchema.index({ 'schedule.Wednesday.teacherId': 1 });
+timetableSchema.index({ 'schedule.Thursday.teacherId': 1 });
+timetableSchema.index({ 'schedule.Friday.teacherId': 1 });
+timetableSchema.index({ 'schedule.Saturday.teacherId': 1 });
+
+// Teacher Timetable Schema - for managing teacher schedules
+const teacherTimetableSchema = new mongoose.Schema({
+  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
+  academicYear: { type: String, default: '2024-25' },
+  schedule: {
+    Monday: [{
+      periodIndex: Number,
+      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+      subject: String,
+      room: String,
+      lastModified: { type: Date, default: Date.now }
+    }],
+    Tuesday: [{
+      periodIndex: Number,
+      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+      subject: String,
+      room: String,
+      lastModified: { type: Date, default: Date.now }
+    }],
+    Wednesday: [{
+      periodIndex: Number,
+      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+      subject: String,
+      room: String,
+      lastModified: { type: Date, default: Date.now }
+    }],
+    Thursday: [{
+      periodIndex: Number,
+      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+      subject: String,
+      room: String,
+      lastModified: { type: Date, default: Date.now }
+    }],
+    Friday: [{
+      periodIndex: Number,
+      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+      subject: String,
+      room: String,
+      lastModified: { type: Date, default: Date.now }
+    }],
+    Saturday: [{
+      periodIndex: Number,
+      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+      subject: String,
+      room: String,
+      lastModified: { type: Date, default: Date.now }
+    }]
+  },
+  totalPeriodsPerWeek: { type: Number, default: 0 },
+  version: { type: Number, default: 1 },
+  lastSyncedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+teacherTimetableSchema.index({ teacherId: 1, academicYear: 1 }, { unique: true });
+
+// Conflict Log Schema - for tracking scheduling conflicts
+const conflictLogSchema = new mongoose.Schema({
+  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
+  conflictType: { 
+    type: String, 
+    enum: ['double_booking', 'unqualified', 'invalid_assignment'], 
+    required: true 
+  },
+  day: { type: String, required: true },
+  periodIndex: { type: Number, required: true },
+  classes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
+  subject: String,
+  detectedAt: { type: Date, default: Date.now },
+  resolvedAt: Date,
+  resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  resolution: String,
+  status: { 
+    type: String, 
+    enum: ['active', 'resolved', 'ignored'], 
+    default: 'active' 
+  }
+}, { timestamps: true });
+
+// Indexes for conflict log
+conflictLogSchema.index({ teacherId: 1, status: 1 });
+conflictLogSchema.index({ detectedAt: -1 });
 
 // Counter Schema for auto-increment
 const counterSchema = new mongoose.Schema({
@@ -764,6 +908,12 @@ import StudentFeeStructure from './models/StudentFeeStructure.js';
 import FeeConsession from './models/FeeConsession.js';
 import LateFeeRule from './models/LateFeeRule.js';
 
+// Class Module Models - Import from separate files
+import ActivityLog from './models/ActivityLog.js';
+import ClassRating from './models/ClassRating.js';
+import ChapterProgress from './models/ChapterProgress.js';
+import ClassAnnouncement from './models/ClassAnnouncement.js';
+
 // Student Remarks Model
 import Remark from './models/Remark.js';
 import FeeRule from './models/FeeRule.js';
@@ -794,6 +944,8 @@ export const Attendance = mongoose.model('Attendance', attendanceSchema);
 export const Exam = mongoose.model('Exam', examSchema);
 export const Result = mongoose.model('Result', resultSchema);
 export const Timetable = mongoose.model('Timetable', timetableSchema);
+export const TeacherTimetable = mongoose.model('TeacherTimetable', teacherTimetableSchema);
+export const ConflictLog = mongoose.model('ConflictLog', conflictLogSchema);
 export const Counter = mongoose.model('Counter', counterSchema);
 export const IntakeForm = mongoose.model('IntakeForm', intakeFormSchema);
 export const FormAssignment = mongoose.model('FormAssignment', formAssignmentSchema);
@@ -837,6 +989,9 @@ export { UserPermission, PermissionRequest };
 
 // Export announcements and reminders models
 export { Announcement, AnnouncementRecipient, Reminder };
+
+// Export class module models
+export { ActivityLog, ClassRating, ChapterProgress, ClassAnnouncement };
 
 // Helper to get next staff code
 export async function getNextStaffCode() {

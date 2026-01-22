@@ -30,13 +30,26 @@ async function seed() {
   console.log(`Created ${teachers.length} staff members`);
 
 
-  // Create 4 classes, each assigned to a teacher
-  const classes = await Class.insertMany([
-    { name: 'Class 6', section: 'A', classTeacherId: teachers[0]._id, subjects: ['Math', 'English', 'Science', 'Hindi'] },
-    { name: 'Class 7', section: 'A', classTeacherId: teachers[1]._id, subjects: ['Math', 'English', 'Science', 'Hindi'] },
-    { name: 'Class 8', section: 'A', classTeacherId: teachers[2]._id, subjects: ['Math', 'English', 'Science', 'Hindi'] },
-    { name: 'Class 9', section: 'A', classTeacherId: teachers[3]._id, subjects: ['Math', 'English', 'Science', 'Hindi'] },
-  ]);
+  // Create 10 classes (1-10) with 2 sections each (A and B)
+  const classes = [];
+  const teacherCount = teachers.filter(t => t.role === 'Teacher').length;
+
+  for (let classNum = 1; classNum <= 10; classNum++) {
+    for (const section of ['A', 'B']) {
+      const teacherIndex = (classNum - 1) % teacherCount;
+      classes.push({
+        name: `Class ${classNum}`,
+        section: section,
+        classTeacherId: teachers[teacherIndex]._id,
+        subjects: ['Math', 'English', 'Science', 'Hindi']
+      });
+    }
+  }
+
+  const insertedClasses = await Class.insertMany(classes);
+  // Store the inserted classes with their _id for student creation
+  classes.length = 0; // Clear the array
+  classes.push(...insertedClasses);
   console.log(`Created ${classes.length} classes`);
 
   // Generate 40 students (10 per class) with comprehensive data
@@ -65,7 +78,7 @@ async function seed() {
         
         // Personal Information
         gender,
-        dateOfBirth: `200${8 + classIdx}-0${(i % 9) + 1}-15`,
+        dateOfBirth: `201${(classIdx % 3) + 5}-0${(i % 9) + 1}-15`,
         bloodGroup: bloodGroups[i % bloodGroups.length],
         nationality: 'Indian',
         religion: i % 3 === 0 ? 'Hindu' : i % 3 === 1 ? 'Muslim' : 'Christian',
@@ -75,7 +88,7 @@ async function seed() {
         // Contact Information
         phone: i % 3 === 0 ? `98765${String(10000 + studentNum).padStart(5, '0')}` : '',
         email: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.com`,
-        address: `${i + 1}, ${lastName} Street, ${['Mumbai', 'Delhi', 'Bangalore', 'Chennai'][classIdx]}, India`,
+        address: `${i + 1}, ${lastName} Street, ${['Mumbai', 'Delhi', 'Bangalore', 'Chennai'][classIdx % 4]}, India`,
         
         // Parent/Guardian Information
         parentName: `${relationships[i % 3]} ${lastName}`,

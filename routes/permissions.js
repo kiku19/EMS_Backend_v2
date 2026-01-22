@@ -28,12 +28,16 @@ router.get('/user/:userId', async (req, res) => {
         ...perms
       }));
 
-      userPermission = await UserPermission.create({
-        userId,
-        role,
-        permissions: permissionsArray,
-        customPermissions: false
-      });
+      userPermission = await UserPermission.findOneAndUpdate(
+        { userId },
+        {
+          userId,
+          role,
+          permissions: permissionsArray,
+          customPermissions: false
+        },
+        { upsert: true, new: true }
+      );
     }
 
     res.json(userPermission);
@@ -210,7 +214,7 @@ router.put('/requests/:requestId', async (req, res) => {
       let userPermission = await UserPermission.findOne({ userId: request.userId });
 
       if (!userPermission) {
-        // Create new permission record
+        // Create new permission record atomically
         const user = await Staff.findById(request.userId);
         const role = determineRole(user.role);
         const defaultPermissions = PERMISSION_TEMPLATES[role];
@@ -220,12 +224,16 @@ router.put('/requests/:requestId', async (req, res) => {
           ...perms
         }));
 
-        userPermission = new UserPermission({
-          userId: request.userId,
-          role,
-          permissions: permissionsArray,
-          customPermissions: false
-        });
+        userPermission = await UserPermission.findOneAndUpdate(
+          { userId: request.userId },
+          {
+            userId: request.userId,
+            role,
+            permissions: permissionsArray,
+            customPermissions: false
+          },
+          { upsert: true, new: true }
+        );
       }
 
       // Update the specific module permissions

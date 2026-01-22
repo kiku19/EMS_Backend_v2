@@ -1,0 +1,11 @@
+teacher_id,teacher_name,subject,class_ids
+T001,John Smith,Mathematics,"C10A,C10B,C10C"
+T001,John Smith,Physics,C10A
+T002,Jane Doe,English,"C10A,C10B,C10C,C11A"
+T002,Jane Doe,Literature,"C11A,C11B"
+T003,Robert Johnson,Chemistry,"C10A,C10B"
+T003,Robert Johnson,Biology,"C10A,C10B,C11A"
+T004,Mary Williams,History,"C10A,C10B,C10C"
+T005,David Brown,Computer Science,"C10A,C10B,C10C,C11A,C11B"
+T006,Sarah Davis,Physical Education,"C10A,C10B,C10C,C11A,C11B,C12A"
+T007,Michael Wilson,Art,"C10A,C10B"

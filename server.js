@@ -21,11 +21,19 @@ import callRoutes from './routes/calls.js';
 import visitorsRoutes from './routes/visitors.js';
 import gatePassesRoutes from './routes/gatePasses.js';
 import frontDeskRoutes from './routes/frontDesk.js';
+import classesEnhancedRoutes from './routes/classesEnhanced.js';
+import teacherAssignmentsRoutes from './routes/teacherAssignments.js';
+import teacherTimetableRoutes from './routes/teacherTimetable.js';
+import validationRoutes from './routes/validation.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
 import { validate, schemas } from './middleware/validation.js';
 import { validateEnvironment, config } from './config/environment.js';
 import { authenticate, requireAdmin as authRequireAdmin, generateToken } from './middleware/auth.js';
 import { checkPermission, requireAdmin as permRequireAdmin } from './middleware/permissions.js';
+import timetableService from './services/timetableService.js';
+import conflictDetectionService from './services/conflictDetectionService.js';
+import batchOperationsService from './services/batchOperationsService.js';
+import cacheService from './services/cacheService.js';
 
 // Load and validate environment variables
 dotenv.config();
@@ -50,8 +58,6 @@ const io = new SocketIOServer(httpServer, {
 // Attach io instance to Express app so routes can access it
 app.set('io', io);
 
-console.log('✅ Socket.IO initialized');
-
 // Configure Cloudinary - FIXED: Validate configuration
 if (config.cloudinary.configured) {
   cloudinary.config({
@@ -59,7 +65,6 @@ if (config.cloudinary.configured) {
     api_key: config.cloudinary.apiKey,
     api_secret: config.cloudinary.apiSecret
   });
-  console.log('✅ Cloudinary configured');
 } else {
   console.warn('⚠️ Cloudinary not configured. File uploads will use base64 fallback.');
 }
@@ -88,10 +93,15 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Rate limiting - ADDED for security
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 300, // Increased from 100 to 300 requests per windowMs
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
+  // Skip rate limiting for successful requests to certain endpoints
+  skip: (req) => {
+    // Don't rate limit health checks or static assets
+    return req.path === '/health' || req.path.startsWith('/static');
+  }
 });
 
 const authLimiter = rateLimit({
@@ -122,43 +132,51 @@ try {
 
 // Initialize Socket.IO chat handlers
 initializeChatHandlers(io);
-console.log('✅ Chat handlers initialized');
 
 // Mount message routes
 app.use('/api/messages', messageRoutes);
-console.log('✅ Message routes mounted');
 
 // Mount fee management routes
 app.use('/api/fee-heads', feeHeadsRoutes);
 app.use('/api/student-fees', studentFeesRoutes);
 app.use('/api/fee-settings', feeSettingsRoutes);
-console.log('✅ Fee management routes mounted');
 
 // Mount staff attendance routes
 app.use('/api/staff-attendance', staffAttendanceRoutes);
-console.log('✅ Staff attendance routes mounted');
 
 // Payroll routes
 app.use('/api/payroll', payrollRoutes);
-console.log('✅ Payroll routes mounted');
 
 // Permission routes
 import permissionRoutes from './routes/permissions.js';
 app.use('/api/permissions', permissionRoutes);
-console.log('✅ Permission routes mounted');
 
 // Messages Module routes
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/calls', callRoutes);
-console.log('✅ Messages module routes mounted');
 
 // Front Desk Module routes
 app.use('/api/visitors', visitorsRoutes);
 app.use('/api/gate-passes', gatePassesRoutes);
 app.use('/api/front-desk', frontDeskRoutes);
-console.log('✅ Front Desk module routes mounted');
+
+// Enhanced Class Module routes
+app.use('/api/classes-enhanced', classesEnhancedRoutes);
+
+// Teacher Assignments routes
+app.use('/api/teacher-assignments', teacherAssignmentsRoutes);
+
+// Teacher Timetable routes
+app.use('/api/teacher-timetable', teacherTimetableRoutes);
+
+// Validation routes
+app.use('/api/validation', validationRoutes);
+
+// Class Settings routes
+import classSettingsRoutes from './routes/classSettings.js';
+app.use('/api/class-settings', classSettingsRoutes);
 
 // Make io and Staff available to routes
 app.locals.io = io;
@@ -230,18 +248,13 @@ app.post('/api/auth/login', authLimiter, validate(schemas.login), async (req, re
 
 // ============ UPLOAD ROUTE ============
 app.post('/api/upload', authenticate, uploadLimiter, upload.single('file'), async (req, res) => {
-  console.log('📤 Upload request received');
   try {
     if (!req.file) {
-      console.log('❌ No file in request');
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    console.log('📄 File received:', req.file.originalname, 'Size:', req.file.size, 'bytes', 'Type:', req.file.mimetype);
-
     // Check file size
     if (req.file.size > 10 * 1024 * 1024) {
-      console.log('❌ File too large:', req.file.size);
       return res.status(400).json({ error: 'File size exceeds 10MB limit' });
     }
 
@@ -251,8 +264,6 @@ app.post('/api/upload', authenticate, uploadLimiter, upload.single('file'), asyn
 
     // Try Cloudinary upload, fallback to base64 if it fails
     try {
-      console.log('☁️ Attempting Cloudinary upload...');
-      
       // Determine resource type based on mime type
       let resourceType = 'auto';
       if (req.file.mimetype === 'application/pdf') {
@@ -264,9 +275,7 @@ app.post('/api/upload', authenticate, uploadLimiter, upload.single('file'), asyn
       } else {
         resourceType = 'raw'; // Default to raw for other documents
       }
-      
-      console.log('📄 File type:', req.file.mimetype, '→ Resource type:', resourceType);
-      
+
       const uploadOptions = {
         resource_type: resourceType,
         folder: 'school_documents',
@@ -275,16 +284,12 @@ app.post('/api/upload', authenticate, uploadLimiter, upload.single('file'), asyn
         type: 'upload', // Ensure it's a regular upload, not authenticated
         access_mode: 'public' // Make sure the file is publicly accessible
       };
-      
+
       const result = await cloudinary.uploader.upload(dataURI, uploadOptions);
 
-      console.log('✅ Cloudinary upload successful:', result.secure_url);
-      
       // Use URL as-is - simple and works
       let finalUrl = result.secure_url;
-      
-      console.log('✅ Final URL:', finalUrl);
-      
+
       res.json({
         url: finalUrl,
         public_id: result.public_id,
@@ -324,9 +329,6 @@ app.post('/api/upload', authenticate, uploadLimiter, upload.single('file'), asyn
 // Add document to student - FIXED: Use Mongoose methods
 app.post('/api/students/:id/documents', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
-    console.log('📄 Adding document to student:', req.params.id);
-    console.log('📄 Document data:', JSON.stringify(req.body, null, 2));
-
     const { name, type, url, uploadDate, category, front, back } = req.body;
 
     const newDoc = {
@@ -360,10 +362,6 @@ app.post('/api/students/:id/documents', authenticate, checkPermission('students'
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    console.log('✅ Document added successfully');
-    console.log('✅ Total documents now:', student.documents?.length || 0);
-    console.log('✅ New document:', newDoc);
-
     res.json({
       success: true,
       documents: student.documents || []
@@ -377,21 +375,17 @@ app.post('/api/students/:id/documents', authenticate, checkPermission('students'
 // Delete document from student - FIXED: Use document ID with Mongoose
 app.delete('/api/students/:id/documents/:docId', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
-    console.log('🗑️ DELETE request - Student ID:', req.params.id, 'Doc ID:', req.params.docId);
-    
     // Use Mongoose findByIdAndUpdate with atomic $pull operation
     const student = await Student.findByIdAndUpdate(
       req.params.id,
       { $pull: { documents: { id: req.params.docId } } },
       { new: true }
     );
-    
+
     if (!student) {
-      console.log('❌ Student not found');
       return res.status(404).json({ error: 'Student not found' });
     }
-    
-    console.log('✅ Document deleted, remaining:', student.documents?.length || 0);
+
     res.json({ success: true, documents: student.documents || [] });
   } catch (error) {
     console.error('❌ Delete error:', error);
@@ -402,27 +396,22 @@ app.delete('/api/students/:id/documents/:docId', authenticate, checkPermission('
 // Update student photo
 app.put('/api/students/:id/photo', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
-    console.log('📸 Updating photo for student:', req.params.id);
-    console.log('📸 Photo URL:', req.body.photo);
-    
     const { photo } = req.body;
-    
+
     // Use Mongoose findByIdAndUpdate
     const student = await Student.findByIdAndUpdate(
       req.params.id,
       { photo },
       { new: true, runValidators: true }
     );
-    
+
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
-    
-    console.log('✅ Photo updated successfully');
-    
-    res.json({ 
-      success: true, 
-      photo: student.photo 
+
+    res.json({
+      success: true,
+      photo: student.photo
     });
   } catch (error) {
     console.error('❌ Error updating photo:', error);
@@ -433,8 +422,6 @@ app.put('/api/students/:id/photo', authenticate, checkPermission('students', 'ed
 // Fix corrupted documents field (migration endpoint)
 app.post('/api/students/:id/fix-documents', async (req, res) => {
   try {
-    console.log('🔧 Fixing documents field for student:', req.params.id);
-    
     // Get the student
     const student = await Student.findById(req.params.id);
     if (!student) {
@@ -837,9 +824,7 @@ app.put('/api/staff/:id', authenticate, checkPermission('staff', 'edit'), async 
       picture: staff.picture,
       timestamp: new Date()
     });
-    
-    console.log(`📢 Broadcasting staff update for ${staff.name} (${staff._id})`);
-    
+
     res.json(responseData);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -871,27 +856,6 @@ app.put('/api/staff/:id/credentials', authenticate, authRequireAdmin, async (req
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// Test endpoint to manually trigger socket event
-app.post('/api/test/socket-event', (req, res) => {
-  console.log('🧪 TEST: Manually triggering staff_updated event');
-  console.log('🧪 Connected clients:', io.engine.clientsCount);
-  
-  io.emit('staff_updated', {
-    staffId: '123',
-    name: 'Test User',
-    role: 'Teacher',
-    department: 'Math',
-    status: 'active',
-    phone: '1234567890',
-    email: 'test@test.com',
-    picture: null,
-    timestamp: new Date()
-  });
-  
-  console.log('✅ Test event emitted');
-  res.json({ success: true, message: 'Test event emitted', clients: io.engine.clientsCount });
 });
 
 app.delete('/api/staff/:id', authenticate, checkPermission('staff', 'delete'), async (req, res) => {
@@ -1272,8 +1236,7 @@ app.post('/api/staff-attendance', async (req, res) => {
       reason,
       timestamp: new Date()
     });
-    console.log(`📢 Broadcasting staff attendance update for ${staffId} on ${date}`);
-    
+
     res.json(attendance);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1370,8 +1333,7 @@ app.put('/api/classes/:id', authenticate, checkPermission('classes', 'edit'), as
       classTeacherId: cls.classTeacherId,
       timestamp: new Date()
     });
-    console.log(`📢 Broadcasting class update for ${cls.name} ${cls.section}`);
-    
+
     res.json({ id: cls._id, ...cls.toObject() });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1395,6 +1357,91 @@ app.get('/api/classes/:id/students', async (req, res) => {
     const students = await Student.find({ classId: req.params.id }).sort({ rollNo: 1 });
     res.json(students.map(s => ({ id: s._id, ...s.toObject() })));
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ CLASS SETTINGS ENDPOINTS (Timetable Management) ============
+
+// Get class settings (tag and subjects)
+app.get('/api/classes/:id/settings', authenticate, async (req, res) => {
+  try {
+    const cls = await Class.findById(req.params.id);
+    if (!cls) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+    
+    res.json({
+      classId: cls._id,
+      classTag: cls.classTag || '',
+      assignedSubjects: cls.assignedSubjects || [],
+      name: cls.name,
+      section: cls.section
+    });
+  } catch (err) {
+    console.error('Error fetching class settings:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update class tag
+app.put('/api/classes/:id/tag', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+  try {
+    const { classTag } = req.body;
+    
+    // Validate input
+    if (classTag === undefined) {
+      return res.status(400).json({ error: 'classTag field is required' });
+    }
+    
+    const cls = await Class.findByIdAndUpdate(
+      req.params.id,
+      { classTag },
+      { new: true, runValidators: true }
+    );
+    
+    if (!cls) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+    
+    res.json({
+      success: true,
+      classId: cls._id,
+      classTag: cls.classTag
+    });
+  } catch (err) {
+    console.error('Error updating class tag:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update class subjects
+app.put('/api/classes/:id/subjects', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+  try {
+    const { assignedSubjects } = req.body;
+    
+    // Validate input
+    if (!Array.isArray(assignedSubjects)) {
+      return res.status(400).json({ error: 'assignedSubjects must be an array' });
+    }
+    
+    const cls = await Class.findByIdAndUpdate(
+      req.params.id,
+      { assignedSubjects },
+      { new: true, runValidators: true }
+    );
+    
+    if (!cls) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+    
+    res.json({
+      success: true,
+      classId: cls._id,
+      assignedSubjects: cls.assignedSubjects
+    });
+  } catch (err) {
+    console.error('Error updating class subjects:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1721,7 +1768,6 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
             isActive: true
           });
 
-          console.log(`📋 Found ${applicableFeeHeads.length} applicable fee heads for class ${classNumber}`);
 
           // Create fee structure
           const feeStructure = new StudentFeeStructure({
@@ -1748,17 +1794,31 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
           feeStructure.overallStatus = 'pending';
 
           await feeStructure.save();
-          console.log(`✅ Fee structure auto-initialized for student ${student.name}`);
         }
-      } else {
-        console.log(`ℹ️ Fee structure already exists for student ${student.name}`);
       }
     } catch (feeError) {
       // Log fee initialization error but don't fail student creation
       console.error('⚠️ Error auto-initializing fee structure:', feeError);
     }
 
-    res.status(201).json({ id: student._id, ...student.toObject() });
+  // Populate classId and format response same as GET endpoint
+  const populatedStudent = await Student.findById(student._id).populate('classId', 'name section');
+  const classInfo = populatedStudent.classId ? `${populatedStudent.classId.name.replace('Class ', '')}-${populatedStudent.classId.section}` : null;
+
+  res.status(201).json({
+    id: populatedStudent._id,
+    name: populatedStudent.name,
+    admissionId: populatedStudent.admissionId,
+    academicYear: populatedStudent.academicYear,
+    rollNo: populatedStudent.rollNo,
+    classId: populatedStudent.classId?._id,
+    class: classInfo,
+    status: populatedStudent.status || 'active',
+    feeStatus: populatedStudent.feeStatus || 'pending',
+    photo: populatedStudent.photo,
+    documents: populatedStudent.documents || [],
+    ...populatedStudent.toObject()
+  });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1766,14 +1826,6 @@ app.post('/api/students', authenticate, checkPermission('students', 'create'), v
 
 app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
-    console.log('📝 PUT /api/students/:id - Request body:', JSON.stringify(req.body, null, 2));
-    console.log('📝 Documents field type:', typeof req.body.documents);
-    console.log('📝 Documents field is array:', Array.isArray(req.body.documents));
-
-    if (req.body.documents) {
-      console.log('📝 Documents field value:', JSON.stringify(req.body.documents, null, 2));
-    }
-
     // Process parents array to preserve isWhatsapp flags
     const processedParents = req.body.parents ? (req.body.parents || []).map(parent => ({
       ...parent,
@@ -1876,8 +1928,7 @@ app.put('/api/students/:id', authenticate, checkPermission('students', 'edit'), 
       status: student.status,
       timestamp: new Date()
     });
-    console.log(`📢 Broadcasting student update for ${student.name} (${student._id})`);
-    
+
     res.json({ id: student._id, ...student.toObject() });
   } catch (err) {
     console.error('❌ Error updating student:', err);
@@ -1968,7 +2019,6 @@ app.post('/api/students/:id/remarks', authenticate, checkPermission('students', 
     });
 
     await remark.save();
-    console.log(`✅ Remark created for student ${req.params.id}`);
 
     res.status(201).json(remark);
   } catch (err) {
@@ -2004,7 +2054,6 @@ app.put('/api/students/:id/remarks/:remarkId', authenticate, checkPermission('st
       return res.status(404).json({ error: 'Remark not found' });
     }
 
-    console.log(`✅ Remark updated: ${req.params.remarkId}`);
     res.json(remark);
   } catch (err) {
     console.error('❌ Error updating remark:', err);
@@ -2024,7 +2073,6 @@ app.delete('/api/students/:id/remarks/:remarkId', authenticate, checkPermission(
       return res.status(404).json({ error: 'Remark not found' });
     }
 
-    console.log(`✅ Remark deleted: ${req.params.remarkId}`);
     res.json({ success: true });
   } catch (err) {
     console.error('❌ Error deleting remark:', err);
@@ -2260,8 +2308,7 @@ app.post('/api/attendance', authenticate, checkPermission('attendance', 'create'
       status,
       timestamp: new Date()
     });
-    console.log(`📢 Broadcasting student attendance update for ${studentId} on ${date}`);
-    
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2289,8 +2336,7 @@ app.post('/api/attendance/bulk', async (req, res) => {
       count: attendance.length,
       timestamp: new Date()
     });
-    console.log(`📢 Broadcasting bulk attendance update for class ${classId} on ${date}`);
-    
+
     res.json({ success: true, count: attendance.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2314,7 +2360,7 @@ app.get('/api/attendance/:classId/:date', async (req, res) => {
 
 // ============ TIMETABLE ROUTES ============
 // Get timetable for a class
-app.get('/api/timetable/:classId', async (req, res) => {
+app.get('/api/timetable/:classId', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear } = req.query;
@@ -2340,7 +2386,7 @@ app.get('/api/timetable/:classId', async (req, res) => {
 });
 
 // Create or update timetable
-app.post('/api/timetable', async (req, res) => {
+app.post('/api/timetable', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId, academicYear, periods, schedule } = req.body;
 
@@ -2350,12 +2396,42 @@ app.post('/api/timetable', async (req, res) => {
       { upsert: true, new: true }
     );
 
+    // Trigger synchronization for all slots with teachers
+    const syncResults = [];
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    
+    for (const day of days) {
+      if (schedule[day]) {
+        for (let periodIndex = 0; periodIndex < schedule[day].length; periodIndex++) {
+          const slot = schedule[day][periodIndex];
+          if (slot && slot.teacherId) {
+            try {
+              await timetableService.syncTimetables({
+                sourceType: 'class',
+                sourceId: classId,
+                day: day,
+                periodIndex: periodIndex,
+                slotData: slot,
+                academicYear: academicYear || '2024-25',
+                modifiedBy: req.user?.id
+              });
+              syncResults.push({ day, periodIndex, success: true });
+            } catch (syncError) {
+              console.error(`Sync error for ${day} period ${periodIndex}:`, syncError);
+              syncResults.push({ day, periodIndex, success: false, error: syncError.message });
+            }
+          }
+        }
+      }
+    }
+
     res.json({
       id: timetable._id,
       classId: timetable.classId,
       academicYear: timetable.academicYear,
       periods: timetable.periods,
-      schedule: timetable.schedule
+      schedule: timetable.schedule,
+      syncResults: syncResults
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2363,11 +2439,35 @@ app.post('/api/timetable', async (req, res) => {
 });
 
 // Update specific period slot
-app.put('/api/timetable/:classId/slot', async (req, res) => {
+app.put('/api/timetable/:classId/slot', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { day, periodIndex, subject, teacherId, room, academicYear } = req.body;
 
+    // Check for conflicts if a teacher is being assigned
+    if (teacherId) {
+      const validation = await conflictDetectionService.validateSlotAssignment(
+        teacherId,
+        classId,
+        subject,
+        day,
+        periodIndex
+      );
+      
+      if (!validation.isValid) {
+        // Log the conflict
+        await conflictDetectionService.logConflict(validation.error);
+        
+        return res.status(409).json({
+          type: 'ConflictError',
+          message: validation.error.message,
+          details: validation.error,
+          conflict: validation.error
+        });
+      }
+    }
+
+    // Update the class timetable slot
     const updatePath = `schedule.${day}.${periodIndex}`;
     const timetable = await Timetable.findOneAndUpdate(
       { classId, academicYear: academicYear || '2024-25' },
@@ -2379,14 +2479,37 @@ app.put('/api/timetable/:classId/slot', async (req, res) => {
       { new: true, upsert: true }
     );
 
-    res.json({ success: true, timetable });
+    // Trigger synchronization to teacher timetable
+    let syncResult = null;
+    try {
+      const syncResponse = await timetableService.syncTimetables({
+        sourceType: 'class',
+        sourceId: classId,
+        day: day,
+        periodIndex: periodIndex,
+        slotData: { subject, teacherId, room },
+        academicYear: academicYear || '2024-25',
+        modifiedBy: req.user?.id
+      });
+      syncResult = { success: true, ...syncResponse };
+    } catch (syncError) {
+      console.error('Synchronization error:', syncError);
+      syncResult = { success: false, error: syncError.message };
+    }
+
+    res.json({ 
+      success: true, 
+      timetable,
+      syncResult: syncResult,
+      conflict: null
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Update periods configuration
-app.put('/api/timetable/:classId/periods', async (req, res) => {
+app.put('/api/timetable/:classId/periods', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { periods, academicYear } = req.body;
@@ -2404,12 +2527,71 @@ app.put('/api/timetable/:classId/periods', async (req, res) => {
 });
 
 // Delete timetable
-app.delete('/api/timetable/:classId', async (req, res) => {
+app.delete('/api/timetable/:classId', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear } = req.query;
     await Timetable.findOneAndDelete({ classId, academicYear: academicYear || '2024-25' });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Batch update multiple slots in a class timetable
+app.post('/api/timetable/:classId/batch', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { slots, academicYear } = req.body;
+
+    if (!slots || !Array.isArray(slots) || slots.length === 0) {
+      return res.status(400).json({ error: 'Invalid slots array' });
+    }
+
+    const result = await batchOperationsService.batchUpdateClassSlots({
+      classId,
+      slots,
+      academicYear: academicYear || '2024-25',
+      modifiedBy: req.user?.id
+    });
+
+    if (!result.success) {
+      return res.status(409).json({
+        type: 'BatchConflictError',
+        message: result.message,
+        results: result.results
+      });
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error('Batch update error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Clear cache endpoint (admin only)
+app.post('/api/timetable/cache/clear', authenticate, authRequireAdmin, async (req, res) => {
+  try {
+    const { pattern } = req.body;
+    
+    if (pattern) {
+      const count = cacheService.invalidatePattern(pattern);
+      res.json({ success: true, message: `Cleared ${count} cache entries matching pattern: ${pattern}` });
+    } else {
+      cacheService.clear();
+      res.json({ success: true, message: 'All cache cleared' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get cache statistics (admin only)
+app.get('/api/timetable/cache/stats', authenticate, authRequireAdmin, async (req, res) => {
+  try {
+    const stats = cacheService.getStats();
+    res.json(stats);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2624,7 +2806,6 @@ app.post('/api/fees/payments', authenticate, checkPermission('fees', 'create'), 
     if (feeStructure) {
       const feeStatus = feeStructure.totalBalance <= 0 ? 'paid' : 'pending';
       await Student.findByIdAndUpdate(studentId, { feeStatus });
-      console.log(`Payment created: ${receiptNumber}, Balance: ${feeStructure.totalBalance}, Status: ${feeStatus}`);
     } else {
       // Fallback to old calculation if no fee structure exists
       const allPayments = await FeePayment.find({
@@ -2636,7 +2817,6 @@ app.post('/api/fees/payments', authenticate, checkPermission('fees', 'create'), 
       await Student.findByIdAndUpdate(studentId, {
         feeStatus: totalPaid > 0 ? 'paid' : 'pending'
       });
-      console.log(`Payment created: ${receiptNumber}, Total paid: ${totalPaid}`);
     }
 
     const populatedPayment = await FeePayment.findById(payment._id)
@@ -2653,7 +2833,6 @@ app.post('/api/fees/payments', authenticate, checkPermission('fees', 'create'), 
       paymentDate: payment.paymentDate,
       timestamp: new Date()
     });
-    console.log(`📢 Broadcasting fee payment for student ${payment.studentId}`);
 
     res.status(201).json(populatedPayment);
   } catch (err) {
@@ -2707,8 +2886,6 @@ app.get('/api/fees/defaulters', async (req, res) => {
       .populate('classId', 'name section')
       .sort({ classId: 1, rollNo: 1 });
 
-    console.log(`Found ${students.length} active students for defaulters check`);
-
     // For each student, calculate pending amount and days overdue
     const defaulters = await Promise.all(students.map(async (student) => {
       // Get total payments made
@@ -2751,7 +2928,6 @@ app.get('/api/fees/defaulters', async (req, res) => {
     // Filter out students with no pending amount
     const actualDefaulters = defaulters.filter(d => d.pending > 0);
 
-    console.log(`Returning ${actualDefaulters.length} defaulters`);
     res.json(actualDefaulters);
   } catch (err) {
     console.error('Error fetching defaulters:', err);
@@ -3370,9 +3546,6 @@ app.delete('/api/settings/document-config/:id', authenticate, authRequireAdmin, 
 
 // Start server
 httpServer.listen(PORT, async () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`🔌 Socket.IO ready for connections`);
-
   // Start Agenda job scheduler
   try {
     const { startAgenda } = await import('./config/agenda.js');
@@ -3449,11 +3622,6 @@ app.post('/api/intake-forms', async (req, res) => {
   try {
     const { formName, formType, fields, status, createdBy } = req.body;
 
-    // Debug logging
-    console.log('Received fields type:', typeof fields);
-    console.log('Received fields is Array:', Array.isArray(fields));
-    console.log('Received fields:', JSON.stringify(fields, null, 2));
-
     const form = new IntakeForm({
       formName,
       formType: formType || 'staff',
@@ -3529,10 +3697,6 @@ app.post('/api/intake-forms/:id/duplicate', async (req, res) => {
   try {
     const originalForm = await IntakeForm.findById(req.params.id);
     if (!originalForm) return res.status(404).json({ error: 'Form not found' });
-
-    console.log('Duplicating form:', originalForm.formName);
-    console.log('Original fields type:', typeof originalForm.fields);
-    console.log('Original fields is Array:', Array.isArray(originalForm.fields));
 
     // Generate a unique name with numbered suffix
     let baseName = originalForm.formName;

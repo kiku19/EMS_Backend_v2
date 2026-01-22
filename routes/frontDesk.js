@@ -1,5 +1,7 @@
 import express from 'express';
-import { Admission, Appointment, Feedback, CallLog, Staff } from '../database.js';
+import { Admission, Appointment, Feedback, CallLog, Staff, Student } from '../database.js';
+import Visitor from '../models/Visitor.js';
+import GatePass from '../models/GatePass.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -90,7 +92,9 @@ router.put('/admissions/:id', authenticate, async (req, res) => {
     }
 
     // Update allowed fields
-    const allowedFields = ['studentName', 'dateOfBirth', 'parentName', 'phoneNumber', 'email', 'classApplyingFor', 'assessmentRequired', 'assignedTeacher', 'testDate', 'testTime', 'testResult', 'source', 'status', 'admissionDecision', 'decisionRemarks'];
+    const allowedFields = ['studentName', 'dateOfBirth', 'parentName', 'phoneNumber', 'email', 'classApplyingFor',
+      'hscGroup', 'assessmentRequired', 'assignedTeacher', 'testDate', 'testTime', 'testResult', 'source', 'status',
+      'admissionDecision', 'decisionRemarks', 'paymentStatus', 'paymentMode', 'paymentAmount', 'paymentDate', 'transactionId'];
 
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
@@ -140,23 +144,182 @@ router.delete('/admissions/:id', authenticate, async (req, res) => {
   }
 });
 
-// ============= VISITORS ROUTES (SIMPLIFIED FRONT DESK VERSION) =============
+/**
+ * POST /api/front-desk/admissions/:id/convert-to-student
+ * Convert admission inquiry to student record
+ */
+router.post('/admissions/:id/convert-to-student', authenticate, async (req, res) => {
+  try {
+    const admission = await Admission.findById(req.params.id);
+
+    if (!admission) {
+      return res.status(404).json({
+        success: false,
+        error: 'Admission not found'
+      });
+    }
+
+    // Check if admission is approved and fee paid
+    if (admission.status !== 'admission-approved' && admission.status !== 'fee-paid' && admission.status !== 'student-admitted') {
+      return res.status(400).json({
+        success: false,
+        error: 'Admission must be approved and fee paid before converting to student'
+      });
+    }
+
+    // Check if student already exists
+    const existingStudent = await Student.findOne({ admissionId: admission._id });
+    if (existingStudent) {
+      return res.status(400).json({
+        success: false,
+        error: 'Student record already exists for this admission'
+      });
+    }
+
+    // Generate admission number for student
+    const year = new Date().getFullYear();
+    const classCount = await Student.countDocuments({ classId: admission.classApplyingFor });
+    const admissionNumber = `${year}-${admission.classApplyingFor}-${String(classCount + 1).padStart(4, '0')}`;
+
+    // Create student from admission
+    const studentData = {
+      name: admission.studentName,
+      dateOfBirth: admission.dateOfBirth,
+      admissionId: admissionNumber,
+      classId: admission.classApplyingFor,
+      section: '',
+      rollNo: String(classCount + 1),
+      parentName: admission.parentName,
+      parentPhone: admission.phoneNumber,
+      parentEmail: admission.email,
+      admissionDate: new Date().toISOString().split('T')[0],
+      status: 'active',
+      hscGroup: admission.hscGroup || '',
+      // Reference to admission inquiry
+      admissionInquiryId: admission._id
+    };
+
+    const student = await Student.create(studentData);
+
+    // Update admission status
+    admission.status = 'student-admitted';
+    await admission.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Student created successfully',
+      student,
+      admissionNumber
+    });
+  } catch (error) {
+    console.error('❌ Convert admission to student error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to convert admission to student'
+    });
+  }
+});
+
+/**
+ * GET /api/front-desk/admissions/:id/tracker
+ * Get admission tracker timeline
+ */
+router.get('/admissions/:id/tracker', authenticate, async (req, res) => {
+  try {
+    const admission = await Admission.findById(req.params.id)
+      .populate('assignedTeacher', 'name')
+      .populate('decisionBy', 'name');
+
+    if (!admission) {
+      return res.status(404).json({
+        success: false,
+        error: 'Admission not found'
+      });
+    }
+
+    // Build timeline based on status
+    const timeline = [];
+    const statusOptions = [
+      'inquiry-logged',
+      'form-sent',
+      'form-submitted',
+      'documents-verified',
+      'test-scheduled',
+      'test-cleared',
+      'test-failed',
+      'test-no-show',
+      'admission-approved',
+      'admission-rejected',
+      'fee-paid',
+      'student-admitted'
+    ];
+
+    const currentIndex = statusOptions.indexOf(admission.status);
+
+    statusOptions.forEach((status, index) => {
+      const isCompleted = index <= currentIndex;
+      const isCurrent = index === currentIndex;
+
+      let label = status.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      let date = null;
+      let notes = '';
+
+      // Add dates and notes based on status
+      if (status === 'inquiry-logged') {
+        date = admission.createdAt;
+        notes = `Source: ${admission.source}`;
+      } else if (status === 'test-scheduled') {
+        date = admission.testDate;
+        notes = admission.testTime ? `Time: ${admission.testTime}` : '';
+      } else if (status === 'admission-approved' || status === 'admission-rejected') {
+        if (admission.admissionDecision) {
+          label = `Admission ${admission.admissionDecision.toUpperCase()}`;
+        }
+        notes = admission.decisionRemarks || '';
+      } else if (status === 'fee-paid') {
+        if (admission.paymentStatus === 'paid') {
+          date = admission.paymentDate;
+          notes = `Mode: ${admission.paymentMode}, Amount: ${admission.paymentAmount}`;
+        }
+      }
+
+      timeline.push({
+        status,
+        label,
+        isCompleted,
+        isCurrent,
+        date,
+        notes,
+        assignedTo: admission.assignedTeacher?.name || null
+      });
+    });
+
+    res.json({
+      admission,
+      timeline,
+      currentStage: admission.status,
+      progress: ((currentIndex + 1) / statusOptions.length) * 100
+    });
+  } catch (error) {
+    console.error('❌ Get admission tracker error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to get admission tracker'
+    });
+  }
+});
+
+// ============= VISITORS ROUTES =============
 
 /**
  * GET /api/front-desk/visitors/today
- * Get today's visitors (simplified version for front desk)
+ * Get today's visitors
  */
 router.get('/visitors/today', authenticate, async (req, res) => {
   try {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const visitors = await Admission.find({
-      createdAt: { $gte: startOfDay, $lte: endOfDay }
-    }).sort({ createdAt: -1 });
-
+    const visitors = await Visitor.getTodaysVisitors();
     res.json(visitors);
   } catch (error) {
     console.error('❌ Get today visitors error:', error);
@@ -169,20 +332,57 @@ router.get('/visitors/today', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /api/front-desk/visitors
+ * Get all visitors with optional filters
+ */
+router.get('/visitors', authenticate, async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    let visitors;
+
+    if (search) {
+      visitors = await Visitor.searchVisitors(search);
+    } else if (status === 'active') {
+      visitors = await Visitor.getActiveVisitors();
+    } else {
+      visitors = await Visitor.find()
+        .sort({ checkInTime: -1 })
+        .populate('checkedInBy', 'name code')
+        .populate('studentId', 'name admissionId rollNo classId');
+    }
+
+    res.json(visitors);
+  } catch (error) {
+    console.error('❌ Get visitors error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to fetch visitors'
+    });
+  }
+});
+
+/**
  * POST /api/front-desk/visitors
- * Create new visitor (simplified - uses Admission model for walk-in visitors)
+ * Create new visitor
  */
 router.post('/visitors', authenticate, async (req, res) => {
   try {
-    // For now, create as admission inquiry type
     const visitorData = {
-      studentName: req.body.visitorName,
-      phoneNumber: req.body.phoneNumber,
-      status: 'inquiry-logged',
-      source: 'walk-in'
+      ...req.body,
+      checkInTime: new Date(),
+      checkedInBy: req.user.id,
+      status: 'ACTIVE'
     };
 
-    const visitor = await Admission.create(visitorData);
+    const visitor = await Visitor.create(visitorData);
+
+    // Populate for response
+    await visitor.populate('checkedInBy', 'name code');
+    if (visitor.studentId) {
+      await visitor.populate('studentId', 'name admissionId rollNo classId');
+    }
+
     res.status(201).json(visitor);
   } catch (error) {
     console.error('❌ Create visitor error:', error);
@@ -196,11 +396,11 @@ router.post('/visitors', authenticate, async (req, res) => {
 
 /**
  * PUT /api/front-desk/visitors/:id
- * Update visitor (for checkout)
+ * Update visitor (for checkout or edit)
  */
 router.put('/visitors/:id', authenticate, async (req, res) => {
   try {
-    const visitor = await Admission.findById(req.params.id);
+    const visitor = await Visitor.findById(req.params.id);
 
     if (!visitor) {
       return res.status(404).json({
@@ -209,12 +409,28 @@ router.put('/visitors/:id', authenticate, async (req, res) => {
       });
     }
 
-    // Update fields
-    if (req.body.checkOutTime) {
-      visitor.notes = visitor.notes ? `${visitor.notes}\nChecked out at ${req.body.checkOutTime}` : `Checked out at ${req.body.checkOutTime}`;
+    // Update allowed fields
+    const allowedFields = ['name', 'phone', 'email', 'purpose', 'otherPurpose', 'whomToMeet', 'department',
+      'companyName', 'deliveryPerson', 'notes', 'studentId', 'studentName', 'parentMapping',
+      'gatePassRequired', 'appointmentRequired'];
+
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        visitor[field] = req.body[field];
+      }
+    });
+
+    // Handle checkout
+    if (req.body.checkOutTime && visitor.status === 'ACTIVE') {
+      await visitor.checkOut(req.user.id, req.body.notes || '');
     }
 
     await visitor.save();
+    await visitor.populate('checkedInBy', 'name code');
+    if (visitor.studentId) {
+      await visitor.populate('studentId', 'name admissionId rollNo classId');
+    }
+
     res.json(visitor);
   } catch (error) {
     console.error('❌ Update visitor error:', error);
@@ -232,7 +448,7 @@ router.put('/visitors/:id', authenticate, async (req, res) => {
  */
 router.delete('/visitors/:id', authenticate, async (req, res) => {
   try {
-    await Admission.deleteOne({ _id: req.params.id });
+    await Visitor.deleteOne({ _id: req.params.id });
     res.json({ success: true, message: 'Visitor deleted successfully' });
   } catch (error) {
     console.error('❌ Delete visitor error:', error);
@@ -248,32 +464,12 @@ router.delete('/visitors/:id', authenticate, async (req, res) => {
 
 /**
  * GET /api/front-desk/gate-passes/today
- * Get today's gate passes (simplified for front desk)
+ * Get today's gate passes
  */
 router.get('/gate-passes/today', authenticate, async (req, res) => {
   try {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const gatePasses = await Admission.find({
-      date: { $gte: startOfDay.toISOString().split('T')[0], $lte: endOfDay.toISOString().split('T')[0] }
-    }).sort({ createdAt: -1 });
-
-    // Format as gate passes
-    const formatted = gatePasses.map(gp => ({
-      _id: gp._id,
-      personType: 'student',
-      personId: gp._id,
-      personName: gp.studentName,
-      leavingWith: gp.parentName || 'N/A',
-      permittedBy: gp.assignedTeacher?.name || 'N/A',
-      outTime: gp.testTime || new Date().toTimeString().slice(0, 5),
-      date: gp.dateOfInquiry
-    }));
-
-    res.json(formatted);
+    const gatePasses = await GatePass.getTodaysPasses();
+    res.json(gatePasses);
   } catch (error) {
     console.error('❌ Get today gate passes error:', error);
     res.status(500).json({
@@ -285,17 +481,62 @@ router.get('/gate-passes/today', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /api/front-desk/gate-passes
+ * Get all gate passes with optional filters
+ */
+router.get('/gate-passes', authenticate, async (req, res) => {
+  try {
+    const { status, approvalStatus, studentId } = req.query;
+    let gatePasses;
+
+    if (studentId) {
+      gatePasses = await GatePass.getByStudent(studentId);
+    } else if (status === 'active') {
+      gatePasses = await GatePass.getActivePasses();
+    } else {
+      const query = {};
+      if (status) query.status = status;
+      if (approvalStatus) query.approvalStatus = approvalStatus;
+
+      gatePasses = await GatePass.find(query)
+        .sort({ leavingDate: -1, leavingTime: -1 })
+        .populate('studentId', 'name admissionId photo rollNo')
+        .populate('approvedByStaffId', 'name code')
+        .populate('requestedById', 'name code');
+    }
+
+    res.json(gatePasses);
+  } catch (error) {
+    console.error('❌ Get gate passes error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to fetch gate passes'
+    });
+  }
+});
+
+/**
  * POST /api/front-desk/gate-passes
- * Create new gate pass (simplified - uses Admission model)
+ * Create new gate pass
  */
 router.post('/gate-passes', authenticate, async (req, res) => {
   try {
     const gatePassData = {
       ...req.body,
-      status: 'test-scheduled'
+      requestedById: req.user.id,
+      requestedByName: req.user.name || 'Front Desk',
+      status: 'PENDING',
+      approvalStatus: 'PENDING'
     };
 
-    const gatePass = await Admission.create(gatePassData);
+    const gatePass = await GatePass.create(gatePassData);
+
+    // Populate for response
+    await gatePass.populate('studentId', 'name admissionId photo rollNo');
+    await gatePass.populate('approvedByStaffId', 'name code');
+    await gatePass.populate('requestedById', 'name code');
+
     res.status(201).json(gatePass);
   } catch (error) {
     console.error('❌ Create gate pass error:', error);
@@ -308,12 +549,68 @@ router.post('/gate-passes', authenticate, async (req, res) => {
 });
 
 /**
+ * PUT /api/front-desk/gate-passes/:id
+ * Update gate pass
+ */
+router.put('/gate-passes/:id', authenticate, async (req, res) => {
+  try {
+    const gatePass = await GatePass.findById(req.params.id);
+
+    if (!gatePass) {
+      return res.status(404).json({
+        success: false,
+        error: 'Gate pass not found'
+      });
+    }
+
+    // Update allowed fields
+    const allowedFields = ['reason', 'otherReason', 'leavingDate', 'leavingTime', 'expectedReturnDate',
+      'expectedReturnTime', 'leavingWith', 'parentType', 'escortName', 'escortRelation',
+      'escortPhone', 'approvedBy', 'approvedByStaffId', 'approvedByName', 'notes'];
+
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        gatePass[field] = req.body[field];
+      }
+    });
+
+    // If status is being updated
+    if (req.body.approvalStatus) {
+      gatePass.approvalStatus = req.body.approvalStatus;
+      if (req.body.approvalStatus === 'APPROVED') {
+        gatePass.status = 'ACTIVE';
+      } else if (req.body.approvalStatus === 'REJECTED') {
+        gatePass.status = 'CANCELLED';
+      }
+    }
+
+    if (req.body.status) {
+      gatePass.status = req.body.status;
+    }
+
+    await gatePass.save();
+    await gatePass.populate('studentId', 'name admissionId photo rollNo');
+    await gatePass.populate('approvedByStaffId', 'name code');
+    await gatePass.populate('requestedById', 'name code');
+
+    res.json(gatePass);
+  } catch (error) {
+    console.error('❌ Update gate pass error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to update gate pass'
+    });
+  }
+});
+
+/**
  * DELETE /api/front-desk/gate-passes/:id
  * Delete gate pass
  */
 router.delete('/gate-passes/:id', authenticate, async (req, res) => {
   try {
-    await Admission.deleteOne({ _id: req.params.id });
+    await GatePass.deleteOne({ _id: req.params.id });
     res.json({ success: true, message: 'Gate pass deleted successfully' });
   } catch (error) {
     console.error('❌ Delete gate pass error:', error);

@@ -12,8 +12,6 @@ const typingUsers = new Map();
 
 export function initializeChatHandlers(io) {
   io.on('connection', (socket) => {
-    console.log('🔌 New socket connection:', socket.id);
-
     // Authentication
     socket.on('authenticate', async (data) => {
       try {
@@ -82,8 +80,6 @@ export function initializeChatHandlers(io) {
             });
           }
         });
-
-        console.log(`✅ User authenticated: ${userId} (${userType})`);
       } catch (error) {
         console.error('❌ Authentication error:', error);
         socket.emit('error', { message: 'Authentication failed' });
@@ -124,7 +120,6 @@ export function initializeChatHandlers(io) {
         await conversation.resetUnread(socket.userId);
 
         socket.emit('joined_conversation', { conversationId });
-        console.log(`📥 User ${socket.userId} joined conversation ${conversationId}`);
       } catch (error) {
         console.error('❌ Join conversation error:', error);
         socket.emit('error', { message: 'Failed to join conversation' });
@@ -284,8 +279,6 @@ export function initializeChatHandlers(io) {
             }
           });
         }
-
-        console.log(`📤 Message sent: ${message._id}`);
       } catch (error) {
         console.error('❌ Send message error:', error);
         socket.emit('error', { message: 'Failed to send message' });
@@ -427,14 +420,14 @@ export function initializeChatHandlers(io) {
 
           // Broadcast user offline status - FIXED: Only to relevant users
           const userConversations = await Conversation.find({
-            participants: socket.userId
-          }).populate('participants', '_id');
+            'participants.userId': socket.userId
+          }).populate('participants.userId', '_id');
           
           const relevantUserIds = new Set();
           userConversations.forEach(conv => {
             conv.participants.forEach(p => {
-              if (p._id.toString() !== socket.userId) {
-                relevantUserIds.add(p._id.toString());
+              if (p.userId._id.toString() !== socket.userId) {
+                relevantUserIds.add(p.userId._id.toString());
               }
             });
           });
@@ -450,8 +443,6 @@ export function initializeChatHandlers(io) {
               });
             }
           });
-
-          console.log(`👋 User disconnected: ${socket.userId}`);
         }
       } catch (error) {
         console.error('❌ Disconnect error:', error);
@@ -469,17 +460,12 @@ export function initializeChatHandlers(io) {
   // Periodic cleanup of stale data (every 5 minutes)
   setInterval(() => {
     try {
-      console.log('🧹 Running periodic cleanup...');
-      
       // Clean up empty typing user sets
       typingUsers.forEach((typingSet, conversationId) => {
         if (typingSet.size === 0) {
           typingUsers.delete(conversationId);
         }
       });
-
-      // Log current state for monitoring
-      console.log(`📊 Active users: ${activeUsers.size}, Active conversations with typing: ${typingUsers.size}`);
     } catch (error) {
       console.error('❌ Cleanup error:', error);
     }

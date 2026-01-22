@@ -40,12 +40,16 @@ export const checkPermission = (module, action) => {
           ...perms
         }));
 
-        userPermission = await UserPermission.create({
-          userId,
-          role,
-          permissions: permissionsArray,
-          customPermissions: false
-        });
+        userPermission = await UserPermission.findOneAndUpdate(
+          { userId },
+          {
+            userId,
+            role,
+            permissions: permissionsArray,
+            customPermissions: false
+          },
+          { upsert: true, new: true }
+        );
       }
 
       // Find permission for the requested module
