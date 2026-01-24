@@ -1,6 +1,7 @@
 import express from 'express';
 import { Timetable, Class, Staff } from '../database.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { validate, schemas } from '../middleware/validation.js';
 
 const router = express.Router();
