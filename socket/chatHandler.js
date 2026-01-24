@@ -63,7 +63,7 @@ export function initializeChatHandlers(io) {
         const relevantUserIds = new Set();
         userConversations.forEach(conv => {
           conv.participants.forEach(p => {
-            if (p.userId._id.toString() !== userId) {
+            if (p.userId && p.userId._id && p.userId._id.toString() !== userId) {
               relevantUserIds.add(p.userId._id.toString());
             }
           });
@@ -426,7 +426,7 @@ export function initializeChatHandlers(io) {
           const relevantUserIds = new Set();
           userConversations.forEach(conv => {
             conv.participants.forEach(p => {
-              if (p.userId._id.toString() !== socket.userId) {
+              if (p.userId && p.userId._id && p.userId._id.toString() !== socket.userId) {
                 relevantUserIds.add(p.userId._id.toString());
               }
             });

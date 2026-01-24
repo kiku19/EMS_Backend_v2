@@ -2,8 +2,16 @@ import express from 'express';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import FeeHead from '../models/FeeHead.js';
 import { Student, Class } from '../database.js';
+import { emitFeeUpdate } from '../utils/socketEmitter.js';
 
 const router = express.Router();
+
+// Helper function to calculate fee status consistently
+function calculateFeeStatus(totalBalance, totalPaid) {
+  if (totalBalance <= 0) return 'paid';
+  if (totalPaid > 0) return 'partial';
+  return 'pending';
+}
 
 // Get fee structure for a student
 router.get('/student/:studentId', async (req, res) => {
@@ -11,7 +19,7 @@ router.get('/student/:studentId', async (req, res) => {
     const { academicYear } = req.query;
     const query = {
       studentId: req.params.studentId,
-      ...(academicYear && { academicYear })
+      academicYear: academicYear || '2024-25'  // FIXED: Always include academic year to get correct fee structure
     };
 
     const feeStructure = await StudentFeeStructure.findOne(query)
@@ -22,6 +30,9 @@ router.get('/student/:studentId', async (req, res) => {
     if (!feeStructure) {
       return res.status(404).json({ error: 'Fee structure not found for this student' });
     }
+
+    // Log for debugging
+    console.log(`✅ Fee structure fetched for student ${req.params.studentId}, year ${feeStructure.academicYear}, totalFee: ${feeStructure.totalFee}`);
 
     res.json(feeStructure);
   } catch (error) {
@@ -115,7 +126,13 @@ router.post('/initialize/:studentId', async (req, res) => {
 
     await feeStructure.save();
 
+    // Sync to Student.feeStatus for student list display
+    await Student.findByIdAndUpdate(student._id, { feeStatus: 'pending' });
+
     console.log(`✅ Fee structure initialized for student ${student.name}`);
+
+    // Emit socket event for real-time updates
+    emitFeeUpdate(student._id, student.name, feeStructure);
 
     res.status(201).json(feeStructure);
   } catch (error) {
@@ -142,14 +159,21 @@ router.put('/student/:studentId/discount', async (req, res) => {
     feeStructure.discountReason = discountReason || '';
     feeStructure.totalBalance = feeStructure.totalFee - feeStructure.totalPaid - feeStructure.discountApplied;
 
-    // Update overall status
-    if (feeStructure.totalBalance <= 0) {
-      feeStructure.overallStatus = 'paid';
-    } else if (feeStructure.totalPaid > 0) {
-      feeStructure.overallStatus = 'partial';
-    }
+    // Update overall status using helper
+    feeStructure.overallStatus = calculateFeeStatus(feeStructure.totalBalance, feeStructure.totalPaid);
 
     await feeStructure.save();
+
+    // Sync to Student.feeStatus for student list display
+    await Student.findByIdAndUpdate(req.params.studentId, { feeStatus: feeStructure.overallStatus });
+
+    // Get student details for socket event
+    const student = await Student.findById(req.params.studentId).select('name');
+
+    // Emit socket event for real-time updates
+    if (student) {
+      emitFeeUpdate(student._id, student.name, feeStructure);
+    }
 
     res.json(feeStructure);
   } catch (error) {
@@ -200,20 +224,23 @@ router.post('/student/:studentId/payment', async (req, res) => {
     feeStructure.totalBalance = feeStructure.totalFee - feeStructure.totalPaid - feeStructure.discountApplied;
     feeStructure.lastPaymentDate = new Date();
 
-    // Update overall status
-    if (feeStructure.totalBalance <= 0) {
-      feeStructure.overallStatus = 'paid';
-    } else if (feeStructure.totalPaid > 0) {
-      feeStructure.overallStatus = 'partial';
-    }
+    // Update overall status using helper
+    feeStructure.overallStatus = calculateFeeStatus(feeStructure.totalBalance, feeStructure.totalPaid);
 
     await feeStructure.save();
 
-    // Update Student's feeStatus field for student list display
-    const feeStatus = feeStructure.totalBalance <= 0 ? 'paid' : 'pending';
-    await Student.findByIdAndUpdate(req.params.studentId, { feeStatus });
+    // Sync to Student.feeStatus for student list display
+    await Student.findByIdAndUpdate(req.params.studentId, { feeStatus: feeStructure.overallStatus });
 
-    console.log(`✅ Student ${req.params.studentId} fee status updated to: ${feeStatus}`);
+    console.log(`✅ Student ${req.params.studentId} fee status updated to: ${feeStructure.overallStatus}`);
+
+    // Get student details for socket event
+    const student = await Student.findById(req.params.studentId).select('name');
+
+    // Emit socket event for real-time updates
+    if (student) {
+      emitFeeUpdate(student._id, student.name, feeStructure);
+    }
 
     res.json(feeStructure);
   } catch (error) {

@@ -4,7 +4,7 @@ const modulePermissionSchema = new mongoose.Schema({
   module: {
     type: String,
     required: true,
-    enum: ['dashboard', 'staff', 'students', 'classes', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk']
+    enum: ['dashboard', 'staff', 'students', 'classes', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk', 'intake-forms']
   },
   view: { type: Boolean, default: false },
   create: { type: Boolean, default: false },
@@ -47,7 +47,8 @@ export const PERMISSION_TEMPLATES = {
     messaging: { view: true, create: true, edit: true, delete: true },
     reports: { view: true, create: true, edit: true, delete: true },
     settings: { view: true, create: true, edit: true, delete: true },
-    'front-desk': { view: true, create: true, edit: true, delete: true }
+    'front-desk': { view: true, create: true, edit: true, delete: true },
+    'intake-forms': { view: true, create: true, edit: true, delete: true }
   },
   teacher: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -61,7 +62,8 @@ export const PERMISSION_TEMPLATES = {
     messaging: { view: true, create: true, edit: true, delete: false },
     reports: { view: true, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
-    'front-desk': { view: false, create: false, edit: false, delete: false }
+    'front-desk': { view: false, create: false, edit: false, delete: false },
+    'intake-forms': { view: true, create: true, edit: true, delete: false }
   },
   accountant: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -75,7 +77,8 @@ export const PERMISSION_TEMPLATES = {
     messaging: { view: true, create: true, edit: false, delete: false },
     reports: { view: true, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
-    'front-desk': { view: false, create: false, edit: false, delete: false }
+    'front-desk': { view: false, create: false, edit: false, delete: false },
+    'intake-forms': { view: true, create: false, edit: false, delete: false }
   },
   receptionist: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -89,7 +92,8 @@ export const PERMISSION_TEMPLATES = {
     messaging: { view: true, create: true, edit: false, delete: false },
     reports: { view: false, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
-    'front-desk': { view: true, create: true, edit: true, delete: false }
+    'front-desk': { view: true, create: true, edit: true, delete: false },
+    'intake-forms': { view: true, create: true, edit: true, delete: false }
   }
 };
 

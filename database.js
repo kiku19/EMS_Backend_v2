@@ -667,12 +667,36 @@ const formSubmissionSchema = new mongoose.Schema({
   submittedByEmail: String,
   submittedByPhone: String,
   submittedAt: { type: Date, default: Date.now },
+
+  // Review workflow fields
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   reviewedAt: Date,
-  reviewStatus: { type: String, default: 'pending' }, // 'pending', 'approved', 'rejected'
+  reviewStatus: {
+    type: String,
+    default: 'pending',
+    enum: ['pending', 'approved', 'rejected', 'needs_revision'] // Added 'needs_revision' for edit requests
+  },
   reviewNotes: String,
-  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Populated after approval
+
+  // Entity linking (populated after approval)
+  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // For staff form submissions
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' }, // For student form submissions
+
+  // Edit request workflow fields
+  editRequestNotes: String, // Admin notes when requesting edits
+  editRequestedAt: Date, // When edit was requested
+  editRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Who requested the edit
+  resubmissionCount: { type: Number, default: 0 }, // Track how many times re-submitted
 }, { timestamps: true });
+
+// Indexes for performance
+formSubmissionSchema.index({ assignmentId: 1 });
+formSubmissionSchema.index({ formId: 1 });
+formSubmissionSchema.index({ submittedByEmail: 1 });
+formSubmissionSchema.index({ reviewStatus: 1 });
+formSubmissionSchema.index({ studentId: 1 });
+formSubmissionSchema.index({ staffId: 1 });
+formSubmissionSchema.index({ submittedAt: -1 }); // For sorting by submission date
 
 // Visitor Schema - REMOVED: Now using enhanced model from ./models/Visitor.js
 // The duplicate schema definition has been removed to avoid confusion

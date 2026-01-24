@@ -37,6 +37,7 @@ import timetableService from './services/timetableService.js';
 import conflictDetectionService from './services/conflictDetectionService.js';
 import batchOperationsService from './services/batchOperationsService.js';
 import cacheService from './services/cacheService.js';
+import { initializeSocket } from './utils/socketEmitter.js';
 
 // Load and validate environment variables
 dotenv.config();
@@ -60,6 +61,9 @@ const io = new SocketIOServer(httpServer, {
 
 // Attach io instance to Express app so routes can access it
 app.set('io', io);
+
+// Initialize socket emitter utility
+initializeSocket(io);
 
 // Configure Cloudinary - FIXED: Validate configuration
 if (config.cloudinary.configured) {
@@ -96,14 +100,16 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Rate limiting - ADDED for security
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 300, // Increased from 100 to 300 requests per windowMs
+  max: 3000, // Increased from 300 to 3000 requests per windowMs for development
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
   // Skip rate limiting for successful requests to certain endpoints
   skip: (req) => {
-    // Don't rate limit health checks or static assets
-    return req.path === '/health' || req.path.startsWith('/static');
+    // Don't rate limit in development or for health checks
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
+    return isDevelopment || isLocalhost || req.path === '/health' || req.path.startsWith('/static');
   }
 });
 
@@ -189,6 +195,14 @@ app.use('/api/settings', settingsRoutes);
 // Class Settings routes
 import classSettingsRoutes from './routes/classSettings.js';
 app.use('/api/class-settings', classSettingsRoutes);
+
+// Intake Forms routes
+import intakeFormsRoutes from './routes/intakeForms.js';
+app.use('/api', intakeFormsRoutes);
+
+// Public API routes (no authentication required)
+import publicRoutes from './routes/public.js';
+app.use('/api/public', publicRoutes);
 
 // Make io and Staff available to routes
 app.locals.io = io;
@@ -1567,6 +1581,29 @@ app.get('/api/classes/:id', async (req, res) => {
 app.post('/api/classes', authenticate, checkPermission('classes', 'create'), async (req, res) => {
   try {
     const { name, section, classTeacherId, subjects, academicYear } = req.body;
+
+    // VALIDATION: Check if teacher is already assigned to another class
+    if (classTeacherId !== null && classTeacherId !== undefined && classTeacherId !== '') {
+      const existingClass = await Class.findOne({
+        classTeacherId: classTeacherId
+      });
+
+      if (existingClass) {
+        const teacher = await Staff.findById(classTeacherId);
+        return res.status(400).json({
+          error: 'Teacher is already assigned as class teacher to another class',
+          teacherName: teacher?.name || 'Unknown',
+          teacherCode: teacher?.code || 'Unknown',
+          existingClass: {
+            id: existingClass._id,
+            name: existingClass.name,
+            section: existingClass.section
+          },
+          message: `${teacher?.name || 'Teacher'} is already assigned to ${existingClass.name} ${existingClass.section}. Please unassign them first.`
+        });
+      }
+    }
+
     const cls = new Class({ name, section, classTeacherId, subjects, academicYear });
     await cls.save();
     res.status(201).json({ id: cls._id, ...cls.toObject() });
@@ -1581,14 +1618,105 @@ app.post('/api/classes', authenticate, checkPermission('classes', 'create'), asy
   }
 });
 
+// Update class teacher for a class (MUST be before /:id route)
+app.put('/api/classes/:id/class-teacher', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+  try {
+    const { classTeacherId } = req.body;
+
+    // Find the class
+    const cls = await Class.findById(req.params.id);
+    if (!cls) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    let teacher = null;
+
+    // Only validate teacher if classTeacherId is provided (not null/undefined)
+    if (classTeacherId !== null && classTeacherId !== undefined && classTeacherId !== '') {
+      teacher = await Staff.findById(classTeacherId);
+      if (!teacher) {
+        return res.status(404).json({ error: 'Teacher not found' });
+      }
+
+      // VALIDATION: Check if teacher is already assigned to another class
+      const existingClass = await Class.findOne({
+        classTeacherId: classTeacherId,
+        _id: { $ne: req.params.id } // Exclude current class
+      });
+
+      if (existingClass) {
+        return res.status(400).json({
+          error: 'Teacher is already assigned as class teacher to another class',
+          teacherName: teacher.name,
+          teacherCode: teacher.code,
+          existingClass: {
+            id: existingClass._id,
+            name: existingClass.name,
+            section: existingClass.section
+          },
+          message: `${teacher.name} (${teacher.code}) is already assigned to ${existingClass.name} ${existingClass.section}. Please unassign them first.`
+        });
+      }
+    }
+
+    // Update only the classTeacherId field (allows null for unassigning)
+    cls.classTeacherId = classTeacherId || null;
+    await cls.save();
+
+    // Broadcast class update with teacher details
+    io.emit('class_updated', {
+      classId: cls._id.toString(),
+      name: cls.name,
+      section: cls.section,
+      classTeacherId: cls.classTeacherId,
+      teacher: teacher?.name || null,
+      teacherPhoto: teacher?.photoURL || teacher?.photo || null,
+      timestamp: new Date()
+    });
+
+    res.json({
+      id: cls._id,
+      ...cls.toObject(),
+      teacherName: teacher?.name || null,
+      teacherPhoto: teacher?.photoURL || teacher?.photo || null
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.put('/api/classes/:id', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { name, section, classTeacherId, subjects, academicYear } = req.body;
+
+    // VALIDATION: Check if teacher is already assigned to another class
+    if (classTeacherId !== null && classTeacherId !== undefined && classTeacherId !== '') {
+      const existingClass = await Class.findOne({
+        classTeacherId: classTeacherId,
+        _id: { $ne: req.params.id } // Exclude current class
+      });
+
+      if (existingClass) {
+        const teacher = await Staff.findById(classTeacherId);
+        return res.status(400).json({
+          error: 'Teacher is already assigned as class teacher to another class',
+          teacherName: teacher?.name || 'Unknown',
+          teacherCode: teacher?.code || 'Unknown',
+          existingClass: {
+            id: existingClass._id,
+            name: existingClass.name,
+            section: existingClass.section
+          },
+          message: `${teacher?.name || 'Teacher'} is already assigned to ${existingClass.name} ${existingClass.section}. Please unassign them first.`
+        });
+      }
+    }
+
     const cls = await Class.findByIdAndUpdate(req.params.id,
       { name, section, classTeacherId, subjects, academicYear }, { new: true }
     );
     if (!cls) return res.status(404).json({ error: 'Class not found' });
-    
+
     // Broadcast class update
     io.emit('class_updated', {
       classId: cls._id.toString(),
@@ -1622,6 +1750,16 @@ app.get('/api/classes/:id/students', async (req, res) => {
     res.json(students.map(s => ({ id: s._id, ...s.toObject() })));
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/classes/:id/next-roll-number', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const rollNumber = await getNextRollNumber(req.params.id);
+    res.json({ rollNumber });
+  } catch (error) {
+    console.error('Error getting next roll number:', error);
+    res.status(500).json({ error: 'Failed to get next roll number' });
   }
 });
 
@@ -1716,27 +1854,48 @@ app.put('/api/classes/:id/subjects', authenticate, checkPermission('classes', 'e
 app.get('/api/students', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
     const { classId, page = 1, limit = 50 } = req.query;
-    
+
     // Parse pagination parameters
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
-    
+
     // Build query
     const query = classId ? { classId } : {};
-    
+
     // Get total count for pagination
     const total = await Student.countDocuments(query);
-    
+
     // Fetch paginated students
     const students = await Student.find(query)
       .populate('classId', 'name section')
       .sort({ rollNo: 1 })
       .limit(limitNum)
       .skip(skip);
-    
+
+    // FIXED: Fetch fee structures for current academic year (2024-25) to get correct feeStatus
+    const StudentFeeStructure = (await import('./models/StudentFeeStructure.js')).default;
+    const studentIds = students.map(s => s._id);
+
+    const feeStructures = await StudentFeeStructure.find({
+      studentId: { $in: studentIds },
+      academicYear: '2024-25'  // Use current academic year
+    });
+
+    // Create a map for quick lookup: studentId -> overallStatus
+    const feeStatusMap = {};
+    feeStructures.forEach(fs => {
+      // Convert studentId to string for consistent matching
+      const studentIdStr = fs.studentId.toString();
+      feeStatusMap[studentIdStr] = fs.overallStatus || 'pending';
+    });
+
     const formatted = students.map(s => {
       const classInfo = s.classId ? `${s.classId.name.replace('Class ', '')}-${s.classId.section}` : null;
+
+      // Use current academic year's feeStatus from StudentFeeStructure, fallback to stored value
+      const currentFeeStatus = feeStatusMap[s._id.toString()] || s.feeStatus;
+
       return {
         id: s._id,
         name: s.name,
@@ -1784,8 +1943,8 @@ app.get('/api/students', authenticate, checkPermission('students', 'view'), asyn
         transportRequired: s.transportRequired,
         hostelRequired: s.hostelRequired,
 
-        // Status
-        feeStatus: s.feeStatus,
+        // Status - FIXED: Use current academic year's feeStatus
+        feeStatus: currentFeeStatus,
         status: s.status,
 
         // Pinning
@@ -1797,7 +1956,7 @@ app.get('/api/students', authenticate, checkPermission('students', 'view'), asyn
         photo: s.photo,
       };
     });
-    
+
     // Send paginated response
     res.json({
       data: formatted,
@@ -2413,6 +2572,172 @@ app.put('/api/students/:id/unpin', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Error unpinning student:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============ CLASS TEACHER VALIDATION ENDPOINT ============
+// Check for duplicate class teacher assignments
+app.get('/api/validation/class-teachers/check-duplicates', authenticate, async (req, res) => {
+  try {
+    console.log('🔍 Checking for duplicate class teacher assignments...');
+
+    // Find all classes with class teachers
+    const classesWithTeachers = await Class.find({
+      classTeacherId: { $exists: true, $ne: null }
+    }).populate('classTeacherId', 'name code');
+
+    // Group classes by teacher
+    const teacherMap = new Map();
+    classesWithTeachers.forEach(cls => {
+      const teacherId = cls.classTeacherId._id.toString();
+      if (!teacherMap.has(teacherId)) {
+        teacherMap.set(teacherId, {
+          teacher: {
+            id: cls.classTeacherId._id,
+            name: cls.classTeacherId.name,
+            code: cls.classTeacherId.code
+          },
+          classes: []
+        });
+      }
+      teacherMap.get(teacherId).classes.push({
+        classId: cls._id,
+        className: `${cls.name} ${cls.section}`,
+        createdAt: cls.createdAt,
+        updatedAt: cls.updatedAt
+      });
+    });
+
+    // Identify violations (teachers with multiple classes)
+    const violations = [];
+    teacherMap.forEach((data, teacherId) => {
+      if (data.classes.length > 1) {
+        // Sort classes by updatedAt (most recent first)
+        const sortedClasses = [...data.classes].sort((a, b) =>
+          new Date(b.updatedAt) - new Date(a.updatedAt)
+        );
+
+        violations.push({
+          teacherId,
+          teacherName: data.teacher.name,
+          teacherCode: data.teacher.code,
+          classCount: data.classes.length,
+          classes: sortedClasses.map(c => ({
+            classId: c.classId,
+            className: c.className,
+            createdAt: c.createdAt,
+            updatedAt: c.updatedAt
+          })),
+          recommendedToKeep: sortedClasses[0].classId,
+          recommendedToRemove: sortedClasses.slice(1).map(c => c.classId)
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      hasViolations: violations.length > 0,
+      violationCount: violations.length,
+      violations: violations,
+      totalClassesWithTeachers: classesWithTeachers.length,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error('❌ Error checking for duplicates:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fix duplicate class teacher assignments
+app.post('/api/validation/class-teachers/fix-duplicates', authenticate, async (req, res) => {
+  try {
+    console.log('🔧 Fixing duplicate class teacher assignments...');
+
+    // Find all classes with class teachers
+    const classesWithTeachers = await Class.find({
+      classTeacherId: { $exists: true, $ne: null }
+    }).populate('classTeacherId', 'name code');
+
+    // Group classes by teacher
+    const teacherMap = new Map();
+    classesWithTeachers.forEach(cls => {
+      const teacherId = cls.classTeacherId._id.toString();
+      if (!teacherMap.has(teacherId)) {
+        teacherMap.set(teacherId, {
+          teacher: {
+            id: cls.classTeacherId._id,
+            name: cls.classTeacherId.name,
+            code: cls.classTeacherId.code
+          },
+          classes: []
+        });
+      }
+      teacherMap.get(teacherId).classes.push({
+        classId: cls._id,
+        className: `${cls.name} ${cls.section}`,
+        createdAt: cls.createdAt,
+        updatedAt: cls.updatedAt
+      });
+    });
+
+    // Identify and fix violations
+    const fixes = [];
+    teacherMap.forEach((data, teacherId) => {
+      if (data.classes.length > 1) {
+        // Sort classes by updatedAt (most recent first)
+        const sortedClasses = [...data.classes].sort((a, b) =>
+          new Date(b.updatedAt) - new Date(a.updatedAt)
+        );
+
+        const classToKeep = sortedClasses[0];
+        const classesToRemove = sortedClasses.slice(1);
+
+        fixes.push({
+          teacherId,
+          teacherName: data.teacher.name,
+          teacherCode: data.teacher.code,
+          classKept: classToKeep,
+          classesRemoved: classesToRemove
+        });
+      }
+    });
+
+    // Apply fixes
+    const fixResults = [];
+    for (const fix of fixes) {
+      const removedClassIds = [];
+
+      for (const classToRemove of fix.classesRemoved) {
+        await Class.findByIdAndUpdate(classToRemove.classId, {
+          $unset: { classTeacherId: 1 }
+        });
+        removedClassIds.push(classToRemove.classId.toString());
+      }
+
+      fixResults.push({
+        teacherName: fix.teacherName,
+        teacherCode: fix.teacherCode,
+        classKept: {
+          classId: fix.classKept.classId.toString(),
+          className: fix.classKept.className
+        },
+        classesRemoved: fix.classesRemoved.map(c => ({
+          classId: c.classId.toString(),
+          className: c.className
+        }))
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Fixed ${fixes.length} duplicate class teacher assignments`,
+      fixesApplied: fixResults.length,
+      details: fixResults,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error('❌ Error fixing duplicates:', err);
     res.status(500).json({ error: err.message });
   }
 });
