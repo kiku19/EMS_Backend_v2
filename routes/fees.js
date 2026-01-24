@@ -1,6 +1,5 @@
 import express from 'express';
-import FeePayment from '../models/FeePayment.js';
-import { Student } from '../database.js';
+import { Student, FeePayment } from '../database.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();

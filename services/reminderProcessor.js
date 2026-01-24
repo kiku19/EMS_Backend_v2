@@ -1,11 +1,7 @@
 import Reminder from '../models/Reminder.js';
 import ReminderLog from '../models/ReminderLog.js';
 import ReminderTemplate from '../models/ReminderTemplate.js';
-import FeePayment from '../models/FeePayment.js';
-import Attendance from '../models/Attendance.js';
-import Staff from '../models/Staff.js';
-import Student from '../models/Student.js';
-import Class from '../models/Class.js';
+import { FeePayment, Attendance, Staff, Student, Class } from '../database.js';
 import { sendReminderEmail } from './emailService.js';
 import { sendFeeReminderSMS, sendAttendanceAlertSMS } from './smsService.js';
 import { sendFeeReminderWhatsApp, sendAttendanceAlertWhatsApp } from './whatsappService.js';

@@ -1,8 +1,6 @@
 import Announcement from '../models/Announcement.js';
 import AnnouncementRecipient from '../models/AnnouncementRecipient.js';
-import Staff from '../models/Staff.js';
-import Student from '../models/Student.js';
-import Class from '../models/Class.js';
+import { Staff, Student, Class } from '../database.js';
 import { sendAnnouncementEmail } from './emailService.js';
 import { sendAnnouncementSMS } from './smsService.js';
 import { sendAnnouncementWhatsApp } from './whatsappService.js';
