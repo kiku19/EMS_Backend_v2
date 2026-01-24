@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import { CURRENT_ACADEMIC_YEAR } from './utils/constants.js';
 
 dotenv.config();
 
@@ -169,7 +170,7 @@ const classSchema = new mongoose.Schema({
   section: { type: String, required: true }, // e.g., "A"
   classTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   subjects: [String],
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
 
   // Strength management
   strengthLimit: {
@@ -200,31 +201,75 @@ const classSchema = new mongoose.Schema({
   assignedSubjects: [{ type: String }] // Subjects assigned to this class
 }, { timestamps: true });
 
+// Add compound unique index to prevent duplicate class name+section combinations
+classSchema.index({ name: 1, section: 1, academicYear: 1 }, { unique: true });
+
 // Student Schema - linked to class with comprehensive fields
 const studentSchema = new mongoose.Schema({
   name: { type: String, required: true },
   admissionId: { type: String, unique: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   rollNo: Number,
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
 
   // Personal Information
   gender: String,
-  dateOfBirth: String,
+  dateOfBirth: {
+    type: String,
+    validate: {
+      validator: function(v) {
+        if (!v) return true; // Optional
+        const dob = new Date(v);
+        const now = new Date();
+        const minDate = new Date(now.getFullYear() - 100, now.getMonth(), now.getDate());
+        return dob <= now && dob >= minDate;
+      },
+      message: 'Date of birth must be within the last 100 years and not in the future'
+    }
+  },
   bloodGroup: String,
   nationality: String,
   religion: String,
   category: String,
   motherTongue: String,
-  aadhaarNumber: String,
+  aadhaarNumber: {
+    type: String,
+    validate: {
+      validator: function(v) {
+        if (!v) return true; // Optional
+        return /^\d{12}$/.test(v);
+      },
+      message: 'Aadhaar number must be exactly 12 digits'
+    }
+  },
 
   // Contact Information
   phone: String,
-  email: String,
+  email: {
+    type: String,
+    validate: {
+      validator: function(v) {
+        if (!v) return true; // Optional
+        return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(v);
+      },
+      message: 'Please enter a valid email address'
+    }
+  },
+  isWhatsapp: { type: Boolean, default: true },
+  whatsappNumber: String,
   address: String,
   city: String,
   state: String,
-  zipCode: String,
+  zipCode: {
+    type: String,
+    validate: {
+      validator: function(v) {
+        if (!v) return true; // Optional
+        return /^\d{6}$/.test(v);
+      },
+      message: 'ZIP code must be exactly 6 digits'
+    }
+  },
 
   // Parent/Guardian Information
   parentName: String,
@@ -235,19 +280,46 @@ const studentSchema = new mongoose.Schema({
   alternatePhone: String,
 
   // Additional Parents (stored as array)
-  parents: [{
-    name: String,
-    relationship: String,
-    phone: String,
-    email: String,
-    occupation: String
-  }],
+  parents: {
+    type: [{
+      name: { type: String, required: true },
+      relationship: String,
+      phone: String,
+      email: String,
+      occupation: String,
+      isWhatsapp: { type: Boolean, default: true }
+    }],
+    validate: {
+      validator: function(v) {
+        return v && v.length > 0;
+      },
+      message: 'At least one parent/guardian is required'
+    }
+  },
 
   // Siblings (only siblings in the same school)
   siblings: [{
     name: { type: String, required: true },
     inSameSchool: { type: Boolean, default: true },
-    classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' }
+    classId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Class',
+      validate: {
+        validator: async function(v) {
+          // If inSameSchool is true, classId is required
+          const sibling = this;
+          const siblingIdx = sibling.siblings.findIndex(s => s.classId && s.classId.toString() === v?.toString());
+          if (siblingIdx === -1) return true; // Not this sibling
+
+          const thisSibling = sibling.siblings[siblingIdx];
+          if (thisSibling.inSameSchool && !v) {
+            return false;
+          }
+          return true;
+        },
+        message: 'Class is required when sibling is in the same school'
+      }
+    }
   }],
 
   // Academic Information
@@ -282,6 +354,7 @@ const studentSchema = new mongoose.Schema({
 
   // Documents (stored as references or URLs)
   documents: [{
+    id: { type: String, required: true },
     name: String,
     type: String,
     category: String, // birthCertificate, tc, aadhaar, etc.
@@ -294,6 +367,14 @@ const studentSchema = new mongoose.Schema({
 
   photo: String,
 }, { timestamps: true });
+
+// Indexes for performance
+studentSchema.index({ admissionId: 1 }, { unique: true });
+studentSchema.index({ classId: 1, status: 1 });
+studentSchema.index({ rollNo: 1, classId: 1, academicYear: 1 }, { unique: true });
+studentSchema.index({ isPinned: 1, pinnedAt: -1 });
+studentSchema.index({ status: 1 });
+studentSchema.index({ feeStatus: 1 });
 
 // Attendance Schema
 const attendanceSchema = new mongoose.Schema({
@@ -311,7 +392,7 @@ const examSchema = new mongoose.Schema({
   name: { type: String, required: true },
   examType: { type: String, required: true }, // unit-test, midterm, final, annual
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, required: true, default: '2024-25' },
+  academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
   startDate: { type: Date, required: true },
   endDate: { type: Date, required: true },
   totalMarks: { type: Number, default: 100 },
@@ -362,7 +443,7 @@ resultSchema.index({ examId: 1, classId: 1 });
 // Timetable Schema
 const timetableSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   periods: [{
     name: String,
     startTime: String,
@@ -431,7 +512,7 @@ timetableSchema.index({ 'schedule.Saturday.teacherId': 1 });
 // Teacher Timetable Schema - for managing teacher schedules
 const teacherTimetableSchema = new mongoose.Schema({
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   schedule: {
     Monday: [{
       periodIndex: Number,
@@ -593,17 +674,9 @@ const formSubmissionSchema = new mongoose.Schema({
   staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Populated after approval
 }, { timestamps: true });
 
-// Visitor Schema
-const visitorSchema = new mongoose.Schema({
-  visitorName: { type: String, required: true },
-  phoneNumber: String,
-  date: { type: String, required: true },
-  checkInTime: { type: String, required: true },
-  checkOutTime: String,
-  reasonForVisit: String,
-  concernedPerson: String,
-  status: { type: String, default: 'checked-in' }, // 'checked-in', 'checked-out'
-}, { timestamps: true });
+// Visitor Schema - REMOVED: Now using enhanced model from ./models/Visitor.js
+// The duplicate schema definition has been removed to avoid confusion
+// Use: import Visitor from './models/Visitor.js';
 
 // Admission Schema
 const admissionSchema = new mongoose.Schema({
@@ -626,26 +699,18 @@ const admissionSchema = new mongoose.Schema({
   decisionBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
 
-// Gate Pass Schema
-const gatePassSchema = new mongoose.Schema({
-  personType: { type: String, required: true }, // 'staff', 'student'
-  personId: { type: mongoose.Schema.Types.ObjectId, refPath: 'personType' },
-  personName: { type: String, required: true },
-  leavingWith: String,
-  permittedBy: String,
-  outTime: { type: String, required: true },
-  date: { type: String, required: true },
-  notifyParent: { type: Boolean, default: false },
-  status: { type: String, default: 'active' },
-}, { timestamps: true });
+// Gate Pass Schema - REMOVED: Now using enhanced model from ./models/GatePass.js
+// The duplicate schema definition has been removed to avoid confusion
+// Use: import GatePass from './models/GatePass.js';
 
 // Appointment Schema
 const appointmentSchema = new mongoose.Schema({
   visitorName: { type: String, required: true },
   phoneNumber: String,
   purpose: String,
-  fromDateTime: { type: String, required: true },
-  toDateTime: { type: String, required: true },
+  // FIX: Change from String to Date type for proper datetime handling
+  fromDateTime: { type: Date, required: true },
+  toDateTime: { type: Date, required: true },
   meetingWith: String,
   notes: String,
   status: { type: String, default: 'scheduled' }, // 'scheduled', 'completed', 'cancelled'
@@ -656,10 +721,15 @@ const feedbackSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phoneNumber: String,
   date: { type: String, default: () => new Date().toISOString().split('T')[0] },
-  category: String,
+  // FIX: Add enum validation for category field
+  category: {
+    type: String,
+    enum: ['STAFF', 'FACILITIES', 'MANAGEMENT', 'ACADEMIC', 'ADMINISTRATIVE', 'FACILITY', 'SUGGESTION', 'COMPLAINT', 'OTHER'],
+    required: true
+  },
   assignedStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   notifyStaff: { type: Boolean, default: false },
-  status: { type: String, default: 'open' }, // 'open', 'resolved'
+  status: { type: String, default: 'open', enum: ['open', 'in_progress', 'resolved', 'closed'] }, // 'open', 'resolved'
   notes: String,
 }, { timestamps: true });
 
@@ -680,7 +750,7 @@ const callLogSchema = new mongoose.Schema({
 
 // School Settings Schema - school-wide configuration
 const schoolSettingsSchema = new mongoose.Schema({
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   currentSession: { type: String, default: '2024-25' },
 
   // Fee Collection Configuration
@@ -768,7 +838,7 @@ const feeTemplateSchema = new mongoose.Schema({
 // Fee Structure Schema - defines fee amounts for classes
 const feeStructureSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeTemplate' },
   
   feeHeads: [{
@@ -804,7 +874,7 @@ feeStructureSchema.index({ classId: 1, academicYear: 1 }, { unique: true });
 const feePaymentSchema = new mongoose.Schema({
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   receiptNumber: { type: String, unique: true, required: true },
 
   // Payment Details
@@ -845,7 +915,7 @@ feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
 const feeRefundSchema = new mongoose.Schema({
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   refundNumber: { type: String, unique: true, required: true },
 
   // Refund Details

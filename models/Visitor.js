@@ -2,13 +2,23 @@ import mongoose from 'mongoose';
 
 const visitorSchema = new mongoose.Schema({
   // Basic Information
+  // Support both old (name, phone) and new (visitorName, phoneNumber) field names
   name: {
+    type: String,
+    trim: true,
+    maxlength: 100
+  },
+  visitorName: {
     type: String,
     required: true,
     trim: true,
     maxlength: 100
   },
   phone: {
+    type: String,
+    trim: true
+  },
+  phoneNumber: {
     type: String,
     required: true,
     trim: true
@@ -23,9 +33,24 @@ const visitorSchema = new mongoose.Schema({
   },
 
   // Visit Details
+  // Support both old (purpose) and new (reasonForVisit) field names
   purpose: {
     type: String,
+    trim: true,
+    enum: [
+      'PARENT_MEETING',
+      'STUDENT_PICKUP_DROP_OFF',
+      'SCHOOL_VISIT_INQUIRY',
+      'DELIVERY_VENDOR',
+      'OFFICIAL_BUSINESS',
+      'VOLUNTEER_EVENT',
+      'OTHER'
+    ]
+  },
+  reasonForVisit: {
+    type: String,
     required: true,
+    trim: true,
     enum: [
       'PARENT_MEETING',
       'STUDENT_PICKUP_DROP_OFF',
@@ -150,8 +175,33 @@ const visitorSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes for efficient queries
+// Pre-save hook to normalize field names (support both old and new naming)
+visitorSchema.pre('save', function(next) {
+  // If new fields are provided, use them; otherwise fall back to old fields
+  if (this.visitorName) {
+    this.name = this.visitorName;
+  } else if (this.name) {
+    this.visitorName = this.name;
+  }
+
+  if (this.phoneNumber) {
+    this.phone = this.phoneNumber;
+  } else if (this.phone) {
+    this.phoneNumber = this.phone;
+  }
+
+  if (this.reasonForVisit) {
+    this.purpose = this.reasonForVisit;
+  } else if (this.purpose) {
+    this.reasonForVisit = this.purpose;
+  }
+
+  next();
+});
+
+// Indexes for efficient queries - support both old and new field names
 visitorSchema.index({ phone: 1 });
+visitorSchema.index({ phoneNumber: 1 });
 visitorSchema.index({ checkInTime: -1 });
 visitorSchema.index({ status: 1 });
 visitorSchema.index({ studentId: 1 });
@@ -160,6 +210,7 @@ visitorSchema.index({ createdAt: -1 });
 // Compound index for common queries
 visitorSchema.index({ status: 1, checkInTime: -1 });
 visitorSchema.index({ phone: 1, status: 1 });
+visitorSchema.index({ phoneNumber: 1, status: 1 });
 
 // Virtual for visit duration
 visitorSchema.virtual('duration').get(function() {
@@ -205,13 +256,15 @@ visitorSchema.statics.getTodaysVisitors = function() {
     .populate('studentId', 'name admissionId rollNo classId');
 };
 
-// Static method to search visitors
+// Static method to search visitors - supports both old and new field names
 visitorSchema.statics.searchVisitors = function(searchTerm) {
   const regex = new RegExp(searchTerm, 'i');
   return this.find({
     $or: [
       { name: regex },
+      { visitorName: regex },
       { phone: regex },
+      { phoneNumber: regex },
       { email: regex },
       { whomToMeet: regex }
     ]

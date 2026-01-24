@@ -368,12 +368,26 @@ router.get('/visitors', authenticate, async (req, res) => {
  */
 router.post('/visitors', authenticate, async (req, res) => {
   try {
+    // Extract only allowed fields for security (input sanitization)
+    const allowedFields = [
+      'visitorName', 'phoneNumber', 'email', 'reasonForVisit', 'otherPurpose',
+      'whomToMeet', 'department', 'companyName', 'deliveryPerson', 'studentId',
+      'studentName', 'parentMapping', 'gatePassRequired', 'appointmentRequired',
+      'admissionInquiry', 'itemsDeclared', 'notes'
+    ];
+
     const visitorData = {
-      ...req.body,
       checkInTime: new Date(),
       checkedInBy: req.user.id,
       status: 'ACTIVE'
     };
+
+    // Only copy allowed fields from request body
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        visitorData[field] = req.body[field];
+      }
+    });
 
     const visitor = await Visitor.create(visitorData);
 
@@ -409,9 +423,10 @@ router.put('/visitors/:id', authenticate, async (req, res) => {
       });
     }
 
-    // Update allowed fields
-    const allowedFields = ['name', 'phone', 'email', 'purpose', 'otherPurpose', 'whomToMeet', 'department',
-      'companyName', 'deliveryPerson', 'notes', 'studentId', 'studentName', 'parentMapping',
+    // Update allowed fields - support both old and new field names
+    const allowedFields = ['name', 'visitorName', 'phone', 'phoneNumber', 'email', 'purpose',
+      'reasonForVisit', 'otherPurpose', 'whomToMeet', 'department', 'companyName',
+      'deliveryPerson', 'notes', 'studentId', 'studentName', 'parentMapping',
       'gatePassRequired', 'appointmentRequired'];
 
     allowedFields.forEach(field => {
@@ -522,13 +537,35 @@ router.get('/gate-passes', authenticate, async (req, res) => {
  */
 router.post('/gate-passes', authenticate, async (req, res) => {
   try {
+    // Extract only allowed fields for security (input sanitization)
+    const allowedFields = [
+      'studentId', 'studentName', 'class', 'section', 'reason', 'otherReason',
+      'leavingDate', 'leavingTime', 'expectedReturnDate', 'expectedReturnTime',
+      'leavingWith', 'escortName', 'escortRelation', 'escortPhone',
+      'approvedBy', 'approvedByStaffId', 'approvedByName', 'notes'
+    ];
+
     const gatePassData = {
-      ...req.body,
       requestedById: req.user.id,
       requestedByName: req.user.name || 'Front Desk',
       status: 'PENDING',
       approvalStatus: 'PENDING'
     };
+
+    // Only copy allowed fields from request body
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        gatePassData[field] = req.body[field];
+      }
+    });
+
+    // Validate required fields
+    if (!gatePassData.studentId || !gatePassData.reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: studentId and reason are required'
+      });
+    }
 
     const gatePass = await GatePass.create(gatePassData);
 

@@ -604,22 +604,41 @@ router.post('/:id/subjects', authenticate, async (req, res) => {
 router.put('/chapters/:chapterId', authenticate, async (req, res) => {
   try {
     const { chapterId } = req.params;
-    const { chapters } = req.body;
+    const { chapters, status, completedDate, notes } = req.body;
 
-    const chapterProgress = await ChapterProgress.findByIdAndUpdate(
-      chapterId,
-      { chapters },
-      { new: true }
-    );
+    // Support both bulk update (chapters array) and individual chapter update
+    if (chapters && Array.isArray(chapters)) {
+      // Bulk update: Update entire chapters array
+      const chapterProgress = await ChapterProgress.findByIdAndUpdate(
+        chapterId,
+        { chapters },
+        { new: true }
+      );
 
-    if (!chapterProgress) {
-      return res.status(404).json({ error: 'Chapter progress not found' });
+      if (!chapterProgress) {
+        return res.status(404).json({ error: 'Chapter progress not found' });
+      }
+
+      chapterProgress.calculateOverallProgress();
+      await chapterProgress.save();
+
+      res.json(chapterProgress);
+    } else if (status || completedDate || notes) {
+      // Individual chapter update: Update specific chapter fields
+      const chapterProgress = await ChapterProgress.findByIdAndUpdate(
+        chapterId,
+        { status, completedDate, notes },
+        { new: true }
+      ).populate('subjectId', 'subjectName');
+
+      if (!chapterProgress) {
+        return res.status(404).json({ error: 'Chapter not found' });
+      }
+
+      res.json(chapterProgress);
+    } else {
+      return res.status(400).json({ error: 'No valid update data provided' });
     }
-
-    chapterProgress.calculateOverallProgress();
-    await chapterProgress.save();
-
-    res.json(chapterProgress);
   } catch (error) {
     console.error('Error updating chapter progress:', error);
     res.status(500).json({ error: 'Failed to update chapter progress' });
