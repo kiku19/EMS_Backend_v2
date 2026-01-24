@@ -27,6 +27,7 @@ import teacherTimetableRoutes from './routes/teacherTimetable.js';
 import validationRoutes from './routes/validation.js';
 import timetableRoutes from './routes/timetable.js';
 import substitutionRoutes from './routes/substitutions.js';
+import settingsRoutes from './routes/settings.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
 import { validate, schemas } from './middleware/validation.js';
 import { validateEnvironment, config } from './config/environment.js';
@@ -181,6 +182,9 @@ app.use('/api/timetable', timetableRoutes);
 
 // Substitutions routes
 app.use('/api/substitutions', substitutionRoutes);
+
+// Settings routes
+app.use('/api/settings', settingsRoutes);
 
 // Class Settings routes
 import classSettingsRoutes from './routes/classSettings.js';
