@@ -41,6 +41,13 @@ agenda.define('cleanup old jobs', async (job) => {
   console.log(`Cleaned up ${result} old jobs`);
 });
 
+agenda.define('purge expired trash', async (job) => {
+  console.log('🗑️ Purging expired trash items...');
+  const { purgeExpiredTrashItems } = await import('../services/trashCleanupService.js');
+  const result = await purgeExpiredTrashItems();
+  console.log(`Purge complete: ${result.purged} items removed`);
+});
+
 // Function to start agenda
 export const startAgenda = async () => {
   try {
@@ -60,6 +67,10 @@ export const startAgenda = async () => {
 
     // Cleanup old jobs daily at 3 AM
     await agenda.every('0 3 * * *', 'cleanup old jobs');
+
+    // Purge expired trash items daily at 2 AM
+    await agenda.every('0 2 * * *', 'purge expired trash');
+    console.log('✅ Trash purge job scheduled for 2 AM daily');
 
     console.log('✅ Recurring jobs scheduled');
   } catch (error) {

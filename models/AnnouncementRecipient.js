@@ -4,13 +4,11 @@ const announcementRecipientSchema = new mongoose.Schema({
   announcementId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Announcement',
-    required: true,
-    index: true
+    required: true
   },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    index: true
+    required: true
   },
   userType: {
     type: String,

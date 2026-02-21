@@ -1,14 +1,15 @@
 import express from 'express';
 import { Student, FeePayment } from '../database.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
+import { emitFeePaymentCreated } from '../utils/socketEmitter.js';
 
 const router = express.Router();
 
 // Get all payments with optional filters
-router.get('/payments', authenticateToken, async (req, res) => {
+router.get('/payments', authenticate, async (req, res) => {
   try {
     const { studentId, academicYear, status, startDate, endDate } = req.query;
-    
+
     const filter = {};
     if (studentId) filter.studentId = studentId;
     if (academicYear) filter.academicYear = academicYear;
@@ -20,7 +21,7 @@ router.get('/payments', authenticateToken, async (req, res) => {
     }
 
     const payments = await FeePayment.find(filter)
-      .populate('studentId', 'firstName lastName admissionId class')
+      .populate('studentId', 'name admissionId class')
       .sort({ paymentDate: -1 });
 
     res.json(payments);
@@ -31,35 +32,60 @@ router.get('/payments', authenticateToken, async (req, res) => {
 });
 
 // Create a new payment
-router.post('/payments', authenticateToken, async (req, res) => {
+router.post('/payments', async (req, res) => {
   try {
-    const payment = new FeePayment(req.body);
+    const { studentId, studentName, classId, academicYear, receiptNumber, paymentDate, amount, paymentMode, feeHeads, remarks } = req.body;
+
+    // Generate receipt number if not provided
+    const receipt = receiptNumber || `RCP-${Date.now()}`;
+
+    // Create payment with explicit fields
+    const payment = new FeePayment({
+      studentId,
+      classId,
+      academicYear: academicYear || '2024-25',
+      receiptNumber: receipt,
+      paymentDate: paymentDate || new Date().toISOString().split('T')[0],
+      amount,
+      paymentMode: paymentMode || 'cash',
+      feeHeads: feeHeads || [],
+      remarks: remarks || '',
+      status: 'completed'
+    });
+
     await payment.save();
 
-    // Update student's fee details
-    if (payment.studentId) {
-      const student = await Student.findById(payment.studentId);
-      if (student) {
-        student.feeDetails = student.feeDetails || {};
-        student.feeDetails.totalPaid = (student.feeDetails.totalPaid || 0) + payment.amount;
-        student.feeDetails.totalPending = (student.feeDetails.totalFee || 0) - student.feeDetails.totalPaid;
-        await student.save();
+    // Update student's fee details (non-blocking, don't fail if this errors)
+    try {
+      if (studentId) {
+        const student = await Student.findById(studentId);
+        if (student) {
+          student.feeDetails = student.feeDetails || {};
+          student.feeDetails.totalPaid = (student.feeDetails.totalPaid || 0) + amount;
+          student.feeDetails.totalPending = (student.feeDetails.totalFee || 0) - student.feeDetails.totalPaid;
+          await student.save();
+        }
       }
+    } catch (studentUpdateError) {
+      console.warn('Could not update student fee details:', studentUpdateError.message);
     }
+
+    // Emit real-time socket event for payment creation
+    emitFeePaymentCreated(studentId, studentName || '', payment);
 
     res.status(201).json(payment);
   } catch (error) {
     console.error('Error creating payment:', error);
-    res.status(500).json({ error: 'Failed to create payment' });
+    res.status(500).json({ error: error.message || 'Failed to create payment' });
   }
 });
 
 // Get payment by ID
-router.get('/payments/:id', authenticateToken, async (req, res) => {
+router.get('/payments/:id', async (req, res) => {
   try {
     const payment = await FeePayment.findById(req.params.id)
-      .populate('studentId', 'firstName lastName admissionId class');
-    
+      .populate('studentId', 'name admissionId class');
+
     if (!payment) {
       return res.status(404).json({ error: 'Payment not found' });
     }

@@ -4,13 +4,11 @@ const reminderLogSchema = new mongoose.Schema({
   reminderId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Reminder',
-    required: true,
-    index: true
+    required: true
   },
   recipientId: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    index: true
+    required: true
   },
   recipientType: {
     type: String,

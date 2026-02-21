@@ -98,7 +98,7 @@ const announcementSchema = new mongoose.Schema({
 // Indexes
 announcementSchema.index({ scheduledFor: 1, status: 1 });
 announcementSchema.index({ createdBy: 1 });
-announcementSchema.index({ status: 1 });
+// Note: status is already indexed in the compound index above
 announcementSchema.index({ createdAt: -1 });
 
 // Virtual for read rate calculation

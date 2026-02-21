@@ -37,7 +37,7 @@ const payrollAuditLogSchema = new mongoose.Schema({
   // Who performed the action
   performedBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'Staff',
     required: true
   },
 

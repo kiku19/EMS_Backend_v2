@@ -287,13 +287,15 @@ router.put('/:teacherId/slot', authenticate, canEditTeacherTimetable, async (req
       }
 
       // Validate teacher qualification for this subject and class
+      // Use flexible mode (strictMode=false) to allow scheduling without formal assignments
       if (subject) {
         const validation = await conflictDetectionService.validateSlotAssignment(
           teacherId,
           classId,
           subject,
           day,
-          periodIndex
+          periodIndex,
+          false // Flexible mode - allow scheduling without formal assignments
         );
 
         if (!validation.isValid) {
@@ -303,6 +305,11 @@ router.put('/:teacherId/slot', authenticate, canEditTeacherTimetable, async (req
             message: validation.error.message,
             conflict: validation.error
           });
+        }
+
+        // If there's a warning (teacher not formally assigned), log it but allow the operation
+        if (validation.warning) {
+          console.warn('Timetable assignment warning:', validation.warning.message);
         }
       }
     }

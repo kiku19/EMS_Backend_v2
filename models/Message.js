@@ -29,12 +29,13 @@ const messageSchema = new mongoose.Schema({
   },
   content: {
     type: String,
-    required: true,
-    trim: true
+    required: false,
+    trim: true,
+    default: '' // Empty string for voice/audio/image messages
   },
   type: {
     type: String,
-    enum: ['text', 'image', 'file', 'audio', 'video'],
+    enum: ['text', 'image', 'file', 'audio', 'voice', 'video'],
     default: 'text'
   },
   fileUrl: String,

@@ -12,23 +12,31 @@
     "populate-staff": "node populate-staff-fields.js",
     "fix-duplicate-class-teachers": "node scripts/fixDuplicateClassTeachers.js",
     "test": "vitest --run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:check": "node scripts/check-pagination-issues.js",
+    "db:fix": "node scripts/fix-database-issues.js",
+    "db:health": "node scripts/monitor-database-health.js",
+    "db:check-class": "node scripts/check-5a-data.js"
   },
   "dependencies": {
     "agenda": "^5.0.0",
     "bcrypt": "^5.1.1",
+    "bcryptjs": "^3.0.3",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.1.5",
+    "firebase-admin": "^13.6.0",
     "joi": "^17.12.0",
-    "jsonwebtoken": "^9.0.2",
+    "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.9.3",
     "multer": "^2.0.2",
     "node-fetch": "^2.7.0",
     "nodemailer": "^7.0.12",
+    "pdfkit": "^0.17.2",
     "peer": "^1.0.2",
+    "razorpay": "^2.9.6",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {

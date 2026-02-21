@@ -55,7 +55,7 @@ export async function connectDB() {
 const staffSchema = new mongoose.Schema({
   code: { type: String, unique: true, required: true },
   name: { type: String, required: true },
-  role: { type: String, required: true }, // Teacher, Admin, etc.
+  role: { type: [String], required: true }, // Array of roles: Teacher, Admin, etc. (supports multiple roles)
   department: String,
   status: { type: String, default: 'active' },
   phone: String,
@@ -102,7 +102,7 @@ const staffSchema = new mongoose.Schema({
   
   // Staff Info
   staffNumber: String,
-  staffType: String,
+  staffType: [String], // Array of staff types to match role field
   assignedClasses: [String],
   isClassTeacher: Boolean,
   classTeacherOf: String,
@@ -132,7 +132,7 @@ const staffSchema = new mongoose.Schema({
     classes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
     createdAt: { type: Date, default: Date.now }
   }]
-}, { timestamps: true });
+}, { timestamps: true, strict: false }); // Allow extra fields to pass through without error
 
 // Hash password before saving
 import bcrypt from 'bcrypt';
@@ -366,15 +366,33 @@ const studentSchema = new mongoose.Schema({
   }],
 
   photo: String,
+
+  // Soft delete fields
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true // Critical for query performance
+  },
+  deletedAt: {
+    type: Date,
+    default: null
+  },
+  deletedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Staff',
+    default: null
+  }
 }, { timestamps: true });
 
 // Indexes for performance
-studentSchema.index({ admissionId: 1 }, { unique: true });
+// Note: admissionId already has unique: true in schema definition which creates an index
 studentSchema.index({ classId: 1, status: 1 });
 studentSchema.index({ rollNo: 1, classId: 1, academicYear: 1 }, { unique: true });
 studentSchema.index({ isPinned: 1, pinnedAt: -1 });
 studentSchema.index({ status: 1 });
 studentSchema.index({ feeStatus: 1 });
+// Add compound index for efficient trash queries
+studentSchema.index({ isDeleted: 1, deletedAt: -1 });
 
 // Attendance Schema
 const attendanceSchema = new mongoose.Schema({
@@ -390,13 +408,20 @@ attendanceSchema.index({ studentId: 1, date: 1 }, { unique: true });
 // Exam Schema
 const examSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  examType: { type: String, required: true }, // unit-test, midterm, final, annual
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
-  startDate: { type: Date, required: true },
-  endDate: { type: Date, required: true },
+  type: { type: String }, // unit_test, quiz, midterm, final (frontend field)
+  examType: { type: String }, // Legacy field - unit-test, midterm, final, annual
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+  subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }, // Single subject mode
+  subjectName: { type: String }, // Single subject name
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
+  startDate: { type: Date },
+  endDate: { type: Date },
   totalMarks: { type: Number, default: 100 },
-  passingMarks: { type: Number, default: 33 },
+  maxMarks: { type: Number, default: 100 }, // Alias for frontend
+  passingMarks: { type: Number, default: 35 },
+  weightage: { type: Number, default: 10 },
+  gradingType: { type: String, default: 'numerical' }, // numerical, grades, cgpa
+  instructions: { type: String },
   subjects: [{
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
     subjectName: String,
@@ -406,7 +431,9 @@ const examSchema = new mongoose.Schema({
     maxMarks: { type: Number, default: 100 },
     passingMarks: { type: Number, default: 33 }
   }],
-  status: { type: String, default: 'scheduled' }, // scheduled, ongoing, completed, cancelled
+  status: { type: String, default: 'scheduled' }, // scheduled, ongoing, completed, results_published
+  isPublished: { type: Boolean, default: false },
+  publishedAt: { type: Date },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
 }, { timestamps: true });
 
@@ -414,8 +441,15 @@ const examSchema = new mongoose.Schema({
 const resultSchema = new mongoose.Schema({
   examId: { type: mongoose.Schema.Types.ObjectId, ref: 'Exam', required: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, required: true },
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+  academicYear: { type: String },
+  // Simple single-subject fields
+  marksObtained: { type: Number, default: 0 },
+  maxMarks: { type: Number, default: 100 },
+  remarks: { type: String },
+  enteredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+  enteredAt: { type: Date },
+  // Multi-subject support (legacy/advanced)
   marks: [{
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
     subjectName: String,
@@ -431,7 +465,6 @@ const resultSchema = new mongoose.Schema({
   grade: String,
   rank: Number,
   status: { type: String, default: 'passed' }, // passed, failed, promoted
-  remarks: String,
   isPublished: { type: Boolean, default: false }
 }, { timestamps: true });
 
@@ -825,7 +858,14 @@ const schoolSettingsSchema = new mongoose.Schema({
   // Payroll Configuration
   payroll: {
     disburseDate: { type: Number, default: 1, min: 1, max: 31 }
-  }
+  },
+
+  // Subjects Configuration
+  subjects: [{
+    name: { type: String, required: true },
+    code: { type: String },
+    description: { type: String }
+  }]
 }, { timestamps: true });
 
 // Fee Template Schema - reusable fee structures
@@ -1031,6 +1071,9 @@ import Announcement from './models/Announcement.js';
 import AnnouncementRecipient from './models/AnnouncementRecipient.js';
 import Reminder from './models/Reminder.js';
 
+// Import Parent model
+import Parent from './models/Parent.js';
+
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
 export const Student = mongoose.model('Student', studentSchema);
@@ -1059,6 +1102,9 @@ export const AdmissionFormConfig = mongoose.model('AdmissionFormConfig', admissi
 export const AdmissionIdConfig = mongoose.model('AdmissionIdConfig', admissionIdConfigSchema);
 export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberConfigSchema);
 export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
+
+// Export Parent model
+export { Parent };
 
 // Export chat models
 export { Message, Conversation, UserPresence, Notification };

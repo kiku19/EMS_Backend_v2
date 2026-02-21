@@ -35,23 +35,40 @@ export const schemas = {
     emergencyPhone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
     whatsappNumber: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
     
+    isWhatsapp: Joi.boolean().allow(null),
+
     // Documents
     picture: Joi.string().uri().allow('', null),
-    idDocuments: Joi.array().items(Joi.string().uri()).allow(null),
-    
+    idDocuments: Joi.array().items(
+      Joi.alternatives().try(
+        Joi.string().uri(),
+        Joi.object({
+          type: Joi.string().allow('', null),
+          url: Joi.string().uri().allow('', null),
+          name: Joi.string().allow('', null)
+        })
+      )
+    ).allow(null),
+    customDocuments: Joi.array().items(Joi.string().uri()).allow(null),
+
     // Qualifications
     professionalQualifications: Joi.array().items(Joi.object({
       name: Joi.string().required(),
-      year: Joi.string(),
+      year: Joi.string().allow('', null),
       documents: Joi.array().items(Joi.string().uri())
     })).allow(null),
     totalExperience: Joi.string().allow('', null),
     previousOrganization: Joi.string().max(100).allow('', null),
+    roleInOrganization: Joi.string().allow('', null),
     qualificationDocs: Joi.array().items(Joi.string().uri()).allow(null),
     
     // Staff Info
     staffNumber: Joi.string().allow('', null),
-    staffType: Joi.string().allow('', null),
+    staffId: Joi.string().allow('', null), // Allow but ignore - sometimes sent by frontend
+    staffType: Joi.alternatives().try(
+      Joi.string().allow('', null),
+      Joi.array().items(Joi.string()).allow(null)
+    ), // Accept both string and array for backward compatibility
     expertise: Joi.string().allow('', null),
     assignedClasses: Joi.array().items(Joi.string()).allow(null),
     isClassTeacher: Joi.boolean().allow(null),
@@ -63,9 +80,17 @@ export const schemas = {
     bankName: Joi.string().max(100).allow('', null),
     branchName: Joi.string().max(100).allow('', null),
     salaryTemplate: Joi.string().allow('', null),
+    salary: Joi.number().min(0).allow(null),
     salaryBreakdown: Joi.array().items(Joi.object({
       component: Joi.string().required(),
       amount: Joi.number().min(0).required()
+    })).allow(null),
+
+    // Emergency contacts (array format from frontend)
+    emergencyContacts: Joi.array().items(Joi.object({
+      name: Joi.string().allow('', null),
+      relationship: Joi.string().allow('', null),
+      phone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null)
     })).allow(null)
   }),
 

@@ -21,7 +21,7 @@ const REQUIRED_ENV_VARS = [
 const OPTIONAL_ENV_VARS = {
   NODE_ENV: 'development',
   LOG_LEVEL: 'DEBUG',
-  CORS_ORIGIN: 'http://localhost:5173',
+  CORS_ORIGIN: 'http://localhost:3000,http://localhost:8081,http://localhost:19006,exp://192.168.1.*:19000,http://192.168.1.*:3001,http://localhost:5173,http://localhost:5174,http://localhost:5175',
 };
 
 /**
@@ -98,13 +98,17 @@ export function getConfig() {
     mongoUri: process.env.MONGO_URI || process.env.MONGODB_URI,
     
     // CORS
-    corsOrigins: process.env.CORS_ORIGIN 
+    corsOrigins: process.env.CORS_ORIGIN
       ? process.env.CORS_ORIGIN.split(',').map(s => s.trim())
       : [
-          'http://localhost:5173',
-          'http://localhost:5174',
-          'http://localhost:3000',
-        ],
+          'http://localhost:3000',    // school-dashboard dev
+          'http://localhost:8081',    // Expo web dev
+          'http://localhost:19006',    // Expo dev
+          'exp://192.168.1.*:19000',   // Expo LAN dev (wildcard for local network)
+          'http://localhost:5173',     // Vite dev server
+          'http://localhost:5174',     // Alternative Vite port
+          'http://localhost:5175',     // Alternative Vite port
+        ].concat(process.env.PARENT_APP_URL || []),
     
     // Cloudinary
     cloudinary: {

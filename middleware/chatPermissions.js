@@ -81,7 +81,10 @@ export async function hasPermission(userId, userType, permission) {
 
     // For staff, check their role
     const staff = await Staff.findById(userId).select('role customPermissions');
-    if (!staff) return false;
+    if (!staff) {
+      console.warn('⚠️ [PERMISSION] Staff not found:', userId);
+      return false;
+    }
 
     // Check custom permissions first (from Settings > Roles & Access)
     if (staff.customPermissions && staff.customPermissions.includes(permission)) {
@@ -90,9 +93,27 @@ export async function hasPermission(userId, userType, permission) {
 
     // Fall back to default role permissions
     const rolePermissions = DEFAULT_ROLE_PERMISSIONS[staff.role] || [];
-    return rolePermissions.includes(permission);
+
+    // If role not in defaults, give basic permissions (SEND_MESSAGE and VIEW_CONVERSATIONS)
+    if (rolePermissions.length === 0) {
+      console.log('📋 [PERMISSION] Role not in defaults, giving basic permissions:', staff.role);
+      return [
+        CHAT_PERMISSIONS.SEND_MESSAGE,
+        CHAT_PERMISSIONS.VIEW_CONVERSATIONS
+      ].includes(permission);
+    }
+
+    const hasAccess = rolePermissions.includes(permission);
+    console.log('🔍 [PERMISSION] Check:', {
+      userId,
+      role: staff.role,
+      permission,
+      hasAccess
+    });
+
+    return hasAccess;
   } catch (error) {
-    console.error('Error checking permission:', error);
+    console.error('❌ [PERMISSION] Error checking permission:', error);
     return false;
   }
 }
@@ -184,7 +205,16 @@ export async function getUserChatPermissions(userId, userType) {
     const staff = await Staff.findById(userId).select('role customPermissions');
     if (!staff) return null;
 
-    const permissions = staff.customPermissions || DEFAULT_ROLE_PERMISSIONS[staff.role] || [];
+    let permissions = staff.customPermissions || DEFAULT_ROLE_PERMISSIONS[staff.role] || [];
+
+    // If role not in defaults, give basic permissions
+    if (permissions.length === 0) {
+      console.log('📋 [PERMISSION] Role not in defaults, giving basic permissions:', staff.role);
+      permissions = [
+        CHAT_PERMISSIONS.SEND_MESSAGE,
+        CHAT_PERMISSIONS.VIEW_CONVERSATIONS
+      ];
+    }
 
     return {
       canSendMessage: permissions.includes(CHAT_PERMISSIONS.SEND_MESSAGE),

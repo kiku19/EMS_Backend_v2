@@ -2,7 +2,8 @@ import mongoose from 'mongoose';
 
 const salaryAdjustmentSchema = new mongoose.Schema({
   employeeId: {
-    type: String,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Staff',
     required: true,
     index: true
   },
@@ -40,7 +41,7 @@ const salaryAdjustmentSchema = new mongoose.Schema({
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    ref: 'Staff'
   }
 }, {
   timestamps: true

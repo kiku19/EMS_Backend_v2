@@ -126,8 +126,17 @@ router.post('/initialize/:studentId', async (req, res) => {
 
     await feeStructure.save();
 
-    // Sync to Student.feeStatus for student list display
-    await Student.findByIdAndUpdate(student._id, { feeStatus: 'pending' });
+    // Sync fee data to Student model for consistent reads
+    await Student.findByIdAndUpdate(student._id, {
+      feeStatus: 'pending',
+      feeDetails: {
+        totalFee: feeStructure.totalFee,
+        paidAmount: 0,
+        balanceAmount: feeStructure.totalBalance,
+        discountApplied: 0,
+        lastPaymentDate: null,
+      }
+    });
 
     console.log(`✅ Fee structure initialized for student ${student.name}`);
 
@@ -164,8 +173,17 @@ router.put('/student/:studentId/discount', async (req, res) => {
 
     await feeStructure.save();
 
-    // Sync to Student.feeStatus for student list display
-    await Student.findByIdAndUpdate(req.params.studentId, { feeStatus: feeStructure.overallStatus });
+    // Sync fee data to Student model for consistent reads
+    await Student.findByIdAndUpdate(req.params.studentId, {
+      feeStatus: feeStructure.overallStatus,
+      feeDetails: {
+        totalFee: feeStructure.totalFee,
+        paidAmount: feeStructure.totalPaid,
+        balanceAmount: feeStructure.totalBalance,
+        discountApplied: feeStructure.discountApplied || 0,
+        lastPaymentDate: feeStructure.lastPaymentDate,
+      }
+    });
 
     // Get student details for socket event
     const student = await Student.findById(req.params.studentId).select('name');
@@ -229,8 +247,17 @@ router.post('/student/:studentId/payment', async (req, res) => {
 
     await feeStructure.save();
 
-    // Sync to Student.feeStatus for student list display
-    await Student.findByIdAndUpdate(req.params.studentId, { feeStatus: feeStructure.overallStatus });
+    // Sync fee data to Student model for consistent reads
+    await Student.findByIdAndUpdate(req.params.studentId, {
+      feeStatus: feeStructure.overallStatus,
+      feeDetails: {
+        totalFee: feeStructure.totalFee,
+        paidAmount: feeStructure.totalPaid,
+        balanceAmount: feeStructure.totalBalance,
+        discountApplied: feeStructure.discountApplied || 0,
+        lastPaymentDate: feeStructure.lastPaymentDate,
+      }
+    });
 
     console.log(`✅ Student ${req.params.studentId} fee status updated to: ${feeStructure.overallStatus}`);
 

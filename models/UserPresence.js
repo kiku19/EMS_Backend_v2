@@ -36,7 +36,7 @@ const userPresenceSchema = new mongoose.Schema({
 });
 
 // Indexes
-userPresenceSchema.index({ userId: 1 });
+// Note: userId already has unique: true which creates an index
 userPresenceSchema.index({ status: 1 });
 userPresenceSchema.index({ lastSeen: -1 });
 

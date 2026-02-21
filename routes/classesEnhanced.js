@@ -13,7 +13,7 @@ router.get('/:id/academic-performance', authenticate, async (req, res) => {
     const { academicYear = '2024-25' } = req.query;
 
     // Get all students in the class
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
     const studentIds = students.map(s => s._id);
 
     // Get all results for this academic year
@@ -227,7 +227,8 @@ router.post('/:id/rating/recalculate', authenticate, async (req, res) => {
     rating.behaviorScore = 70;
 
     // Fee score - based on fee compliance (10% weight)
-    const students = await Student.find({ classId: id });
+    // FIXED: Filter by status='active' AND isDeleted!=true for consistency
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
     const paidStudents = students.filter(s => s.feeStatus === 'paid').length;
     rating.feeScore = students.length > 0 ? Math.round((paidStudents / students.length) * 100) : 70;
 
@@ -267,7 +268,7 @@ router.get('/:id/attendance-analytics', authenticate, async (req, res) => {
     const { id } = req.params;
     const { period = 'month' } = req.query; // week, month, term
 
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
     const studentIds = students.map(s => s._id);
 
     // Calculate date range based on period
@@ -327,7 +328,7 @@ router.get('/:id/chronic-absentees', authenticate, async (req, res) => {
     const { id } = req.params;
     const { threshold = 60 } = req.query;
 
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
     const studentIds = students.map(s => s._id);
 
     // Get last 30 days attendance
@@ -375,7 +376,7 @@ router.get('/:id/today-status', authenticate, async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
 
     // Get today's attendance
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
     const studentIds = students.map(s => s._id);
 
     const todayAttendance = await Attendance.find({
@@ -456,7 +457,7 @@ router.post('/:id/promote', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
 
     const promotionResults = {
       promoted: [],
@@ -696,7 +697,7 @@ router.post('/:id/announcements', authenticate, async (req, res) => {
     const { title, description, targetAudience, priority, attachments, scheduledFor } = req.body;
 
     // Get all students in class
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
 
     const announcement = await ClassAnnouncement.create({
       classId: id,
@@ -762,7 +763,7 @@ router.get('/:id/fees-overview', authenticate, async (req, res) => {
     const { id } = req.params;
     const { academicYear = '2024-25' } = req.query;
 
-    const students = await Student.find({ classId: id, status: 'active' });
+    const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
 
     const feeStats = {
       totalStudents: students.length,

@@ -93,10 +93,17 @@ export const checkPermission = (module, action) => {
 };
 
 /**
- * Determine role from user's role string
+ * Determine role from user's role string or array
  */
 function determineRole(userRole) {
-  const roleLower = userRole.toLowerCase();
+  // Handle array of roles (take first role)
+  const roleStr = Array.isArray(userRole) ? userRole[0] : userRole;
+  
+  if (!roleStr || typeof roleStr !== 'string') {
+    return 'teacher'; // Default to teacher role
+  }
+  
+  const roleLower = roleStr.toLowerCase();
   
   if (roleLower.includes('admin') || roleLower.includes('principal')) {
     return 'admin';

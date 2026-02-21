@@ -46,7 +46,7 @@ const payrollRunSchema = new mongoose.Schema({
   },
   runBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    ref: 'Staff'
   },
   completedAt: Date,
   errorLog: [String],
@@ -59,7 +59,7 @@ const payrollRunSchema = new mongoose.Schema({
   processingLockExpiresAt: Date,
   processingLockedBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    ref: 'Staff'
   }
 }, {
   timestamps: true

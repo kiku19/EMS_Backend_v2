@@ -263,6 +263,7 @@ class TimetableService {
 
   /**
    * Add teacher to class timetable
+   * Auto-creates class timetable if it doesn't exist
    * @private
    */
   async _addToClassTimetable({ classId, teacherId, day, periodIndex, subject, room, academicYear, modifiedBy, session }) {
@@ -271,8 +272,50 @@ class TimetableService {
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
     
+    // Auto-create class timetable if it doesn't exist
     if (!classTimetable) {
-      throw new Error(`Class timetable not found for classId: ${classId}`);
+      console.log(`Class timetable not found for classId: ${classId}, creating new one...`);
+      
+      // Get default periods from school settings or use defaults
+      const defaultPeriods = [
+        { name: "Period 1", startTime: "08:00", endTime: "08:45", isBreak: false },
+        { name: "Period 2", startTime: "08:45", endTime: "09:30", isBreak: false },
+        { name: "Break", startTime: "09:30", endTime: "09:45", isBreak: true },
+        { name: "Period 3", startTime: "09:45", endTime: "10:30", isBreak: false },
+        { name: "Period 4", startTime: "10:30", endTime: "11:15", isBreak: false },
+        { name: "Lunch", startTime: "11:15", endTime: "12:00", isBreak: true },
+        { name: "Period 5", startTime: "12:00", endTime: "12:45", isBreak: false },
+        { name: "Period 6", startTime: "12:45", endTime: "13:30", isBreak: false },
+      ];
+
+      const emptySchedule = {
+        Monday: [],
+        Tuesday: [],
+        Wednesday: [],
+        Thursday: [],
+        Friday: [],
+        Saturday: []
+      };
+
+      classTimetable = new Timetable({
+        classId,
+        academicYear,
+        periods: defaultPeriods,
+        schedule: emptySchedule,
+        metadata: {
+          createdBy: modifiedBy,
+          lastModifiedBy: modifiedBy,
+          version: 1
+        }
+      });
+
+      if (session) {
+        await classTimetable.save({ session });
+      } else {
+        await classTimetable.save();
+      }
+
+      console.log(`✓ Created class timetable for classId: ${classId}`);
     }
 
     if (!classTimetable.schedule[day]) {

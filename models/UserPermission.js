@@ -50,6 +50,36 @@ export const PERMISSION_TEMPLATES = {
     'front-desk': { view: true, create: true, edit: true, delete: true },
     'intake-forms': { view: true, create: true, edit: true, delete: true }
   },
+  principal: {
+    dashboard: { view: true, create: true, edit: true, delete: true },
+    staff: { view: true, create: true, edit: true, delete: true },
+    students: { view: true, create: true, edit: true, delete: true },
+    classes: { view: true, create: true, edit: true, delete: true },
+    attendance: { view: true, create: true, edit: true, delete: true },
+    timetable: { view: true, create: true, edit: true, delete: true },
+    fees: { view: true, create: true, edit: true, delete: true },
+    payroll: { view: true, create: true, edit: true, delete: true },
+    messaging: { view: true, create: true, edit: true, delete: true },
+    reports: { view: true, create: true, edit: true, delete: true },
+    settings: { view: true, create: true, edit: true, delete: false },
+    'front-desk': { view: true, create: true, edit: true, delete: true },
+    'intake-forms': { view: true, create: true, edit: true, delete: true }
+  },
+  'vice-principal': {
+    dashboard: { view: true, create: true, edit: true, delete: false },
+    staff: { view: true, create: true, edit: true, delete: false },
+    students: { view: true, create: true, edit: true, delete: false },
+    classes: { view: true, create: true, edit: true, delete: false },
+    attendance: { view: true, create: true, edit: true, delete: false },
+    timetable: { view: true, create: true, edit: true, delete: false },
+    fees: { view: true, create: false, edit: false, delete: false },
+    payroll: { view: true, create: false, edit: false, delete: false },
+    messaging: { view: true, create: true, edit: true, delete: false },
+    reports: { view: true, create: true, edit: false, delete: false },
+    settings: { view: false, create: false, edit: false, delete: false },
+    'front-desk': { view: true, create: true, edit: true, delete: false },
+    'intake-forms': { view: true, create: true, edit: true, delete: false }
+  },
   teacher: {
     dashboard: { view: true, create: false, edit: false, delete: false },
     staff: { view: true, create: false, edit: false, delete: false },
@@ -79,6 +109,36 @@ export const PERMISSION_TEMPLATES = {
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: false, create: false, edit: false, delete: false },
     'intake-forms': { view: true, create: false, edit: false, delete: false }
+  },
+  librarian: {
+    dashboard: { view: true, create: false, edit: false, delete: false },
+    staff: { view: true, create: false, edit: false, delete: false },
+    students: { view: true, create: false, edit: false, delete: false },
+    classes: { view: true, create: false, edit: false, delete: false },
+    attendance: { view: true, create: false, edit: false, delete: false },
+    timetable: { view: true, create: false, edit: false, delete: false },
+    fees: { view: false, create: false, edit: false, delete: false },
+    payroll: { view: false, create: false, edit: false, delete: false },
+    messaging: { view: true, create: true, edit: false, delete: false },
+    reports: { view: false, create: false, edit: false, delete: false },
+    settings: { view: false, create: false, edit: false, delete: false },
+    'front-desk': { view: false, create: false, edit: false, delete: false },
+    'intake-forms': { view: false, create: false, edit: false, delete: false }
+  },
+  'lab-assistant': {
+    dashboard: { view: true, create: false, edit: false, delete: false },
+    staff: { view: true, create: false, edit: false, delete: false },
+    students: { view: true, create: false, edit: false, delete: false },
+    classes: { view: true, create: false, edit: false, delete: false },
+    attendance: { view: true, create: false, edit: false, delete: false },
+    timetable: { view: true, create: false, edit: false, delete: false },
+    fees: { view: false, create: false, edit: false, delete: false },
+    payroll: { view: false, create: false, edit: false, delete: false },
+    messaging: { view: true, create: true, edit: false, delete: false },
+    reports: { view: false, create: false, edit: false, delete: false },
+    settings: { view: false, create: false, edit: false, delete: false },
+    'front-desk': { view: false, create: false, edit: false, delete: false },
+    'intake-forms': { view: false, create: false, edit: false, delete: false }
   },
   receptionist: {
     dashboard: { view: true, create: false, edit: false, delete: false },

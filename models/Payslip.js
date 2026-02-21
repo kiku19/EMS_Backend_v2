@@ -8,7 +8,8 @@ const payslipSchema = new mongoose.Schema({
     unique: true
   },
   employeeId: {
-    type: String,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Staff',
     required: true,
     index: true
   },

@@ -2,6 +2,7 @@ import conflictDetectionService from '../services/conflictDetectionService.js';
 
 /**
  * Middleware to check for teacher conflicts before saving timetable slots
+ * Uses flexible mode by default - only blocks on time conflicts, not qualification issues
  */
 export const checkConflicts = async (req, res, next) => {
   try {
@@ -12,13 +13,14 @@ export const checkConflicts = async (req, res, next) => {
       return next();
     }
     
-    // Validate the slot assignment
+    // Validate the slot assignment (flexible mode - only check time conflicts)
     const validation = await conflictDetectionService.validateSlotAssignment(
       teacherId,
       classId,
       subject,
       day,
-      periodIndex
+      periodIndex,
+      false // Flexible mode - allow scheduling without formal assignments
     );
     
     if (!validation.isValid) {
@@ -30,6 +32,11 @@ export const checkConflicts = async (req, res, next) => {
         message: validation.error.message,
         details: validation.error
       });
+    }
+    
+    // Log warning if teacher is not formally assigned
+    if (validation.warning) {
+      console.warn('Timetable assignment warning:', validation.warning.message);
     }
     
     next();
@@ -45,6 +52,7 @@ export const checkConflicts = async (req, res, next) => {
 
 /**
  * Middleware to check conflicts for teacher timetable updates
+ * Uses flexible mode by default - only blocks on time conflicts, not qualification issues
  */
 export const checkTeacherTimetableConflicts = async (req, res, next) => {
   try {
@@ -56,13 +64,14 @@ export const checkTeacherTimetableConflicts = async (req, res, next) => {
       return next();
     }
     
-    // Validate the slot assignment
+    // Validate the slot assignment (flexible mode - only check time conflicts)
     const validation = await conflictDetectionService.validateSlotAssignment(
       teacherId,
       classId,
       subject,
       day,
-      periodIndex
+      periodIndex,
+      false // Flexible mode - allow scheduling without formal assignments
     );
     
     if (!validation.isValid) {
@@ -74,6 +83,11 @@ export const checkTeacherTimetableConflicts = async (req, res, next) => {
         message: validation.error.message,
         details: validation.error
       });
+    }
+    
+    // Log warning if teacher is not formally assigned
+    if (validation.warning) {
+      console.warn('Timetable assignment warning:', validation.warning.message);
     }
     
     next();

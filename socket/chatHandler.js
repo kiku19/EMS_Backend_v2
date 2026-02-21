@@ -1,7 +1,7 @@
 import Message from '../models/Message.js';
 import Conversation from '../models/Conversation.js';
 import UserPresence from '../models/UserPresence.js';
-import { Staff, Student } from '../database.js';
+import { Staff, Student, Parent } from '../database.js';
 import { hasPermission, canMessageUser, CHAT_PERMISSIONS } from '../middleware/chatPermissions.js';
 
 // Store active users: userId -> socketId
@@ -23,9 +23,18 @@ export function initializeChatHandlers(io) {
         }
 
         // Verify user exists
-        const UserModel = userType === 'staff' ? Staff : Student;
+        const getUserModel = (userType) => {
+          switch (userType) {
+            case 'staff': return Staff;
+            case 'student': return Student;
+            case 'parent': return Parent;
+            default: throw new Error(`Invalid user type: ${userType}`);
+          }
+        };
+
+        const UserModel = getUserModel(userType);
         const user = await UserModel.findById(userId);
-        
+
         if (!user) {
           socket.emit('error', { message: 'User not found' });
           return;
@@ -34,7 +43,7 @@ export function initializeChatHandlers(io) {
         // Store user info in socket
         socket.userId = userId;
         socket.userType = userType;
-        socket.userModel = userType === 'staff' ? 'Staff' : 'Student';
+        socket.userModel = userType === 'staff' ? 'Staff' : userType === 'parent' ? 'Parent' : 'Student';
 
         // Add to active users
         activeUsers.set(userId, socket.id);
@@ -48,11 +57,20 @@ export function initializeChatHandlers(io) {
         // Join user's personal room
         socket.join(`user:${userId}`);
 
+        // If parent, also join student rooms for their children
+        if (userType === 'parent' && user.children) {
+          for (const child of user.children) {
+            const childStudentId = (child.studentId || child).toString();
+            socket.join(`student:${childStudentId}`);
+            console.log(`👨‍👩‍👧 Parent ${userId} joined student room: student:${childStudentId}`);
+          }
+        }
+
         // Emit authentication success
-        socket.emit('authenticated', { 
-          userId, 
+        socket.emit('authenticated', {
+          userId,
           userType,
-          message: 'Successfully authenticated' 
+          message: 'Successfully authenticated'
         });
 
         // Broadcast user online status - FIXED: Only to relevant users
@@ -129,12 +147,17 @@ export function initializeChatHandlers(io) {
     // Send message
     socket.on('send_message', async (data) => {
       try {
-        const { conversationId, receiverId, receiverModel, content, type = 'text', fileUrl, fileName, fileSize, replyTo, forwardedFrom } = data;
-        
+        console.log('📨 Received send_message event:', JSON.stringify(data, null, 2));
+
+        const { conversationId, receiverId, receiverModel, content, type = 'text', fileUrl, fileName, fileSize, replyTo, forwardedFrom, duration, waveform } = data;
+
         if (!socket.userId) {
+          console.error('❌ Socket not authenticated');
           socket.emit('error', { message: 'Not authenticated' });
           return;
         }
+
+        console.log('📨 Processing message from:', socket.userId, 'type:', type, 'fileUrl:', fileUrl ? 'present' : 'missing');
 
         // Check if user has permission to send messages
         const canSend = await hasPermission(socket.userId, socket.userType, CHAT_PERMISSIONS.SEND_MESSAGE);
@@ -143,23 +166,8 @@ export function initializeChatHandlers(io) {
           return;
         }
 
-        // Check if user can message this specific receiver
-        if (receiverId) {
-          const canMessage = await canMessageUser(
-            socket.userId,
-            socket.userType,
-            receiverId,
-            receiverModel.toLowerCase()
-          );
-          
-          if (!canMessage) {
-            socket.emit('error', { 
-              message: 'You do not have permission to message this user',
-              details: 'Please contact your administrator to enable messaging permissions'
-            });
-            return;
-          }
-        }
+        // NOTE: We don't check canMessageUser here anymore since we gave basic permissions to all staff
+        // They can message anyone as long as they have SEND_MESSAGE permission
 
         // Find or create conversation
         let conversation;
@@ -179,6 +187,22 @@ export function initializeChatHandlers(io) {
           return;
         }
 
+        // Provide default content for non-text messages if not provided
+        let messageContent = content;
+        if (!messageContent || messageContent.trim() === '') {
+          if (type === 'audio' || type === 'voice') {
+            messageContent = '🎤 Voice message';
+          } else if (type === 'image') {
+            messageContent = '📷 Image';
+          } else if (type === 'file') {
+            messageContent = '📎 File';
+          } else if (type === 'video') {
+            messageContent = '🎬 Video';
+          } else {
+            messageContent = '';
+          }
+        }
+
         // Create message
         const messageData = {
           conversationId: conversation._id,
@@ -186,11 +210,13 @@ export function initializeChatHandlers(io) {
           senderModel: socket.userModel,
           receiverId: receiverId || conversation.participants.find(p => p.userId.toString() !== socket.userId).userId,
           receiverModel: receiverModel || conversation.participants.find(p => p.userId.toString() !== socket.userId).userModel,
-          content,
+          content: messageContent,
           type,
           fileUrl,
           fileName,
           fileSize,
+          duration: duration || 0,
+          waveform: waveform || [],
           status: 'sent'
         };
 
@@ -203,9 +229,19 @@ export function initializeChatHandlers(io) {
           }
         }
 
-        // Handle forwardedFrom
-        if (forwardedFrom) {
+        // Handle forwardedFrom - only add if it has valid data
+        if (forwardedFrom && forwardedFrom.messageId) {
           messageData.forwardedFrom = forwardedFrom;
+        }
+
+        // Debug: Log message data for voice/audio messages
+        if (type === 'audio' || type === 'voice') {
+          console.log('🎤 Creating voice/audio message:', {
+            fileUrl: messageData.fileUrl,
+            duration: messageData.duration,
+            waveformLength: messageData.waveform?.length,
+            content: messageData.content
+          });
         }
 
         const message = await Message.create(messageData);
@@ -218,7 +254,7 @@ export function initializeChatHandlers(io) {
 
         // Update conversation last message
         conversation.lastMessage = {
-          content,
+          content: messageContent,
           senderId: socket.userId,
           senderName: message.senderId.name,
           timestamp: new Date(),
@@ -245,6 +281,8 @@ export function initializeChatHandlers(io) {
           fileUrl: message.fileUrl,
           fileName: message.fileName,
           fileSize: message.fileSize,
+          duration: message.duration || 0,
+          waveform: message.waveform || [],
           status: message.status,
           createdAt: message.createdAt,
           replyTo: message.replyTo ? {
@@ -253,12 +291,23 @@ export function initializeChatHandlers(io) {
             senderId: message.replyTo.senderId,
             senderName: message.replyTo.senderId?.name || 'Unknown'
           } : null,
-          forwardedFrom: message.forwardedFrom,
+          forwardedFrom: message.forwardedFrom?.messageId ? message.forwardedFrom : null,
           pinned: message.pinned || false,
           pinnedBy: message.pinnedBy || [],
           reactions: message.reactions || [],
           isEdited: message.isEdited || false
         };
+
+        // Debug: Log voice/audio message emission
+        if (type === 'audio' || type === 'voice') {
+          console.log('🎤 Emitting voice/audio message:', {
+            id: socketMessage.id,
+            type: socketMessage.type,
+            fileUrl: socketMessage.fileUrl,
+            duration: socketMessage.duration,
+            waveformLength: socketMessage.waveform?.length
+          });
+        }
 
         // Emit to entire conversation room (includes sender)
         io.to(`conversation:${conversation._id}`).emit('new_message', { message: socketMessage });
@@ -281,7 +330,13 @@ export function initializeChatHandlers(io) {
         }
       } catch (error) {
         console.error('❌ Send message error:', error);
-        socket.emit('error', { message: 'Failed to send message' });
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Error details:', {
+          name: error.name,
+          message: error.message,
+          code: error.code
+        });
+        socket.emit('error', { message: 'Failed to send message', error: error.message });
       }
     });
 

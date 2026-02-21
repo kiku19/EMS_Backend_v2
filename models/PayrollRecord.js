@@ -2,7 +2,8 @@ import mongoose from 'mongoose';
 
 const payrollRecordSchema = new mongoose.Schema({
   employeeId: {
-    type: String,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Staff',
     required: true,
     index: true
   },
@@ -86,11 +87,11 @@ const payrollRecordSchema = new mongoose.Schema({
   lockedAt: Date,
   lockedBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    ref: 'Staff'
   },
   paidBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    ref: 'Staff'
   },
   failureReason: String,
   notes: String,
@@ -99,7 +100,7 @@ const payrollRecordSchema = new mongoose.Schema({
     reversedAt: Date,
     reversedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
+      ref: 'Staff'
     },
     reason: String,
     previousStatus: String,

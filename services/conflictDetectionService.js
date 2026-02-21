@@ -176,11 +176,12 @@ class ConflictDetectionService {
    * @param {string} subject - The subject
    * @param {string} day - Day of the week
    * @param {number} periodIndex - Index of the period
-   * @returns {Object} Validation result with isValid flag and error details
+   * @param {boolean} strictMode - If true, enforce qualification checks; if false, only check conflicts
+   * @returns {Object} Validation result with isValid flag and error/warning details
    */
-  async validateSlotAssignment(teacherId, classId, subject, day, periodIndex) {
+  async validateSlotAssignment(teacherId, classId, subject, day, periodIndex, strictMode = false) {
     try {
-      // Check for time conflict
+      // Always check for time conflicts (hard validation)
       const timeConflict = await this.checkTeacherConflict(teacherId, day, periodIndex, classId);
       if (timeConflict) {
         return {
@@ -206,18 +207,35 @@ class ConflictDetectionService {
         assignment.classes.some(c => c.toString() === classId.toString())
       );
       
+      // In strict mode, qualification is required
+      // In flexible mode (default), qualification is optional (just a warning)
       if (!hasQualification) {
-        return {
-          isValid: false,
-          error: {
-            type: 'unqualified',
-            teacherId: teacherId,
-            teacherName: teacher.name,
-            classId: classId,
-            subject: subject,
-            message: `Teacher ${teacher.name} is not qualified to teach ${subject} in this class`
-          }
-        };
+        if (strictMode) {
+          return {
+            isValid: false,
+            error: {
+              type: 'unqualified',
+              teacherId: teacherId,
+              teacherName: teacher.name,
+              classId: classId,
+              subject: subject,
+              message: `Teacher ${teacher.name} is not qualified to teach ${subject} in this class`
+            }
+          };
+        } else {
+          // Flexible mode: allow assignment but return a warning
+          return {
+            isValid: true,
+            warning: {
+              type: 'unqualified',
+              teacherId: teacherId,
+              teacherName: teacher.name,
+              classId: classId,
+              subject: subject,
+              message: `Teacher ${teacher.name} is not formally assigned to teach ${subject} in this class. Consider adding this assignment in Staff Management.`
+            }
+          };
+        }
       }
       
       return {

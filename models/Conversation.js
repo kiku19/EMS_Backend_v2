@@ -9,7 +9,7 @@ const participantSchema = new mongoose.Schema({
   userModel: {
     type: String,
     required: true,
-    enum: ['Staff', 'Student']
+    enum: ['Staff', 'Student', 'Parent']
   },
   name: String,
   avatar: String,

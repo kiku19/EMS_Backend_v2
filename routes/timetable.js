@@ -252,6 +252,55 @@ router.put('/:classId/periods', authenticate, checkPermission('classes', 'edit')
 });
 
 /**
+ * PUT /api/timetable/:classId
+ * Update entire timetable
+ * Body: { academicYear, periods, schedule }
+ * Note: This must come AFTER more specific routes like /:classId/slot, /:classId/periods
+ */
+router.put('/:classId', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { academicYear = '2024-25', periods, schedule } = req.body;
+
+    // Validate class exists
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    // Find existing timetable
+    let timetable = await Timetable.findOne({ classId, academicYear });
+
+    if (timetable) {
+      // Update existing timetable
+      if (periods) timetable.periods = periods;
+      if (schedule) timetable.schedule = schedule;
+      timetable.version += 1;
+      timetable.lastSyncedAt = new Date();
+    } else {
+      // Create new timetable
+      timetable = new Timetable({
+        classId,
+        academicYear,
+        periods: periods || [],
+        schedule: schedule || {
+          Monday: [], Tuesday: [], Wednesday: [],
+          Thursday: [], Friday: [], Saturday: []
+        }
+      });
+    }
+
+    await timetable.save();
+    await timetable.populate('classId', 'name section');
+
+    res.json(timetable);
+  } catch (error) {
+    console.error('Error updating timetable:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * DELETE /api/timetable/:classId
  * Delete timetable
  * Query params: academicYear (optional, defaults to '2024-25')

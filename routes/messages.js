@@ -4,8 +4,40 @@ import Conversation from '../models/Conversation.js';
 import UserPresence from '../models/UserPresence.js';
 import { Staff, Student } from '../database.js';
 import { hasPermission, canMessageUser, getUserChatPermissions, CHAT_PERMISSIONS } from '../middleware/chatPermissions.js';
+import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Get unread count for a user
+router.get('/unread-count', async (req, res) => {
+  try {
+    const { userId, userType } = req.query;
+
+    if (!userId || !userType) {
+      return res.status(400).json({ error: 'userId and userType are required' });
+    }
+
+    // Find all conversations for this user
+    const conversations = await Conversation.find({
+      'participants.userId': userId,
+      isArchived: false
+    }).lean();
+
+    // Calculate total unread count
+    let totalUnread = 0;
+    conversations.forEach(conv => {
+      const participant = conv.participants.find(p => p.userId.toString() === userId);
+      if (participant && participant.unreadCount) {
+        totalUnread += participant.unreadCount;
+      }
+    });
+
+    res.json({ count: totalUnread });
+  } catch (error) {
+    console.error('❌ Get unread count error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Get user's chat permissions
 router.get('/permissions', async (req, res) => {
@@ -30,7 +62,7 @@ router.get('/permissions', async (req, res) => {
 });
 
 // Get all conversations for a user
-router.get('/conversations', async (req, res) => {
+router.get('/conversations', authenticate, async (req, res) => {
   try {
     const { userId, userType } = req.query;
 
@@ -102,7 +134,7 @@ router.get('/conversations', async (req, res) => {
 });
 
 // Get messages for a conversation
-router.get('/conversations/:conversationId/messages', async (req, res) => {
+router.get('/conversations/:conversationId/messages', authenticate, async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { limit = 50, before } = req.query;
@@ -139,6 +171,8 @@ router.get('/conversations/:conversationId/messages', async (req, res) => {
       fileUrl: msg.fileUrl,
       fileName: msg.fileName,
       fileSize: msg.fileSize,
+      duration: msg.duration || 0,
+      waveform: msg.waveform || [],
       status: msg.status,
       readAt: msg.readAt,
       createdAt: msg.createdAt,
@@ -147,7 +181,7 @@ router.get('/conversations/:conversationId/messages', async (req, res) => {
       pinnedBy: msg.pinnedBy || [],
       reactions: msg.reactions || [],
       isEdited: msg.isEdited || false,
-      forwardedFrom: msg.forwardedFrom || null
+      forwardedFrom: msg.forwardedFrom?.messageId ? msg.forwardedFrom : null
     }));
 
     res.json(formattedMessages);
@@ -158,7 +192,7 @@ router.get('/conversations/:conversationId/messages', async (req, res) => {
 });
 
 // Create or get conversation
-router.post('/conversations', async (req, res) => {
+router.post('/conversations', authenticate, async (req, res) => {
   try {
     const { user1Id, user1Type, user2Id, user2Type, type = 'direct' } = req.body;
 
@@ -216,7 +250,7 @@ router.post('/conversations', async (req, res) => {
 });
 
 // Send message (REST fallback)
-router.post('/', async (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   try {
     const {
       conversationId,
@@ -230,10 +264,13 @@ router.post('/', async (req, res) => {
       fileName,
       fileSize,
       replyTo,
-      forwardedFrom
+      forwardedFrom,
+      duration,
+      waveform
     } = req.body;
 
-    if (!conversationId || !senderId || !receiverId || !content) {
+    // Note: For voice/audio messages, content can be empty string
+    if (!conversationId || !senderId || !receiverId || content === undefined) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
@@ -249,6 +286,8 @@ router.post('/', async (req, res) => {
       fileUrl,
       fileName,
       fileSize,
+      duration: duration || 0,
+      waveform: waveform || [],
       status: 'sent'
     };
 
@@ -261,8 +300,8 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Handle forwardedFrom
-    if (forwardedFrom) {
+    // Handle forwardedFrom - only add if it has valid data
+    if (forwardedFrom && forwardedFrom.messageId) {
       messageData.forwardedFrom = forwardedFrom;
     }
 
@@ -296,6 +335,11 @@ router.post('/', async (req, res) => {
       senderName: message.senderId.name,
       content: message.content,
       type: message.type,
+      fileUrl: message.fileUrl,
+      fileName: message.fileName,
+      fileSize: message.fileSize,
+      duration: message.duration || 0,
+      waveform: message.waveform || [],
       status: message.status,
       createdAt: message.createdAt,
       replyTo: message.replyTo ? {
@@ -304,7 +348,7 @@ router.post('/', async (req, res) => {
         senderId: message.replyTo.senderId,
         senderName: message.replyTo.senderId?.name || 'Unknown'
       } : null,
-      forwardedFrom: message.forwardedFrom
+      forwardedFrom: message.forwardedFrom?.messageId ? message.forwardedFrom : null
     });
   } catch (error) {
     console.error('❌ Send message error:', error);
@@ -313,7 +357,7 @@ router.post('/', async (req, res) => {
 });
 
 // Mark messages as read
-router.put('/read', async (req, res) => {
+router.put('/read', authenticate, async (req, res) => {
   try {
     const { conversationId, userId } = req.body;
 
@@ -347,7 +391,7 @@ router.put('/read', async (req, res) => {
 });
 
 // Delete message
-router.delete('/:messageId', async (req, res) => {
+router.delete('/:messageId', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const { userId } = req.query;
@@ -878,6 +922,52 @@ router.delete('/conversations/:conversationId', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('❌ Delete conversation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get available contacts (staff and students for starting new conversations)
+router.get('/contacts', authenticate, async (req, res) => {
+  try {
+    const { userType } = req.query;
+
+    if (!userType || !['staff', 'student'].includes(userType)) {
+      return res.status(400).json({ error: 'Valid userType (staff/student) is required' });
+    }
+
+    // Get all active staff members
+    const staff = await Staff.find({ isActive: true })
+      .select('_id name role picture')
+      .sort({ name: 1 })
+      .lean();
+
+    // Get all active students
+    const students = await Student.find({ isActive: true })
+      .select('_id name rollNo picture')
+      .sort({ name: 1 })
+      .lean();
+
+    // Format response
+    const formattedStaff = staff.map(s => ({
+      id: s._id.toString(),
+      name: s.name,
+      role: s.role,
+      avatar: s.picture
+    }));
+
+    const formattedStudents = students.map(s => ({
+      id: s._id.toString(),
+      name: s.name,
+      rollNo: s.rollNo,
+      avatar: s.picture
+    }));
+
+    res.json({
+      staff: formattedStaff,
+      students: formattedStudents
+    });
+  } catch (error) {
+    console.error('❌ Get contacts error:', error);
     res.status(500).json({ error: error.message });
   }
 });
