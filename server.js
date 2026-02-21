@@ -122,18 +122,18 @@ app.use(cors({
     if (config.isDevelopment) {
       return callback(null, true);
     }
-    
+
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
+
     // Check if origin is in allowed list
     const allowedOrigins = config.corsOrigins;
-    
+
     // Check for exact match
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    
+
     // Check for wildcard patterns
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (allowedOrigin.includes('*')) {
@@ -143,15 +143,15 @@ app.use(cors({
       }
       return false;
     });
-    
+
     if (isAllowed) {
       return callback(null, true);
     }
-    
+
     // Log rejected origin for debugging
     console.log('CORS: Rejected origin:', origin);
     console.log('CORS: Allowed origins:', allowedOrigins);
-    
+
     // Origin not allowed
     callback(null, false);
   },
@@ -487,15 +487,15 @@ app.get('/api/staff/validate/:id', async (req, res) => {
     const { id } = req.params;
 
     // Find staff by ID and check if they exist and are active
-    const staff = await Staff.findOne({ 
+    const staff = await Staff.findOne({
       _id: id,
       status: 'active'
     });
 
     if (!staff) {
-      return res.json({ 
-        valid: false, 
-        reason: 'Staff member not found or inactive' 
+      return res.json({
+        valid: false,
+        reason: 'Staff member not found or inactive'
       });
     }
 
@@ -513,9 +513,9 @@ app.get('/api/staff/validate/:id', async (req, res) => {
     });
   } catch (err) {
     console.error('Error validating staff member:', err);
-    res.json({ 
-      valid: false, 
-      reason: 'Validation failed' 
+    res.json({
+      valid: false,
+      reason: 'Validation failed'
     });
   }
 });
@@ -904,7 +904,7 @@ app.get('/api/staff/:id/classes', async (req, res) => {
   try {
     const { id } = req.params;
     const { role } = req.query; // 'classTeacher' or 'all' (default)
-    
+
     const staff = await Staff.findById(id);
 
     if (!staff) {
@@ -1129,6 +1129,14 @@ app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validat
       }
     }
 
+    // Check if email already exists (actual duplicate check)
+    if (email) {
+      const existingByEmail = await Staff.findOne({ email: email.toLowerCase() });
+      if (existingByEmail) {
+        return res.status(400).json({ error: `Email already used by ${existingByEmail.name} (${existingByEmail.code})` });
+      }
+    }
+
     // Auto-generate username from email or code, ensuring uniqueness
     let baseUsername = email ? email.split('@')[0].toLowerCase() : code.toLowerCase();
     let username = baseUsername;
@@ -1139,14 +1147,16 @@ app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validat
       usernameExists = await Staff.findOne({ username });
       suffix++;
     }
+
     // Auto-generate random password
     const password = generatePassword(8);
 
     const staff = new Staff({
       code, name,
       // Use role if provided, otherwise use staffType (they have the same values now)
+      // role can be a string or array; Mongoose [String] schema handles both
       role: role || staffType,
-      department: department || expertise,
+      department: department || 'General',
       status: status || 'active',
       phone, email, joinDate, address, username, password,
       reporterId: reporterId || null,
@@ -1190,10 +1200,16 @@ app.post('/api/staff', authenticate, checkPermission('staff', 'create'), validat
     const { PERMISSION_TEMPLATES } = await import('./models/UserPermission.js');
 
     // Create user permission
+    const template = PERMISSION_TEMPLATES[permissionRole] || PERMISSION_TEMPLATES.teacher;
+    const permissionsArray = Object.entries(template).map(([module, perms]) => ({
+      module,
+      ...perms
+    }));
+
     await UserPermission.create({
-      staffId: staff._id,
+      userId: staff._id,
       role: permissionRole,
-      permissions: PERMISSION_TEMPLATES[permissionRole] || PERMISSION_TEMPLATES.teacher
+      permissions: permissionsArray
     });
 
     console.log(`✅ Created ${permissionRole} permissions for staff ${staff.name}`);
@@ -1377,11 +1393,17 @@ app.put('/api/staff/:id', authenticate, checkPermission('staff', 'edit'), async 
       const { PERMISSION_TEMPLATES } = await import('./models/UserPermission.js');
 
       // Update or create user permission
+      const template = PERMISSION_TEMPLATES[permissionRole] || PERMISSION_TEMPLATES.teacher;
+      const permissionsArray = Object.entries(template).map(([module, perms]) => ({
+        module,
+        ...perms
+      }));
+
       await UserPermission.findOneAndUpdate(
         { userId: staff._id }, // Fixed: use userId instead of staffId
         {
           role: permissionRole,
-          permissions: PERMISSION_TEMPLATES[permissionRole] || PERMISSION_TEMPLATES.teacher
+          permissions: permissionsArray
         },
         { upsert: true, new: true }
       );
@@ -2915,8 +2937,26 @@ app.put('/api/classes/:id/class-teacher', authenticate, checkPermission('classes
     }
 
     // Update only the classTeacherId field (allows null for unassigning)
+    const oldTeacherId = cls.classTeacherId;
     cls.classTeacherId = classTeacherId || null;
     await cls.save();
+
+    // ✅ SYNC: Update Staff.classTeacherOf field automatically
+    // Remove old teacher's assignment (if exists)
+    if (oldTeacherId) {
+      await Staff.findByIdAndUpdate(oldTeacherId, {
+        classTeacherOf: null,
+        isClassTeacher: false
+      });
+    }
+
+    // Set new teacher's assignment (if exists)
+    if (classTeacherId) {
+      await Staff.findByIdAndUpdate(classTeacherId, {
+        classTeacherOf: `${cls.name}-${cls.section}`,
+        isClassTeacher: true
+      });
+    }
 
     // Broadcast class update with teacher details
     io.emit('class_updated', {
@@ -4096,8 +4136,8 @@ app.get('/api/validation/class-teachers/check-consistency', authenticate, async 
 
       // Parse classTeacherOf to find expected class
       const classMatch = staff.classTeacherOf.match(/Class\s*(\d+)[-\s]?([A-Z])?/i) ||
-                        staff.classTeacherOf.match(/^(\d+)[-\s]?([A-Z])?$/i);
-      
+        staff.classTeacherOf.match(/^(\d+)[-\s]?([A-Z])?$/i);
+
       if (!classMatch) continue;
 
       const className = `Class ${classMatch[1]}`;
@@ -4125,8 +4165,8 @@ app.get('/api/validation/class-teachers/check-consistency', authenticate, async 
     }
 
     // Also check for classes with classTeacherId but staff.isClassTeacher is false
-    const classesWithTeachers = await Class.find({ 
-      classTeacherId: { $exists: true, $ne: null } 
+    const classesWithTeachers = await Class.find({
+      classTeacherId: { $exists: true, $ne: null }
     });
 
     for (const cls of classesWithTeachers) {

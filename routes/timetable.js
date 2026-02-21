@@ -6,6 +6,220 @@ import { validate, schemas } from '../middleware/validation.js';
 
 const router = express.Router();
 
+// IMPORTANT: More specific routes must be defined BEFORE parameterized routes (:classId)
+// Otherwise, /generate-all would be matched by /:classId
+
+/**
+ * GET /api/timetable
+ * Get all timetables for school
+ * Query params: academicYear (optional, defaults to '2024-25')
+ */
+router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { academicYear = '2024-25' } = req.query;
+
+    const timetables = await Timetable.find({ academicYear })
+      .populate('classId', 'name section teacher')
+      .sort({ 'classId.name': 1, 'classId.section': 1 });
+
+    res.json(timetables);
+  } catch (error) {
+    console.error('Error fetching all timetables:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/timetable/generate-all
+ * Generate/regenerate timetables for all classes
+ */
+router.post('/generate-all', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+  try {
+    const { academicYear = '2024-25', periodRules } = req.body;
+
+    // Get all classes
+    const classes = await Class.find({}).sort({ name: 1, section: 1 });
+
+    if (classes.length === 0) {
+      return res.status(404).json({ error: 'No classes found' });
+    }
+
+    const results = [];
+    const errors = [];
+
+    // Default periods if not provided
+    const defaultPeriods = [
+      { name: 'Period 1', startTime: '09:00', endTime: '09:45', isBreak: false },
+      { name: 'Period 2', startTime: '09:45', endTime: '10:30', isBreak: false },
+      { name: 'Break', startTime: '10:30', endTime: '10:45', isBreak: true },
+      { name: 'Period 3', startTime: '10:45', endTime: '11:30', isBreak: false },
+      { name: 'Period 4', startTime: '11:30', endTime: '12:15', isBreak: false },
+      { name: 'Lunch', startTime: '12:15', endTime: '13:00', isBreak: true },
+      { name: 'Period 5', startTime: '13:00', endTime: '13:45', isBreak: false },
+      { name: 'Period 6', startTime: '13:45', endTime: '14:30', isBreak: false },
+    ];
+
+    for (const cls of classes) {
+      try {
+        // Skip if class has no subjects
+        if (!cls.subjects || cls.subjects.length === 0) {
+          errors.push({
+            classId: cls._id,
+            className: `${cls.name}-${cls.section}`,
+            error: 'No subjects assigned'
+          });
+          continue;
+        }
+
+        // Check if timetable exists
+        let timetable = await Timetable.findOne({ classId: cls._id, academicYear });
+
+        if (!timetable) {
+          // Create new timetable
+          timetable = new Timetable({
+            classId: cls._id,
+            academicYear,
+            periods: defaultPeriods,
+            schedule: {
+              Monday: [],
+              Tuesday: [],
+              Wednesday: [],
+              Thursday: [],
+              Friday: [],
+              Saturday: []
+            }
+          });
+        }
+
+        // Generate schedule using same logic as wizard
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const periods = timetable.periods || defaultPeriods;
+
+        // Initialize empty schedule
+        const schedule = {};
+        days.forEach(day => {
+          schedule[day] = periods.map(() => ({
+            subject: '',
+            teacherId: null,
+            room: ''
+          }));
+        });
+
+        // Get non-break periods
+        const nonBreakIndices = periods
+          .map((p, i) => (!p.isBreak ? i : -1))
+          .filter(i => i !== -1);
+
+        // Track subject usage
+        const subjectUsage = {};
+        cls.subjects.forEach(s => {
+          subjectUsage[s] = { perDay: {}, perWeek: 0 };
+          days.forEach(d => {
+            subjectUsage[s].perDay[d] = 0;
+          });
+        });
+
+        // Calculate periods per subject
+        const totalAvailablePeriods = nonBreakIndices.length * days.length;
+        const periodsPerSubject = Math.floor(totalAvailablePeriods / cls.subjects.length);
+
+        // Build subject pool
+        const subjectPool = [];
+        cls.subjects.forEach(subject => {
+          for (let i = 0; i < Math.max(1, periodsPerSubject); i++) {
+            subjectPool.push(subject);
+          }
+        });
+
+        // Shuffle and fill schedule
+        const shuffleArray = (arr) => {
+          const shuffled = [...arr];
+          for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+          }
+          return shuffled;
+        };
+
+        for (const day of days) {
+          let pool = shuffleArray(subjectPool);
+
+          for (const periodIdx of nonBreakIndices) {
+            let selectedSubject = null;
+
+            for (let i = 0; i < pool.length; i++) {
+              const subject = pool[i];
+              const usage = subjectUsage[subject];
+
+              // Check constraints
+              const maxPerDay = periodRules?.maxPeriodsPerSubjectPerDay || 1;
+              const maxPerWeek = periodRules?.maxPeriodsPerSubjectPerWeek || 5;
+              const noConsecutive = periodRules?.noConsecutiveSame !== false;
+
+              if (usage.perDay[day] >= maxPerDay) continue;
+              if (usage.perWeek >= maxPerWeek) continue;
+
+              if (noConsecutive && periodIdx > 0) {
+                const prevPeriod = periodIdx - 1;
+                if (!periods[prevPeriod]?.isBreak &&
+                    schedule[day][prevPeriod]?.subject === subject) {
+                  continue;
+                }
+              }
+
+              selectedSubject = subject;
+              pool.splice(i, 1);
+              break;
+            }
+
+            if (selectedSubject) {
+              schedule[day][periodIdx] = {
+                subject: selectedSubject,
+                teacherId: null,
+                room: `Room ${cls.name.replace('Class ', '')}-${cls.section}`
+              };
+
+              subjectUsage[selectedSubject].perDay[day]++;
+              subjectUsage[selectedSubject].perWeek++;
+            }
+          }
+        }
+
+        timetable.schedule = schedule;
+        timetable.version += 1;
+        timetable.lastSyncedAt = new Date();
+
+        await timetable.save();
+        await timetable.populate('classId', 'name section teacher');
+
+        results.push({
+          classId: cls._id,
+          className: `${cls.name}-${cls.section}`,
+          success: true
+        });
+      } catch (err) {
+        console.error(`Error generating timetable for class ${cls.name}-${cls.section}:`, err);
+        errors.push({
+          classId: cls._id,
+          className: `${cls.name}-${cls.section}`,
+          error: err.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      generated: results.length,
+      errors: errors.length,
+      results,
+      errors
+    });
+  } catch (error) {
+    console.error('Error generating all timetables:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * GET /api/timetable/:classId
  * Get timetable for a class
@@ -77,7 +291,7 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
 
 /**
  * PUT /api/timetable/:classId/slot
- * Update a single slot in the timetable
+ * Update a single slot in timetable
  * Body: { day, periodIndex, subject, teacherId, room }
  */
 router.put('/:classId/slot', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
@@ -147,7 +361,7 @@ router.put('/:classId/slot', authenticate, checkPermission('classes', 'edit'), a
 
 /**
  * POST /api/timetable/:classId/batch
- * Batch update slots in the timetable
+ * Batch update slots in timetable
  * Body: { updates: [{ day, periodIndex, subject, teacherId, room }], academicYear }
  */
 router.post('/:classId/batch', authenticate, checkPermission('classes', 'edit'), async (req, res) => {

@@ -14,7 +14,10 @@ export const schemas = {
   // Staff creation
   createStaff: Joi.object({
     name: Joi.string().required().min(2).max(100).trim(),
-    role: Joi.string().required().max(50),
+    role: Joi.alternatives().try(
+      Joi.string().required().max(50),
+      Joi.array().items(Joi.string().max(50)).min(1).required()
+    ).required(),
     department: Joi.string().max(50),
     status: Joi.string().valid('active', 'inactive', 'on-leave').default('active'),
     phone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
@@ -23,7 +26,7 @@ export const schemas = {
     address: Joi.string().max(500).allow('', null),
     assignedClassId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).allow(null),
     reporterId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).allow(null),
-    
+
     // Personal Details
     dob: Joi.string().allow('', null),
     gender: Joi.string().valid('Male', 'Female', 'Other').allow('', null),
@@ -34,7 +37,7 @@ export const schemas = {
     emergencyContact: Joi.string().max(100).allow('', null),
     emergencyPhone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
     whatsappNumber: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
-    
+
     isWhatsapp: Joi.boolean().allow(null),
 
     // Documents
@@ -61,7 +64,7 @@ export const schemas = {
     previousOrganization: Joi.string().max(100).allow('', null),
     roleInOrganization: Joi.string().allow('', null),
     qualificationDocs: Joi.array().items(Joi.string().uri()).allow(null),
-    
+
     // Staff Info
     staffNumber: Joi.string().allow('', null),
     staffId: Joi.string().allow('', null), // Allow but ignore - sometimes sent by frontend
@@ -69,11 +72,10 @@ export const schemas = {
       Joi.string().allow('', null),
       Joi.array().items(Joi.string()).allow(null)
     ), // Accept both string and array for backward compatibility
-    expertise: Joi.string().allow('', null),
     assignedClasses: Joi.array().items(Joi.string()).allow(null),
     isClassTeacher: Joi.boolean().allow(null),
     classTeacherOf: Joi.string().allow('', null),
-    
+
     // Bank & Salary
     accountNumber: Joi.string().max(50).allow('', null),
     ifscCode: Joi.string().pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/).allow('', null),
@@ -101,7 +103,7 @@ export const schemas = {
     academicYear: Joi.string().required().pattern(/^\d{4}-\d{2}$/),
     rollNo: Joi.number().integer().min(1).allow(null),
     classId: Joi.string().required().pattern(/^[0-9a-fA-F]{24}$/),
-    
+
     // Personal Information
     gender: Joi.string().valid('Male', 'Female', 'Other').allow('', null),
     dateOfBirth: Joi.string().allow('', null),
@@ -111,12 +113,12 @@ export const schemas = {
     category: Joi.string().max(50).allow('', null),
     motherTongue: Joi.string().max(50).allow('', null),
     aadhaarNumber: Joi.string().pattern(/^[0-9]{12}$/).allow('', null),
-    
+
     // Contact Information
     phone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
     email: Joi.string().email().allow('', null),
     address: Joi.string().max(500).allow('', null),
-    
+
     // Parent Information
     parentName: Joi.string().max(100).allow('', null),
     parentPhone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
@@ -131,26 +133,26 @@ export const schemas = {
       email: Joi.string().email().allow('', null),
       occupation: Joi.string().allow('', null)
     })).allow(null),
-    
+
     // Academic Information
     previousSchool: Joi.string().max(200).allow('', null),
     tcNumber: Joi.string().max(50).allow('', null),
     mediumOfInstruction: Joi.string().max(50).allow('', null),
     house: Joi.string().max(50).allow('', null),
-    
+
     // Health & Safety
     medicalConditions: Joi.string().max(500).allow('', null),
     emergencyContactName: Joi.string().max(100).allow('', null),
     emergencyContactPhone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
-    
+
     // Requirements
     transportRequired: Joi.boolean().allow(null),
     hostelRequired: Joi.boolean().allow(null),
-    
+
     // Status
     feeStatus: Joi.string().valid('paid', 'pending', 'partial').default('pending'),
     status: Joi.string().valid('active', 'inactive', 'graduated', 'transferred').default('active'),
-    
+
     // Documents & Photo
     documents: Joi.array().items(Joi.object({
       id: Joi.string(),
@@ -206,10 +208,10 @@ export const schemas = {
 // Validation middleware factory
 export function validate(schema, source = 'body') {
   return (req, res, next) => {
-    const data = source === 'body' ? req.body : 
-                 source === 'params' ? req.params : 
-                 source === 'query' ? req.query : req[source];
-    
+    const data = source === 'body' ? req.body :
+      source === 'params' ? req.params :
+        source === 'query' ? req.query : req[source];
+
     const { error, value } = schema.validate(data, {
       abortEarly: false, // Get all errors, not just the first one
       stripUnknown: true // Remove unknown fields
@@ -220,7 +222,7 @@ export function validate(schema, source = 'body') {
         field: detail.path.join('.'),
         message: detail.message
       }));
-      
+
       return res.status(400).json({
         error: 'Validation failed',
         details: errors
@@ -240,7 +242,7 @@ export function validate(schema, source = 'body') {
 // Sanitize string inputs (XSS protection)
 export function sanitizeString(str) {
   if (typeof str !== 'string') return str;
-  
+
   return str
     .trim()
     .replace(/[<>]/g, '') // Remove angle brackets

@@ -797,4 +797,37 @@ router.get('/:id/fees-overview', authenticate, async (req, res) => {
   }
 });
 
+// ============ MISSING SUBJECTS ENDPOINT ============
+
+// Get classes with missing subjects
+router.get('/missing-subjects', authenticate, async (req, res) => {
+  try {
+    // Get all classes
+    const classes = await Class.find({}).sort({ name: 1, section: 1 });
+
+    const missingSubjects = [];
+
+    for (const cls of classes) {
+      // Check if class has no subjects or empty subjects array
+      if (!cls.subjects || cls.subjects.length === 0) {
+        missingSubjects.push({
+          classId: cls._id,
+          className: `${cls.name}-${cls.section}`,
+          subjectsCount: 0,
+          hasSubjects: false
+        });
+      }
+    }
+
+    res.json({
+      totalClasses: classes.length,
+      classesWithMissingSubjects: missingSubjects.length,
+      missingSubjects
+    });
+  } catch (error) {
+    console.error('Error fetching missing subjects:', error);
+    res.status(500).json({ error: 'Failed to fetch missing subjects' });
+  }
+});
+
 export default router;
