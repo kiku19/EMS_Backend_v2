@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { Timetable, TeacherTimetable } from '../database.js';
 import timetableService from './timetableService.js';
 import conflictDetectionService from './conflictDetectionService.js';
@@ -18,7 +19,7 @@ class BatchOperationsService {
    * @returns {Promise<Object>} Result with success status and conflicts
    */
   async batchUpdateClassSlots(options) {
-    const { classId, slots, academicYear = '2024-25', modifiedBy } = options;
+    const { classId, slots, academicYear = CURRENT_ACADEMIC_YEAR, modifiedBy } = options;
 
     if (!classId || !slots || !Array.isArray(slots) || slots.length === 0) {
       throw new Error('Invalid batch update parameters');
@@ -254,7 +255,7 @@ class BatchOperationsService {
    * @returns {Promise<Object>} Result with success status
    */
   async batchUpdateTeacherSlots(options) {
-    const { teacherId, slots, academicYear = '2024-25' } = options;
+    const { teacherId, slots, academicYear = CURRENT_ACADEMIC_YEAR } = options;
 
     if (!teacherId || !slots || !Array.isArray(slots) || slots.length === 0) {
       throw new Error('Invalid batch update parameters');
@@ -474,3 +475,5 @@ class BatchOperationsService {
 }
 
 export default new BatchOperationsService();
+
+

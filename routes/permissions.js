@@ -2,7 +2,7 @@ import express from 'express';
 import UserPermission, { PERMISSION_TEMPLATES } from '../models/UserPermission.js';
 import PermissionRequest from '../models/PermissionRequest.js';
 import { Staff } from '../database.js';
-import { requireAdmin } from '../middleware/permissions.js';
+import { buildPermissionsArray, determineRole, ensurePermissionDocument } from '../middleware/permissions.js';
 
 const router = express.Router();
 
@@ -13,7 +13,6 @@ router.get('/user/:userId', async (req, res) => {
 
     let userPermission = await UserPermission.findOne({ userId });
 
-    // If no permissions found, create default based on user role
     if (!userPermission) {
       const user = await Staff.findById(userId);
       if (!user) {
@@ -21,23 +20,20 @@ router.get('/user/:userId', async (req, res) => {
       }
 
       const role = determineRole(user.role);
-      const defaultPermissions = PERMISSION_TEMPLATES[role];
-
-      const permissionsArray = Object.entries(defaultPermissions).map(([mod, perms]) => ({
-        module: mod,
-        ...perms
-      }));
+      const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
       userPermission = await UserPermission.findOneAndUpdate(
         { userId },
         {
           userId,
           role,
-          permissions: permissionsArray,
+          permissions: buildPermissionsArray(defaultPermissions),
           customPermissions: false
         },
         { upsert: true, new: true }
       );
+    } else {
+      await ensurePermissionDocument(userPermission, userPermission.role);
     }
 
     res.json(userPermission);
@@ -214,26 +210,22 @@ router.put('/requests/:requestId', async (req, res) => {
       let userPermission = await UserPermission.findOne({ userId: request.userId });
 
       if (!userPermission) {
-        // Create new permission record atomically
         const user = await Staff.findById(request.userId);
         const role = determineRole(user.role);
-        const defaultPermissions = PERMISSION_TEMPLATES[role];
-
-        const permissionsArray = Object.entries(defaultPermissions).map(([mod, perms]) => ({
-          module: mod,
-          ...perms
-        }));
+        const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
         userPermission = await UserPermission.findOneAndUpdate(
           { userId: request.userId },
           {
             userId: request.userId,
             role,
-            permissions: permissionsArray,
+            permissions: buildPermissionsArray(defaultPermissions),
             customPermissions: false
           },
           { upsert: true, new: true }
         );
+      } else {
+        await ensurePermissionDocument(userPermission, userPermission.role);
       }
 
       // Update the specific module permissions
@@ -251,7 +243,8 @@ router.put('/requests/:requestId', async (req, res) => {
           view: false,
           create: false,
           edit: false,
-          delete: false
+          delete: false,
+          publish: false
         };
         request.permissions.forEach(perm => {
           newModulePermission[perm] = true;
@@ -302,29 +295,5 @@ router.get('/user/:userId/requests', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch user requests' });
   }
 });
-
-// Helper function
-function determineRole(userRole) {
-  // Handle array of roles (take first role)
-  const roleStr = Array.isArray(userRole) ? userRole[0] : userRole;
-  
-  if (!roleStr || typeof roleStr !== 'string') {
-    return 'teacher'; // Default to teacher role
-  }
-  
-  const roleLower = roleStr.toLowerCase();
-  
-  if (roleLower.includes('admin') || roleLower.includes('principal')) {
-    return 'admin';
-  } else if (roleLower.includes('teacher')) {
-    return 'teacher';
-  } else if (roleLower.includes('accountant') || roleLower.includes('finance')) {
-    return 'accountant';
-  } else if (roleLower.includes('receptionist') || roleLower.includes('front')) {
-    return 'receptionist';
-  }
-  
-  return 'teacher';
-}
 
 export default router;

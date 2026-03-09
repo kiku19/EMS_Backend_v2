@@ -4,15 +4,22 @@ const modulePermissionSchema = new mongoose.Schema({
   module: {
     type: String,
     required: true,
-    enum: ['dashboard', 'staff', 'students', 'classes', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk', 'intake-forms']
+    enum: ['dashboard', 'staff', 'students', 'classes', 'academics', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk', 'intake-forms']
   },
   view: { type: Boolean, default: false },
   create: { type: Boolean, default: false },
   edit: { type: Boolean, default: false },
-  delete: { type: Boolean, default: false }
+  delete: { type: Boolean, default: false },
+  publish: { type: Boolean, default: false }
 }, { _id: false });
 
 const userPermissionSchema = new mongoose.Schema({
+  schoolId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'School',
+    default: null,
+    index: true,
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Staff',
@@ -25,7 +32,7 @@ const userPermissionSchema = new mongoose.Schema({
     enum: ['admin', 'teacher', 'accountant', 'receptionist', 'custom']
   },
   permissions: [modulePermissionSchema],
-  customPermissions: { type: Boolean, default: false }, // If true, uses custom permissions instead of role defaults
+  customPermissions: { type: Boolean, default: false },
   lastUpdated: { type: Date, default: Date.now },
   updatedBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -33,13 +40,15 @@ const userPermissionSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-// Default permission templates
+userPermissionSchema.index({ schoolId: 1, role: 1 });
+
 export const PERMISSION_TEMPLATES = {
   admin: {
     dashboard: { view: true, create: true, edit: true, delete: true },
     staff: { view: true, create: true, edit: true, delete: true },
     students: { view: true, create: true, edit: true, delete: true },
     classes: { view: true, create: true, edit: true, delete: true },
+    academics: { view: true, create: true, edit: true, delete: true, publish: true },
     attendance: { view: true, create: true, edit: true, delete: true },
     timetable: { view: true, create: true, edit: true, delete: true },
     fees: { view: true, create: true, edit: true, delete: true },
@@ -55,6 +64,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: true, edit: true, delete: true },
     students: { view: true, create: true, edit: true, delete: true },
     classes: { view: true, create: true, edit: true, delete: true },
+    academics: { view: true, create: true, edit: true, delete: true, publish: true },
     attendance: { view: true, create: true, edit: true, delete: true },
     timetable: { view: true, create: true, edit: true, delete: true },
     fees: { view: true, create: true, edit: true, delete: true },
@@ -70,6 +80,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: true, edit: true, delete: false },
     students: { view: true, create: true, edit: true, delete: false },
     classes: { view: true, create: true, edit: true, delete: false },
+    academics: { view: true, create: true, edit: true, delete: false, publish: true },
     attendance: { view: true, create: true, edit: true, delete: false },
     timetable: { view: true, create: true, edit: true, delete: false },
     fees: { view: true, create: false, edit: false, delete: false },
@@ -85,6 +96,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: false, edit: false, delete: false },
     students: { view: true, create: false, edit: true, delete: false },
     classes: { view: true, create: false, edit: false, delete: false },
+    academics: { view: true, create: true, edit: true, delete: false, publish: false },
     attendance: { view: true, create: true, edit: true, delete: false },
     timetable: { view: true, create: false, edit: false, delete: false },
     fees: { view: true, create: false, edit: false, delete: false },
@@ -100,6 +112,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: false, edit: false, delete: false },
     students: { view: true, create: false, edit: false, delete: false },
     classes: { view: true, create: false, edit: false, delete: false },
+    academics: { view: true, create: false, edit: false, delete: false, publish: false },
     attendance: { view: true, create: false, edit: false, delete: false },
     timetable: { view: false, create: false, edit: false, delete: false },
     fees: { view: true, create: true, edit: true, delete: true },
@@ -115,6 +128,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: false, edit: false, delete: false },
     students: { view: true, create: false, edit: false, delete: false },
     classes: { view: true, create: false, edit: false, delete: false },
+    academics: { view: true, create: false, edit: false, delete: false, publish: false },
     attendance: { view: true, create: false, edit: false, delete: false },
     timetable: { view: true, create: false, edit: false, delete: false },
     fees: { view: false, create: false, edit: false, delete: false },
@@ -130,6 +144,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: false, edit: false, delete: false },
     students: { view: true, create: false, edit: false, delete: false },
     classes: { view: true, create: false, edit: false, delete: false },
+    academics: { view: true, create: false, edit: false, delete: false, publish: false },
     attendance: { view: true, create: false, edit: false, delete: false },
     timetable: { view: true, create: false, edit: false, delete: false },
     fees: { view: false, create: false, edit: false, delete: false },
@@ -145,6 +160,7 @@ export const PERMISSION_TEMPLATES = {
     staff: { view: true, create: false, edit: false, delete: false },
     students: { view: true, create: true, edit: true, delete: false },
     classes: { view: true, create: false, edit: false, delete: false },
+    academics: { view: true, create: false, edit: false, delete: false, publish: false },
     attendance: { view: true, create: false, edit: false, delete: false },
     timetable: { view: false, create: false, edit: false, delete: false },
     fees: { view: true, create: false, edit: false, delete: false },

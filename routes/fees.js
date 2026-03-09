@@ -1,12 +1,14 @@
+import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
 import { Student, FeePayment } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { emitFeePaymentCreated } from '../utils/socketEmitter.js';
 
 const router = express.Router();
 
 // Get all payments with optional filters
-router.get('/payments', authenticate, async (req, res) => {
+router.get('/payments', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { studentId, academicYear, status, startDate, endDate } = req.query;
 
@@ -32,9 +34,10 @@ router.get('/payments', authenticate, async (req, res) => {
 });
 
 // Create a new payment
-router.post('/payments', async (req, res) => {
+router.post('/payments', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
     const { studentId, studentName, classId, academicYear, receiptNumber, paymentDate, amount, paymentMode, feeHeads, remarks } = req.body;
+    const resolvedAcademicYear = await resolveAcademicYear(academicYear);
 
     // Generate receipt number if not provided
     const receipt = receiptNumber || `RCP-${Date.now()}`;
@@ -43,7 +46,7 @@ router.post('/payments', async (req, res) => {
     const payment = new FeePayment({
       studentId,
       classId,
-      academicYear: academicYear || '2024-25',
+      academicYear: resolvedAcademicYear,
       receiptNumber: receipt,
       paymentDate: paymentDate || new Date().toISOString().split('T')[0],
       amount,
@@ -60,9 +63,22 @@ router.post('/payments', async (req, res) => {
       if (studentId) {
         const student = await Student.findById(studentId);
         if (student) {
-          student.feeDetails = student.feeDetails || {};
-          student.feeDetails.totalPaid = (student.feeDetails.totalPaid || 0) + amount;
-          student.feeDetails.totalPending = (student.feeDetails.totalFee || 0) - student.feeDetails.totalPaid;
+          const totalFee = student.feeDetails?.totalFee || 0;
+          const discountApplied = student.feeDetails?.discountApplied || 0;
+          const paidAmount = (student.feeDetails?.paidAmount || 0) + amount;
+          const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
+
+          student.feeDetails = {
+            ...student.feeDetails,
+            paidAmount,
+            balanceAmount,
+            lastPaymentDate: payment.paymentDate,
+          };
+
+          if (totalFee > 0) {
+            student.feeStatus = balanceAmount <= 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'pending';
+          }
+
           await student.save();
         }
       }
@@ -81,7 +97,7 @@ router.post('/payments', async (req, res) => {
 });
 
 // Get payment by ID
-router.get('/payments/:id', async (req, res) => {
+router.get('/payments/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const payment = await FeePayment.findById(req.params.id)
       .populate('studentId', 'name admissionId class');
@@ -98,3 +114,6 @@ router.get('/payments/:id', async (req, res) => {
 });
 
 export default router;
+
+
+

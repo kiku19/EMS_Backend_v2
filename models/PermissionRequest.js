@@ -8,14 +8,14 @@ const permissionRequestSchema = new mongoose.Schema({
   },
   userName: { type: String, required: true },
   userEmail: String,
-  module: { 
-    type: String, 
+  module: {
+    type: String,
     required: true,
-    enum: ['dashboard', 'staff', 'students', 'classes', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk']
+    enum: ['dashboard', 'staff', 'students', 'classes', 'academics', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk']
   },
   permissions: [{
     type: String,
-    enum: ['view', 'create', 'edit', 'delete']
+    enum: ['view', 'create', 'edit', 'delete', 'publish']
   }],
   reason: { type: String, required: true },
   status: {

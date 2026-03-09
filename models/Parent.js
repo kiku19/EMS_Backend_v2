@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 const parentSchema = new mongoose.Schema({
+  schoolId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'School',
+    default: null,
+    index: true,
+  },
   phone: {
     type: String,
     required: true,
@@ -108,8 +114,10 @@ parentSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 // Index for frequently queried fields
-parentSchema.index({ status: 1 });
+parentSchema.index({ schoolId: 1, phone: 1 });
+parentSchema.index({ schoolId: 1, email: 1 });
 parentSchema.index({ 'children.studentId': 1 });
 parentSchema.index({ createdAt: -1 });
 
 export default mongoose.models.Parent || mongoose.model('Parent', parentSchema);
+

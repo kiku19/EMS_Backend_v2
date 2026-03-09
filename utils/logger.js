@@ -1,93 +1,260 @@
-// Simple logging utility
-// Can be replaced with winston or pino in the future
+import pino from 'pino';
 
-const LOG_LEVELS = {
-  ERROR: 0,
-  WARN: 1,
-  INFO: 2,
-  DEBUG: 3,
-};
+const VALID_LOG_LEVELS = new Set(['fatal', 'error', 'warn', 'info', 'debug', 'trace']);
+const REDACTED_VALUE = '[REDACTED]';
+const SENSITIVE_KEYS = new Set([
+  'authorization',
+  'cookie',
+  'cookies',
+  'password',
+  'secret',
+  'token',
+  'accessToken',
+  'refreshToken',
+  'apiKey',
+  'apiSecret',
+  'jwt',
+]);
 
-const COLORS = {
-  ERROR: '\x1b[31m', // Red
-  WARN: '\x1b[33m',  // Yellow
-  INFO: '\x1b[36m',  // Cyan
-  DEBUG: '\x1b[90m', // Gray
-  RESET: '\x1b[0m',
-};
+let consoleBridgeInstalled = false;
 
-const currentLogLevel = LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase()] ?? 
-  (process.env.NODE_ENV === 'production' ? LOG_LEVELS.INFO : LOG_LEVELS.DEBUG);
-
-/**
- * Format log message with timestamp and level
- */
-function formatMessage(level, message, meta = {}) {
-  const timestamp = new Date().toISOString();
-  const color = COLORS[level];
-  const reset = COLORS.RESET;
-  
-  let logMessage = `${color}[${timestamp}] [${level}]${reset} ${message}`;
-  
-  if (Object.keys(meta).length > 0) {
-    logMessage += ` ${JSON.stringify(meta)}`;
+function resolveLogLevel() {
+  const configuredLevel = process.env.LOG_LEVEL?.toLowerCase();
+  if (configuredLevel && VALID_LOG_LEVELS.has(configuredLevel)) {
+    return configuredLevel;
   }
-  
-  return logMessage;
+
+  return process.env.NODE_ENV === 'production' ? 'warn' : 'debug';
 }
 
-/**
- * Logger class
- */
-class Logger {
-  constructor(context = '') {
-    this.context = context;
+function sanitizeString(value) {
+  return value
+    .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, `$1${REDACTED_VALUE}`)
+    .replace(
+      /((?:token|access[_-]?token|refresh[_-]?token|authorization|cookie|set-cookie|password)\s*[:=]\s*)([^\s,;]+)/gi,
+      `$1${REDACTED_VALUE}`
+    );
+}
+
+function sanitizeValue(value, seen = new WeakSet()) {
+  if (typeof value === 'string') {
+    return sanitizeString(value);
   }
 
-  error(message, meta = {}) {
-    if (currentLogLevel >= LOG_LEVELS.ERROR) {
-      const contextMeta = this.context ? { context: this.context, ...meta } : meta;
-      console.error(formatMessage('ERROR', message, contextMeta));
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: sanitizeString(value.message),
+      stack: value.stack ? sanitizeString(value.stack) : undefined,
+    };
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return `[Buffer ${value.length} bytes]`;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeValue(item, seen));
+  }
+
+  if (typeof value === 'object') {
+    if (seen.has(value)) {
+      return '[Circular]';
     }
+
+    seen.add(value);
+
+    return Object.entries(value).reduce((result, [key, entryValue]) => {
+      if (SENSITIVE_KEYS.has(key)) {
+        result[key] = REDACTED_VALUE;
+        return result;
+      }
+
+      result[key] = sanitizeValue(entryValue, seen);
+      return result;
+    }, {});
   }
 
-  warn(message, meta = {}) {
-    if (currentLogLevel >= LOG_LEVELS.WARN) {
-      const contextMeta = this.context ? { context: this.context, ...meta } : meta;
-      console.warn(formatMessage('WARN', message, contextMeta));
-    }
+  return String(value);
+}
+
+function isPlainObject(value) {
+  return Object.prototype.toString.call(value) === '[object Object]';
+}
+
+function stringifyValue(value) {
+  if (typeof value === 'string') {
+    return value;
   }
 
-  info(message, meta = {}) {
-    if (currentLogLevel >= LOG_LEVELS.INFO) {
-      const contextMeta = this.context ? { context: this.context, ...meta } : meta;
-      console.log(formatMessage('INFO', message, contextMeta));
-    }
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return String(value);
   }
 
-  debug(message, meta = {}) {
-    if (currentLogLevel >= LOG_LEVELS.DEBUG) {
-      const contextMeta = this.context ? { context: this.context, ...meta } : meta;
-      console.log(formatMessage('DEBUG', message, contextMeta));
-    }
-  }
-
-  // Alias for backward compatibility
-  log(message, meta = {}) {
-    this.info(message, meta);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 
-// Create default logger
-const logger = new Logger();
+function buildTransport() {
+  if (process.env.NODE_ENV === 'production' || process.env.LOG_PRETTY === 'false') {
+    return undefined;
+  }
 
-// Export logger factory
+  return pino.transport({
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'SYS:standard',
+      ignore: 'pid,hostname',
+    },
+  });
+}
+
+function wrapLogMethod(instance, level) {
+  const originalMethod = instance[level].bind(instance);
+
+  instance[level] = (messageOrObject, meta, ...args) => {
+    if (typeof messageOrObject === 'string') {
+      const sanitizedMessage = sanitizeString(messageOrObject);
+
+      if (meta === undefined) {
+        return originalMethod(sanitizedMessage, ...args.map((arg) => sanitizeValue(arg)));
+      }
+
+      if (isPlainObject(meta)) {
+        return originalMethod(
+          sanitizeValue(meta),
+          sanitizedMessage,
+          ...args.map((arg) => sanitizeValue(arg))
+        );
+      }
+
+      return originalMethod(
+        sanitizedMessage,
+        sanitizeValue(meta),
+        ...args.map((arg) => sanitizeValue(arg))
+      );
+    }
+
+    if (messageOrObject instanceof Error) {
+      return originalMethod(
+        { err: sanitizeValue(messageOrObject) },
+        typeof meta === 'string' ? sanitizeString(meta) : meta,
+        ...args.map((arg) => sanitizeValue(arg))
+      );
+    }
+
+    return originalMethod(
+      sanitizeValue(messageOrObject),
+      typeof meta === 'string' ? sanitizeString(meta) : sanitizeValue(meta),
+      ...args.map((arg) => sanitizeValue(arg))
+    );
+  };
+}
+
+function addLogAlias(instance) {
+  ['fatal', 'error', 'warn', 'info', 'debug', 'trace'].forEach((level) => {
+    wrapLogMethod(instance, level);
+  });
+  instance.log = instance.info.bind(instance);
+  return instance;
+}
+
+function logConsoleCall(instance, level, args) {
+  const sanitizedArgs = args.map((arg) => sanitizeValue(arg));
+  const [firstArg, ...restArgs] = sanitizedArgs;
+
+  if (typeof firstArg === 'string') {
+    if (restArgs.length === 0) {
+      instance[level](firstArg);
+      return;
+    }
+
+    if (restArgs.length === 1 && isPlainObject(restArgs[0])) {
+      instance[level](restArgs[0], firstArg);
+      return;
+    }
+
+    if (restArgs.every((arg) => !isPlainObject(arg) && !Array.isArray(arg))) {
+      instance[level](`${firstArg} ${restArgs.map(stringifyValue).join(' ')}`.trim());
+      return;
+    }
+
+    instance[level]({ args: restArgs }, firstArg);
+    return;
+  }
+
+  if (sanitizedArgs.length === 1) {
+    if (isPlainObject(firstArg)) {
+      instance[level](firstArg);
+      return;
+    }
+
+    instance[level](stringifyValue(firstArg));
+    return;
+  }
+
+  instance[level]({ args: sanitizedArgs }, 'console output');
+}
+
+const rootLogger = addLogAlias(
+  pino(
+    {
+      level: resolveLogLevel(),
+      timestamp: pino.stdTimeFunctions.isoTime,
+      formatters: {
+        level: (label) => ({ level: label.toUpperCase() }),
+      },
+      serializers: {
+        err: pino.stdSerializers.err,
+      },
+    },
+    buildTransport()
+  )
+);
+
 export function createLogger(context) {
-  return new Logger(context);
+  return addLogAlias(rootLogger.child({ context }));
 }
 
-// Export default logger
-export default logger;
+export function installConsoleBridge() {
+  if (consoleBridgeInstalled) {
+    return;
+  }
 
-// Export log levels for reference
-export { LOG_LEVELS };
+  consoleBridgeInstalled = true;
+
+  console.log = (...args) => logConsoleCall(rootLogger, 'debug', args);
+  console.debug = (...args) => logConsoleCall(rootLogger, 'debug', args);
+  console.info = (...args) => logConsoleCall(rootLogger, 'info', args);
+  console.warn = (...args) => logConsoleCall(rootLogger, 'warn', args);
+  console.error = (...args) => logConsoleCall(rootLogger, 'error', args);
+}
+
+export { sanitizeValue };
+export default rootLogger;

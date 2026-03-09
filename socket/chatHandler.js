@@ -12,12 +12,17 @@ const typingUsers = new Map();
 
 export function initializeChatHandlers(io) {
   io.on('connection', (socket) => {
+    console.log('🔌 New socket connection:', socket.id);
+    
     // Authentication
     socket.on('authenticate', async (data) => {
+      console.log('🔐 Authentication attempt:', { userId: data?.userId, userType: data?.userType });
+      
       try {
         const { userId, userType } = data;
         
         if (!userId || !userType) {
+          console.error('❌ Invalid authentication data:', data);
           socket.emit('error', { message: 'Invalid authentication data' });
           return;
         }
@@ -36,6 +41,7 @@ export function initializeChatHandlers(io) {
         const user = await UserModel.findById(userId);
 
         if (!user) {
+          console.error('❌ User not found:', userId);
           socket.emit('error', { message: 'User not found' });
           return;
         }
@@ -66,14 +72,15 @@ export function initializeChatHandlers(io) {
           }
         }
 
-        // Emit authentication success
+        // Emit authentication success IMMEDIATELY
+        console.log('✅ Authentication successful, emitting authenticated event for:', userId);
         socket.emit('authenticated', {
           userId,
           userType,
           message: 'Successfully authenticated'
         });
 
-        // Broadcast user online status - FIXED: Only to relevant users
+        // Broadcast user online status - FIXED: Only to relevant users (do this AFTER emitting authenticated)
         const userConversations = await Conversation.find({
           participants: { $elemMatch: { userId: userId } }
         }).populate('participants.userId', '_id');
@@ -100,7 +107,7 @@ export function initializeChatHandlers(io) {
         });
       } catch (error) {
         console.error('❌ Authentication error:', error);
-        socket.emit('error', { message: 'Authentication failed' });
+        socket.emit('error', { message: 'Authentication failed', details: error.message });
       }
     });
 
@@ -506,10 +513,15 @@ export function initializeChatHandlers(io) {
 
     // Handle socket errors to ensure cleanup
     socket.on('error', (error) => {
-      console.error('❌ Socket error:', error);
+      console.error('❌ Socket error for user:', socket.userId, error);
       // Trigger disconnect cleanup
       socket.disconnect(true);
     });
+  });
+
+  // Handle io-level errors
+  io.on('error', (error) => {
+    console.error('❌ Socket.IO server error:', error);
   });
 
   // Periodic cleanup of stale data (every 5 minutes)

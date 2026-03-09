@@ -1,59 +1,128 @@
 import UserPermission, { PERMISSION_TEMPLATES } from '../models/UserPermission.js';
 
+const ACTION_KEYS = ['view', 'create', 'edit', 'delete', 'publish'];
+
+const toPermissionRecord = (module, actions = {}) => ({
+  module,
+  view: Boolean(actions.view),
+  create: Boolean(actions.create),
+  edit: Boolean(actions.edit),
+  delete: Boolean(actions.delete),
+  publish: Boolean(actions.publish)
+});
+
+export const buildPermissionsArray = (permissionsObject = {}) => {
+  return Object.entries(permissionsObject).map(([module, actions]) => toPermissionRecord(module, actions));
+};
+
+export async function ensurePermissionDocument(userPermission, role) {
+  const effectiveRole = role || userPermission.role || 'teacher';
+  const defaultPermissions = PERMISSION_TEMPLATES[effectiveRole] || PERMISSION_TEMPLATES.teacher;
+  let changed = false;
+
+  if (!Array.isArray(userPermission.permissions)) {
+    userPermission.permissions = [];
+    changed = true;
+  }
+
+  const permissionMap = new Map();
+  userPermission.permissions.forEach((permission) => {
+    permissionMap.set(permission.module, permission);
+
+    ACTION_KEYS.forEach((action) => {
+      if (typeof permission[action] !== 'boolean') {
+        permission[action] = false;
+        changed = true;
+      }
+    });
+  });
+
+  Object.entries(defaultPermissions).forEach(([module, actions]) => {
+    const existingPermission = permissionMap.get(module);
+
+    if (!existingPermission) {
+      userPermission.permissions.push(toPermissionRecord(module, actions));
+      changed = true;
+      return;
+    }
+
+    ACTION_KEYS.forEach((action) => {
+      if (typeof existingPermission[action] !== 'boolean') {
+        existingPermission[action] = Boolean(actions[action]);
+        changed = true;
+      }
+    });
+  });
+
+  if (!userPermission.role) {
+    userPermission.role = effectiveRole;
+    changed = true;
+  }
+
+  if (changed) {
+    userPermission.lastUpdated = new Date();
+    await userPermission.save();
+  }
+
+  return userPermission;
+}
+
 /**
  * Middleware to check if user has required permission for a module
  * @param {string} module - Module name (e.g., 'staff', 'students')
- * @param {string} action - Action type ('view', 'create', 'edit', 'delete')
+ * @param {string} action - Action type ('view', 'create', 'edit', 'delete', 'publish')
  */
 export const checkPermission = (module, action) => {
   return async (req, res, next) => {
     try {
-      const userId = req.user?.id || req.body.userId || req.query.userId;
-      
+      const userId = req.user?.id;
+
       if (!userId) {
-        return res.status(401).json({ 
+        return res.status(401).json({
           error: 'Unauthorized',
           message: 'User ID not found in request'
         });
       }
 
-      // Get user permissions from database
       let userPermission = await UserPermission.findOne({ userId });
 
-      // If no permissions found, create default based on user role
       if (!userPermission) {
         const user = await req.app.locals.Staff.findById(userId);
         if (!user) {
-          return res.status(404).json({ 
+          return res.status(404).json({
             error: 'User not found',
             message: 'User does not exist'
           });
         }
 
-        // Determine role from user data
         const role = determineRole(user.role);
-        const defaultPermissions = PERMISSION_TEMPLATES[role];
-
-        // Create permissions array
-        const permissionsArray = Object.entries(defaultPermissions).map(([mod, perms]) => ({
-          module: mod,
-          ...perms
-        }));
+        const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
         userPermission = await UserPermission.findOneAndUpdate(
           { userId },
           {
+            schoolId: req.user?.schoolId || user.schoolId || null,
             userId,
             role,
-            permissions: permissionsArray,
+            permissions: buildPermissionsArray(defaultPermissions),
             customPermissions: false
           },
           { upsert: true, new: true }
         );
+      } else {
+        let shouldPersistSchoolId = false;
+        if (!userPermission.schoolId && req.user?.schoolId) {
+          userPermission.schoolId = req.user.schoolId;
+          shouldPersistSchoolId = true;
+        }
+        await ensurePermissionDocument(userPermission, userPermission.role);
+        if (shouldPersistSchoolId) {
+          userPermission.lastUpdated = new Date();
+          await userPermission.save({ validateModifiedOnly: true });
+        }
       }
 
-      // Find permission for the requested module
-      const modulePermission = userPermission.permissions.find(p => p.module === module);
+      const modulePermission = userPermission.permissions.find((permission) => permission.module === module);
 
       if (!modulePermission) {
         return res.status(403).json({
@@ -65,7 +134,6 @@ export const checkPermission = (module, action) => {
         });
       }
 
-      // Check if user has the required action permission
       if (!modulePermission[action]) {
         return res.status(403).json({
           error: 'Permission Denied',
@@ -73,18 +141,15 @@ export const checkPermission = (module, action) => {
           module,
           action,
           hasPermission: false,
-          availableActions: Object.keys(modulePermission).filter(key => 
-            ['view', 'create', 'edit', 'delete'].includes(key) && modulePermission[key]
-          )
+          availableActions: ACTION_KEYS.filter((permissionAction) => modulePermission[permissionAction])
         });
       }
 
-      // Permission granted
       req.userPermissions = userPermission;
       next();
     } catch (error) {
       console.error('Permission check error:', error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to check permissions'
       });
@@ -95,27 +160,29 @@ export const checkPermission = (module, action) => {
 /**
  * Determine role from user's role string or array
  */
-function determineRole(userRole) {
-  // Handle array of roles (take first role)
+export function determineRole(userRole) {
   const roleStr = Array.isArray(userRole) ? userRole[0] : userRole;
-  
+
   if (!roleStr || typeof roleStr !== 'string') {
-    return 'teacher'; // Default to teacher role
+    return 'teacher';
   }
-  
+
   const roleLower = roleStr.toLowerCase();
-  
+
   if (roleLower.includes('admin') || roleLower.includes('principal')) {
     return 'admin';
-  } else if (roleLower.includes('teacher')) {
+  }
+  if (roleLower.includes('teacher')) {
     return 'teacher';
-  } else if (roleLower.includes('accountant') || roleLower.includes('finance')) {
+  }
+  if (roleLower.includes('accountant') || roleLower.includes('finance')) {
     return 'accountant';
-  } else if (roleLower.includes('receptionist') || roleLower.includes('front')) {
+  }
+  if (roleLower.includes('receptionist') || roleLower.includes('front')) {
     return 'receptionist';
   }
-  
-  return 'teacher'; // Default to teacher role
+
+  return 'teacher';
 }
 
 /**
@@ -123,17 +190,17 @@ function determineRole(userRole) {
  */
 export const requireAdmin = async (req, res, next) => {
   try {
-    const userId = req.user?.id || req.body.userId || req.query.userId;
-    
+    const userId = req.user?.id;
+
     if (!userId) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Unauthorized',
         message: 'User ID not found'
       });
     }
 
     const userPermission = await UserPermission.findOne({ userId });
-    
+
     if (!userPermission || userPermission.role !== 'admin') {
       return res.status(403).json({
         error: 'Admin Access Required',
@@ -144,7 +211,7 @@ export const requireAdmin = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Admin check error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to verify admin status'
     });
@@ -156,16 +223,20 @@ export const requireAdmin = async (req, res, next) => {
  */
 export const getUserPermissions = async (req, res, next) => {
   try {
-    const userId = req.user?.id || req.body.userId || req.query.userId;
-    
+    const userId = req.user?.id;
+
     if (userId) {
       const userPermission = await UserPermission.findOne({ userId });
+      if (userPermission && !userPermission.schoolId && req.user?.schoolId) {
+        userPermission.schoolId = req.user.schoolId;
+        await userPermission.save({ validateModifiedOnly: true });
+      }
       req.userPermissions = userPermission;
     }
-    
+
     next();
   } catch (error) {
     console.error('Get permissions error:', error);
-    next(); // Continue even if error
+    next();
   }
 };

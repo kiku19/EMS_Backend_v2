@@ -1,10 +1,12 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { CURRENT_ACADEMIC_YEAR } from './utils/constants.js';
+import { createLogger } from './utils/logger.js';
 
 dotenv.config();
 
 const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
+const logger = createLogger('Database');
 
 export async function connectDB() {
   try {
@@ -12,21 +14,21 @@ export async function connectDB() {
     
     // Add connection event listeners
     mongoose.connection.on('connected', () => {
-      console.log('✅ MongoDB connected successfully');
+      logger.info('MongoDB connected successfully');
     });
     
     mongoose.connection.on('error', (err) => {
-      console.error('❌ MongoDB connection error:', err);
+      logger.error({ err }, 'MongoDB connection error');
     });
     
     mongoose.connection.on('disconnected', () => {
-      console.warn('⚠️ MongoDB disconnected');
+      logger.warn('MongoDB disconnected');
     });
     
     // Graceful shutdown
     process.on('SIGINT', async () => {
       await mongoose.connection.close();
-      console.log('MongoDB connection closed through app termination');
+      logger.info('MongoDB connection closed through app termination');
       process.exit(0);
     });
     
@@ -37,22 +39,28 @@ export async function connectDB() {
       socketTimeoutMS: 45000,
     });
     
-    console.log('Connected to MongoDB:', MONGODB_URI.replace(/\/\/.*@/, '//***@')); // Hide credentials in log
+    logger.info({ mongoUri: MONGODB_URI.replace(/\/\/.*@/, '//***@') }, 'Connected to MongoDB');
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message);
-    console.error('MongoDB URI (sanitized):', MONGODB_URI.replace(/\/\/.*@/, '//***@'));
+    logger.error(
+      {
+        err: error,
+        mongoUri: MONGODB_URI.replace(/\/\/.*@/, '//***@'),
+      },
+      'MongoDB connection failed'
+    );
     
     // Don't exit immediately in development, allow retry
     if (process.env.NODE_ENV === 'production') {
       process.exit(1);
     } else {
-      console.warn('⚠️ Running in development mode without database connection');
+      logger.warn('Running in development mode without database connection');
     }
   }
 }
 
 // Staff Schema - with login credentials
 const staffSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null, index: true },
   code: { type: String, unique: true, required: true },
   name: { type: String, required: true },
   role: { type: [String], required: true }, // Array of roles: Teacher, Admin, etc. (supports multiple roles)
@@ -62,6 +70,9 @@ const staffSchema = new mongoose.Schema({
   email: String,
   joinDate: String,
   address: String,
+  nationality: { type: String, default: 'Indian' },
+  shift: { type: String, default: 'Morning' },
+  designation: String,
   
   // Personal Details
   dob: String,
@@ -82,6 +93,7 @@ const staffSchema = new mongoose.Schema({
   
   // Documents
   picture: String, // URL to profile picture
+  photo: String, // Legacy alias used by chat and older views
   idDocuments: [{
     type: String, // Document type (Aadhar Card, PAN Card, etc.)
     url: String, // Document URL
@@ -99,6 +111,8 @@ const staffSchema = new mongoose.Schema({
   roleInOrganization: String,
   qualificationDocs: [String], // URLs to qualification documents
   customDocuments: [String], // URLs to custom documents
+  qualification: String,
+  experience: { type: Number, default: 0 },
   
   // Staff Info
   staffNumber: String,
@@ -112,6 +126,7 @@ const staffSchema = new mongoose.Schema({
   ifscCode: String,
   bankName: String,
   branchName: String,
+  panNumber: String,
   salary: { type: Number, default: 0 }, // Base salary for payroll
   salaryTemplate: String,
   salaryBreakdown: [{
@@ -132,12 +147,18 @@ const staffSchema = new mongoose.Schema({
     classes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
     createdAt: { type: Date, default: Date.now }
   }]
-}, { timestamps: true, strict: false }); // Allow extra fields to pass through without error
+}, { timestamps: true });
 
 // Hash password before saving
 import bcrypt from 'bcrypt';
 
 staffSchema.pre('save', async function(next) {
+  const canonicalPhoto = this.picture || this.photo;
+  if (canonicalPhoto) {
+    this.picture = canonicalPhoto;
+    this.photo = canonicalPhoto;
+  }
+
   // Only hash the password if it has been modified (or is new)
   if (!this.isModified('password')) return next();
   
@@ -807,8 +828,46 @@ const callLogSchema = new mongoose.Schema({
 
 // School Settings Schema - school-wide configuration
 const schoolSettingsSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null, index: true },
+  name: { type: String, default: 'School Name', trim: true },
+  schoolName: { type: String, default: 'School Name', trim: true },
+  address: { type: String, default: '' },
+  phone: { type: String, default: '' },
+  email: { type: String, default: '' },
+  website: { type: String, default: '' },
+  logo: { type: String, default: '' },
+  udiseNo: { type: String, default: '' },
+  affiliationNo: { type: String, default: '' },
+  boardOfEducation: { type: String, default: '' },
+  principalSignature: { type: String, default: '' },
+  correspondentSignature: { type: String, default: '' },
   academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  currentSession: { type: String, default: '2024-25' },
+  currentSession: { type: String, default: CURRENT_ACADEMIC_YEAR },
+  academicYearStart: { type: String, default: '' },
+  academicYearEnd: { type: String, default: '' },
+  schoolStartTime: { type: String, default: '08:00' },
+  schoolEndTime: { type: String, default: '15:00' },
+  periodDuration: { type: Number, default: 45 },
+  periodsPerDay: { type: Number, default: 8 },
+  workingDays: [{
+    type: String,
+    enum: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+  }],
+  holidays: [{
+    name: { type: String, required: true },
+    date: { type: String, required: true },
+    type: { type: String, default: 'General' },
+    description: { type: String, default: '' }
+  }],
+  leaveTypes: [{
+    name: { type: String, required: true },
+    quota: { type: Number, default: 0 },
+    applicableTo: { type: String, default: 'both' },
+    requiresApproval: { type: Boolean, default: true },
+    approver: { type: String, default: 'reporter' },
+    paid: { type: Boolean, default: true },
+    color: { type: String, default: '' }
+  }],
 
   // Fee Collection Configuration
   feeCollection: {
@@ -896,7 +955,7 @@ const feeTemplateSchema = new mongoose.Schema({
     conditions: String
   }],
   isActive: { type: Boolean, default: true },
-  academicYear: { type: String, default: '2024-25' }
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR }
 }, { timestamps: true });
 
 // Fee Structure Schema - defines fee amounts for classes
@@ -1073,6 +1132,7 @@ import Reminder from './models/Reminder.js';
 
 // Import Parent model
 import Parent from './models/Parent.js';
+import School from './models/School.js';
 
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
@@ -1104,7 +1164,7 @@ export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberCon
 export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
 
 // Export Parent model
-export { Parent };
+export { Parent, School };
 
 // Export chat models
 export { Message, Conversation, UserPresence, Notification };
@@ -1279,3 +1339,6 @@ export async function getNextRollNumber(classId) {
 }
 
 export default mongoose;
+
+
+

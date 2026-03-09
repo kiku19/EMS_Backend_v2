@@ -13,7 +13,7 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
   try {
     const { id } = req.params;
 
-    const classData = await Class.findById(id).select('classTag assignedSubjects name section');
+    const classData = await Class.findById(id).select('classTag assignedSubjects subjects name section');
     
     if (!classData) {
       return res.status(404).json({
@@ -22,10 +22,16 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
       });
     }
 
+    // Use subjects field if assignedSubjects is empty (backward compatibility)
+    const finalSubjects = classData.assignedSubjects && classData.assignedSubjects.length > 0 
+      ? classData.assignedSubjects 
+      : (classData.subjects || []);
+
     res.json({
       success: true,
       classTag: classData.classTag || '',
-      assignedSubjects: classData.assignedSubjects || [],
+      assignedSubjects: finalSubjects,
+      subjects: finalSubjects,
       className: `${classData.name} ${classData.section}`
     });
   } catch (error) {
@@ -125,11 +131,16 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
       });
     }
 
+    // Update both assignedSubjects AND subjects fields to ensure consistency
+    // This fixes the issue where missing-subjects check uses 'subjects' field
     const classData = await Class.findByIdAndUpdate(
       id,
-      { assignedSubjects: subjects },
+      { 
+        assignedSubjects: subjects,
+        subjects: subjects // Sync to subjects field for backward compatibility
+      },
       { new: true, runValidators: true }
-    ).select('assignedSubjects name section');
+    ).select('assignedSubjects subjects name section');
 
     if (!classData) {
       return res.status(404).json({
@@ -142,6 +153,7 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
       success: true,
       message: 'Subjects updated successfully',
       assignedSubjects: classData.assignedSubjects,
+      subjects: classData.subjects,
       className: `${classData.name} ${classData.section}`
     });
   } catch (error) {

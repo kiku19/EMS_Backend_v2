@@ -3,6 +3,7 @@ import { IntakeForm, FormAssignment, FormSubmission, Student, Staff, StudentFeeS
 import { authenticate } from '../middleware/auth.js';
 import { validateIndianPhone, validateInternationalPhone, mockThirdPartyValidation } from '../services/phoneValidation.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { ensureDefaultSchool } from '../utils/schoolContext.js';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 
@@ -761,7 +762,7 @@ router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, re
         }
       } else if (form.formType === 'staff') {
         try {
-          const staff = await createStaffFromSubmission(submission.submissionData, form);
+          const staff = await createStaffFromSubmission(submission.submissionData, form, req.user?.schoolId || null);
           submission.staffId = staff._id;
           console.log('✅ Staff created from submission:', staff._id);
         } catch (staffError) {
@@ -1308,14 +1309,16 @@ async function createStudentFromSubmission(submissionData, form) {
 /**
  * Create Staff record from submission data
  */
-async function createStaffFromSubmission(submissionData, form) {
+async function createStaffFromSubmission(submissionData, form, schoolId = null) {
   console.log('👔 Creating staff from submission data...');
 
   const { getNextStaffCode } = await import('../database.js');
   const staffCode = await getNextStaffCode();
+  const effectiveSchoolId = schoolId || (await ensureDefaultSchool())._id;
 
   // Extract and map fields from submissionData
   const staffData = {
+    schoolId: effectiveSchoolId,
     code: staffCode,
     name: submissionData.name,
     role: submissionData.role || submissionData.designation || 'Teacher',

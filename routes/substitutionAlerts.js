@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import express from 'express';
 import { Substitution, Staff, Class, Timetable } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -13,7 +14,7 @@ const router = express.Router();
  */
 router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const { date = new Date().toISOString().split('T')[0], academicYear = '2024-25' } = req.query;
+    const { date = new Date().toISOString().split('T')[0], academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     // Get pending substitutions with details
     const alerts = await substitutionService.getPendingSubstitutionsWithDetails(date);
@@ -388,3 +389,4 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
 });
 
 export default router;
+

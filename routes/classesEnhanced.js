@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import express from 'express';
 import { Class, Student, Staff, Attendance, Result, ActivityLog, ClassRating, ChapterProgress, ClassAnnouncement, Timetable } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -10,7 +11,7 @@ const router = express.Router();
 router.get('/:id/academic-performance', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     // Get all students in the class
     const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
@@ -161,7 +162,7 @@ router.post('/:id/activity-log', authenticate, async (req, res) => {
 router.get('/:id/rating', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     let rating = await ClassRating.findOne({ classId: id, academicYear });
     if (!rating) {
@@ -179,7 +180,7 @@ router.get('/:id/rating', authenticate, async (req, res) => {
 router.post('/:id/rating/recalculate', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { academicYear = '2024-25' } = req.body;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
     const classData = await Class.findById(id);
     if (!classData) {
@@ -545,7 +546,7 @@ router.post('/:id/promote', authenticate, async (req, res) => {
 router.get('/:id/subjects', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     const chapters = await ChapterProgress.find({
       classId: id,
@@ -564,7 +565,7 @@ router.post('/:id/subjects', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { subjectName, subjectId, teacherId, chapters, assignedStudents } = req.body;
-    const { academicYear = '2024-25' } = req.body;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
     const chapterProgress = await ChapterProgress.create({
       classId: id,
@@ -761,7 +762,7 @@ router.get('/:id/announcements', authenticate, async (req, res) => {
 router.get('/:id/fees-overview', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     const students = await Student.find({ classId: id, status: 'active', isDeleted: { $ne: true } });
 
@@ -831,3 +832,4 @@ router.get('/missing-subjects', authenticate, async (req, res) => {
 });
 
 export default router;
+

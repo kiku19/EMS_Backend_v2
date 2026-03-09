@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { Timetable, TeacherTimetable, Class, Staff } from '../database.js';
 
 /**
@@ -11,7 +12,7 @@ class ValidationService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Array>} - Array of empty slots with day and period information
    */
-  async identifyEmptySlots(classId, academicYear = '2024-25') {
+  async identifyEmptySlots(classId, academicYear = CURRENT_ACADEMIC_YEAR) {
     const classTimetable = await Timetable.findOne({ classId, academicYear });
     
     if (!classTimetable) {
@@ -50,7 +51,7 @@ class ValidationService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Array>} - Array of unassigned periods with day and period information
    */
-  async identifyTeacherScheduleGaps(teacherId, academicYear = '2024-25') {
+  async identifyTeacherScheduleGaps(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
     const teacherTimetable = await TeacherTimetable.findOne({ teacherId, academicYear });
     
     if (!teacherTimetable) {
@@ -130,7 +131,7 @@ class ValidationService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Object>} - Validation report with statistics
    */
-  async generateClassValidationReport(classId, academicYear = '2024-25') {
+  async generateClassValidationReport(classId, academicYear = CURRENT_ACADEMIC_YEAR) {
     const classDoc = await Class.findById(classId);
     if (!classDoc) {
       throw new Error(`Class not found: ${classId}`);
@@ -188,7 +189,7 @@ class ValidationService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Object>} - Validation report with statistics
    */
-  async generateTeacherValidationReport(teacherId, academicYear = '2024-25') {
+  async generateTeacherValidationReport(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
     const teacher = await Staff.findById(teacherId);
     if (!teacher) {
       throw new Error(`Teacher not found: ${teacherId}`);
@@ -235,7 +236,7 @@ class ValidationService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Object>} - Comprehensive validation report
    */
-  async generateComprehensiveClassReport(academicYear = '2024-25') {
+  async generateComprehensiveClassReport(academicYear = CURRENT_ACADEMIC_YEAR) {
     const classes = await Class.find({ academicYear });
     const reports = [];
 
@@ -271,7 +272,7 @@ class ValidationService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Object>} - Comprehensive validation report
    */
-  async generateComprehensiveTeacherReport(academicYear = '2024-25') {
+  async generateComprehensiveTeacherReport(academicYear = CURRENT_ACADEMIC_YEAR) {
     const teachers = await Staff.find({ role: 'Teacher' });
     const reports = [];
 
@@ -304,3 +305,5 @@ class ValidationService {
 }
 
 export default new ValidationService();
+
+

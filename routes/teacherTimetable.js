@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import express from 'express';
 import { TeacherTimetable, Staff, Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -115,12 +116,12 @@ const canViewTeacherTimetable = async (req, res, next) => {
 /**
  * GET /api/teacher-timetable/:teacherId
  * Get teacher timetable for a specific teacher
- * Query params: academicYear (optional, defaults to '2024-25')
+ * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
 router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     // Validate teacher exists
     const teacher = await Staff.findById(teacherId);
@@ -188,7 +189,7 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
 router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { academicYear = '2024-25', periods = [] } = req.body;
+    const { academicYear = CURRENT_ACADEMIC_YEAR, periods = [] } = req.body;
 
     // Validate teacher exists
     const teacher = await Staff.findById(teacherId);
@@ -248,7 +249,7 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
 router.put('/:teacherId/slot', authenticate, canEditTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { day, periodIndex, classId, subject, room, academicYear = '2024-25' } = req.body;
+    const { day, periodIndex, classId, subject, room, academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
     // Validate required fields
     if (!day || periodIndex === undefined) {
@@ -352,12 +353,12 @@ router.put('/:teacherId/slot', authenticate, canEditTeacherTimetable, async (req
 /**
  * GET /api/teacher-timetable/:teacherId/conflicts
  * Get all conflicts for a teacher
- * Query params: academicYear (optional, defaults to '2024-25')
+ * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
 router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     // Validate teacher exists
     const teacher = await Staff.findById(teacherId);
@@ -406,7 +407,7 @@ router.post('/:teacherId/switch-class', authenticate, canEditTeacherTimetable, a
       newClassId,
       subject,
       room,
-      academicYear = '2024-25'
+      academicYear = CURRENT_ACADEMIC_YEAR
     } = req.body;
 
     // Validate required fields
@@ -514,3 +515,4 @@ router.post('/:teacherId/switch-class', authenticate, canEditTeacherTimetable, a
 });
 
 export default router;
+

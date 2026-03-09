@@ -4,13 +4,15 @@ import LateFeeRule from '../models/LateFeeRule.js';
 import FeeRule from '../models/FeeRule.js';
 import PaymentMethodConfig from '../models/PaymentMethodConfig.js';
 import FeeCollectionPeriod from '../models/FeeCollectionPeriod.js';
+import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
 // ============ FEE CONCESSIONS ============
 
 // Get all concessions
-router.get('/concessions', async (req, res) => {
+router.get('/concessions', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     const query = academicYear ? { academicYear } : {};
@@ -27,7 +29,7 @@ router.get('/concessions', async (req, res) => {
 });
 
 // Get single concession
-router.get('/concessions/:id', async (req, res) => {
+router.get('/concessions/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const concession = await FeeConsession.findById(req.params.id)
       .populate('applicableFeeHeads', 'name amount');
@@ -44,7 +46,7 @@ router.get('/concessions/:id', async (req, res) => {
 });
 
 // Create concession
-router.post('/concessions', async (req, res) => {
+router.post('/concessions', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
     const concession = new FeeConsession(req.body);
     await concession.save();
@@ -60,7 +62,7 @@ router.post('/concessions', async (req, res) => {
 });
 
 // Update concession
-router.put('/concessions/:id', async (req, res) => {
+router.put('/concessions/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const concession = await FeeConsession.findByIdAndUpdate(
       req.params.id,
@@ -80,7 +82,7 @@ router.put('/concessions/:id', async (req, res) => {
 });
 
 // Delete concession
-router.delete('/concessions/:id', async (req, res) => {
+router.delete('/concessions/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const concession = await FeeConsession.findByIdAndDelete(req.params.id);
     
@@ -98,7 +100,7 @@ router.delete('/concessions/:id', async (req, res) => {
 // ============ LATE FEE RULES ============
 
 // Get late fee rule
-router.get('/late-fee-rules', async (req, res) => {
+router.get('/late-fee-rules', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     const query = academicYear ? { academicYear } : {};
@@ -115,7 +117,7 @@ router.get('/late-fee-rules', async (req, res) => {
 });
 
 // Get single late fee rule
-router.get('/late-fee-rules/:id', async (req, res) => {
+router.get('/late-fee-rules/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const rule = await LateFeeRule.findById(req.params.id)
       .populate('applicableFeeHeads', 'name amount');
@@ -132,7 +134,7 @@ router.get('/late-fee-rules/:id', async (req, res) => {
 });
 
 // Create or update late fee rule (only one per academic year)
-router.post('/late-fee-rules', async (req, res) => {
+router.post('/late-fee-rules', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const { academicYear } = req.body;
     
@@ -160,7 +162,7 @@ router.post('/late-fee-rules', async (req, res) => {
 });
 
 // Update late fee rule
-router.put('/late-fee-rules/:id', async (req, res) => {
+router.put('/late-fee-rules/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const rule = await LateFeeRule.findByIdAndUpdate(
       req.params.id,
@@ -180,7 +182,7 @@ router.put('/late-fee-rules/:id', async (req, res) => {
 });
 
 // Delete late fee rule
-router.delete('/late-fee-rules/:id', async (req, res) => {
+router.delete('/late-fee-rules/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const rule = await LateFeeRule.findByIdAndDelete(req.params.id);
     
@@ -198,7 +200,7 @@ router.delete('/late-fee-rules/:id', async (req, res) => {
 // ============ FEE RULES ============
 
 // Get fee rules
-router.get('/rules', async (req, res) => {
+router.get('/rules', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     const query = academicYear ? { academicYear } : {};
@@ -213,7 +215,7 @@ router.get('/rules', async (req, res) => {
 });
 
 // Get single fee rule
-router.get('/rules/:id', async (req, res) => {
+router.get('/rules/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const rule = await FeeRule.findById(req.params.id);
     
@@ -229,7 +231,7 @@ router.get('/rules/:id', async (req, res) => {
 });
 
 // Create or update fee rule (only one per academic year)
-router.post('/rules', async (req, res) => {
+router.post('/rules', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const { academicYear } = req.body;
     
@@ -254,7 +256,7 @@ router.post('/rules', async (req, res) => {
 });
 
 // Update fee rule
-router.put('/rules/:id', async (req, res) => {
+router.put('/rules/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const rule = await FeeRule.findByIdAndUpdate(
       req.params.id,
@@ -274,7 +276,7 @@ router.put('/rules/:id', async (req, res) => {
 });
 
 // Delete fee rule
-router.delete('/rules/:id', async (req, res) => {
+router.delete('/rules/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const rule = await FeeRule.findByIdAndDelete(req.params.id);
     
@@ -292,7 +294,7 @@ router.delete('/rules/:id', async (req, res) => {
 // ============ PAYMENT METHOD CONFIG ============
 
 // Get payment method config
-router.get('/payment-methods', async (req, res) => {
+router.get('/payment-methods', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     const query = academicYear ? { academicYear } : {};
@@ -307,7 +309,7 @@ router.get('/payment-methods', async (req, res) => {
 });
 
 // Get single payment method config
-router.get('/payment-methods/:id', async (req, res) => {
+router.get('/payment-methods/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const config = await PaymentMethodConfig.findById(req.params.id);
     
@@ -323,7 +325,7 @@ router.get('/payment-methods/:id', async (req, res) => {
 });
 
 // Create or update payment method config (only one per academic year)
-router.post('/payment-methods', async (req, res) => {
+router.post('/payment-methods', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const { academicYear } = req.body;
     
@@ -348,7 +350,7 @@ router.post('/payment-methods', async (req, res) => {
 });
 
 // Update payment method config
-router.put('/payment-methods/:id', async (req, res) => {
+router.put('/payment-methods/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const config = await PaymentMethodConfig.findByIdAndUpdate(
       req.params.id,
@@ -368,7 +370,7 @@ router.put('/payment-methods/:id', async (req, res) => {
 });
 
 // Delete payment method config
-router.delete('/payment-methods/:id', async (req, res) => {
+router.delete('/payment-methods/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const config = await PaymentMethodConfig.findByIdAndDelete(req.params.id);
     
@@ -386,7 +388,7 @@ router.delete('/payment-methods/:id', async (req, res) => {
 // ============ FEE COLLECTION PERIOD ============
 
 // Get collection period config
-router.get('/collection-period', async (req, res) => {
+router.get('/collection-period', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     const query = academicYear ? { academicYear } : {};
@@ -401,7 +403,7 @@ router.get('/collection-period', async (req, res) => {
 });
 
 // Get single collection period config
-router.get('/collection-period/:id', async (req, res) => {
+router.get('/collection-period/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const config = await FeeCollectionPeriod.findById(req.params.id);
     
@@ -417,7 +419,7 @@ router.get('/collection-period/:id', async (req, res) => {
 });
 
 // Create or update collection period config (only one per academic year)
-router.post('/collection-period', async (req, res) => {
+router.post('/collection-period', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const { academicYear } = req.body;
     
@@ -442,7 +444,7 @@ router.post('/collection-period', async (req, res) => {
 });
 
 // Update collection period config
-router.put('/collection-period/:id', async (req, res) => {
+router.put('/collection-period/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const config = await FeeCollectionPeriod.findByIdAndUpdate(
       req.params.id,
@@ -462,7 +464,7 @@ router.put('/collection-period/:id', async (req, res) => {
 });
 
 // Delete collection period config
-router.delete('/collection-period/:id', async (req, res) => {
+router.delete('/collection-period/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const config = await FeeCollectionPeriod.findByIdAndDelete(req.params.id);
     

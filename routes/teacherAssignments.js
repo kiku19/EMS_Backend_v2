@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import express from 'express';
 import { Staff, Class, Timetable } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -9,7 +10,7 @@ const router = express.Router();
 // IMPORTANT: This route must come BEFORE /:teacherId to avoid route conflicts
 router.get('/available-teachers', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
-    const { classId, subject, day, period, academicYear = '2024-25' } = req.query;
+    const { classId, subject, day, period, academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
     
     // Validate required parameters
     if (!classId || !subject) {
@@ -308,3 +309,4 @@ router.delete('/:id', authenticate, checkPermission('staff', 'edit'), async (req
 });
 
 export default router;
+

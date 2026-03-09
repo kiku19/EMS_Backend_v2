@@ -1,3 +1,4 @@
+import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
 import crypto from 'crypto';
 import { Parent, Student, Class, FeePayment } from '../database.js';
@@ -310,7 +311,7 @@ router.get('/students/:id/fees', validateParentChildAccess, async (req, res) => 
     }
 
     // Get fee structure from StudentFeeStructure (the source of truth for fee data)
-    const year = academicYear || student.classId?.academicYear || '2024-25';
+    const year = academicYear || student.classId?.academicYear || await resolveAcademicYear();
 
     console.log(`🔍 [Parent Fees] Student: ${student.name} (${id}), academicYear query: "${year}", classAcademicYear: "${student.classId?.academicYear}"`);
 
@@ -388,6 +389,55 @@ router.get('/students/:id/fees', validateParentChildAccess, async (req, res) => 
       error: {
         code: 'SERVER_ERROR',
         message: 'Failed to fetch fee details'
+      }
+    });
+  }
+});
+
+// GET /api/parent/students/:id/exams
+// Get all exams for student's class (with access check)
+router.get('/students/:id/exams', validateParentChildAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { academicYear } = req.query;
+
+    const student = await Student.findById(id).select('name classId');
+
+    if (!student) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'STUDENT_NOT_FOUND',
+          message: 'Student not found'
+        }
+      });
+    }
+
+    // Get exams for student's class
+    const { Exam } = await import('../database.js');
+
+    const query = { classId: student.classId };
+    if (academicYear) query.academicYear = academicYear;
+
+    const exams = await Exam.find(query)
+      .sort({ startDate: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        studentId: id,
+        studentName: student.name,
+        exams
+      }
+    });
+  } catch (error) {
+    console.error('Get student exams error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Failed to fetch exams'
       }
     });
   }
@@ -731,7 +781,8 @@ router.post('/students/:id/payment/create-order', validateParentChildAccess, asy
     }
 
     // Verify amount doesn't exceed balance
-    const feeStructure = await StudentFeeStructure.findOne({ studentId, academicYear: academicYear || '2024-25' })
+    const resolvedAcademicYear = await resolveAcademicYear(academicYear);
+    const feeStructure = await StudentFeeStructure.findOne({ studentId, academicYear: resolvedAcademicYear })
       || await StudentFeeStructure.findOne({ studentId }).sort({ createdAt: -1 });
 
     if (!feeStructure) {
@@ -872,7 +923,7 @@ router.post('/students/:id/payment/verify', validateParentChildAccess, async (re
       });
     }
 
-    const year = academicYear || student.classId?.academicYear || '2024-25';
+    const year = academicYear || student.classId?.academicYear || await resolveAcademicYear();
 
     // Build fee heads breakdown for payment record
     let paymentFeeHeads = [];
@@ -973,3 +1024,6 @@ router.post('/students/:id/payment/verify', validateParentChildAccess, async (re
 });
 
 export default router;
+
+
+

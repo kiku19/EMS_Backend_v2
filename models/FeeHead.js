@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 // Fee Head Schema - defines individual fee components
 const feeHeadSchema = new mongoose.Schema({
@@ -53,7 +54,7 @@ const feeHeadSchema = new mongoose.Schema({
   },
   
   // Academic year
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   
   // Status
   isActive: { type: Boolean, default: true },
@@ -63,3 +64,4 @@ const feeHeadSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 export default mongoose.model('FeeHead', feeHeadSchema);
+

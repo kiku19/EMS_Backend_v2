@@ -1,4 +1,5 @@
 import Parent from '../models/Parent.js';
+import { ensureDefaultSchool } from './schoolContext.js';
 
 /**
  * Generate parent password from student's DOB and admission ID
@@ -74,6 +75,8 @@ export async function createOrUpdateParentAccount(studentDoc) {
 
   // Generate password from student DOB + admission ID
   const plainPassword = generateParentPassword(studentDoc.dateOfBirth, studentDoc.admissionId);
+  const defaultSchool = studentDoc.schoolId ? null : await ensureDefaultSchool();
+  const targetSchoolId = studentDoc.schoolId || defaultSchool?._id || null;
 
   for (const parentInfo of parentsToProcess) {
     try {
@@ -81,7 +84,10 @@ export async function createOrUpdateParentAccount(studentDoc) {
       const relationship = normalizeRelationship(parentInfo.relationship);
 
       // Find existing parent by phone
-      let parent = await Parent.findOne({ phone: parentInfo.phone });
+      let parent = await Parent.findOne({
+        phone: parentInfo.phone,
+        ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
+      });
 
       if (parent) {
         // Check if this child is already linked
@@ -107,10 +113,15 @@ export async function createOrUpdateParentAccount(studentDoc) {
           parent.password = plainPassword;
         }
 
+        if (!parent.schoolId && targetSchoolId) {
+          parent.schoolId = targetSchoolId;
+        }
+
         await parent.save();
       } else {
         // Create new parent
         const newParent = new Parent({
+          schoolId: targetSchoolId,
           name: parentInfo.name,
           phone: parentInfo.phone,
           email: parentInfo.email,

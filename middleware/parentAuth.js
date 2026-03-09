@@ -1,5 +1,7 @@
 import jwt from 'jsonwebtoken';
 import Parent from '../models/Parent.js';
+import { getRequiredSecret } from '../config/environment.js';
+import { ensureDocumentSchool } from '../utils/schoolContext.js';
 
 /**
  * Authenticate parent JWT token and load parent data
@@ -20,7 +22,7 @@ export const authenticateParent = async (req, res, next) => {
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     // Verify JWT token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, getRequiredSecret('JWT_SECRET'));
 
     // Load parent from database
     const parent = await Parent.findById(decoded.userId || decoded.parentId).select('-password');
@@ -43,9 +45,20 @@ export const authenticateParent = async (req, res, next) => {
     }
 
     // Attach parent data to request
+    const resolvedSchoolId = await ensureDocumentSchool(parent);
+    const schoolId = resolvedSchoolId?.toString?.() || resolvedSchoolId || null;
+
     req.parent = parent;
     req.userType = 'parent';
     req.userId = parent._id;
+    req.schoolId = schoolId;
+    req.user = {
+      id: parent._id,
+      userId: parent._id,
+      role: 'parent',
+      userType: 'parent',
+      schoolId,
+    };
 
     next();
   } catch (error) {

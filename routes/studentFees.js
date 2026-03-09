@@ -1,8 +1,11 @@
+import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import FeeHead from '../models/FeeHead.js';
 import { Student, Class } from '../database.js';
 import { emitFeeUpdate } from '../utils/socketEmitter.js';
+import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
@@ -14,12 +17,12 @@ function calculateFeeStatus(totalBalance, totalPaid) {
 }
 
 // Get fee structure for a student
-router.get('/student/:studentId', async (req, res) => {
+router.get('/student/:studentId', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
-    const { academicYear } = req.query;
+    const academicYear = await resolveAcademicYear(req.query.academicYear);
     const query = {
       studentId: req.params.studentId,
-      academicYear: academicYear || '2024-25'  // FIXED: Always include academic year to get correct fee structure
+      academicYear
     };
 
     const feeStructure = await StudentFeeStructure.findOne(query)
@@ -42,7 +45,7 @@ router.get('/student/:studentId', async (req, res) => {
 });
 
 // Get all students with their fee structures
-router.get('/all', async (req, res) => {
+router.get('/all', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear, classId, status } = req.query;
     const query = {};
@@ -64,7 +67,7 @@ router.get('/all', async (req, res) => {
 });
 
 // Initialize fee structure for a new student
-router.post('/initialize/:studentId', async (req, res) => {
+router.post('/initialize/:studentId', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
     const student = await Student.findById(req.params.studentId).populate('classId');
     
@@ -72,8 +75,7 @@ router.post('/initialize/:studentId', async (req, res) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    const { academicYear } = req.body;
-    const year = academicYear || '2024-25';
+    const year = await resolveAcademicYear(req.body.academicYear);
 
     // Check if fee structure already exists
     let feeStructure = await StudentFeeStructure.findOne({
@@ -151,13 +153,13 @@ router.post('/initialize/:studentId', async (req, res) => {
 });
 
 // Update discount for a student
-router.put('/student/:studentId/discount', async (req, res) => {
+router.put('/student/:studentId/discount', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const { discountAmount, discountReason, academicYear } = req.body;
 
     const feeStructure = await StudentFeeStructure.findOne({
       studentId: req.params.studentId,
-      academicYear: academicYear || '2024-25'
+      academicYear: await resolveAcademicYear(academicYear)
     });
 
     if (!feeStructure) {
@@ -201,13 +203,13 @@ router.put('/student/:studentId/discount', async (req, res) => {
 });
 
 // Record payment for a student
-router.post('/student/:studentId/payment', async (req, res) => {
+router.post('/student/:studentId/payment', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const { amount, feeHeadPayments, academicYear } = req.body;
 
     const feeStructure = await StudentFeeStructure.findOne({
       studentId: req.params.studentId,
-      academicYear: academicYear || '2024-25'
+      academicYear: await resolveAcademicYear(academicYear)
     });
 
     if (!feeStructure) {
@@ -277,12 +279,12 @@ router.post('/student/:studentId/payment', async (req, res) => {
 });
 
 // Get fee defaulters
-router.get('/defaulters', async (req, res) => {
+router.get('/defaulters', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     
     const defaulters = await StudentFeeStructure.find({
-      academicYear: academicYear || '2024-25',
+      academicYear: await resolveAcademicYear(academicYear),
       overallStatus: { $in: ['pending', 'partial'] },
       totalBalance: { $gt: 0 }
     })
@@ -298,3 +300,8 @@ router.get('/defaulters', async (req, res) => {
 });
 
 export default router;
+
+
+
+
+

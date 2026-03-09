@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const classRatingSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true, unique: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
 
   // Overall rating (1-5 stars)
   rating: { type: Number, min: 1, max: 5, default: 3 },
@@ -49,3 +50,4 @@ classRatingSchema.methods.calculateOverallRating = function() {
 };
 
 export default mongoose.model('ClassRating', classRatingSchema);
+

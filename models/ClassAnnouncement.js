@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const classAnnouncementSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
@@ -54,7 +55,7 @@ const classAnnouncementSchema = new mongoose.Schema({
   }],
 
   // Academic year
-  academicYear: { type: String, default: '2024-25' }
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR }
 }, {
   timestamps: true
 });
@@ -65,3 +66,4 @@ classAnnouncementSchema.index({ sentBy: 1, createdAt: -1 });
 classAnnouncementSchema.index({ scheduledFor: 1 });
 
 export default mongoose.model('ClassAnnouncement', classAnnouncementSchema);
+

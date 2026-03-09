@@ -1,5 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
+import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
@@ -33,7 +35,7 @@ const transformEvent = (doc) => {
 const CalendarEvent = mongoose.models.CalendarEvent || mongoose.model('CalendarEvent', calendarEventSchema);
 
 // GET all calendar events
-router.get('/calendar/events', async (req, res) => {
+router.get('/calendar/events', authenticate, checkPermission('timetable', 'view'), async (req, res) => {
   try {
     const events = await CalendarEvent.find().sort({ date: 1, startTime: 1 });
     res.json(events.map(transformEvent));
@@ -44,7 +46,7 @@ router.get('/calendar/events', async (req, res) => {
 });
 
 // POST create a new calendar event
-router.post('/calendar/events', async (req, res) => {
+router.post('/calendar/events', authenticate, checkPermission('timetable', 'create'), async (req, res) => {
   try {
     const { title, date, type, startTime, endTime, allDay } = req.body;
 
@@ -70,7 +72,7 @@ router.post('/calendar/events', async (req, res) => {
 });
 
 // PUT update a calendar event
-router.put('/calendar/events/:id', async (req, res) => {
+router.put('/calendar/events/:id', authenticate, checkPermission('timetable', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -93,7 +95,7 @@ router.put('/calendar/events/:id', async (req, res) => {
 });
 
 // DELETE a calendar event
-router.delete('/calendar/events/:id', async (req, res) => {
+router.delete('/calendar/events/:id', authenticate, checkPermission('timetable', 'delete'), async (req, res) => {
   try {
     const { id } = req.params;
 

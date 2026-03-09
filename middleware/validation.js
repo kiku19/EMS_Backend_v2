@@ -8,7 +8,9 @@ export const schemas = {
       'string.pattern.base': 'Phone number must be 10 digits'
     }),
     email: Joi.string().email(),
-    password: Joi.string().required().min(4).max(50)
+    password: Joi.string().required().min(4).max(50),
+    schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).allow('', null),
+    schoolCode: Joi.string().max(40).allow('', null),
   }).xor('phone', 'email'), // Must have either phone or email, not both
 
   // Staff creation

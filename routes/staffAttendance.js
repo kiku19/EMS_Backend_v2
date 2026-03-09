@@ -2,11 +2,13 @@ import express from 'express';
 import StaffAttendance from '../models/StaffAttendance.js';
 import { Staff } from '../database.js';
 import substitutionService from '../services/substitutionService.js';
+import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
 // Get all attendance records (for initial data load)
-router.get('/', async (req, res) => {
+router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     console.log('[StaffAttendance Routes] Fetching all staff attendance');
     const attendance = await StaffAttendance.find().sort({ date: -1 });
@@ -34,7 +36,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get attendance for a specific date
-router.get('/date/:date', async (req, res) => {
+router.get('/date/:date', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { date } = req.params;
     const attendance = await StaffAttendance.find({ date })
@@ -49,7 +51,7 @@ router.get('/date/:date', async (req, res) => {
 });
 
 // Get attendance for a staff member (with date range)
-router.get('/staff/:staffId', async (req, res) => {
+router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { staffId } = req.params;
     const { startDate, endDate } = req.query;
@@ -70,7 +72,7 @@ router.get('/staff/:staffId', async (req, res) => {
 });
 
 // Get today's attendance for a staff member (for mobile app)
-router.get('/staff/:staffId/today', async (req, res) => {
+router.get('/staff/:staffId/today', authenticate, async (req, res) => {
   try {
     const { staffId } = req.params;
     const today = new Date().toISOString().split('T')[0];
@@ -110,7 +112,7 @@ router.get('/staff/:staffId/today', async (req, res) => {
 });
 
 // Mark attendance (admin/manual)
-router.post('/', async (req, res) => {
+router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { staffId, date, status, checkInTime, checkOutTime, reason, markedBy } = req.body;
 
@@ -186,7 +188,7 @@ router.post('/', async (req, res) => {
 });
 
 // Bulk mark attendance
-router.post('/bulk', async (req, res) => {
+router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { date, staffIds, status, markedBy, reason, checkInTime, checkOutTime } = req.body;
 
@@ -221,7 +223,7 @@ router.post('/bulk', async (req, res) => {
 });
 
 // Regularize attendance
-router.put('/:id/regularize', async (req, res) => {
+router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { date, status, checkInTime, checkOutTime, reason, regularizedBy } = req.body;
@@ -321,9 +323,10 @@ router.put('/:id/regularize', async (req, res) => {
 // ============ MOBILE APP ENDPOINTS ============
 
 // Mark attendance from mobile app (with status and reason)
-router.post('/mobile/mark', async (req, res) => {
+router.post('/mobile/mark', authenticate, async (req, res) => {
   try {
-    const { staffId, status, reason, location } = req.body;
+    const { status, reason, location } = req.body;
+    const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
     const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
@@ -457,9 +460,10 @@ router.post('/mobile/mark', async (req, res) => {
 });
 
 // Check-in (from mobile app)
-router.post('/mobile/checkin', async (req, res) => {
+router.post('/mobile/checkin', authenticate, async (req, res) => {
   try {
-    const { staffId, location } = req.body;
+    const { location } = req.body;
+    const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
     const checkInTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
@@ -484,9 +488,10 @@ router.post('/mobile/checkin', async (req, res) => {
 });
 
 // Check-out (from mobile app)
-router.post('/mobile/checkout', async (req, res) => {
+router.post('/mobile/checkout', authenticate, async (req, res) => {
   try {
-    const { staffId, location } = req.body;
+    const { location } = req.body;
+    const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
     const checkOutTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
@@ -512,9 +517,10 @@ router.post('/mobile/checkout', async (req, res) => {
 });
 
 // Apply for leave (from mobile app)
-router.post('/mobile/leave/apply', async (req, res) => {
+router.post('/mobile/leave/apply', authenticate, async (req, res) => {
   try {
-    const { staffId, leaveType, startDate, endDate, reason } = req.body;
+    const { leaveType, startDate, endDate, reason } = req.body;
+    const staffId = req.user.id;
 
     // Calculate number of days
     const start = new Date(startDate);
@@ -568,7 +574,7 @@ router.post('/mobile/leave/apply', async (req, res) => {
 });
 
 // Get pending leave applications
-router.get('/leave/pending', async (req, res) => {
+router.get('/leave/pending', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const pendingLeaves = await StaffAttendance.find({
       'leaveApplication.approvalStatus': 'pending'
@@ -583,7 +589,7 @@ router.get('/leave/pending', async (req, res) => {
 });
 
 // Approve/Reject leave
-router.put('/leave/:id/approve', async (req, res) => {
+router.put('/leave/:id/approve', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { approvalStatus, approvedBy, rejectionReason } = req.body;
@@ -611,7 +617,7 @@ router.put('/leave/:id/approve', async (req, res) => {
 });
 
 // Get staff attendance summary
-router.get('/summary/:staffId', async (req, res) => {
+router.get('/summary/:staffId', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { staffId } = req.params;
     const { month, year } = req.query;

@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const feeCollectionPeriodSchema = new mongoose.Schema({
-  academicYear: { type: String, required: true, default: '2024-25' },
+  academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
   
   collectionInterval: { 
     type: String, 
@@ -37,3 +38,4 @@ const feeCollectionPeriodSchema = new mongoose.Schema({
 feeCollectionPeriodSchema.index({ academicYear: 1 }, { unique: true });
 
 export default mongoose.model('FeeCollectionPeriod', feeCollectionPeriodSchema);
+

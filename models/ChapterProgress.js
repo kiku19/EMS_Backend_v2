@@ -1,11 +1,12 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const chapterProgressSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
   subjectName: { type: String, required: true },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
 
   // Chapter tracking
   chapters: [{
@@ -51,3 +52,4 @@ chapterProgressSchema.methods.calculateOverallProgress = function() {
 };
 
 export default mongoose.model('ChapterProgress', chapterProgressSchema);
+

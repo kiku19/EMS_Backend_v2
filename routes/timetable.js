@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import express from 'express';
 import { Timetable, Class, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -12,11 +13,11 @@ const router = express.Router();
 /**
  * GET /api/timetable
  * Get all timetables for school
- * Query params: academicYear (optional, defaults to '2024-25')
+ * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
 router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     const timetables = await Timetable.find({ academicYear })
       .populate('classId', 'name section teacher')
@@ -35,7 +36,7 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
  */
 router.post('/generate-all', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
-    const { academicYear = '2024-25', periodRules } = req.body;
+    const { academicYear = CURRENT_ACADEMIC_YEAR, periodRules } = req.body;
 
     // Get all classes
     const classes = await Class.find({}).sort({ name: 1, section: 1 });
@@ -223,12 +224,12 @@ router.post('/generate-all', authenticate, checkPermission('classes', 'edit'), a
 /**
  * GET /api/timetable/:classId
  * Get timetable for a class
- * Query params: academicYear (optional, defaults to '2024-25')
+ * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
 router.get('/:classId', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     const timetable = await Timetable.findOne({ classId, academicYear });
 
@@ -249,7 +250,7 @@ router.get('/:classId', authenticate, checkPermission('classes', 'view'), async 
  */
 router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
-    const { classId, academicYear = '2024-25', periods, schedule } = req.body;
+    const { classId, academicYear = CURRENT_ACADEMIC_YEAR, periods, schedule } = req.body;
 
     // Validate class exists
     const classData = await Class.findById(classId);
@@ -297,7 +298,7 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
 router.put('/:classId/slot', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const { day, periodIndex, subject, teacherId, room, academicYear = '2024-25' } = req.body;
+    const { day, periodIndex, subject, teacherId, room, academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
     // Validate day
     const validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -367,7 +368,7 @@ router.put('/:classId/slot', authenticate, checkPermission('classes', 'edit'), a
 router.post('/:classId/batch', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const { updates, academicYear = '2024-25' } = req.body;
+    const { updates, academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
     if (!Array.isArray(updates) || updates.length === 0) {
       return res.status(400).json({ error: 'Updates array is required' });
@@ -438,7 +439,7 @@ router.post('/:classId/batch', authenticate, checkPermission('classes', 'edit'),
 router.put('/:classId/periods', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const { periods, academicYear = '2024-25' } = req.body;
+    const { periods, academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
     if (!Array.isArray(periods)) {
       return res.status(400).json({ error: 'Periods must be an array' });
@@ -474,7 +475,7 @@ router.put('/:classId/periods', authenticate, checkPermission('classes', 'edit')
 router.put('/:classId', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const { academicYear = '2024-25', periods, schedule } = req.body;
+    const { academicYear = CURRENT_ACADEMIC_YEAR, periods, schedule } = req.body;
 
     // Validate class exists
     const classData = await Class.findById(classId);
@@ -517,12 +518,12 @@ router.put('/:classId', authenticate, checkPermission('classes', 'edit'), async 
 /**
  * DELETE /api/timetable/:classId
  * Delete timetable
- * Query params: academicYear (optional, defaults to '2024-25')
+ * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
 router.delete('/:classId', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const { academicYear = '2024-25' } = req.query;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     const timetable = await Timetable.findOneAndDelete({ classId, academicYear });
 

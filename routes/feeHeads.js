@@ -1,14 +1,17 @@
+import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
 import FeeHead from '../models/FeeHead.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import { Student, Class } from '../database.js';
+import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
 // Get all fee heads
-router.get('/', async (req, res) => {
+router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
-    const { academicYear } = req.query;
+    const academicYear = await resolveAcademicYear(req.query.academicYear);
     const query = academicYear ? { academicYear } : {};
     const feeHeads = await FeeHead.find(query).sort({ createdAt: -1 });
     res.json(feeHeads);
@@ -19,7 +22,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get fee head by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const feeHead = await FeeHead.findById(req.params.id);
     if (!feeHead) {
@@ -33,7 +36,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // Create new fee head
-router.post('/', async (req, res) => {
+router.post('/', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
     const {
       name,
@@ -43,9 +46,11 @@ router.post('/', async (req, res) => {
       description,
       applicableClasses,
       frequency,
-      academicYear,
+      academicYear: requestAcademicYear,
       autoApply
     } = req.body;
+
+    const academicYear = await resolveAcademicYear(requestAcademicYear);
 
     // Validate required fields
     if (!name || !amount || !applicableClasses || applicableClasses.length === 0) {
@@ -63,7 +68,7 @@ router.post('/', async (req, res) => {
       description,
       applicableClasses,
       frequency: frequency || 'yearly',
-      academicYear: academicYear || '2024-25',
+      academicYear,
       autoApply: autoApply !== undefined ? autoApply : true,
     });
 
@@ -83,7 +88,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update fee head
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const {
       name,
@@ -109,7 +114,7 @@ router.put('/:id', async (req, res) => {
         applicableClasses,
         frequency,
         academicYear,
-        autoApply,
+      autoApply,
         isActive
       },
       { new: true }
@@ -134,7 +139,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete fee head
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const feeHead = await FeeHead.findByIdAndDelete(req.params.id);
     
@@ -166,7 +171,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // Apply fee head to all applicable students
-router.post('/:id/apply', async (req, res) => {
+router.post('/:id/apply', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const feeHead = await FeeHead.findById(req.params.id);
     
@@ -312,3 +317,10 @@ async function recalculateStudentFeeStructure(structureId) {
 }
 
 export default router;
+
+
+
+
+
+
+

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const feeConcessionSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -37,7 +38,7 @@ const feeConcessionSchema = new mongoose.Schema({
     conditions: [{ type: String }]
   },
   
-  academicYear: { type: String, required: true, default: '2024-25' },
+  academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
   isActive: { type: Boolean, default: true },
   
   // Usage tracking
@@ -48,3 +49,4 @@ const feeConcessionSchema = new mongoose.Schema({
 feeConcessionSchema.index({ academicYear: 1, isActive: 1 });
 
 export default mongoose.model('FeeConsession', feeConcessionSchema);
+

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 // Student Fee Structure Schema - links students to their applicable fee heads
 const studentFeeStructureSchema = new mongoose.Schema({
@@ -12,7 +13,7 @@ const studentFeeStructureSchema = new mongoose.Schema({
     ref: 'Class', 
     required: true 
   },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   
   // Fee heads applicable to this student
   feeHeads: [{
@@ -61,3 +62,4 @@ const studentFeeStructureSchema = new mongoose.Schema({
 studentFeeStructureSchema.index({ studentId: 1, academicYear: 1 }, { unique: true });
 
 export default mongoose.model('StudentFeeStructure', studentFeeStructureSchema);
+

@@ -1,18 +1,101 @@
 import jwt from 'jsonwebtoken';
-import { UserPermission } from '../database.js';
+import { Staff, UserPermission } from '../database.js';
+import { getRequiredSecret } from '../config/environment.js';
+import { ensureDocumentSchool } from '../utils/schoolContext.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRES_IN = '8h';
+export const AUTH_COOKIE_NAME = 'ems_auth_token';
+const AUTH_COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+
+function getJwtSecret() {
+  return getRequiredSecret('JWT_SECRET');
+}
+
+function getAuthCookieOptions() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction,
+    maxAge: AUTH_COOKIE_MAX_AGE_MS,
+    path: '/',
+  };
+}
+
+function parseCookies(cookieHeader = '') {
+  return cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, part) => {
+      const separatorIndex = part.indexOf('=');
+
+      if (separatorIndex === -1) {
+        return cookies;
+      }
+
+      const key = part.slice(0, separatorIndex).trim();
+      const value = part.slice(separatorIndex + 1).trim();
+      cookies[key] = decodeURIComponent(value);
+      return cookies;
+    }, {});
+}
+
+function extractTokenFromRequest(req) {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader?.startsWith('Bearer ')) {
+    const bearerToken = authHeader.substring(7).trim();
+    if (bearerToken) {
+      return bearerToken;
+    }
+  }
+
+  const cookies = parseCookies(req.headers.cookie);
+  return cookies[AUTH_COOKIE_NAME] || null;
+}
+
+export function setAuthCookie(res, token) {
+  res.cookie(AUTH_COOKIE_NAME, token, getAuthCookieOptions());
+}
+
+export function clearAuthCookie(res) {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    ...getAuthCookieOptions(),
+    maxAge: undefined,
+  });
+}
 
 /**
  * Generate JWT token for authenticated user
  */
-export function generateToken(userId, role) {
+export function generateToken(userId, role, extraClaims = {}) {
   return jwt.sign(
-    { userId, role },
-    JWT_SECRET,
+    { userId, role, ...extraClaims },
+    getJwtSecret(),
     { expiresIn: JWT_EXPIRES_IN }
   );
+}
+
+async function buildAuthenticatedUser(decoded) {
+  let schoolId = decoded.schoolId || null;
+
+  if (!schoolId && decoded.userId) {
+    const staff = await Staff.findById(decoded.userId).select('schoolId');
+    if (staff) {
+      const resolvedSchoolId = await ensureDocumentSchool(staff);
+      schoolId = resolvedSchoolId?.toString?.() || resolvedSchoolId || null;
+    }
+  }
+
+  return {
+    id: decoded.userId,
+    userId: decoded.userId,
+    role: decoded.role,
+    userType: decoded.userType || 'staff',
+    schoolId,
+  };
 }
 
 /**
@@ -20,7 +103,7 @@ export function generateToken(userId, role) {
  */
 export function verifyToken(token) {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, getJwtSecret());
   } catch (error) {
     return null;
   }
@@ -31,45 +114,29 @@ export function verifyToken(token) {
  */
 export async function authenticate(req, res, next) {
   try {
-    // Get token from header
-    const authHeader = req.headers.authorization;
-    
-    console.log('🔐 Auth middleware - Header:', authHeader ? `Bearer ${authHeader.substring(7, 27)}...` : 'NONE');
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.warn('⚠️ Auth failed: No Bearer token in header');
-      return res.status(401).json({ 
+    const token = extractTokenFromRequest(req);
+
+    if (!token) {
+      return res.status(401).json({
         error: 'Authentication required',
         message: 'No token provided'
       });
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-
-    // Verify token
     const decoded = verifyToken(token);
-    
+
     if (!decoded) {
-      console.warn('⚠️ Auth failed: Invalid or expired token');
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Invalid or expired token',
         message: 'Please login again'
       });
     }
 
-    console.log('✅ Auth successful:', decoded.userId, decoded.role);
-
-    // Attach user info to request
-    req.user = {
-      id: decoded.userId,      // Use 'id' for consistency with permissions middleware
-      userId: decoded.userId,  // Keep userId for backward compatibility
-      role: decoded.role
-    };
+    req.user = await buildAuthenticatedUser(decoded);
 
     next();
   } catch (error) {
-    console.error('❌ Authentication error:', error);
-    return res.status(401).json({ 
+    return res.status(401).json({
       error: 'Authentication failed',
       message: error.message
     });
@@ -81,23 +148,15 @@ export async function authenticate(req, res, next) {
  */
 export async function optionalAuth(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
-    
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      const decoded = verifyToken(token);
-      
-      if (decoded) {
-        req.user = {
-          userId: decoded.userId,
-          role: decoded.role
-        };
-      }
+    const token = extractTokenFromRequest(req);
+    const decoded = token ? verifyToken(token) : null;
+
+    if (decoded) {
+      req.user = await buildAuthenticatedUser(decoded);
     }
 
     next();
   } catch (error) {
-    // Continue without authentication
     next();
   }
 }
@@ -108,16 +167,15 @@ export async function optionalAuth(req, res, next) {
 export async function requireAdmin(req, res, next) {
   try {
     if (!req.user) {
-      return res.status(401).json({ 
-        error: 'Authentication required' 
+      return res.status(401).json({
+        error: 'Authentication required'
       });
     }
 
-    // Check if user has admin permissions
     const permissions = await UserPermission.findOne({ userId: req.user.userId });
-    
+
     if (!permissions || permissions.role !== 'admin') {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'Admin access required',
         message: 'You do not have permission to perform this action'
       });
@@ -125,8 +183,7 @@ export async function requireAdmin(req, res, next) {
 
     next();
   } catch (error) {
-    console.error('Admin check error:', error);
-    return res.status(500).json({ 
+    return res.status(500).json({
       error: 'Permission check failed',
       message: error.message
     });
@@ -136,6 +193,8 @@ export async function requireAdmin(req, res, next) {
 export default {
   generateToken,
   verifyToken,
+  setAuthCookie,
+  clearAuthCookie,
   authenticate,
   optionalAuth,
   requireAdmin

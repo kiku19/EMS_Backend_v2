@@ -1,9 +1,19 @@
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import Parent from '../models/Parent.js';
 import { Student } from '../database.js';
 import { generateParentPassword, createOrUpdateParentAccount } from '../utils/parentAccountHelper.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
+const getParentQuery = (req, query = {}) => buildSchoolScopedQuery(req.user?.schoolId, query);
+const parentPasswordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many parent password reset attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // GET /api/parents - List parents with pagination, search, filters
 router.get('/', async (req, res) => {
@@ -11,7 +21,7 @@ router.get('/', async (req, res) => {
     const { page = 1, limit = 20, search, status } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const query = {};
+    const query = getParentQuery(req);
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -83,7 +93,7 @@ router.get('/', async (req, res) => {
 // GET /api/parents/:id - Single parent with populated children
 router.get('/:id', async (req, res) => {
   try {
-    const parent = await Parent.findById(req.params.id)
+    const parent = await Parent.findOne(getParentQuery(req, { _id: req.params.id }))
       .select('-password -fcmTokens -firebaseUid')
       .lean();
 
@@ -128,9 +138,9 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/parents/:id/reset-password - Regenerate password from child's DOB+AdmissionId
-router.post('/:id/reset-password', async (req, res) => {
+router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) => {
   try {
-    const parent = await Parent.findById(req.params.id);
+    const parent = await Parent.findOne(getParentQuery(req, { _id: req.params.id }));
     if (!parent) {
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
     }
@@ -174,8 +184,8 @@ router.put('/:id/status', async (req, res) => {
       return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Status must be active, inactive, or suspended' } });
     }
 
-    const parent = await Parent.findByIdAndUpdate(
-      req.params.id,
+    const parent = await Parent.findOneAndUpdate(
+      getParentQuery(req, { _id: req.params.id }),
       { status },
       { new: true }
     ).select('-password -fcmTokens -firebaseUid');
@@ -207,9 +217,9 @@ router.post('/bulk-create', async (req, res) => {
     for (const student of students) {
       try {
         // Check if any parent already exists for this student
-        const existingParent = await Parent.findOne({
+        const existingParent = await Parent.findOne(getParentQuery(req, {
           'children.studentId': student._id
-        });
+        }));
 
         if (existingParent) {
           skipped++;

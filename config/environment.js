@@ -4,6 +4,10 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('Environment');
 
+function getDefaultLogLevel() {
+  return (process.env.NODE_ENV || 'development') === 'production' ? 'WARN' : 'DEBUG';
+}
+
 // Load environment variables
 dotenv.config();
 
@@ -15,12 +19,27 @@ const REQUIRED_ENV_VARS = [
   'PORT',
 ];
 
+const REQUIRED_SECRET_VARS = [
+  'JWT_SECRET',
+  'JWT_REFRESH_SECRET',
+];
+
+const INSECURE_SECRET_VALUES = new Set([
+  'your-secret-key-change-in-production',
+  'your-secret-key',
+  'your-refresh-secret',
+  'change-me',
+  'changeme',
+  'replace-me',
+]);
+
+const MIN_SECRET_LENGTH = 32;
+
 /**
  * Optional environment variables with defaults
  */
 const OPTIONAL_ENV_VARS = {
   NODE_ENV: 'development',
-  LOG_LEVEL: 'DEBUG',
   CORS_ORIGIN: 'http://localhost:3000,http://localhost:8081,http://localhost:19006,exp://192.168.1.*:19000,http://192.168.1.*:3001,http://localhost:5173,http://localhost:5174,http://localhost:5175',
 };
 
@@ -32,6 +51,34 @@ const CLOUDINARY_VARS = [
   'CLOUDINARY_API_KEY',
   'CLOUDINARY_API_SECRET',
 ];
+
+function validateSecretValue(varName, value) {
+  const normalizedValue = value?.trim();
+
+  if (!normalizedValue) {
+    return `Missing required environment variable: ${varName}`;
+  }
+
+  if (INSECURE_SECRET_VALUES.has(normalizedValue)) {
+    return `${varName} is using an insecure placeholder value. Use a cryptographically random 256-bit secret.`;
+  }
+
+  if (normalizedValue.length < MIN_SECRET_LENGTH) {
+    return `${varName} must be at least ${MIN_SECRET_LENGTH} characters. Use a cryptographically random 256-bit secret.`;
+  }
+
+  return null;
+}
+
+export function getRequiredSecret(varName) {
+  const validationError = validateSecretValue(varName, process.env[varName]);
+
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  return process.env[varName].trim();
+}
 
 /**
  * Validate environment variables
@@ -52,12 +99,25 @@ export function validateEnvironment() {
     errors.push('Missing required environment variable: MONGO_URI or MONGODB_URI');
   }
 
+  // Check required secrets
+  for (const varName of REQUIRED_SECRET_VARS) {
+    const validationError = validateSecretValue(varName, process.env[varName]);
+    if (validationError) {
+      errors.push(validationError);
+    }
+  }
+
   // Check optional variables and set defaults
   for (const [varName, defaultValue] of Object.entries(OPTIONAL_ENV_VARS)) {
     if (!process.env[varName]) {
       process.env[varName] = defaultValue;
       warnings.push(`Using default for ${varName}: ${defaultValue}`);
     }
+  }
+
+  if (!process.env.LOG_LEVEL) {
+    process.env.LOG_LEVEL = getDefaultLogLevel();
+    warnings.push(`Using default for LOG_LEVEL: ${process.env.LOG_LEVEL}`);
   }
 
   // Check Cloudinary variables (warn if missing)
@@ -92,7 +152,7 @@ export function getConfig() {
     // Server
     port: parseInt(process.env.PORT) || 3001,
     nodeEnv: process.env.NODE_ENV || 'development',
-    logLevel: process.env.LOG_LEVEL || 'DEBUG',
+    logLevel: process.env.LOG_LEVEL || getDefaultLogLevel(),
     
     // Database
     mongoUri: process.env.MONGO_URI || process.env.MONGODB_URI,

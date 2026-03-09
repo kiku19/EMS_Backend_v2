@@ -4,10 +4,23 @@ import NotificationPreference from '../models/NotificationPreference.js';
 import { sendAnnouncementEmail } from '../services/emailService.js';
 import { sendAnnouncementSMS } from '../services/smsService.js';
 import { sendAnnouncementWhatsApp } from '../services/whatsappService.js';
-import { verifyToken } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
-router.use(verifyToken);
+router.use(authenticate);
+
+const getUserModel = (user) => {
+  const normalizedRole = String(user?.role || '').toLowerCase();
+  return normalizedRole === 'parent' ? 'Student' : 'Staff';
+};
+
+const getPreferenceRole = (user) => {
+  const normalizedRole = String(user?.role || '').toLowerCase();
+  if (normalizedRole === 'admin') return 'admin';
+  if (normalizedRole === 'parent') return 'parent';
+  if (normalizedRole === 'student') return 'student';
+  return 'staff';
+};
 
 // GET /api/notifications - Get user notifications
 router.get('/', async (req, res) => {
@@ -17,7 +30,7 @@ router.get('/', async (req, res) => {
 
     const query = {
       userId: user.id,
-      userModel: user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student'
+      userModel: getUserModel(user)
     };
 
     if (unreadOnly === 'true') {
@@ -49,7 +62,11 @@ router.get('/', async (req, res) => {
 // PUT /api/notifications/:id/read - Mark notification as read
 router.put('/:id/read', async (req, res) => {
   try {
-    const notification = await Notification.findById(req.params.id);
+    const notification = await Notification.findOne({
+      _id: req.params.id,
+      userId: req.user.id,
+      userModel: getUserModel(req.user)
+    });
 
     if (!notification) {
       return res.status(404).json({ error: 'Notification not found' });
@@ -68,7 +85,7 @@ router.put('/:id/read', async (req, res) => {
 router.put('/read-all', async (req, res) => {
   try {
     const user = req.user;
-    const userModel = user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student';
+    const userModel = getUserModel(user);
 
     await Notification.markAllAsReadForUser(user.id, userModel);
 
@@ -82,7 +99,16 @@ router.put('/read-all', async (req, res) => {
 // DELETE /api/notifications/:id - Delete notification
 router.delete('/:id', async (req, res) => {
   try {
-    await Notification.findByIdAndDelete(req.params.id);
+    const deleted = await Notification.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user.id,
+      userModel: getUserModel(req.user)
+    });
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
     res.json({ message: 'Notification deleted' });
   } catch (error) {
     console.error('Error deleting notification:', error);
@@ -94,7 +120,7 @@ router.delete('/:id', async (req, res) => {
 router.get('/preferences/me', async (req, res) => {
   try {
     const user = req.user;
-    const userModel = user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student';
+    const userModel = getUserModel(user);
 
     let preferences = await NotificationPreference.findOne({
       userId: user.id,
@@ -106,7 +132,7 @@ router.get('/preferences/me', async (req, res) => {
       preferences = await NotificationPreference.create({
         userId: user.id,
         userModel,
-        role: user.role === 'admin' ? 'admin' : (user.role === 'parent' ? 'parent' : userModel.toLowerCase()),
+        role: getPreferenceRole(user),
         preferences: [] // Will be populated with defaults
       });
     }
@@ -122,7 +148,7 @@ router.get('/preferences/me', async (req, res) => {
 router.put('/preferences/me', async (req, res) => {
   try {
     const user = req.user;
-    const userModel = user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student';
+    const userModel = getUserModel(user);
 
     const { preferences, quietHours, digestFrequency, emailDigest } = req.body;
 
@@ -135,7 +161,7 @@ router.put('/preferences/me', async (req, res) => {
       pref = new NotificationPreference({
         userId: user.id,
         userModel,
-        role: user.role
+        role: getPreferenceRole(user)
       });
     }
 
@@ -157,7 +183,7 @@ router.put('/preferences/me', async (req, res) => {
 router.post('/preferences/reset', async (req, res) => {
   try {
     const user = req.user;
-    const userModel = user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student';
+    const userModel = getUserModel(user);
 
     await NotificationPreference.findOneAndDelete({
       userId: user.id,

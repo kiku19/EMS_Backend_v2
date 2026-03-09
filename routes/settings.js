@@ -3,28 +3,19 @@ import { SchoolSettings } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import FeeHead from '../models/FeeHead.js';
 import Reminder from '../models/Reminder.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { ensureSchoolSettings, getDefaultSchoolSettings, parseAcademicYear, resolveAcademicYear } from '../utils/academicYear.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+const getSettingsQuery = (req) => buildSchoolScopedQuery(req.user?.schoolId);
+const findSchoolSettings = (req) => SchoolSettings.findOne(getSettingsQuery(req));
 
 // Get school settings
 router.get('/school', authenticate, async (req, res) => {
   try {
-    let settings = await SchoolSettings.findOne();
-    
-    // If no settings exist, create default settings
-    if (!settings) {
-      settings = await SchoolSettings.create({
-        schoolName: 'School Name',
-        address: '',
-        phone: '',
-        email: '',
-        website: '',
-        logo: '',
-        academicYearStart: new Date().getFullYear(),
-        academicYearEnd: new Date().getFullYear() + 1
-      });
-    }
-    
+    const settings = await ensureSchoolSettings(req.user?.schoolId);
     res.json(settings);
   } catch (error) {
     console.error('Error fetching school settings:', error);
@@ -35,15 +26,31 @@ router.get('/school', authenticate, async (req, res) => {
 // Update school settings
 router.put('/school', authenticate, async (req, res) => {
   try {
-    let settings = await SchoolSettings.findOne();
-    
+    let settings = await findSchoolSettings(req);
+    const updates = { ...req.body };
+
+    if (updates.academicYear) {
+      updates.currentSession = updates.academicYear;
+    }
+
+    if (updates.name && !updates.schoolName) {
+      updates.schoolName = updates.name;
+    }
+
+    if (updates.schoolName && !updates.name) {
+      updates.name = updates.schoolName;
+    }
+
     if (!settings) {
-      settings = await SchoolSettings.create(req.body);
+      settings = await SchoolSettings.create({
+        ...getDefaultSchoolSettings(req.user?.schoolId),
+        ...updates,
+      });
     } else {
-      Object.assign(settings, req.body);
+      Object.assign(settings, updates);
       await settings.save();
     }
-    
+
     res.json(settings);
   } catch (error) {
     console.error('Error updating school settings:', error);
@@ -51,10 +58,54 @@ router.put('/school', authenticate, async (req, res) => {
   }
 });
 
+router.get('/academic-year', authenticate, async (req, res) => {
+  try {
+    const settings = await ensureSchoolSettings(req.user?.schoolId);
+
+    res.json({
+      academicYear: settings.academicYear || CURRENT_ACADEMIC_YEAR,
+      academicYearStart: settings.academicYearStart || '',
+      academicYearEnd: settings.academicYearEnd || '',
+    });
+  } catch (error) {
+    console.error('Error fetching academic year settings:', error);
+    res.status(500).json({ error: 'Failed to fetch academic year settings' });
+  }
+});
+
+router.put('/academic-year', authenticate, async (req, res) => {
+  try {
+    const settings = await ensureSchoolSettings(req.user?.schoolId);
+    const academicYear = (req.body.academicYear || '').trim();
+
+    if (!academicYear) {
+      return res.status(400).json({ error: 'Academic year is required' });
+    }
+
+    const { startYear, endYear } = parseAcademicYear(academicYear);
+
+    settings.academicYear = academicYear;
+    settings.currentSession = academicYear;
+    settings.academicYearStart = req.body.academicYearStart || `${startYear}-04-01`;
+    settings.academicYearEnd = req.body.academicYearEnd || `${endYear}-03-31`;
+
+    await settings.save();
+
+    res.json({
+      academicYear: settings.academicYear,
+      academicYearStart: settings.academicYearStart,
+      academicYearEnd: settings.academicYearEnd,
+    });
+  } catch (error) {
+    console.error('Error updating academic year settings:', error);
+    res.status(500).json({ error: 'Failed to update academic year settings' });
+  }
+});
+
 // Get holidays
 router.get('/holidays', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     res.json(settings?.holidays || []);
   } catch (error) {
     console.error('Error fetching holidays:', error);
@@ -65,10 +116,13 @@ router.get('/holidays', authenticate, async (req, res) => {
 // Add holiday
 router.post('/holidays', authenticate, async (req, res) => {
   try {
-    let settings = await SchoolSettings.findOne();
+    let settings = await findSchoolSettings(req);
     
     if (!settings) {
-      settings = await SchoolSettings.create({ holidays: [req.body] });
+      settings = await SchoolSettings.create({
+        ...getDefaultSchoolSettings(req.user?.schoolId),
+        holidays: [req.body],
+      });
     } else {
       settings.holidays = settings.holidays || [];
       settings.holidays.push(req.body);
@@ -85,7 +139,7 @@ router.post('/holidays', authenticate, async (req, res) => {
 // Update holiday
 router.put('/holidays/:id', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     
     if (!settings) {
       return res.status(404).json({ error: 'Settings not found' });
@@ -110,7 +164,7 @@ router.put('/holidays/:id', authenticate, async (req, res) => {
 // Delete holiday
 router.delete('/holidays/:id', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     
     if (!settings) {
       return res.status(404).json({ error: 'Settings not found' });
@@ -129,7 +183,7 @@ router.delete('/holidays/:id', authenticate, async (req, res) => {
 // Get leave types
 router.get('/leave-types', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     res.json(settings?.leaveTypes || []);
   } catch (error) {
     console.error('Error fetching leave types:', error);
@@ -140,10 +194,13 @@ router.get('/leave-types', authenticate, async (req, res) => {
 // Add leave type
 router.post('/leave-types', authenticate, async (req, res) => {
   try {
-    let settings = await SchoolSettings.findOne();
+    let settings = await findSchoolSettings(req);
     
     if (!settings) {
-      settings = await SchoolSettings.create({ leaveTypes: [req.body] });
+      settings = await SchoolSettings.create({
+        ...getDefaultSchoolSettings(req.user?.schoolId),
+        leaveTypes: [req.body],
+      });
     } else {
       settings.leaveTypes = settings.leaveTypes || [];
       settings.leaveTypes.push(req.body);
@@ -160,7 +217,7 @@ router.post('/leave-types', authenticate, async (req, res) => {
 // Update leave type
 router.put('/leave-types/:id', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     
     if (!settings) {
       return res.status(404).json({ error: 'Settings not found' });
@@ -185,7 +242,7 @@ router.put('/leave-types/:id', authenticate, async (req, res) => {
 // Delete leave type
 router.delete('/leave-types/:id', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     
     if (!settings) {
       return res.status(404).json({ error: 'Settings not found' });
@@ -204,7 +261,7 @@ router.delete('/leave-types/:id', authenticate, async (req, res) => {
 // Get subjects
 router.get('/subjects', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     res.json(settings?.subjects || []);
   } catch (error) {
     console.error('Error fetching subjects:', error);
@@ -215,10 +272,13 @@ router.get('/subjects', authenticate, async (req, res) => {
 // Add subject
 router.post('/subjects', authenticate, async (req, res) => {
   try {
-    let settings = await SchoolSettings.findOne();
+    let settings = await findSchoolSettings(req);
     
     if (!settings) {
-      settings = await SchoolSettings.create({ subjects: [req.body] });
+      settings = await SchoolSettings.create({
+        ...getDefaultSchoolSettings(req.user?.schoolId),
+        subjects: [req.body],
+      });
     } else {
       settings.subjects = settings.subjects || [];
       settings.subjects.push(req.body);
@@ -235,7 +295,7 @@ router.post('/subjects', authenticate, async (req, res) => {
 // Update subject
 router.put('/subjects/:id', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     
     if (!settings) {
       return res.status(404).json({ error: 'Settings not found' });
@@ -260,7 +320,7 @@ router.put('/subjects/:id', authenticate, async (req, res) => {
 // Delete subject
 router.delete('/subjects/:id', authenticate, async (req, res) => {
   try {
-    const settings = await SchoolSettings.findOne();
+    const settings = await findSchoolSettings(req);
     
     if (!settings) {
       return res.status(404).json({ error: 'Settings not found' });
@@ -283,7 +343,7 @@ router.delete('/subjects/:id', authenticate, async (req, res) => {
 // Get all fee heads
 router.get('/fee-heads', authenticate, async (req, res) => {
   try {
-    const { academicYear } = req.query;
+    const academicYear = await resolveAcademicYear(req.query.academicYear);
     const query = academicYear ? { academicYear } : {};
     const feeHeads = await FeeHead.find(query).sort({ createdAt: -1 });
     res.json(feeHeads);
@@ -304,9 +364,11 @@ router.post('/fee-heads', authenticate, async (req, res) => {
       description,
       applicableClasses,
       frequency,
-      academicYear,
+      academicYear: requestAcademicYear,
       autoApply
     } = req.body;
+
+    const academicYear = await resolveAcademicYear(requestAcademicYear);
 
     // Validate required fields
     if (!name || !amount || !applicableClasses || applicableClasses.length === 0) {
@@ -324,7 +386,7 @@ router.post('/fee-heads', authenticate, async (req, res) => {
       description,
       applicableClasses,
       frequency: frequency || 'yearly',
-      academicYear: academicYear || '2024-25',
+      academicYear,
       autoApply: autoApply !== undefined ? autoApply : true,
     });
 
@@ -349,10 +411,12 @@ router.put('/fee-heads/:id', authenticate, async (req, res) => {
       description,
       applicableClasses,
       frequency,
-      academicYear,
+      academicYear: requestAcademicYear,
       autoApply,
       isActive
     } = req.body;
+
+    const academicYear = await resolveAcademicYear(requestAcademicYear);
 
     const feeHead = await FeeHead.findByIdAndUpdate(
       req.params.id,
@@ -364,7 +428,7 @@ router.put('/fee-heads/:id', authenticate, async (req, res) => {
         description,
         applicableClasses,
         frequency,
-        academicYear,
+        academicYear: requestAcademicYear,
         autoApply,
         isActive
       },
@@ -459,4 +523,72 @@ router.get('/payroll/reminder', authenticate, async (req, res) => {
   }
 });
 
+// ============================================================
+// DOCUMENT CONFIGURATION ENDPOINTS
+// ============================================================
+
+// Get all document configurations
+router.get('/document-config', authenticate, async (req, res) => {
+  try {
+    const { DocumentConfig } = await import('../database.js');
+    const configs = await DocumentConfig.find().sort({ documentName: 1 });
+    res.json(configs);
+  } catch (error) {
+    console.error('Error fetching document configs:', error);
+    res.status(500).json({ error: 'Failed to fetch document configurations' });
+  }
+});
+
+// Create document configuration
+router.post('/document-config', authenticate, async (req, res) => {
+  try {
+    const { DocumentConfig } = await import('../database.js');
+    const config = await DocumentConfig.create(req.body);
+    res.json(config);
+  } catch (error) {
+    console.error('Error creating document config:', error);
+    res.status(500).json({ error: 'Failed to create document configuration' });
+  }
+});
+
+// Update document configuration
+router.put('/document-config/:id', authenticate, async (req, res) => {
+  try {
+    const { DocumentConfig } = await import('../database.js');
+    const config = await DocumentConfig.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    
+    if (!config) {
+      return res.status(404).json({ error: 'Document configuration not found' });
+    }
+    
+    res.json(config);
+  } catch (error) {
+    console.error('Error updating document config:', error);
+    res.status(500).json({ error: 'Failed to update document configuration' });
+  }
+});
+
+// Delete document configuration
+router.delete('/document-config/:id', authenticate, async (req, res) => {
+  try {
+    const { DocumentConfig } = await import('../database.js');
+    const config = await DocumentConfig.findByIdAndDelete(req.params.id);
+    
+    if (!config) {
+      return res.status(404).json({ error: 'Document configuration not found' });
+    }
+    
+    res.json({ success: true, message: 'Document configuration deleted' });
+  } catch (error) {
+    console.error('Error deleting document config:', error);
+    res.status(500).json({ error: 'Failed to delete document configuration' });
+  }
+});
+
 export default router;
+
+

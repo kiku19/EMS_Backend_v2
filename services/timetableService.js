@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { Timetable, TeacherTimetable, Class, Staff } from '../database.js';
 import mongoose from 'mongoose';
 import cacheService from './cacheService.js';
@@ -20,7 +21,7 @@ class TimetableService {
    * @returns {Promise<Object>} - Sync result with success status
    */
   async syncTimetables(options) {
-    const { sourceType, sourceId, day, periodIndex, slotData, academicYear = '2024-25', modifiedBy } = options;
+    const { sourceType, sourceId, day, periodIndex, slotData, academicYear = CURRENT_ACADEMIC_YEAR, modifiedBy } = options;
 
     // Validate inputs
     if (!['class', 'teacher'].includes(sourceType)) {
@@ -461,7 +462,7 @@ class TimetableService {
   /**
    * Delete a slot from class timetable and sync to teacher
    */
-  async deleteClassSlot({ classId, day, periodIndex, academicYear = '2024-25' }) {
+  async deleteClassSlot({ classId, day, periodIndex, academicYear = CURRENT_ACADEMIC_YEAR }) {
     // Proceed without transactions for compatibility
     const session = null;
 
@@ -515,7 +516,7 @@ class TimetableService {
   /**
    * Delete a slot from teacher timetable and sync to class
    */
-  async deleteTeacherSlot({ teacherId, day, periodIndex, academicYear = '2024-25' }) {
+  async deleteTeacherSlot({ teacherId, day, periodIndex, academicYear = CURRENT_ACADEMIC_YEAR }) {
     // Proceed without transactions for compatibility
     const session = null;
 
@@ -570,7 +571,7 @@ class TimetableService {
   /**
    * Get class timetable
    */
-  async getClassTimetable(classId, academicYear = '2024-25') {
+  async getClassTimetable(classId, academicYear = CURRENT_ACADEMIC_YEAR) {
     // Check cache first
     const cacheKey = cacheService.getClassTimetableKey(classId, academicYear);
     const cached = cacheService.get(cacheKey);
@@ -598,7 +599,7 @@ class TimetableService {
   /**
    * Get teacher timetable
    */
-  async getTeacherTimetable(teacherId, academicYear = '2024-25') {
+  async getTeacherTimetable(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
     // Check cache first
     const cacheKey = cacheService.getTeacherTimetableKey(teacherId, academicYear);
     const cached = cacheService.get(cacheKey);
@@ -649,7 +650,7 @@ class TimetableService {
       periodIndex,
       subject,
       room = '',
-      academicYear = '2024-25',
+      academicYear = CURRENT_ACADEMIC_YEAR,
       modifiedBy = null
     } = options;
 
@@ -843,7 +844,7 @@ class TimetableService {
    * @returns {Promise<Object>} - Result with success status
    */
   async removeTeacherFromSlot(options) {
-    const { classId, teacherId, day, periodIndex, academicYear = '2024-25' } = options;
+    const { classId, teacherId, day, periodIndex, academicYear = CURRENT_ACADEMIC_YEAR } = options;
 
     // Validate inputs
     if (!classId || !teacherId || !day || periodIndex === undefined) {
@@ -908,7 +909,7 @@ class TimetableService {
       periodIndex,
       subject,
       room = '',
-      academicYear = '2024-25',
+      academicYear = CURRENT_ACADEMIC_YEAR,
       modifiedBy = null
     } = options;
 
@@ -955,3 +956,5 @@ class TimetableService {
 }
 
 export default new TimetableService();
+
+

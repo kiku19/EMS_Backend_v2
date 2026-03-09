@@ -1,3 +1,4 @@
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { Staff, Timetable, TeacherTimetable, Class, Substitution } from '../database.js';
 
 /**
@@ -12,7 +13,7 @@ class SubstitutionService {
    * @param {string} academicYear - Academic year
    * @returns {Promise<Array>} Array of substitution alerts
    */
-  async generateSubstitutionAlerts(date, academicYear = '2024-25') {
+  async generateSubstitutionAlerts(date, academicYear = CURRENT_ACADEMIC_YEAR) {
     try {
       const dayOfWeek = this.getDayOfWeek(date);
 
@@ -94,7 +95,7 @@ class SubstitutionService {
    * @returns {Promise<Object>} Available and suggested teachers
    */
   async getAvailableTeachersForSubstitution(params) {
-    const { classId, subject, day, period, date, academicYear = '2024-25' } = params;
+    const { classId, subject, day, period, date, academicYear = CURRENT_ACADEMIC_YEAR } = params;
 
     try {
       const periodIndex = parseInt(period) - 1;
@@ -245,7 +246,7 @@ class SubstitutionService {
   async createSubstitutionFromAbsence(teacherId, date, reason = 'Absent') {
     try {
       const dayOfWeek = this.getDayOfWeek(date);
-      const academicYear = '2024-25'; // Should be dynamic
+      const academicYear = CURRENT_ACADEMIC_YEAR; // Should be dynamic
 
       // Get teacher's timetable for the day
       const teacherTimetable = await TeacherTimetable.findOne({
@@ -435,7 +436,7 @@ class SubstitutionService {
             day: dayOfWeek,
             period: sub.period,
             date,
-            academicYear: timetable?.academicYear || '2024-25'
+            academicYear: timetable?.academicYear || CURRENT_ACADEMIC_YEAR
           });
 
           return {
@@ -460,3 +461,5 @@ class SubstitutionService {
 }
 
 export default new SubstitutionService();
+
+

@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const lateFeeRuleSchema = new mongoose.Schema({
-  academicYear: { type: String, required: true, default: '2024-25' },
+  academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
   enabled: { type: Boolean, default: false },
   gracePeriod: { type: Number, default: 0 },  // Days after due date
   
@@ -39,3 +40,4 @@ const lateFeeRuleSchema = new mongoose.Schema({
 lateFeeRuleSchema.index({ academicYear: 1 }, { unique: true });
 
 export default mongoose.model('LateFeeRule', lateFeeRuleSchema);
+

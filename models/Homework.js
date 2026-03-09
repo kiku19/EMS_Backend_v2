@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const homeworkSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -6,7 +7,7 @@ const homeworkSchema = new mongoose.Schema({
   subject: { type: String, required: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
-  academicYear: { type: String, default: '2024-25' },
+  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
 
   // Due date and time
   dueDate: { type: Date, required: true },
@@ -50,3 +51,4 @@ homeworkSchema.index({ classId: 1, status: 1, dueDate: -1 });
 homeworkSchema.index({ teacherId: 1, createdAt: -1 });
 
 export default mongoose.model('Homework', homeworkSchema);
+

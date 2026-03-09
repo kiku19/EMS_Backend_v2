@@ -1,3 +1,4 @@
+﻿import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { Staff, Timetable, TeacherTimetable, ConflictLog } from '../database.js';
 import { debounceAsync } from '../utils/debounce.js';
 import cacheService from './cacheService.js';
@@ -102,10 +103,10 @@ class ConflictDetectionService {
   /**
    * Get all conflicts for a teacher in a specific academic year
    * @param {string} teacherId - The teacher's ID
-   * @param {string} academicYear - Academic year (e.g., '2024-25')
+   * @param {string} academicYear - Academic year (e.g., CURRENT_ACADEMIC_YEAR)
    * @returns {Array} Array of conflict objects
    */
-  async getTeacherConflicts(teacherId, academicYear = '2024-25') {
+  async getTeacherConflicts(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
     try {
       const conflicts = [];
       const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -179,7 +180,7 @@ class ConflictDetectionService {
    * @param {boolean} strictMode - If true, enforce qualification checks; if false, only check conflicts
    * @returns {Object} Validation result with isValid flag and error/warning details
    */
-  async validateSlotAssignment(teacherId, classId, subject, day, periodIndex, strictMode = false) {
+  async validateSlotAssignment(teacherId, classId, subject, day, periodIndex, strictMode = true) {
     try {
       // Always check for time conflicts (hard validation)
       const timeConflict = await this.checkTeacherConflict(teacherId, day, periodIndex, classId);
@@ -300,3 +301,6 @@ class ConflictDetectionService {
 }
 
 export default new ConflictDetectionService();
+
+
+
