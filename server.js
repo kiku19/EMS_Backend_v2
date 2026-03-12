@@ -141,15 +141,6 @@ if (config.cloudinary.configured) {
 
 logger.debug({ corsOrigins: config.corsOrigins }, 'CORS origins configured');
 
-app.use(helmet({
-  hsts: {
-    maxAge: 31536000,
-    includeSubDomains: true,
-    preload: true,
-  },
-}));
-app.use(mongoSanitize());
-
 app.use(cors({
   origin(origin, callback) {
     // Allow server-to-server (no origin) only in non-production
@@ -182,6 +173,16 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Mode'],
 }));
+
+app.use(helmet({
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+app.use(mongoSanitize());
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
