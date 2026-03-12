@@ -5,9 +5,8 @@
  */
 
 import { TrashItem } from '../models/TrashItem.js';
-import { Student } from '../database.js';
-import { StudentFeeStructure } from '../database.js';
 import { Staff } from '../database.js';
+import { permanentlyDeleteStudentData } from './studentDataErasureService.js';
 
 /**
  * Permanently delete expired items from trash
@@ -41,13 +40,8 @@ export async function purgeExpiredTrashItems() {
         // Delete based on item type
         switch (trashItem.itemType) {
           case 'Student':
-            // First delete related fee structures
-            await StudentFeeStructure.deleteMany({ studentId: trashItem.itemId });
-            console.log(`   💰 Deleted fee structures for student ${trashItem.itemId}`);
-
-            // Then delete the student record
-            await Student.findByIdAndDelete(trashItem.itemId);
-            console.log(`   👤 Deleted student record ${trashItem.itemId}`);
+            await permanentlyDeleteStudentData(trashItem.itemId);
+            console.log(`   👤 Deleted student personal data ${trashItem.itemId}`);
             break;
 
           case 'Staff':

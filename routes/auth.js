@@ -1,6 +1,9 @@
 import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { Class, Staff } from '../database.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('Auth');
 import {
   authenticate,
   requireAdmin as authRequireAdmin,
@@ -9,7 +12,24 @@ import {
   clearAuthCookie
 } from '../middleware/auth.js';
 import { validate, schemas } from '../middleware/validation.js';
-import { ensureDocumentSchool, resolveSchool, serializeSchool } from '../utils/schoolContext.js';
+import {
+  ensureDocumentSchool,
+  resolveSchool,
+  serializeSchool,
+} from '../utils/schoolContext.js';
+import { normalizeInvitedSchoolName, verifySignupInvite } from '../utils/signupInvites.js';
+import {
+  buildSuperAdminAuthPayload,
+  isSuperAdminLogin,
+  isSuperAdminUser,
+} from '../utils/superAdmin.js';
+import {
+  ensureSchoolSubscription,
+  provisionSchoolSubscription,
+  summarizeSubscription,
+  syncUsageMetrics,
+} from '../services/billingService.js';
+import { onboardSchool } from '../services/schoolProvisioningService.js';
 
 const router = express.Router();
 const COOKIE_AUTH_MODE = 'cookie';
@@ -21,6 +41,7 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
+  skip: () => process.env.NODE_ENV === 'test',
 });
 
 const passwordResetLimiter = rateLimit({
@@ -35,6 +56,13 @@ async function buildStaffAuthPayload(staff) {
   const resolvedSchoolId = await ensureDocumentSchool(staff);
   const classes = await Class.find({ classTeacherId: staff._id });
   const school = resolvedSchoolId ? await resolveSchool({ schoolId: resolvedSchoolId }) : null;
+  const subscription = resolvedSchoolId
+    ? await ensureSchoolSubscription(resolvedSchoolId, {
+        billingContactName: school?.billingContactName || school?.name,
+        billingEmail: school?.billingEmail || school?.contactEmail,
+        billingPhone: school?.billingPhone || school?.contactPhone,
+      })
+    : null;
 
   return {
     id: staff._id,
@@ -48,6 +76,7 @@ async function buildStaffAuthPayload(staff) {
     picture: staff.picture || staff.photo || null,
     schoolId: resolvedSchoolId?.toString?.() || resolvedSchoolId || null,
     school: serializeSchool(school),
+    subscription: summarizeSubscription(subscription),
   };
 }
 
@@ -100,8 +129,135 @@ async function authenticateStaff({ phone, email, password, schoolId, schoolCode 
   return { staff };
 }
 
+function normalizeSignupEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+router.get('/signup/invite-details', async (req, res) => {
+  const inviteToken = String(req.query.token || '').trim();
+
+  if (!inviteToken) {
+    return res.status(400).json({ error: 'Invite token is required' });
+  }
+
+  const invite = verifySignupInvite(inviteToken);
+
+  if (!invite) {
+    return res.status(403).json({ error: 'Invite link is invalid or expired' });
+  }
+
+  return res.json({
+    success: true,
+    invite,
+  });
+});
+
+router.post('/signup', validate(schemas.signup), async (req, res) => {
+  try {
+    const { name, email, schoolName, password, inviteToken } = req.body;
+    const invite = verifySignupInvite(inviteToken);
+    if (!invite) {
+      return res.status(403).json({
+        error: 'Signup is available by invitation only. Use the invite link sent to your school.',
+      });
+    }
+
+    const normalizedEmail = normalizeSignupEmail(email);
+    const normalizedSchoolName = normalizeInvitedSchoolName(schoolName);
+
+    if (invite.email !== normalizedEmail || invite.schoolName !== normalizedSchoolName) {
+      return res.status(400).json({
+        error: 'Invite details do not match the signup form',
+      });
+    }
+
+    const existingStaff = await Staff.findOne({ email: normalizedEmail });
+    if (existingStaff) {
+      return res.status(409).json({
+        error: 'An account with this email already exists',
+      });
+    }
+
+    const result = await onboardSchool({
+      schoolName: normalizedSchoolName,
+      contactEmail: normalizedEmail,
+      adminName: name,
+      adminEmail: normalizedEmail,
+      adminPassword: password,
+      plan: 'starter',
+      planStatus: 'trialing',
+      schoolSettings: {
+        email: normalizedEmail,
+      },
+      provisionedBy: invite.invitedBy || normalizedEmail,
+      source: 'invite-only-signup',
+    });
+
+    const school = result.school;
+    school.billingContactName = name.trim();
+    school.billingEmail = normalizedEmail;
+    school.metadata = {
+      ...(school.metadata || {}),
+      signupSource: 'invite-only',
+      ownerName: name.trim(),
+      invitedBy: invite.invitedBy,
+      inviteAcceptedAt: new Date().toISOString(),
+    };
+    await school.save();
+
+    await provisionSchoolSubscription({
+      schoolId: school._id,
+      billingContactName: name.trim(),
+      billingEmail: normalizedEmail,
+    });
+
+    const staff = result.admin;
+
+    const subscription = await syncUsageMetrics(school._id);
+
+    res.status(201).json({
+      success: true,
+      message: 'Invite accepted successfully',
+      school: serializeSchool(school),
+      user: {
+        id: staff._id.toString(),
+        name: staff.name,
+        email: staff.email,
+        role: staff.role,
+        schoolId: school._id.toString(),
+        subscription: summarizeSubscription(subscription),
+      },
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({ error: 'Unable to create account with the provided details' });
+    }
+
+    logger.error({ err: error }, 'Signup error');
+    res.status(500).json({ error: 'Signup failed. Please try again.' });
+  }
+});
+
 router.post('/login', authLimiter, validate(schemas.login), async (req, res) => {
   try {
+    if (req.body.email && await isSuperAdminLogin(req.body)) {
+      const payload = buildSuperAdminAuthPayload();
+      const token = generateToken(payload.id, payload.role, {
+        userType: payload.userType,
+        email: payload.email,
+        name: payload.name,
+      });
+
+      if (req.get('X-Auth-Mode') === COOKIE_AUTH_MODE) {
+        setAuthCookie(res, token);
+      }
+
+      return res.json({
+        ...payload,
+        token
+      });
+    }
+
     const { staff, error, status } = await authenticateStaff(req.body);
 
     if (!staff) {
@@ -127,13 +283,28 @@ router.post('/login', authLimiter, validate(schemas.login), async (req, res) => 
       token
     });
   } catch (error) {
-    console.error('Login error:', error);
+    logger.error({ err: error }, 'Login error');
     res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
 
 router.get('/session', authenticate, async (req, res) => {
   try {
+    if (isSuperAdminUser(req.user)) {
+      const payload = buildSuperAdminAuthPayload();
+      const token = generateToken(payload.id, payload.role, {
+        userType: payload.userType,
+        email: payload.email,
+        name: payload.name,
+      });
+      setAuthCookie(res, token);
+
+      return res.json({
+        ...payload,
+        token
+      });
+    }
+
     const staff = await Staff.findOne({ _id: req.user.id, status: 'active' });
 
     if (!staff) {
@@ -153,7 +324,7 @@ router.get('/session', authenticate, async (req, res) => {
       token
     });
   } catch (error) {
-    console.error('Session lookup error:', error);
+    logger.error({ err: error }, 'Session lookup error');
     res.status(500).json({ error: 'Failed to restore session' });
   }
 });
@@ -163,38 +334,6 @@ router.post('/logout', async (req, res) => {
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
-router.post('/emergency-reset', passwordResetLimiter, authenticate, authRequireAdmin, async (req, res) => {
-  try {
-    const { email, newPassword } = req.body;
-
-    if (!email || !newPassword) {
-      return res.status(400).json({ error: 'Email and newPassword required' });
-    }
-
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ error: 'Not available in production' });
-    }
-
-    const bcrypt = await import('bcrypt');
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-
-    const staff = await Staff.findOneAndUpdate(
-      { email },
-      { password: hashedPassword },
-      { new: true }
-    );
-
-    if (!staff) {
-      return res.status(404).json({ error: 'Staff not found with this email' });
-    }
-
-    console.log('Emergency password reset for:', staff.email, 'by admin:', req.user.userId);
-    res.json({ success: true, message: 'Password reset successfully' });
-  } catch (error) {
-    console.error('Emergency reset error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// Emergency reset endpoint removed — use the standard password change flow or a DB admin script.
 
 export default router;

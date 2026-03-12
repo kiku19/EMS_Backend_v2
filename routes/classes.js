@@ -3,8 +3,42 @@ import { Class, Staff, Student, getNextRollNumber } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import resolveClassId from '../utils/resolveClassId.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { countActiveStudents, checkClassCapacity } from '../utils/classCapacity.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
+
+/**
+ * Sync Staff document when class teacher assignment changes.
+ * Clears the old teacher's fields and sets the new teacher's fields.
+ */
+async function syncClassTeacherStaff({ oldTeacherId, newTeacherId, classDoc }) {
+  if (oldTeacherId && String(oldTeacherId) !== String(newTeacherId)) {
+    await Staff.findByIdAndUpdate(oldTeacherId, {
+      classTeacherOf: null,
+      isClassTeacher: false
+    });
+  }
+
+  if (newTeacherId) {
+    await Staff.findByIdAndUpdate(newTeacherId, {
+      classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+      isClassTeacher: true
+    });
+  }
+}
 
 async function ensureTeacherAvailable(classTeacherId, currentClassId = null) {
   if (classTeacherId === null || classTeacherId === undefined || classTeacherId === '') {
@@ -44,9 +78,10 @@ async function ensureTeacherAvailable(classTeacherId, currentClassId = null) {
   return { teacher };
 }
 
-router.get('/public', async (req, res) => {
+router.get('/public', authenticate, async (req, res) => {
   try {
-    const classes = await Class.find({}).sort({ name: 1, section: 1 });
+    const schoolId = await resolveRequestSchoolId(req);
+    const classes = await Class.find(scopeBySchool(schoolId, {})).sort({ name: 1, section: 1 });
     const formatted = classes.map((cls) => ({
       id: cls._id,
       name: cls.name,
@@ -62,17 +97,14 @@ router.get('/public', async (req, res) => {
 
 router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const query = req.query.teacherId ? { classTeacherId: req.query.teacherId } : {};
+    const baseQuery = req.query.teacherId ? { classTeacherId: req.query.teacherId } : {};
+    const query = scopeBySchool(req.user?.schoolId, baseQuery);
     const classes = await Class.find(query)
       .populate('classTeacherId', 'name')
       .sort({ name: 1, section: 1 });
 
     const formatted = await Promise.all(classes.map(async (cls) => {
-      const studentCount = await Student.countDocuments({
-        classId: cls._id,
-        status: 'active',
-        isDeleted: { $ne: true }
-      });
+      const studentCount = await countActiveStudents(cls._id, req.user?.schoolId);
 
       return {
         id: cls._id.toString(),
@@ -100,8 +132,15 @@ router.post('/', authenticate, checkPermission('classes', 'create'), async (req,
       return res.status(validation.error.status).json(validation.error.body);
     }
 
-    const classDoc = new Class({ name, section, classTeacherId, subjects, academicYear });
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
+    const classDoc = new Class({ name, section, classTeacherId, subjects, academicYear, ...(schoolId ? { schoolId } : {}) });
     await classDoc.save();
+
+    // Sync Staff record if a class teacher was assigned at creation
+    if (classTeacherId) {
+      await syncClassTeacherStaff({ oldTeacherId: null, newTeacherId: classTeacherId, classDoc });
+    }
+
     res.status(201).json({ id: classDoc._id, ...classDoc.toObject() });
   } catch (error) {
     if (error.code === 11000) {
@@ -117,7 +156,7 @@ router.post('/', authenticate, checkPermission('classes', 'create'), async (req,
 router.put('/:id/class-teacher', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { classTeacherId } = req.body;
-    const classDoc = await Class.findById(req.params.id);
+    const classDoc = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!classDoc) {
       return res.status(404).json({ error: 'Class not found' });
     }
@@ -131,19 +170,7 @@ router.put('/:id/class-teacher', authenticate, checkPermission('classes', 'edit'
     classDoc.classTeacherId = classTeacherId || null;
     await classDoc.save();
 
-    if (oldTeacherId) {
-      await Staff.findByIdAndUpdate(oldTeacherId, {
-        classTeacherOf: null,
-        isClassTeacher: false
-      });
-    }
-
-    if (classTeacherId) {
-      await Staff.findByIdAndUpdate(classTeacherId, {
-        classTeacherOf: `${classDoc.name}-${classDoc.section}`,
-        isClassTeacher: true
-      });
-    }
+    await syncClassTeacherStaff({ oldTeacherId, newTeacherId: classTeacherId, classDoc });
 
     const io = req.app.get('io');
     if (io) {
@@ -171,7 +198,7 @@ router.put('/:id/class-teacher', authenticate, checkPermission('classes', 'edit'
 
 router.get('/:id/settings', authenticate, async (req, res) => {
   try {
-    const classDoc = await Class.findById(req.params.id);
+    const classDoc = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!classDoc) {
       return res.status(404).json({ error: 'Class not found' });
     }
@@ -194,6 +221,11 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
     const { classTag } = req.body;
     if (classTag === undefined) {
       return res.status(400).json({ error: 'classTag field is required' });
+    }
+
+    const scopedClass = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedClass) {
+      return res.status(404).json({ error: 'Class not found' });
     }
 
     const classDoc = await Class.findByIdAndUpdate(
@@ -224,6 +256,11 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
       return res.status(400).json({ error: 'assignedSubjects must be an array' });
     }
 
+    const scopedClass = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedClass) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
     const classDoc = await Class.findByIdAndUpdate(
       req.params.id,
       { assignedSubjects },
@@ -245,18 +282,21 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
   }
 });
 
-router.get('/:id/students', async (req, res) => {
+router.get('/:id/students', authenticate, async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id);
     if (!resolved) {
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const students = await Student.find({
-      classId: resolved.classId,
-      status: 'active',
-      isDeleted: { $ne: true }
-    }).sort({ rollNo: 1 });
+    const scopedClass = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: resolved.classId }));
+    if (!scopedClass) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const students = await Student.find(
+      scopeBySchool(req.user?.schoolId, { classId: resolved.classId, status: 'active', isDeleted: { $ne: true } })
+    ).sort({ rollNo: 1 });
 
     res.json(students.map((student) => ({ id: student._id, ...student.toObject() })));
   } catch (error) {
@@ -276,27 +316,19 @@ router.get('/:id/next-roll-number', authenticate, checkPermission('classes', 'vi
 
 router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const classData = await Class.findById(req.params.id);
-    if (!classData) {
+    const result = await checkClassCapacity(req.params.id, req.user?.schoolId);
+    if (!result) {
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const currentStudents = await Student.countDocuments({
-      classId: req.params.id,
-      status: { $ne: 'inactive' }
-    });
-
-    const capacity = classData.strengthLimit?.current || classData.strengthLimit?.default || 40;
-    const isFull = currentStudents >= capacity;
-
     res.json({
-      classId: classData._id,
-      name: classData.name,
-      section: classData.section,
-      current: currentStudents,
-      capacity,
-      available: capacity - currentStudents,
-      isFull
+      classId: result.classData._id,
+      name: result.classData.name,
+      section: result.classData.section,
+      current: result.currentCount,
+      capacity: result.capacity,
+      available: result.available,
+      isFull: result.isFull
     });
   } catch (error) {
     console.error('Error checking class capacity:', error);
@@ -304,19 +336,21 @@ router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), as
   }
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticate, async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id);
     if (!resolved) {
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const classDoc = await Class.findById(resolved.classId).populate('classTeacherId', 'name');
+    const classDoc = await Class.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: resolved.classId })
+    ).populate('classTeacherId', 'name');
     if (!classDoc) {
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const studentCount = await Student.countDocuments({ classId: classDoc._id });
+    const studentCount = await countActiveStudents(classDoc._id, req.user?.schoolId);
     res.json({
       id: classDoc._id,
       name: classDoc.name,
@@ -340,6 +374,13 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
       return res.status(validation.error.status).json(validation.error.body);
     }
 
+    const scopedCheck = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedCheck) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const oldTeacherId = scopedCheck.classTeacherId;
+
     const classDoc = await Class.findByIdAndUpdate(
       req.params.id,
       { name, section, classTeacherId, subjects, academicYear },
@@ -348,6 +389,11 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
 
     if (!classDoc) {
       return res.status(404).json({ error: 'Class not found' });
+    }
+
+    // Sync Staff records when classTeacherId changes via general update
+    if (String(oldTeacherId || '') !== String(classTeacherId || '')) {
+      await syncClassTeacherStaff({ oldTeacherId, newTeacherId: classTeacherId, classDoc });
     }
 
     const io = req.app.get('io');
@@ -369,9 +415,19 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
 
 router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
-    const studentCount = await Student.countDocuments({ classId: req.params.id });
+    const scopedCheck = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedCheck) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    const studentCount = await countActiveStudents(req.params.id, req.user?.schoolId);
     if (studentCount > 0) {
-      return res.status(400).json({ error: 'Cannot delete class with students' });
+      return res.status(400).json({ error: 'Cannot delete class with active students' });
+    }
+
+    // Clear the teacher's staff record before deleting the class
+    if (scopedCheck.classTeacherId) {
+      await syncClassTeacherStaff({ oldTeacherId: scopedCheck.classTeacherId, newTeacherId: null, classDoc: scopedCheck });
     }
 
     const classDoc = await Class.findByIdAndDelete(req.params.id);

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 
 const announcementSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   title: {
     type: String,
     required: true,
@@ -96,6 +97,7 @@ const announcementSchema = new mongoose.Schema({
 });
 
 // Indexes
+announcementSchema.index({ schoolId: 1, status: 1, createdAt: -1 });
 announcementSchema.index({ scheduledFor: 1, status: 1 });
 announcementSchema.index({ createdBy: 1 });
 // Note: status is already indexed in the compound index above

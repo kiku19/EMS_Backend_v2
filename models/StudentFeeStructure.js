@@ -3,15 +3,20 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 // Student Fee Structure Schema - links students to their applicable fee heads
 const studentFeeStructureSchema = new mongoose.Schema({
-  studentId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Student', 
-    required: true 
+  studentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Student',
+    required: true
   },
-  classId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Class', 
-    required: true 
+  classId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Class',
+    required: true
+  },
+  schoolId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'School',
+    index: true
   },
   academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   
@@ -58,8 +63,8 @@ const studentFeeStructureSchema = new mongoose.Schema({
   lastPaymentDate: Date,
 }, { timestamps: true });
 
-// Index for quick lookups
-studentFeeStructureSchema.index({ studentId: 1, academicYear: 1 }, { unique: true });
+// Index for quick lookups — include schoolId to prevent cross-school collisions in multi-tenant setups
+studentFeeStructureSchema.index({ studentId: 1, academicYear: 1, schoolId: 1 }, { unique: true });
 
 export default mongoose.model('StudentFeeStructure', studentFeeStructureSchema);
 

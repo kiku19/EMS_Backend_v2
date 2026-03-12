@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 
 const gatePassSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   // Student Information
   studentId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -171,6 +172,7 @@ gatePassSchema.index({ approvedByStaffId: 1 });
 gatePassSchema.index({ createdAt: -1 });
 
 // Compound indexes for common queries
+gatePassSchema.index({ schoolId: 1, status: 1, leavingDate: -1 });
 gatePassSchema.index({ status: 1, leavingDate: -1 });
 gatePassSchema.index({ approvalStatus: 1, status: 1 });
 gatePassSchema.index({ studentId: 1, createdAt: -1 });

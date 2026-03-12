@@ -33,7 +33,7 @@ const INSECURE_SECRET_VALUES = new Set([
   'replace-me',
 ]);
 
-const MIN_SECRET_LENGTH = 32;
+const MIN_SECRET_LENGTH = 64;
 
 /**
  * Optional environment variables with defaults
@@ -123,7 +123,7 @@ export function validateEnvironment() {
   // Check Cloudinary variables (warn if missing)
   const missingCloudinary = CLOUDINARY_VARS.filter(v => !process.env[v]);
   if (missingCloudinary.length > 0) {
-    warnings.push(`Cloudinary not configured. File uploads will use base64 fallback. Missing: ${missingCloudinary.join(', ')}`);
+    warnings.push(`Cloudinary not configured. File uploads will be unavailable. Missing: ${missingCloudinary.join(', ')}`);
   }
 
   // Log warnings

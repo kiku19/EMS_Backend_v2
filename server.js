@@ -1,4 +1,6 @@
 import express from 'express';
+import helmet from 'helmet';
+import mongoSanitize from 'express-mongo-sanitize';
 import cors from 'cors';
 import { createServer } from 'http';
 import { createRequire } from 'module';
@@ -55,6 +57,8 @@ import attendanceRoutes from './routes/attendance.js';
 import academicsRoutes from './routes/academics.js';
 import classesRoutes from './routes/classes.js';
 import studentsRoutes from './routes/students.js';
+import billingRoutes from './routes/billing.js';
+import superAdminRoutes from './routes/superAdmin.js';
 import { initializeChatHandlers } from './socket/chatHandler.js';
 import { validateEnvironment, config } from './config/environment.js';
 import { authenticate } from './middleware/auth.js';
@@ -71,10 +75,12 @@ validateEnvironment();
 
 process.on('uncaughtException', (error) => {
   logger.fatal({ err: error }, 'Uncaught exception');
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
   logger.fatal({ reason }, 'Unhandled rejection');
+  process.exit(1);
 });
 
 const app = express();
@@ -96,14 +102,17 @@ const getDatabaseStatus = () => {
 
 const healthHandler = (_req, res) => {
   const db = getDatabaseStatus();
+  const memUsage = process.memoryUsage();
+  const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
   const isHealthy = db === 'connected';
 
   res.status(isHealthy ? 200 : 503).json({
     status: isHealthy ? 'ok' : 'error',
     db,
-    uptime: process.uptime(),
+    uptime: Math.round(process.uptime()),
+    memory: { heapUsedMB: memMB },
     version,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 };
 
@@ -131,14 +140,21 @@ if (config.cloudinary.configured) {
 
 logger.debug({ corsOrigins: config.corsOrigins }, 'CORS origins configured');
 
+app.use(helmet({
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  },
+}));
+app.use(mongoSanitize());
+
 app.use(cors({
   origin(origin, callback) {
-    if (config.isDevelopment) {
-      return callback(null, true);
-    }
-
+    // Allow server-to-server (no origin) only in non-production
     if (!origin) {
-      return callback(null, true);
+      if (config.isDevelopment) return callback(null, true);
+      return callback(null, false);
     }
 
     const allowedOrigins = config.corsOrigins;
@@ -146,14 +162,12 @@ app.use(cors({
       return callback(null, true);
     }
 
+    // Wildcard matching only for explicitly listed wildcard patterns (dev LAN)
     const isAllowed = allowedOrigins.some((allowedOrigin) => {
-      if (!allowedOrigin.includes('*')) {
-        return false;
-      }
-
-      const pattern = allowedOrigin.replace(/\*/g, '.*');
-      const regex = new RegExp(`^${pattern}$`);
-      return regex.test(origin);
+      if (!allowedOrigin.includes('*')) return false;
+      // Escape regex special chars except * which we convert to .*
+      const escaped = allowedOrigin.replace(/[-[\]{}()+?.,\\^$|#\s]/g, '\\$&').replace(/\*/g, '.*');
+      return new RegExp(`^${escaped}$`).test(origin);
     });
 
     if (isAllowed) {
@@ -165,7 +179,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Mode']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Mode'],
 }));
 
 app.use(express.json({ limit: '50mb' }));
@@ -176,7 +190,7 @@ app.get('/api/health', healthHandler);
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 1000,
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -192,6 +206,7 @@ app.locals.io = io;
 app.locals.Staff = Staff;
 
 app.use('/api/auth', authRoutes);
+app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/messages', messageRoutes);
@@ -225,6 +240,7 @@ app.use('/api/trash', authenticate, trashRoutes);
 app.use('/api/class-settings', classSettingsRoutes);
 app.use('/api/classes', classesRoutes);
 app.use('/api/students', studentsRoutes);
+app.use('/api/billing', billingRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api', academicsRoutes);
@@ -240,6 +256,16 @@ app.use('/api/homework', homeworkRoutes);
 app.use('/api/teacher-leaves', teacherLeavesRoutes);
 app.use('/api/push-notifications', pushNotificationsRoutes);
 app.use('/api', calendarEventsRoutes);
+
+// Global error handler — must be after all routes, 4 parameters required
+app.use((err, req, res, next) => {
+  logger.error({ err: err.message, path: req.path, method: req.method }, 'Unhandled error');
+  const statusCode = err.status || err.statusCode || 500;
+  const message = process.env.NODE_ENV === 'production'
+    ? 'Internal server error'
+    : err.message;
+  res.status(statusCode).json({ error: message });
+});
 
 httpServer.listen(PORT, async () => {
   logger.info({ port: PORT }, 'Server started');

@@ -4,8 +4,10 @@ import ReminderTemplate from '../models/ReminderTemplate.js';
 import ReminderLog from '../models/ReminderLog.js';
 import { scheduleJob, cancelJobs } from '../config/agenda.js';
 import { authenticate } from '../middleware/auth.js';
+import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+const logger = createLogger('Reminders');
 router.use(authenticate);
 
 // POST /api/reminders - Create reminder
@@ -32,14 +34,21 @@ router.post('/', async (req, res) => {
 
     await reminder.save();
 
-    // Schedule the reminder
-    await scheduleJob('check reminder triggers', new Date(startDate), {
-      reminderId: reminder._id
-    });
+    // Schedule the reminder — if scheduling fails, mark the reminder as inactive and surface the error
+    try {
+      await scheduleJob('check reminder triggers', new Date(startDate), {
+        reminderId: reminder._id
+      });
+    } catch (scheduleError) {
+      logger.error({ err: scheduleError, reminderId: reminder._id }, 'Failed to schedule reminder job');
+      // Roll back: delete the saved reminder since it will never execute
+      await Reminder.findByIdAndDelete(reminder._id);
+      return res.status(500).json({ error: 'Failed to schedule reminder. Please try again.' });
+    }
 
     res.status(201).json(reminder);
   } catch (error) {
-    console.error('Error creating reminder:', error);
+    logger.error({ err: error }, 'Error creating reminder');
     res.status(500).json({ error: 'Failed to create reminder' });
   }
 });

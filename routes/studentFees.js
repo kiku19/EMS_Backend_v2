@@ -6,8 +6,21 @@ import { Student, Class } from '../database.js';
 import { emitFeeUpdate } from '../utils/socketEmitter.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 // Helper function to calculate fee status consistently
 function calculateFeeStatus(totalBalance, totalPaid) {
@@ -20,12 +33,16 @@ function calculateFeeStatus(totalBalance, totalPaid) {
 router.get('/student/:studentId', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear);
-    const query = {
-      studentId: req.params.studentId,
-      academicYear
-    };
 
-    const feeStructure = await StudentFeeStructure.findOne(query)
+    // Validate student belongs to the school
+    const student = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.studentId }));
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const feeStructure = await StudentFeeStructure.findOne(
+      scopeBySchool(req.user?.schoolId, { studentId: req.params.studentId, academicYear })
+    )
       .populate('studentId', 'name admissionId rollNo')
       .populate('classId', 'name section')
       .populate('feeHeads.feeHeadId');
@@ -44,12 +61,49 @@ router.get('/student/:studentId', authenticate, checkPermission('fees', 'view'),
   }
 });
 
+// Batch get fee structures for multiple students
+router.post('/batch', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+  try {
+    const { studentIds, academicYear } = req.body;
+
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ error: 'studentIds array is required' });
+    }
+
+    // Cap at 100 to prevent abuse
+    const ids = studentIds.slice(0, 100);
+    const year = await resolveAcademicYear(academicYear);
+
+    const feeStructures = await StudentFeeStructure.find(
+      scopeBySchool(req.user?.schoolId, {
+        studentId: { $in: ids },
+        academicYear: year
+      })
+    )
+      .populate('studentId', 'name admissionId rollNo')
+      .populate('classId', 'name section')
+      .populate('feeHeads.feeHeadId');
+
+    // Index by studentId for easy lookup
+    const result = {};
+    feeStructures.forEach(fs => {
+      const sid = fs.studentId?._id?.toString() || fs.studentId?.toString();
+      if (sid) result[sid] = fs;
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching batch fee structures:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get all students with their fee structures
 router.get('/all', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear, classId, status } = req.query;
-    const query = {};
-    
+    const query = scopeBySchool(req.user?.schoolId, {});
+
     if (academicYear) query.academicYear = academicYear;
     if (classId) query.classId = classId;
     if (status) query.overallStatus = status;
@@ -69,19 +123,20 @@ router.get('/all', authenticate, checkPermission('fees', 'view'), async (req, re
 // Initialize fee structure for a new student
 router.post('/initialize/:studentId', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
-    const student = await Student.findById(req.params.studentId).populate('classId');
-    
+    // Validate student belongs to the school
+    const student = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.studentId })).populate('classId');
+
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
 
     const year = await resolveAcademicYear(req.body.academicYear);
+    const schoolId = await resolveRequestSchoolId(req);
 
     // Check if fee structure already exists
-    let feeStructure = await StudentFeeStructure.findOne({
-      studentId: student._id,
-      academicYear: year
-    });
+    let feeStructure = await StudentFeeStructure.findOne(
+      scopeBySchool(schoolId, { studentId: student._id, academicYear: year })
+    );
 
     if (feeStructure) {
       return res.json({
@@ -94,19 +149,22 @@ router.post('/initialize/:studentId', authenticate, checkPermission('fees', 'cre
     const classNumber = student.classId.name.replace('Class ', '');
 
     // Find applicable fee heads for this class
-    const applicableFeeHeads = await FeeHead.find({
-      applicableClasses: classNumber,
-      academicYear: year,
-      isActive: true
-    });
+    const applicableFeeHeads = await FeeHead.find(
+      scopeBySchool(schoolId, {
+        applicableClasses: classNumber,
+        academicYear: year,
+        isActive: true
+      })
+    );
 
-    console.log(`📋 Found ${applicableFeeHeads.length} applicable fee heads for class ${classNumber}`);
+    console.log(`Found ${applicableFeeHeads.length} applicable fee heads for class ${classNumber}`);
 
     // Create fee structure
     feeStructure = new StudentFeeStructure({
       studentId: student._id,
       classId: student.classId._id,
       academicYear: year,
+      schoolId,
       feeHeads: applicableFeeHeads.map(fh => ({
         feeHeadId: fh._id,
         name: fh.name,
@@ -147,6 +205,13 @@ router.post('/initialize/:studentId', authenticate, checkPermission('fees', 'cre
 
     res.status(201).json(feeStructure);
   } catch (error) {
+    // Handle race condition: duplicate key means another request already initialized it
+    if (error.code === 11000) {
+      const existing = await StudentFeeStructure.findOne({ studentId: req.params.studentId });
+      if (existing) {
+        return res.json({ message: 'Fee structure already exists', feeStructure: existing });
+      }
+    }
     console.error('Error initializing fee structure:', error);
     res.status(500).json({ error: error.message });
   }
@@ -157,13 +222,24 @@ router.put('/student/:studentId/discount', authenticate, checkPermission('fees',
   try {
     const { discountAmount, discountReason, academicYear } = req.body;
 
-    const feeStructure = await StudentFeeStructure.findOne({
-      studentId: req.params.studentId,
-      academicYear: await resolveAcademicYear(academicYear)
-    });
+    const feeStructure = await StudentFeeStructure.findOne(
+      scopeBySchool(req.user?.schoolId, {
+        studentId: req.params.studentId,
+        academicYear: await resolveAcademicYear(academicYear)
+      })
+    );
 
     if (!feeStructure) {
       return res.status(404).json({ error: 'Fee structure not found' });
+    }
+
+    const maxDiscount = feeStructure.totalFee - feeStructure.totalPaid;
+    if ((discountAmount || 0) > maxDiscount) {
+      return res.status(400).json({
+        error: `Discount cannot exceed outstanding balance of ₹${maxDiscount}`,
+        field: 'discountAmount',
+        maxAllowed: maxDiscount
+      });
     }
 
     feeStructure.discountApplied = discountAmount || 0;
@@ -207,10 +283,12 @@ router.post('/student/:studentId/payment', authenticate, checkPermission('fees',
   try {
     const { amount, feeHeadPayments, academicYear } = req.body;
 
-    const feeStructure = await StudentFeeStructure.findOne({
-      studentId: req.params.studentId,
-      academicYear: await resolveAcademicYear(academicYear)
-    });
+    const feeStructure = await StudentFeeStructure.findOne(
+      scopeBySchool(req.user?.schoolId, {
+        studentId: req.params.studentId,
+        academicYear: await resolveAcademicYear(academicYear)
+      })
+    );
 
     if (!feeStructure) {
       return res.status(404).json({ error: 'Fee structure not found' });
@@ -282,12 +360,14 @@ router.post('/student/:studentId/payment', authenticate, checkPermission('fees',
 router.get('/defaulters', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
-    
-    const defaulters = await StudentFeeStructure.find({
-      academicYear: await resolveAcademicYear(academicYear),
-      overallStatus: { $in: ['pending', 'partial'] },
-      totalBalance: { $gt: 0 }
-    })
+
+    const defaulters = await StudentFeeStructure.find(
+      scopeBySchool(req.user?.schoolId, {
+        academicYear: await resolveAcademicYear(academicYear),
+        overallStatus: { $in: ['pending', 'partial'] },
+        totalBalance: { $gt: 0 }
+      })
+    )
       .populate('studentId', 'name admissionId rollNo phone parentPhone')
       .populate('classId', 'name section')
       .sort({ totalBalance: -1 });

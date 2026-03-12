@@ -5,6 +5,7 @@ import { authenticate, requireAdmin as authRequireAdmin } from '../middleware/au
 import { checkPermission } from '../middleware/permissions.js';
 import { validate, schemas } from '../middleware/validation.js';
 import { ensureDefaultSchool, extractSchoolId } from '../utils/schoolContext.js';
+import { assertSchoolWithinLimit, syncUsageMetrics } from '../services/billingService.js';
 
 const router = express.Router();
 
@@ -506,6 +507,12 @@ router.post('/', authenticate, checkPermission('staff', 'create'), validate(sche
     } = req.body;
 
     const schoolId = await resolveRequestSchoolId(req);
+    await assertSchoolWithinLimit({
+      schoolId,
+      metric: 'staff',
+      delta: 1,
+    });
+
     const reporterError = await validateReporter(reporterId, null, schoolId);
     if (reporterError) {
       return res.status(400).json({ error: reporterError });
@@ -572,6 +579,7 @@ router.post('/', authenticate, checkPermission('staff', 'create'), validate(sche
     });
 
     await staff.save();
+    await syncUsageMetrics(schoolId);
     const permissionRole = await buildPermissions(staff.role, staff._id, schoolId);
     console.log(`Created ${permissionRole} permissions for staff ${staff.name}`);
 
@@ -599,7 +607,10 @@ router.post('/', authenticate, checkPermission('staff', 'create'), validate(sche
       password
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({
+      error: error.message,
+      details: error.details,
+    });
   }
 });
 
@@ -801,8 +812,8 @@ router.put('/:id/change-password', authenticate, async (req, res) => {
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
     }
 
     const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
@@ -882,6 +893,10 @@ router.delete('/:id', authenticate, checkPermission('staff', 'delete'), async (r
     const result = await Staff.findOneAndDelete(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!result) {
       return res.status(404).json({ error: 'Staff not found' });
+    }
+
+    if (result.schoolId) {
+      await syncUsageMetrics(result.schoolId);
     }
 
     res.json({ success: true });

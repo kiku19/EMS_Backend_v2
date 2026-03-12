@@ -3,15 +3,29 @@ import { Attendance } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import resolveClassId from '../utils/resolveClassId.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
 
-router.get('/student/:studentId', async (req, res) => {
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
+
+router.get('/student/:studentId', authenticate, async (req, res) => {
   try {
     const { studentId } = req.params;
     const { start, end } = req.query;
 
-    const query = { studentId };
+    const schoolId = await resolveRequestSchoolId(req);
+    const query = scopeBySchool(schoolId, { studentId });
     if (start && end) {
       query.date = { $gte: start, $lte: end };
     } else if (start) {
@@ -39,7 +53,7 @@ router.get('/class/:classId/:date', authenticate, checkPermission('students', 'v
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const attendance = await Attendance.find({ classId: resolved.classId, date })
+    const attendance = await Attendance.find(scopeBySchool(req.user?.schoolId, { classId: resolved.classId, date }))
       .populate('studentId', 'name rollNo admissionId');
 
     const attendanceObj = {};
@@ -71,6 +85,7 @@ router.post('/class', authenticate, checkPermission('students', 'edit'), async (
       return res.status(404).json({ error: 'Class not found' });
     }
 
+    const schoolId = await resolveRequestSchoolId(req);
     const validStatuses = ['present', 'absent', 'late'];
     const results = [];
 
@@ -81,13 +96,14 @@ router.post('/class', authenticate, checkPermission('students', 'edit'), async (
       }
 
       const attendanceRecord = await Attendance.findOneAndUpdate(
-        { studentId, date },
+        scopeBySchool(schoolId, { studentId, date }),
         {
           studentId,
           classId: resolved.classId,
           date,
           status,
-          markedBy: req.user?.id
+          markedBy: req.user?.id,
+          schoolId
         },
         { new: true, upsert: true }
       );
@@ -116,7 +132,7 @@ router.post('/class', authenticate, checkPermission('students', 'edit'), async (
   }
 });
 
-router.get('/history/:classId', async (req, res) => {
+router.get('/history/:classId', authenticate, async (req, res) => {
   try {
     const { classId } = req.params;
     const { start, end } = req.query;
@@ -126,7 +142,8 @@ router.get('/history/:classId', async (req, res) => {
       return res.json([]);
     }
 
-    const query = { classId: resolved.classId };
+    const schoolId = await resolveRequestSchoolId(req);
+    const query = scopeBySchool(schoolId, { classId: resolved.classId });
     if (start && end) {
       query.date = { $gte: start, $lte: end };
     } else if (start) {
@@ -159,10 +176,12 @@ router.get('/report/:classId', authenticate, checkPermission('students', 'view')
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const attendance = await Attendance.find({
-      classId: resolved.classId,
-      date: { $gte: startDate, $lte: endDate }
-    }).populate('studentId', 'name rollNo admissionId');
+    const attendance = await Attendance.find(
+      scopeBySchool(req.user?.schoolId, {
+        classId: resolved.classId,
+        date: { $gte: startDate, $lte: endDate }
+      })
+    ).populate('studentId', 'name rollNo admissionId');
 
     const summary = {};
     attendance.forEach((record) => {
@@ -206,7 +225,7 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
     const { studentId } = req.params;
     const { startDate, endDate } = req.query;
 
-    const query = { studentId };
+    const query = scopeBySchool(req.user?.schoolId, { studentId });
     if (startDate || endDate) {
       query.date = {};
       if (startDate) {
@@ -234,7 +253,7 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
   }
 });
 
-router.get('/:classId/:date', async (req, res) => {
+router.get('/:classId/:date', authenticate, async (req, res) => {
   try {
     const { classId, date } = req.params;
     const resolved = await resolveClassId(classId);
@@ -243,7 +262,8 @@ router.get('/:classId/:date', async (req, res) => {
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const attendance = await Attendance.find({ classId: resolved.classId, date })
+    const schoolId = await resolveRequestSchoolId(req);
+    const attendance = await Attendance.find(scopeBySchool(schoolId, { classId: resolved.classId, date }))
       .populate('studentId', 'name rollNo admissionId');
 
     const attendanceArray = attendance.map((record) => ({
@@ -273,14 +293,16 @@ router.post('/', authenticate, checkPermission('students', 'edit'), async (req, 
       return res.status(400).json({ error: 'Invalid status. Must be present, absent, or late' });
     }
 
+    const schoolId = await resolveRequestSchoolId(req);
     const attendance = await Attendance.findOneAndUpdate(
-      { studentId, date },
+      scopeBySchool(schoolId, { studentId, date }),
       {
         studentId,
         classId,
         date,
         status,
-        markedBy: req.user?.id
+        markedBy: req.user?.id,
+        schoolId
       },
       { new: true, upsert: true }
     );
@@ -316,6 +338,7 @@ router.post('/bulk', authenticate, checkPermission('students', 'edit'), async (r
       return res.status(404).json({ error: 'Class not found' });
     }
 
+    const schoolId = await resolveRequestSchoolId(req);
     const validStatuses = ['present', 'absent', 'late'];
     const results = [];
 
@@ -326,13 +349,14 @@ router.post('/bulk', authenticate, checkPermission('students', 'edit'), async (r
       }
 
       const attendanceRecord = await Attendance.findOneAndUpdate(
-        { studentId, date },
+        scopeBySchool(schoolId, { studentId, date }),
         {
           studentId,
           classId: resolved.classId,
           date,
           status,
-          markedBy: req.user?.id
+          markedBy: req.user?.id,
+          schoolId
         },
         { new: true, upsert: true }
       );

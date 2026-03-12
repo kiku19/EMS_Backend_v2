@@ -3,6 +3,19 @@ import { Admission, Appointment, Feedback, CallLog, Staff, Student } from '../da
 import Visitor from '../models/Visitor.js';
 import GatePass from '../models/GatePass.js';
 import { authenticate } from '../middleware/auth.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 const router = express.Router();
 
@@ -672,7 +685,8 @@ router.get('/appointments', authenticate, async (req, res) => {
 
     if (status) query.status = status;
 
-    const appointments = await Appointment.find(query)
+    const schoolId = await resolveRequestSchoolId(req);
+    const appointments = await Appointment.find(scopeBySchool(schoolId, query))
       .sort({ fromDateTime: 1 });
 
     res.json(appointments);
@@ -692,7 +706,8 @@ router.get('/appointments', authenticate, async (req, res) => {
  */
 router.post('/appointments', authenticate, async (req, res) => {
   try {
-    const appointment = await Appointment.create(req.body);
+    const schoolId = await resolveRequestSchoolId(req);
+    const appointment = await Appointment.create({ ...req.body, schoolId });
     res.status(201).json(appointment);
   } catch (error) {
     console.error('❌ Create appointment error:', error);
@@ -710,7 +725,8 @@ router.post('/appointments', authenticate, async (req, res) => {
  */
 router.put('/appointments/:id', authenticate, async (req, res) => {
   try {
-    const appointment = await Appointment.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const appointment = await Appointment.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!appointment) {
       return res.status(404).json({
@@ -746,7 +762,8 @@ router.put('/appointments/:id', authenticate, async (req, res) => {
  */
 router.delete('/appointments/:id', authenticate, async (req, res) => {
   try {
-    await Appointment.deleteOne({ _id: req.params.id });
+    const schoolId = await resolveRequestSchoolId(req);
+    await Appointment.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
     res.json({ success: true, message: 'Appointment deleted successfully' });
   } catch (error) {
     console.error('❌ Delete appointment error:', error);

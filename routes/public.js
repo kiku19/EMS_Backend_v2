@@ -1,8 +1,21 @@
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { FormAssignment, FormSubmission, IntakeForm } from '../database.js';
 import crypto from 'crypto';
+import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+const logger = createLogger('Public');
+
+// Per-token rate limiter: max 10 submissions per hour per IP
+const formSubmissionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => `${req.ip}:${req.params.token || ''}`,
+  message: { error: 'Too many submissions. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Helper function to validate access token
 async function validateAccessToken(token) {
@@ -90,7 +103,7 @@ router.get('/form-assignment/:token', async (req, res) => {
       } : null
     });
   } catch (error) {
-    console.error('Error fetching form assignment:', error);
+    logger.error({ err: error }, 'Error fetching form assignment');
     res.status(500).json({
       error: 'Failed to fetch form details',
       details: error.message
@@ -99,7 +112,7 @@ router.get('/form-assignment/:token', async (req, res) => {
 });
 
 // POST /api/public/form-submission/:token - Submit form data
-router.post('/form-submission/:token', async (req, res) => {
+router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) => {
   try {
     const { token } = req.params;
     const { submissionData, submittedByEmail, submittedByPhone } = req.body;
@@ -129,15 +142,24 @@ router.post('/form-submission/:token', async (req, res) => {
       });
     }
 
-    // Validate submission data is provided
-    if (!submissionData || typeof submissionData !== 'object') {
+    // Validate submission data is provided and is a plain object
+    if (!submissionData || typeof submissionData !== 'object' || Array.isArray(submissionData)) {
       return res.status(400).json({
-        error: 'Submission data is required',
+        error: 'Submission data is required and must be an object',
         code: 'INVALID_DATA'
       });
     }
 
-    // Populate form to get form details
+    // Enforce a reasonable size limit on submissionData to prevent oversized documents
+    const submissionDataStr = JSON.stringify(submissionData);
+    if (submissionDataStr.length > 512 * 1024) { // 512 KB
+      return res.status(400).json({
+        error: 'Submission data is too large',
+        code: 'DATA_TOO_LARGE'
+      });
+    }
+
+    // Populate form to get form details and validate fields against schema
     const populatedAssignment = await FormAssignment.findById(assignment._id)
       .populate('formId');
 
@@ -148,11 +170,37 @@ router.post('/form-submission/:token', async (req, res) => {
       });
     }
 
+    // Validate submissionData keys against form field definitions
+    const formFields = populatedAssignment.formId.fields || [];
+    if (formFields.length > 0) {
+      const allowedKeys = new Set(formFields.map(f => f.name || f.id || f.key).filter(Boolean));
+      const unknownKeys = Object.keys(submissionData).filter(k => !allowedKeys.has(k));
+      if (unknownKeys.length > 0) {
+        return res.status(400).json({
+          error: `Unknown fields in submission: ${unknownKeys.join(', ')}`,
+          code: 'UNKNOWN_FIELDS'
+        });
+      }
+    }
+
+    // Sanitize string values — strip angle brackets and JS event handlers
+    const sanitizedData = {};
+    for (const [key, value] of Object.entries(submissionData)) {
+      if (typeof value === 'string') {
+        sanitizedData[key] = value
+          .replace(/[<>]/g, '')
+          .replace(/javascript:/gi, '')
+          .replace(/on\w+=/gi, '');
+      } else {
+        sanitizedData[key] = value;
+      }
+    }
+
     // Create form submission
     const submission = new FormSubmission({
       assignmentId: assignment._id,
       formId: populatedAssignment.formId._id,
-      submissionData,
+      submissionData: sanitizedData,
       submittedByEmail: submittedByEmail || assignment.assignedToEmail,
       submittedByPhone: submittedByPhone || assignment.assignedToPhone,
       submittedAt: new Date()
@@ -164,8 +212,6 @@ router.post('/form-submission/:token', async (req, res) => {
     assignment.status = 'submitted';
     await assignment.save();
 
-    console.log('✅ Form submission created:', submission._id);
-
     res.status(201).json({
       success: true,
       message: 'Form submitted successfully',
@@ -176,7 +222,7 @@ router.post('/form-submission/:token', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error creating form submission:', error);
+    logger.error({ err: error }, 'Error creating form submission');
     res.status(500).json({
       error: 'Failed to submit form',
       details: error.message
@@ -227,7 +273,7 @@ router.get('/form-submission/:token/status', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error checking submission status:', error);
+    logger.error({ err: error }, 'Error checking submission status');
     res.status(500).json({
       error: 'Failed to check submission status',
       details: error.message
@@ -287,7 +333,6 @@ router.put('/form-submission/:token', async (req, res) => {
 
     await submission.save();
 
-    console.log('✅ Form submission updated:', submission._id);
 
     res.json({
       success: true,
@@ -299,7 +344,7 @@ router.put('/form-submission/:token', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error updating form submission:', error);
+    logger.error({ err: error }, 'Error updating form submission');
     res.status(500).json({
       error: 'Failed to update form',
       details: error.message

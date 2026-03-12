@@ -1,7 +1,9 @@
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import { Staff, UserPermission } from '../database.js';
 import { getRequiredSecret } from '../config/environment.js';
 import { ensureDocumentSchool } from '../utils/schoolContext.js';
+import { isSuperAdminUser } from '../utils/superAdmin.js';
 
 const JWT_EXPIRES_IN = '8h';
 export const AUTH_COOKIE_NAME = 'ems_auth_token';
@@ -79,9 +81,21 @@ export function generateToken(userId, role, extraClaims = {}) {
 }
 
 async function buildAuthenticatedUser(decoded) {
+  if (decoded.userType === 'super-admin' || isSuperAdminUser(decoded)) {
+    return {
+      id: decoded.userId || 'super-admin',
+      userId: decoded.userId || 'super-admin',
+      role: decoded.role || ['Super Admin'],
+      userType: 'super-admin',
+      schoolId: null,
+      email: decoded.email || null,
+      name: decoded.name || null,
+    };
+  }
+
   let schoolId = decoded.schoolId || null;
 
-  if (!schoolId && decoded.userId) {
+  if (!schoolId && decoded.userId && mongoose.Types.ObjectId.isValid(String(decoded.userId))) {
     const staff = await Staff.findById(decoded.userId).select('schoolId');
     if (staff) {
       const resolvedSchoolId = await ensureDocumentSchool(staff);
@@ -95,6 +109,8 @@ async function buildAuthenticatedUser(decoded) {
     role: decoded.role,
     userType: decoded.userType || 'staff',
     schoolId,
+    email: decoded.email || null,
+    name: decoded.name || null,
   };
 }
 
@@ -190,6 +206,30 @@ export async function requireAdmin(req, res, next) {
   }
 }
 
+export async function requireSuperAdmin(req, res, next) {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        error: 'Authentication required'
+      });
+    }
+
+    if (!isSuperAdminUser(req.user)) {
+      return res.status(403).json({
+        error: 'Super admin access required',
+        message: 'You do not have permission to perform this action'
+      });
+    }
+
+    next();
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Permission check failed',
+      message: error.message
+    });
+  }
+}
+
 export default {
   generateToken,
   verifyToken,
@@ -197,5 +237,6 @@ export default {
   clearAuthCookie,
   authenticate,
   optionalAuth,
-  requireAdmin
+  requireAdmin,
+  requireSuperAdmin
 };

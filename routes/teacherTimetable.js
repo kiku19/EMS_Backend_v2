@@ -5,8 +5,21 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import timetableService from '../services/timetableService.js';
 import conflictDetectionService from '../services/conflictDetectionService.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 /**
  * Middleware to check if user can edit teacher timetable
@@ -147,7 +160,8 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
           Thursday: [],
           Friday: [],
           Saturday: []
-        }
+        },
+        schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
       });
       await newTimetable.save();
 
@@ -201,7 +215,7 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
     }
 
     // Check if timetable already exists
-    let timetable = await TeacherTimetable.findOne({ teacherId, academicYear });
+    let timetable = await TeacherTimetable.findOne(scopeBySchool(req.user?.schoolId, { teacherId, academicYear }));
 
     if (timetable) {
       return res.status(400).json({
@@ -221,7 +235,8 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
         Thursday: [],
         Friday: [],
         Saturday: []
-      }
+      },
+      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
     });
 
     await timetable.save();

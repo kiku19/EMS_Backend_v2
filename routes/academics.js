@@ -4,9 +4,74 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import resolveClassId from '../utils/resolveClassId.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
-import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import { buildSchoolScopedQuery, extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
+
+/**
+ * Issue #17/#21 Fix: Compute grade from percentage using Indian grading scale.
+ * @param {number} percentage - The percentage score (0-100)
+ * @returns {string} Grade string
+ */
+function computeGrade(percentage) {
+  if (percentage >= 90) return 'A+';
+  if (percentage >= 80) return 'A';
+  if (percentage >= 70) return 'B+';
+  if (percentage >= 60) return 'B';
+  if (percentage >= 50) return 'C';
+  if (percentage >= 40) return 'D';
+  return 'F';
+}
+
+/**
+ * Issue #22 Fix: Compute and persist ranks for all results in an exam+class.
+ * Ranks are assigned by sorting students by percentage in descending order.
+ * Students with equal percentages receive the same rank (dense ranking).
+ * @param {string} examId - The exam ID
+ * @param {string} classId - The class ID
+ * @param {string} schoolId - The school ID (optional)
+ */
+async function computeAndSaveRanks(examId, classId, schoolId) {
+  const query = { examId };
+  if (classId) query.classId = classId;
+  if (schoolId) query.schoolId = schoolId;
+
+  const allResults = await Result.find(query).sort({ percentage: -1 });
+  if (allResults.length === 0) return;
+
+  const rankOps = [];
+  let currentRank = 1;
+
+  for (let i = 0; i < allResults.length; i++) {
+    // Dense ranking: same percentage gets same rank
+    if (i > 0 && allResults[i].percentage < allResults[i - 1].percentage) {
+      currentRank = i + 1;
+    }
+
+    rankOps.push({
+      updateOne: {
+        filter: { _id: allResults[i]._id },
+        update: { $set: { rank: currentRank } }
+      }
+    });
+  }
+
+  if (rankOps.length > 0) {
+    await Result.bulkWrite(rankOps);
+  }
+}
 
 router.get('/exams/class/:classId', authenticate, checkPermission('academics', 'view'), async (req, res) => {
   try {
@@ -15,7 +80,7 @@ router.get('/exams/class/:classId', authenticate, checkPermission('academics', '
       return res.status(404).json({ error: 'Class not found' });
     }
 
-    const exams = await Exam.find({ classId: resolved.classId }).sort({ startDate: -1 });
+    const exams = await Exam.find(scopeBySchool(req.user?.schoolId, { classId: resolved.classId })).sort({ startDate: -1 });
     res.json(exams);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -41,7 +106,7 @@ router.get('/exams/staff/:staffId', authenticate, checkPermission('academics', '
       }
     }
 
-    const exams = await Exam.find({ classId: { $in: resolvedClassIds } }).sort({ startDate: -1 });
+    const exams = await Exam.find(scopeBySchool(req.user?.schoolId, { classId: { $in: resolvedClassIds } })).sort({ startDate: -1 });
     res.json(exams);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -66,7 +131,7 @@ router.get('/exams', authenticate, checkPermission('academics', 'view'), async (
       query.status = status;
     }
 
-    const exams = await Exam.find(query).sort({ startDate: -1, createdAt: -1 });
+    const exams = await Exam.find(scopeBySchool(req.user?.schoolId, query)).sort({ startDate: -1, createdAt: -1 });
     const classIds = [...new Set(exams.map((exam) => exam.classId).filter(Boolean))];
     const classMap = new Map();
 
@@ -95,7 +160,7 @@ router.get('/exams', authenticate, checkPermission('academics', 'view'), async (
 
 router.get('/exams/:id', authenticate, checkPermission('academics', 'view'), async (req, res) => {
   try {
-    const exam = await Exam.findById(req.params.id);
+    const exam = await Exam.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!exam) {
       return res.status(404).json({ error: 'Exam not found' });
     }
@@ -164,7 +229,8 @@ router.post('/exams', authenticate, checkPermission('academics', 'create'), asyn
       gradingType: gradingType || 'numerical',
       instructions,
       createdBy,
-      status: 'scheduled'
+      status: 'scheduled',
+      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
     });
 
     await exam.save();
@@ -212,11 +278,12 @@ router.put('/exams/:id', authenticate, checkPermission('academics', 'edit'), asy
     if (instructions !== undefined) updateData.instructions = instructions;
     if (status !== undefined) updateData.status = status;
 
-    const exam = await Exam.findByIdAndUpdate(req.params.id, updateData, { new: true });
-    if (!exam) {
+    const examToUpdate = await Exam.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!examToUpdate) {
       return res.status(404).json({ error: 'Exam not found' });
     }
 
+    const exam = await Exam.findByIdAndUpdate(req.params.id, updateData, { new: true });
     res.json(exam);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -225,11 +292,12 @@ router.put('/exams/:id', authenticate, checkPermission('academics', 'edit'), asy
 
 router.delete('/exams/:id', authenticate, checkPermission('academics', 'delete'), async (req, res) => {
   try {
-    const exam = await Exam.findByIdAndDelete(req.params.id);
-    if (!exam) {
+    const examToDelete = await Exam.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!examToDelete) {
       return res.status(404).json({ error: 'Exam not found' });
     }
 
+    const exam = await Exam.findByIdAndDelete(req.params.id);
     await Result.deleteMany({ examId: req.params.id });
     res.json({ message: 'Exam deleted successfully' });
   } catch (error) {
@@ -239,15 +307,22 @@ router.delete('/exams/:id', authenticate, checkPermission('academics', 'delete')
 
 router.post('/exams/:id/publish', authenticate, checkPermission('academics', 'publish'), async (req, res) => {
   try {
+    const examToPublish = await Exam.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!examToPublish) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
     const exam = await Exam.findByIdAndUpdate(
       req.params.id,
       { status: 'results_published', isPublished: true, publishedAt: new Date() },
       { new: true }
     );
 
-    if (!exam) {
-      return res.status(404).json({ error: 'Exam not found' });
-    }
+    // Issue #18 Fix: Also publish all Result documents for this exam
+    await Result.updateMany(
+      { examId: exam._id },
+      { $set: { isPublished: true } }
+    );
 
     res.json(exam);
   } catch (error) {
@@ -265,9 +340,9 @@ router.get('/results/class/:classId/exam/:examId', authenticate, checkPermission
       resolvedClassId = resolved.classId;
     }
 
-    let results = await Result.find({ classId: resolvedClassId, examId });
+    let results = await Result.find(scopeBySchool(req.user?.schoolId, { classId: resolvedClassId, examId }));
     if (results.length === 0 && resolvedClassId !== classId) {
-      results = await Result.find({ classId, examId });
+      results = await Result.find(scopeBySchool(req.user?.schoolId, { classId, examId }));
     }
 
     res.json(results);
@@ -292,25 +367,57 @@ router.post('/results/bulk', authenticate, checkPermission('academics', 'edit'),
       }
     }
 
-    const bulkOps = results.map((result) => ({
-      updateOne: {
-        filter: { studentId: result.studentId, examId },
-        update: {
-          $set: {
-            studentId: result.studentId,
-            examId,
-            classId: resolvedClassId,
-            marksObtained: result.marksObtained || 0,
-            remarks: result.remarks || '',
-            enteredBy: result.enteredBy,
-            enteredAt: new Date()
-          }
-        },
-        upsert: true
-      }
-    }));
+    // Fetch the exam to get maxMarks, passingMarks, and academicYear
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    const examMaxMarks = exam.maxMarks || exam.totalMarks || 100;
+    const examPassingMarks = exam.passingMarks || 35;
+    const examAcademicYear = exam.academicYear;
+
+    const resolvedSchoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
+
+    // Issue #17 Fix: Compute all derived fields (percentage, grade, status, maxMarks, totals, academicYear)
+    const bulkOps = results.map((result) => {
+      const marksObtained = result.marksObtained || 0;
+      const percentage = examMaxMarks > 0 ? Math.round((marksObtained / examMaxMarks) * 100 * 100) / 100 : 0;
+      const grade = computeGrade(percentage);
+      const status = marksObtained >= examPassingMarks ? 'passed' : 'failed';
+
+      return {
+        updateOne: {
+          filter: { studentId: result.studentId, examId },
+          update: {
+            $set: {
+              studentId: result.studentId,
+              examId,
+              classId: resolvedClassId,
+              academicYear: examAcademicYear,
+              marksObtained,
+              maxMarks: examMaxMarks,
+              totalMarksObtained: marksObtained,
+              totalMaxMarks: examMaxMarks,
+              percentage,
+              grade,
+              status,
+              remarks: result.remarks || '',
+              enteredBy: result.enteredBy,
+              enteredAt: new Date(),
+              ...(resolvedSchoolId ? { schoolId: resolvedSchoolId } : {})
+            }
+          },
+          upsert: true
+        }
+      };
+    });
 
     await Result.bulkWrite(bulkOps);
+
+    // Issue #22 Fix: Compute ranks for all results in this exam+class based on percentage
+    await computeAndSaveRanks(examId, resolvedClassId, resolvedSchoolId);
+
     res.json({ message: 'Results saved successfully', count: results.length });
   } catch (error) {
     res.status(500).json({ error: error.message });

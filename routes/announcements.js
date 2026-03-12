@@ -7,8 +7,21 @@ import { sendAnnouncementSMS } from '../services/smsService.js';
 import { sendAnnouncementWhatsApp } from '../services/whatsappService.js';
 import { scheduleJob, cancelJobs } from '../config/agenda.js';
 import { authenticate } from '../middleware/auth.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 // All routes require authentication
 router.use(authenticate);
@@ -153,7 +166,8 @@ router.post('/', async (req, res) => {
       scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
       status: scheduledFor ? 'scheduled' : 'draft',
       createdBy: user.id,
-      creatorModel: user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student'
+      creatorModel: user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student',
+      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
     });
 
     await announcement.save();
@@ -189,14 +203,16 @@ router.get('/', async (req, res) => {
       if (dateTo) query.scheduledFor.$lte = new Date(dateTo);
     }
 
-    const announcements = await Announcement.find(query)
+    const scopedQuery = scopeBySchool(req.user?.schoolId, query);
+
+    const announcements = await Announcement.find(scopedQuery)
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .populate('createdBy', 'name profileImage')
       .lean();
 
-    const total = await Announcement.countDocuments(query);
+    const total = await Announcement.countDocuments(scopedQuery);
 
     res.json({
       announcements,
@@ -213,7 +229,7 @@ router.get('/', async (req, res) => {
 // GET /api/announcements/:id - Get announcement details
 router.get('/:id', async (req, res) => {
   try {
-    const announcement = await Announcement.findById(req.params.id)
+    const announcement = await Announcement.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }))
       .populate('createdBy', 'name profileImage')
       .lean();
 
@@ -236,7 +252,7 @@ router.get('/:id', async (req, res) => {
 // PUT /api/announcements/:id - Update announcement (draft or scheduled only)
 router.put('/:id', async (req, res) => {
   try {
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
 
     if (!announcement) {
       return res.status(404).json({ error: 'Announcement not found' });
@@ -288,7 +304,7 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/announcements/:id - Delete announcement
 router.delete('/:id', async (req, res) => {
   try {
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
 
     if (!announcement) {
       return res.status(404).json({ error: 'Announcement not found' });
@@ -315,7 +331,7 @@ router.delete('/:id', async (req, res) => {
 // POST /api/announcements/:id/send - Send announcement immediately
 router.post('/:id/send', async (req, res) => {
   try {
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
 
     if (!announcement) {
       return res.status(404).json({ error: 'Announcement not found' });
@@ -339,7 +355,7 @@ router.post('/:id/send', async (req, res) => {
 // GET /api/announcements/:id/analytics - Get announcement analytics
 router.get('/:id/analytics', async (req, res) => {
   try {
-    const announcement = await Announcement.findById(req.params.id)
+    const announcement = await Announcement.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }))
       .populate('createdBy', 'name profileImage')
       .lean();
 
@@ -402,7 +418,7 @@ router.post('/:id/resend', async (req, res) => {
   try {
     const { recipients } = req.body; // Array of recipient IDs to resend to
 
-    const announcement = await Announcement.findById(req.params.id);
+    const announcement = await Announcement.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
 
     if (!announcement) {
       return res.status(404).json({ error: 'Announcement not found' });

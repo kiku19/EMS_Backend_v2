@@ -2,8 +2,21 @@ import express from 'express';
 import { Substitution, Staff, Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 /**
  * GET /api/substitutions
@@ -20,7 +33,7 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
     if (classId) query.classId = classId;
     if (status) query.status = status;
 
-    const substitutions = await Substitution.find(query)
+    const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, query))
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name role')
       .populate('substituteTeacherId', 'name role')
@@ -39,7 +52,7 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
  */
 router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const substitution = await Substitution.findById(req.params.id)
+    const substitution = await Substitution.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }))
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name role')
       .populate('substituteTeacherId', 'name role');
@@ -90,7 +103,7 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
     }
 
     // Check if substitution already exists for this date, class, and period
-    const existing = await Substitution.findOne({ date, classId, period });
+    const existing = await Substitution.findOne(scopeBySchool(req.user?.schoolId, { date, classId, period }));
     if (existing) {
       return res.status(400).json({ error: 'Substitution already exists for this date, class, and period' });
     }
@@ -104,7 +117,8 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
       reason,
       type,
       notes,
-      status: 'confirmed'
+      status: 'confirmed',
+      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
     });
 
     await substitution.save();
@@ -131,7 +145,7 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
     const { date, classId, period, absentTeacherId, substituteTeacherId, reason, type, status, notes } = req.body;
 
     // Find existing substitution
-    const substitution = await Substitution.findById(req.params.id);
+    const substitution = await Substitution.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!substitution) {
       return res.status(404).json({ error: 'Substitution not found' });
     }
@@ -190,11 +204,12 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
  */
 router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
-    const substitution = await Substitution.findByIdAndDelete(req.params.id);
-
-    if (!substitution) {
+    const substitutionToDelete = await Substitution.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!substitutionToDelete) {
       return res.status(404).json({ error: 'Substitution not found' });
     }
+
+    const substitution = await Substitution.findByIdAndDelete(req.params.id);
 
     res.json({ success: true, message: 'Substitution deleted successfully' });
   } catch (error) {
@@ -211,7 +226,7 @@ router.get('/date/:date', authenticate, checkPermission('classes', 'view'), asyn
   try {
     const { date } = req.params;
 
-    const substitutions = await Substitution.find({ date })
+    const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, { date }))
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name role')
       .populate('substituteTeacherId', 'name role')
@@ -248,7 +263,7 @@ router.get('/teacher/:teacherId', authenticate, checkPermission('classes', 'view
       if (endDate) query.date.$lte = endDate;
     }
 
-    const substitutions = await Substitution.find(query)
+    const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, query))
       .populate('classId', 'name section')
       .populate('absentTeacherId', 'name role')
       .populate('substituteTeacherId', 'name role')

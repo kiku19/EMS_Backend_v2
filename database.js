@@ -182,11 +182,13 @@ staffSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 // Indexes for Staff model
+staffSchema.index({ schoolId: 1, status: 1 });
 staffSchema.index({ 'teacherAssignments.subject': 1 });
 staffSchema.index({ 'teacherAssignments.classes': 1 });
 
 // Class Schema - with class teacher reference
 const classSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   name: { type: String, required: true }, // e.g., "Class 10"
   section: { type: String, required: true }, // e.g., "A"
   classTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
@@ -223,10 +225,11 @@ const classSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Add compound unique index to prevent duplicate class name+section combinations
-classSchema.index({ name: 1, section: 1, academicYear: 1 }, { unique: true });
+classSchema.index({ schoolId: 1, name: 1, section: 1, academicYear: 1 }, { unique: true });
 
 // Student Schema - linked to class with comprehensive fields
 const studentSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   name: { type: String, required: true },
   admissionId: { type: String, unique: true },
   academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
@@ -408,15 +411,17 @@ const studentSchema = new mongoose.Schema({
 // Indexes for performance
 // Note: admissionId already has unique: true in schema definition which creates an index
 studentSchema.index({ classId: 1, status: 1 });
-studentSchema.index({ rollNo: 1, classId: 1, academicYear: 1 }, { unique: true });
+studentSchema.index({ rollNo: 1, classId: 1, academicYear: 1 }, { unique: true, partialFilterExpression: { rollNo: { $type: "string" } } });
 studentSchema.index({ isPinned: 1, pinnedAt: -1 });
 studentSchema.index({ status: 1 });
 studentSchema.index({ feeStatus: 1 });
 // Add compound index for efficient trash queries
 studentSchema.index({ isDeleted: 1, deletedAt: -1 });
+studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
 
 // Attendance Schema
 const attendanceSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   date: { type: String, required: true },
@@ -424,10 +429,13 @@ const attendanceSchema = new mongoose.Schema({
   markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 }, { timestamps: true });
 
-attendanceSchema.index({ studentId: 1, date: 1 }, { unique: true });
+attendanceSchema.index({ schoolId: 1, studentId: 1, date: 1 }, { unique: true });
+attendanceSchema.index({ classId: 1, date: 1 });
+attendanceSchema.index({ 'records.studentId': 1, date: 1 });
 
 // Exam Schema
 const examSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   name: { type: String, required: true },
   type: { type: String }, // unit_test, quiz, midterm, final (frontend field)
   examType: { type: String }, // Legacy field - unit-test, midterm, final, annual
@@ -458,8 +466,11 @@ const examSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
 }, { timestamps: true });
 
+examSchema.index({ schoolId: 1, classId: 1, academicYear: 1 });
+
 // Result Schema
 const resultSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   examId: { type: mongoose.Schema.Types.ObjectId, ref: 'Exam', required: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
@@ -490,7 +501,7 @@ const resultSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Compound indexes for efficient queries
-resultSchema.index({ examId: 1, studentId: 1 }, { unique: true });
+resultSchema.index({ schoolId: 1, examId: 1, studentId: 1 }, { unique: true });
 resultSchema.index({ studentId: 1, academicYear: 1 });
 resultSchema.index({ examId: 1, classId: 1 });
 
@@ -565,6 +576,7 @@ timetableSchema.index({ 'schedule.Saturday.teacherId': 1 });
 
 // Teacher Timetable Schema - for managing teacher schedules
 const teacherTimetableSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
   academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   schedule: {
@@ -616,7 +628,7 @@ const teacherTimetableSchema = new mongoose.Schema({
   lastSyncedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-teacherTimetableSchema.index({ teacherId: 1, academicYear: 1 }, { unique: true });
+teacherTimetableSchema.index({ schoolId: 1, teacherId: 1, academicYear: 1 }, { unique: true });
 
 // Conflict Log Schema - for tracking scheduling conflicts
 const conflictLogSchema = new mongoose.Schema({
@@ -783,6 +795,7 @@ const admissionSchema = new mongoose.Schema({
 
 // Appointment Schema
 const appointmentSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   visitorName: { type: String, required: true },
   phoneNumber: String,
   purpose: String,
@@ -793,6 +806,8 @@ const appointmentSchema = new mongoose.Schema({
   notes: String,
   status: { type: String, default: 'scheduled' }, // 'scheduled', 'completed', 'cancelled'
 }, { timestamps: true });
+
+appointmentSchema.index({ schoolId: 1, fromDateTime: 1 });
 
 // Feedback Schema
 const feedbackSchema = new mongoose.Schema({
@@ -929,6 +944,7 @@ const schoolSettingsSchema = new mongoose.Schema({
 
 // Fee Template Schema - reusable fee structures
 const feeTemplateSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   name: { type: String, required: true },
   description: String,
   section: { type: String, required: true },
@@ -960,6 +976,7 @@ const feeTemplateSchema = new mongoose.Schema({
 
 // Fee Structure Schema - defines fee amounts for classes
 const feeStructureSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
   templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeTemplate' },
@@ -991,14 +1008,15 @@ const feeStructureSchema = new mongoose.Schema({
   appliedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }]
 }, { timestamps: true });
 
-feeStructureSchema.index({ classId: 1, academicYear: 1 }, { unique: true });
+feeStructureSchema.index({ schoolId: 1, classId: 1, academicYear: 1 }, { unique: true });
 
 // Fee Payment Schema - records individual payments
 const feePaymentSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  receiptNumber: { type: String, unique: true, required: true },
+  receiptNumber: { type: String, required: true },
 
   // Payment Details
   paymentDate: { type: String, required: true },
@@ -1033,6 +1051,10 @@ const feePaymentSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
+feePaymentSchema.index({ studentId: 1, academicYear: 1 });
+feePaymentSchema.index({ classId: 1, academicYear: 1 });
+feePaymentSchema.index({ schoolId: 1, receiptNumber: 1 }, { unique: true });
+feePaymentSchema.index({ schoolId: 1, paymentDate: -1 });
 
 // Fee Refund Schema
 const feeRefundSchema = new mongoose.Schema({
@@ -1076,6 +1098,7 @@ feeRefundSchema.index({ studentId: 1, refundDate: 1 });
 
 // Substitution Schema - for teacher substitutions
 const substitutionSchema = new mongoose.Schema({
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
   date: { type: String, required: true }, // YYYY-MM-DD format
   classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
   period: { type: String, required: true }, // Period number (1-8)
@@ -1087,7 +1110,7 @@ const substitutionSchema = new mongoose.Schema({
   notes: String,
 }, { timestamps: true });
 
-substitutionSchema.index({ date: 1, classId: 1, period: 1 });
+substitutionSchema.index({ schoolId: 1, date: 1, classId: 1, period: 1 });
 
 // Chat Models - Import from separate files
 import Message from './models/Message.js';
@@ -1133,6 +1156,8 @@ import Reminder from './models/Reminder.js';
 // Import Parent model
 import Parent from './models/Parent.js';
 import School from './models/School.js';
+import SchoolSubscription from './models/SchoolSubscription.js';
+import SchoolInvoice from './models/SchoolInvoice.js';
 
 export const Staff = mongoose.model('Staff', staffSchema);
 export const Class = mongoose.model('Class', classSchema);
@@ -1164,7 +1189,7 @@ export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberCon
 export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
 
 // Export Parent model
-export { Parent, School };
+export { Parent, School, SchoolSubscription, SchoolInvoice };
 
 // Export chat models
 export { Message, Conversation, UserPresence, Notification };
@@ -1339,6 +1364,5 @@ export async function getNextRollNumber(classId) {
 }
 
 export default mongoose;
-
 
 

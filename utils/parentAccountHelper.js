@@ -32,56 +32,98 @@ export function generateParentPassword(dateOfBirth, admissionId) {
   return `${dobPart}${admissionId}`;
 }
 
+function normalizePhone(phone) {
+  return typeof phone === 'string' ? phone.trim() : '';
+}
+
+function normalizeEmail(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : null;
+}
+
+function collectStudentParents(studentDoc) {
+  const parentMap = new Map();
+
+  const upsertParent = (parentInfo = {}) => {
+    const phone = normalizePhone(parentInfo.phone);
+    if (!phone) return;
+
+    const normalized = {
+      name: typeof parentInfo.name === 'string' ? parentInfo.name.trim() : '',
+      phone,
+      email: normalizeEmail(parentInfo.email),
+      relationship: normalizeRelationship(parentInfo.relationship),
+    };
+
+    const existing = parentMap.get(phone);
+    if (!existing) {
+      parentMap.set(phone, normalized);
+      return;
+    }
+
+    parentMap.set(phone, {
+      name: existing.name || normalized.name,
+      phone,
+      email: existing.email || normalized.email,
+      relationship: existing.relationship !== 'guardian' ? existing.relationship : normalized.relationship,
+    });
+  };
+
+  if (Array.isArray(studentDoc.parents)) {
+    for (const parent of studentDoc.parents) {
+      upsertParent(parent);
+    }
+  }
+
+  upsertParent({
+    name: studentDoc.parentName || `${studentDoc.name}'s Parent`,
+    phone: studentDoc.parentPhone,
+    email: studentDoc.parentEmail,
+    relationship: studentDoc.parentRelationship,
+  });
+
+  return Array.from(parentMap.values());
+}
+
 /**
  * Create or update parent accounts for a student.
  * For each parent in the student's parents array (or top-level parentName/parentPhone),
  * find or create a Parent record, link the child, and set password.
  */
 export async function createOrUpdateParentAccount(studentDoc) {
-  if (!studentDoc) return;
+  if (!studentDoc?._id) return;
 
-  const parentsToProcess = [];
+  const parentsToProcess = collectStudentParents(studentDoc);
+  const defaultSchool = (studentDoc.schoolId || parentsToProcess.length === 0)
+    ? null
+    : await ensureDefaultSchool();
+  const targetSchoolId = studentDoc.schoolId || defaultSchool?._id || null;
+  const currentPhones = new Set(parentsToProcess.map((parent) => parent.phone));
 
-  // Collect parents from the student's parents array
-  if (studentDoc.parents && studentDoc.parents.length > 0) {
-    for (const p of studentDoc.parents) {
-      if (p.phone) {
-        parentsToProcess.push({
-          name: p.name,
-          phone: p.phone.trim(),
-          email: p.email || null,
-          relationship: p.relationship || 'guardian'
-        });
-      }
+  const previouslyLinkedParents = await Parent.find({
+    'children.studentId': studentDoc._id,
+    ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
+  });
+
+  for (const linkedParent of previouslyLinkedParents) {
+    const linkedPhone = normalizePhone(linkedParent.phone);
+    if (currentPhones.has(linkedPhone)) {
+      continue;
     }
-  }
 
-  // Also check top-level parentPhone if not already covered
-  if (studentDoc.parentPhone) {
-    const alreadyIncluded = parentsToProcess.some(
-      p => p.phone === studentDoc.parentPhone.trim()
+    linkedParent.children = linkedParent.children.filter(
+      (child) => child.studentId.toString() !== studentDoc._id.toString()
     );
-    if (!alreadyIncluded) {
-      parentsToProcess.push({
-        name: studentDoc.parentName || studentDoc.name + "'s Parent",
-        phone: studentDoc.parentPhone.trim(),
-        email: studentDoc.parentEmail || null,
-        relationship: studentDoc.parentRelationship || 'guardian'
-      });
-    }
+    await linkedParent.save();
   }
 
   if (parentsToProcess.length === 0) return;
 
   // Generate password from student DOB + admission ID
   const plainPassword = generateParentPassword(studentDoc.dateOfBirth, studentDoc.admissionId);
-  const defaultSchool = studentDoc.schoolId ? null : await ensureDefaultSchool();
-  const targetSchoolId = studentDoc.schoolId || defaultSchool?._id || null;
 
   for (const parentInfo of parentsToProcess) {
     try {
-      // Normalize relationship to match enum
-      const relationship = normalizeRelationship(parentInfo.relationship);
+      const relationship = parentInfo.relationship || 'guardian';
 
       // Find existing parent by phone
       let parent = await Parent.findOne({
@@ -103,8 +145,11 @@ export async function createOrUpdateParentAccount(studentDoc) {
           });
         }
 
-        // Update email if not set
-        if (!parent.email && parentInfo.email) {
+        if (parentInfo.name && parent.name !== parentInfo.name) {
+          parent.name = parentInfo.name;
+        }
+
+        if (parentInfo.email && parent.email !== parentInfo.email) {
           parent.email = parentInfo.email;
         }
 

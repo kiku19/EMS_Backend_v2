@@ -1,17 +1,42 @@
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import StaffAttendance from '../models/StaffAttendance.js';
 import { Staff } from '../database.js';
 import substitutionService from '../services/substitutionService.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { sanitizeString } from '../middleware/validation.js';
 
 const router = express.Router();
+
+// Rate limit for mobile attendance actions: max 20 requests per 15 min per IP
+const mobileAttendanceLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many attendance requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+});
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 // Get all attendance records (for initial data load)
 router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     console.log('[StaffAttendance Routes] Fetching all staff attendance');
-    const attendance = await StaffAttendance.find().sort({ date: -1 });
+    const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId)).sort({ date: -1 });
     console.log('[StaffAttendance Routes] Found', attendance.length, 'records');
 
     // Return as array of objects to match what webapp expects
@@ -39,7 +64,7 @@ router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res)
 router.get('/date/:date', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { date } = req.params;
-    const attendance = await StaffAttendance.find({ date })
+    const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, { date }))
       .populate('staffId', 'name code department role')
       .populate('markedBy', 'name')
       .sort({ 'staffId.name': 1 });
@@ -61,7 +86,7 @@ router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), as
       query.date = { $gte: startDate, $lte: endDate };
     }
 
-    const attendance = await StaffAttendance.find(query)
+    const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, query))
       .sort({ date: -1 })
       .limit(100);
 
@@ -79,10 +104,10 @@ router.get('/staff/:staffId/today', authenticate, async (req, res) => {
 
     console.log('[StaffAttendance] Getting today attendance for staff:', staffId, 'date:', today);
 
-    const todayAttendance = await StaffAttendance.findOne({
+    const todayAttendance = await StaffAttendance.findOne(scopeBySchool(req.user?.schoolId, {
       staffId,
       date: today
-    });
+    }));
 
     if (todayAttendance) {
       res.json({
@@ -116,8 +141,10 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
   try {
     const { staffId, date, status, checkInTime, checkOutTime, reason, markedBy } = req.body;
 
+    const schoolId = await resolveRequestSchoolId(req);
+
     const attendance = await StaffAttendance.findOneAndUpdate(
-      { staffId, date },
+      scopeBySchool(schoolId, { staffId, date }),
       {
         staffId,
         date,
@@ -128,7 +155,8 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
         markedBy,
         lastModifiedBy: markedBy,
         checkInMethod: 'admin',
-        checkOutMethod: 'admin'
+        checkOutMethod: 'admin',
+        schoolId
       },
       { upsert: true, new: true }
     ).populate('staffId', 'name code department role');
@@ -197,9 +225,11 @@ router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req,
     const defaultOutTime = checkOutTime || '-';
     const finalReason = reason || '';
 
+    const schoolId = await resolveRequestSchoolId(req);
+
     const operations = staffIds.map(staffId => ({
       updateOne: {
-        filter: { staffId, date },
+        filter: scopeBySchool(schoolId, { staffId, date }),
         update: {
           $set: {
             status,
@@ -208,7 +238,8 @@ router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req,
             reason: finalReason,
             markedBy,
             lastModifiedBy: markedBy,
-            checkInMethod: 'admin'
+            checkInMethod: 'admin',
+            schoolId
           }
         },
         upsert: true
@@ -228,18 +259,20 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
     const { id } = req.params;
     const { date, status, checkInTime, checkOutTime, reason, regularizedBy } = req.body;
 
+    const schoolId = await resolveRequestSchoolId(req);
+
     let attendance = null;
 
     // Try to find by ID (if it's a valid attendance ID)
     try {
-      attendance = await StaffAttendance.findById(id);
+      attendance = await StaffAttendance.findOne(scopeBySchool(schoolId, { _id: id }));
     } catch (e) {
       // Ignore cast error, might be staffId
     }
 
     // If not found by ID, try finding by staffId and date
     if (!attendance && date) {
-      attendance = await StaffAttendance.findOne({ staffId: id, date });
+      attendance = await StaffAttendance.findOne(scopeBySchool(schoolId, { staffId: id, date }));
     }
 
     // If still not found, and we have date, create new record (upsert logic)
@@ -253,6 +286,7 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
         reason: reason || '',
         markedBy: regularizedBy,
         checkInMethod: 'admin',
+        schoolId,
         regularization: {
           regularizedBy,
           regularizedAt: new Date(),
@@ -323,9 +357,10 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
 // ============ MOBILE APP ENDPOINTS ============
 
 // Mark attendance from mobile app (with status and reason)
-router.post('/mobile/mark', authenticate, async (req, res) => {
+router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, res) => {
   try {
-    const { status, reason, location } = req.body;
+    const { status, location } = req.body;
+    const reason = sanitizeString(req.body.reason);
     const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
     const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
@@ -351,7 +386,7 @@ router.post('/mobile/mark', authenticate, async (req, res) => {
     }
 
     // Check for duplicate submission
-    const existingAttendance = await StaffAttendance.findOne({ staffId, date });
+    const existingAttendance = await StaffAttendance.findOne(scopeBySchool(req.user?.schoolId, { staffId, date }));
     if (existingAttendance) {
       return res.status(400).json({
         success: false,
@@ -368,6 +403,7 @@ router.post('/mobile/mark', authenticate, async (req, res) => {
     }
 
     // Create new attendance record
+    const mobileSchoolId = await resolveRequestSchoolId(req);
     const newAttendance = new StaffAttendance({
       staffId,
       date,
@@ -378,7 +414,8 @@ router.post('/mobile/mark', authenticate, async (req, res) => {
       checkInMethod: 'mobile',
       checkInLocation: location || null,
       markedBy: staffId,
-      lastModifiedBy: staffId
+      lastModifiedBy: staffId,
+      schoolId: mobileSchoolId
     });
 
     await newAttendance.save();
@@ -460,15 +497,17 @@ router.post('/mobile/mark', authenticate, async (req, res) => {
 });
 
 // Check-in (from mobile app)
-router.post('/mobile/checkin', authenticate, async (req, res) => {
+router.post('/mobile/checkin', mobileAttendanceLimiter, authenticate, async (req, res) => {
   try {
     const { location } = req.body;
     const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
     const checkInTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
+    const checkinSchoolId = await resolveRequestSchoolId(req);
+
     const attendance = await StaffAttendance.findOneAndUpdate(
-      { staffId, date },
+      scopeBySchool(checkinSchoolId, { staffId, date }),
       {
         staffId,
         date,
@@ -476,7 +515,8 @@ router.post('/mobile/checkin', authenticate, async (req, res) => {
         checkInTime,
         checkInLocation: location,
         checkInMethod: 'mobile',
-        lastModifiedBy: staffId
+        lastModifiedBy: staffId,
+        schoolId: checkinSchoolId
       },
       { upsert: true, new: true }
     ).populate('staffId', 'name code department role');
@@ -488,7 +528,7 @@ router.post('/mobile/checkin', authenticate, async (req, res) => {
 });
 
 // Check-out (from mobile app)
-router.post('/mobile/checkout', authenticate, async (req, res) => {
+router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (req, res) => {
   try {
     const { location } = req.body;
     const staffId = req.user.id;
@@ -496,7 +536,7 @@ router.post('/mobile/checkout', authenticate, async (req, res) => {
     const checkOutTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
     const attendance = await StaffAttendance.findOneAndUpdate(
-      { staffId, date },
+      scopeBySchool(req.user?.schoolId, { staffId, date }),
       {
         checkOutTime,
         checkOutLocation: location,
@@ -517,9 +557,10 @@ router.post('/mobile/checkout', authenticate, async (req, res) => {
 });
 
 // Apply for leave (from mobile app)
-router.post('/mobile/leave/apply', authenticate, async (req, res) => {
+router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, async (req, res) => {
   try {
-    const { leaveType, startDate, endDate, reason } = req.body;
+    const { leaveType, startDate, endDate } = req.body;
+    const reason = sanitizeString(req.body.reason);
     const staffId = req.user.id;
 
     // Calculate number of days
@@ -527,13 +568,15 @@ router.post('/mobile/leave/apply', authenticate, async (req, res) => {
     const end = new Date(endDate);
     const numberOfDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
 
+    const leaveSchoolId = await resolveRequestSchoolId(req);
+
     // Create attendance records for each day
     const operations = [];
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
       operations.push({
         updateOne: {
-          filter: { staffId, date: dateStr },
+          filter: scopeBySchool(leaveSchoolId, { staffId, date: dateStr }),
           update: {
             $set: {
               staffId,
@@ -551,7 +594,8 @@ router.post('/mobile/leave/apply', authenticate, async (req, res) => {
                 numberOfDays,
                 approvalStatus: 'pending'
               },
-              lastModifiedBy: staffId
+              lastModifiedBy: staffId,
+              schoolId: leaveSchoolId
             }
           },
           upsert: true
@@ -576,9 +620,9 @@ router.post('/mobile/leave/apply', authenticate, async (req, res) => {
 // Get pending leave applications
 router.get('/leave/pending', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
-    const pendingLeaves = await StaffAttendance.find({
+    const pendingLeaves = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, {
       'leaveApplication.approvalStatus': 'pending'
-    })
+    }))
       .populate('staffId', 'name code department role')
       .sort({ 'leaveApplication.appliedAt': -1 });
 
@@ -594,7 +638,7 @@ router.put('/leave/:id/approve', authenticate, checkPermission('staff', 'edit'),
     const { id } = req.params;
     const { approvalStatus, approvedBy, rejectionReason } = req.body;
 
-    const attendance = await StaffAttendance.findById(id);
+    const attendance = await StaffAttendance.findOne(scopeBySchool(req.user?.schoolId, { _id: id }));
     if (!attendance) {
       return res.status(404).json({ error: 'Leave application not found' });
     }
@@ -625,10 +669,10 @@ router.get('/summary/:staffId', authenticate, checkPermission('staff', 'view'), 
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
     const endDate = `${year}-${String(month).padStart(2, '0')}-31`;
 
-    const attendance = await StaffAttendance.find({
+    const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, {
       staffId,
       date: { $gte: startDate, $lte: endDate }
-    });
+    }));
 
     const summary = {
       present: attendance.filter(a => a.status === 'present').length,

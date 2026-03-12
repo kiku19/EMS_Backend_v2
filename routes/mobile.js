@@ -20,27 +20,53 @@ import StaffProfileAudit from '../models/StaffProfileAudit.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateStaffProfileUpdate } from '../middleware/staffValidation.js';
 import { emitStaffUpdate } from '../utils/socketEmitter.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+const logger = createLogger('Mobile');
+
+/**
+ * Middleware: only allow a teacher to access their own /:teacherId routes.
+ * Admins (role contains 'Admin' or 'admin') may access any teacher's routes.
+ */
+function requireSelfOrAdmin(req, res, next) {
+  const { teacherId } = req.params;
+  const userId = req.user?.id || req.user?.userId;
+  const roles = Array.isArray(req.user?.role) ? req.user.role : [req.user?.role || ''];
+  const isAdmin = roles.some(r => /admin/i.test(r));
+  if (isAdmin || userId === teacherId) {
+    return next();
+  }
+  return res.status(403).json({ error: 'Forbidden: you may only access your own data' });
+}
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 // ============ TEACHER MOBILE API ============
 
 // Get teacher dashboard data
-router.get('/teacher/:teacherId/dashboard', async (req, res) => {
+router.get('/teacher/:teacherId/dashboard', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const today = new Date().toISOString().split('T')[0];
-
-    console.log(`[Dashboard] Loading dashboard for teacher: ${teacherId}`);
+    const schoolId = req.user?.schoolId;
 
     // Get teacher details
-    const teacher = await Staff.findById(teacherId);
+    const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
     if (!teacher) {
-      console.log(`[Dashboard] Teacher not found: ${teacherId}`);
-      return res.status(404).json({ error: 'Teacher not found' });
+        return res.status(404).json({ error: 'Teacher not found' });
     }
-
-    console.log(`[Dashboard] Teacher found: ${teacher.name}`);
 
     // Run queries in parallel for better performance
     const [
@@ -51,7 +77,7 @@ router.get('/teacher/:teacherId/dashboard', async (req, res) => {
       unreadAnnouncements
     ] = await Promise.all([
       // Check if class teacher
-      Class.findOne({ classTeacherId: teacherId }).lean(),
+      Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId })).lean(),
       
       // Get today's attendance status
       StaffAttendance.findOne({
@@ -80,7 +106,6 @@ router.get('/teacher/:teacherId/dashboard', async (req, res) => {
       })
     ]);
 
-    console.log(`[Dashboard] Parallel queries completed`);
 
     // Get today's schedule
     const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
@@ -91,12 +116,11 @@ router.get('/teacher/:teacherId/dashboard', async (req, res) => {
     let appointments = [];
     
     if (classTeacherOf) {
-      console.log(`[Dashboard] Loading class teacher data for class: ${classTeacherOf.name}`);
       
       // Run class teacher queries in parallel
       // FIXED: Filter by status and isDeleted for consistency
       const [students, classAppointments] = await Promise.all([
-        Student.find({ classId: classTeacherOf._id, status: 'active', isDeleted: { $ne: true } }).select('_id').lean(),
+        Student.find(scopeBySchool(schoolId, { classId: classTeacherOf._id, status: 'active', isDeleted: { $ne: true } })).select('_id').lean(),
         Appointment.find({
           meetingWith: teacher.name,
           fromDateTime: { $gte: new Date() },
@@ -122,10 +146,7 @@ router.get('/teacher/:teacherId/dashboard', async (req, res) => {
       }
       
       appointments = classAppointments;
-      console.log(`[Dashboard] Class teacher data loaded`);
     }
-
-    console.log(`[Dashboard] Sending response`);
 
     res.json({
       teacher: {
@@ -153,13 +174,13 @@ router.get('/teacher/:teacherId/dashboard', async (req, res) => {
       unreadAnnouncements: unreadAnnouncements || 0
     });
   } catch (error) {
-    console.error('[Dashboard] Error loading dashboard:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Error loading teacher dashboard');
+    res.status(500).json({ error: 'Failed to load dashboard' });
   }
 });
 
 // Get teacher's full timetable
-router.get('/teacher/:teacherId/timetable', async (req, res) => {
+router.get('/teacher/:teacherId/timetable', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
 
@@ -182,28 +203,17 @@ router.get('/teacher/:teacherId/timetable', async (req, res) => {
 });
 
 // Mark teacher attendance (self)
-router.post('/teacher/:teacherId/attendance', async (req, res) => {
+router.post('/teacher/:teacherId/attendance', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { status, inTime, outTime } = req.body;
     const today = new Date().toISOString().split('T')[0];
-
-    console.log(`[Mobile Attendance] Marking attendance for teacher: ${teacherId}`);
-    console.log(`[Mobile Attendance] Status: ${status}, InTime: ${inTime}, OutTime: ${outTime}`);
 
     const attendance = await StaffAttendance.findOneAndUpdate(
       { staffId: teacherId, date: today },
       { status, checkInTime: inTime, checkOutTime: outTime },
       { new: true, upsert: true }
     );
-
-    console.log(`[Mobile Attendance] Saved to DB:`, {
-      staffId: attendance.staffId,
-      date: attendance.date,
-      status: attendance.status,
-      checkInTime: attendance.checkInTime,
-      checkOutTime: attendance.checkOutTime
-    });
 
     // Emit socket event (matches webapp's expected event structure)
     const io = req.app.get('io');
@@ -218,24 +228,20 @@ router.post('/teacher/:teacherId/attendance', async (req, res) => {
       reason: attendance.reason || ''
     };
 
-    console.log(`[Mobile Attendance] Emitting socket event:`, socketData);
     io.emit('attendance_updated', socketData);
-    console.log(`[Mobile Attendance] Socket event emitted to all clients`);
 
     res.json(attendance);
   } catch (error) {
-    console.error(`[Mobile Attendance] Error:`, error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Error marking teacher attendance');
+    res.status(500).json({ error: 'Failed to mark attendance' });
   }
 });
 
-// Reset teacher attendance (for testing)
-router.delete('/teacher/:teacherId/attendance', async (req, res) => {
+// Reset teacher attendance (dev/admin only)
+router.delete('/teacher/:teacherId/attendance', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const today = new Date().toISOString().split('T')[0];
-
-    console.log(`[Mobile Attendance] Resetting attendance for teacher: ${teacherId}`);
 
     const result = await StaffAttendance.findOneAndDelete({
       staffId: teacherId,
@@ -243,15 +249,8 @@ router.delete('/teacher/:teacherId/attendance', async (req, res) => {
     });
 
     if (!result) {
-      console.log(`[Mobile Attendance] No attendance record found for today`);
       return res.status(404).json({ error: 'No attendance record found for today' });
     }
-
-    console.log(`[Mobile Attendance] Deleted attendance record:`, {
-      staffId: result.staffId,
-      date: result.date,
-      status: result.status
-    });
 
     // Emit socket event to update real-time views
     const io = req.app.get('io');
@@ -265,33 +264,33 @@ router.delete('/teacher/:teacherId/attendance', async (req, res) => {
       reason: ''
     });
 
-    res.json({
-      success: true,
-      message: 'Attendance reset successfully'
-    });
+    res.json({ success: true, message: 'Attendance reset successfully' });
   } catch (error) {
-    console.error(`[Mobile Attendance] Error resetting:`, error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Error resetting teacher attendance');
+    res.status(500).json({ error: 'Failed to reset attendance' });
   }
 });
 
 // Get class students for attendance (class teacher only)
-router.get('/teacher/:teacherId/class-students', async (req, res) => {
+router.get('/teacher/:teacherId/class-students', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
+    const schoolId = req.user?.schoolId;
 
     // Find class where teacher is class teacher
-    const classData = await Class.findOne({ classTeacherId: teacherId });
+    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
     if (!classData) {
       return res.status(404).json({ error: 'Not a class teacher' });
     }
 
     // FIXED: Filter by status='active' AND isDeleted!=true for consistency
-    const students = await Student.find({
-      classId: classData._id,
-      status: 'active',
-      isDeleted: { $ne: true }
-    }).sort({ rollNo: 1 });
+    const students = await Student.find(
+      scopeBySchool(schoolId, {
+        classId: classData._id,
+        status: 'active',
+        isDeleted: { $ne: true }
+      })
+    ).sort({ rollNo: 1 });
 
     res.json({
       class: {
@@ -313,12 +312,13 @@ router.get('/teacher/:teacherId/class-students', async (req, res) => {
 });
 
 // Get class attendance for a date
-router.get('/teacher/:teacherId/class-attendance/:date', async (req, res) => {
+router.get('/teacher/:teacherId/class-attendance/:date', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId, date } = req.params;
+    const schoolId = req.user?.schoolId;
 
     // Find class where teacher is class teacher
-    const classData = await Class.findOne({ classTeacherId: teacherId });
+    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
     if (!classData) {
       return res.status(404).json({ error: 'Not a class teacher' });
     }
@@ -340,13 +340,14 @@ router.get('/teacher/:teacherId/class-attendance/:date', async (req, res) => {
 });
 
 // Mark class attendance (class teacher only)
-router.post('/teacher/:teacherId/class-attendance', async (req, res) => {
+router.post('/teacher/:teacherId/class-attendance', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { date, attendance } = req.body; // attendance: [{ studentId, status }]
+    const schoolId = req.user?.schoolId;
 
     // Verify teacher is class teacher
-    const classData = await Class.findOne({ classTeacherId: teacherId });
+    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
     if (!classData) {
       return res.status(403).json({ error: 'Not authorized' });
     }
@@ -387,18 +388,19 @@ router.post('/teacher/:teacherId/class-attendance', async (req, res) => {
 });
 
 // Get class overview (for class teacher)
-router.get('/teacher/:teacherId/class-overview', async (req, res) => {
+router.get('/teacher/:teacherId/class-overview', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
+    const schoolId = req.user?.schoolId;
 
-    const classData = await Class.findOne({ classTeacherId: teacherId });
+    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
     if (!classData) {
       return res.status(404).json({ error: 'Not a class teacher' });
     }
 
     // Get all students
     // FIXED: Filter by status and isDeleted for consistency
-    const students = await Student.find({ classId: classData._id, status: 'active', isDeleted: { $ne: true } });
+    const students = await Student.find(scopeBySchool(schoolId, { classId: classData._id, status: 'active', isDeleted: { $ne: true } }));
 
     // Get low attendance students (< 75%)
     const thirtyDaysAgo = new Date();
@@ -489,7 +491,7 @@ router.get('/teacher/:teacherId/class-overview', async (req, res) => {
 });
 
 // Get announcements for teachers
-router.get('/teacher/:teacherId/announcements', async (req, res) => {
+router.get('/teacher/:teacherId/announcements', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { limit = 20 } = req.query;
 
@@ -506,7 +508,7 @@ router.get('/teacher/:teacherId/announcements', async (req, res) => {
 });
 
 // Get teacher leaves (mobile-specific endpoint)
-router.get('/teacher/:teacherId/leaves', async (req, res) => {
+router.get('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { status } = req.query;
@@ -524,13 +526,13 @@ router.get('/teacher/:teacherId/leaves', async (req, res) => {
 
     res.json(leaves);
   } catch (error) {
-    console.error('Error loading leaves:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Error loading teacher leaves');
+    res.status(500).json({ error: 'Failed to load leaves' });
   }
 });
 
 // Apply for leave (mobile-specific endpoint)
-router.post('/teacher/:teacherId/leaves', async (req, res) => {
+router.post('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const {
@@ -585,18 +587,19 @@ router.post('/teacher/:teacherId/leaves', async (req, res) => {
 
     res.status(201).json(populatedLeave);
   } catch (error) {
-    console.error('Error applying for leave:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Error applying for leave');
+    res.status(500).json({ error: 'Failed to apply for leave' });
   }
 });
 
 // Get student details (for mobile view)
-router.get('/teacher/:teacherId/student/:studentId', async (req, res) => {
+router.get('/teacher/:teacherId/student/:studentId', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId, studentId } = req.params;
+    const schoolId = req.user?.schoolId;
 
     // Get student with class info (MongoDB/Mongoose)
-    const student = await Student.findById(studentId)
+    const student = await Student.findOne(scopeBySchool(schoolId, { _id: studentId }))
       .populate('classId', 'name section')
       .lean();
 
@@ -653,10 +656,9 @@ router.get('/teacher/:teacherId/student/:studentId', async (req, res) => {
       parents,
       attendance: stats
     });
-
   } catch (error) {
-    console.error('Error fetching student details:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Error fetching student details');
+    res.status(500).json({ error: 'Failed to fetch student details' });
   }
 });
 
@@ -672,13 +674,11 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
   try {
     const { staffId } = req.params;
 
-    console.log(`[Staff Profile] Fetching profile for staff: ${staffId}`);
 
     // Find staff member
-    const staff = await Staff.findById(staffId).lean();
+    const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId })).lean();
 
     if (!staff) {
-      console.log(`[Staff Profile] Staff not found: ${staffId}`);
       return res.status(404).json({
         error: 'Staff not found',
         message: `No staff member found with ID: ${staffId}`
@@ -703,11 +703,9 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
       updatedAt: staff.updatedAt
     };
 
-    console.log(`[Staff Profile] Profile loaded successfully for: ${staff.name}`);
-
     res.json(profileData);
   } catch (error) {
-    console.error('[Staff Profile] Error fetching profile:', error);
+    logger.error({ err: error }, 'Error fetching staff profile');
     res.status(500).json({
       error: 'Failed to fetch profile',
       message: error.message
@@ -732,8 +730,6 @@ router.put('/staff/:staffId/profile',
       const { staffId } = req.params;
       const updateData = req.body;
 
-      console.log(`[Staff Profile] Updating profile for staff: ${staffId}`);
-      console.log(`[Staff Profile] Update data:`, Object.keys(updateData));
 
       // Verify staffId matches authenticated user (self-service only)
       if (req.user.userId !== staffId) {
@@ -742,24 +738,18 @@ router.put('/staff/:staffId/profile',
         const permissions = await UserPermission.findOne({ userId: req.user.userId });
 
         if (!permissions || permissions.role !== 'admin') {
-          console.warn(`[Staff Profile] Forbidden: User ${req.user.userId} attempted to edit staff ${staffId}`);
           return res.status(403).json({
             error: 'Access denied',
             message: 'You can only edit your own profile'
           });
         }
-        console.log(`[Staff Profile] Admin override: User ${req.user.userId} editing staff ${staffId}`);
       }
 
       // Find staff member
-      const staff = await Staff.findById(staffId);
+      const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId }));
 
       if (!staff) {
-        console.log(`[Staff Profile] Staff not found: ${staffId}`);
-        return res.status(404).json({
-          error: 'Staff not found',
-          message: `No staff member found with ID: ${staffId}`
-        });
+        return res.status(404).json({ error: 'Staff not found' });
       }
 
       // Detect which fields changed for audit log and socket event
@@ -778,15 +768,12 @@ router.put('/staff/:staffId/profile',
       });
 
       if (fieldsChanged.length === 0) {
-        console.log(`[Staff Profile] No changes detected`);
         return res.json({
           success: true,
           message: 'No changes to update',
           profile: staff
         });
       }
-
-      console.log(`[Staff Profile] Fields changed:`, fieldsChanged);
 
       // Update staff profile
       Object.keys(updateData).forEach(field => {
@@ -809,7 +796,6 @@ router.put('/staff/:staffId/profile',
       });
 
       await auditLog.save();
-      console.log(`[Staff Profile] Audit log created`);
 
       // Emit socket event for real-time updates
       emitStaffUpdate(
@@ -826,8 +812,6 @@ router.put('/staff/:staffId/profile',
           picture: staff.picture
         }
       );
-
-      console.log(`[Staff Profile] Socket event emitted: staff_updated`);
 
       // Return updated profile
       const updatedProfile = {
@@ -855,11 +839,8 @@ router.put('/staff/:staffId/profile',
       });
 
     } catch (error) {
-      console.error('[Staff Profile] Error updating profile:', error);
-      res.status(500).json({
-        error: 'Failed to update profile',
-        message: error.message
-      });
+      logger.error({ err: error }, 'Error updating staff profile');
+      res.status(500).json({ error: 'Failed to update profile' });
     }
   }
 );
@@ -882,8 +863,6 @@ router.post('/staff/:staffId/photo',
     try {
       const { staffId } = req.params;
 
-      console.log(`[Staff Photo] Photo upload request for staff: ${staffId}`);
-
       // Verify staffId matches authenticated user (self-service only)
       if (req.user.userId !== staffId) {
         // Check if user is admin (admin can upload any staff photo)
@@ -891,38 +870,26 @@ router.post('/staff/:staffId/photo',
         const permissions = await UserPermission.findOne({ userId: req.user.userId });
 
         if (!permissions || permissions.role !== 'admin') {
-          console.warn(`[Staff Photo] Forbidden: User ${req.user.userId} attempted to upload photo for staff ${staffId}`);
           return res.status(403).json({
             error: 'Access denied',
             message: 'You can only upload your own photo'
           });
         }
-        console.log(`[Staff Photo] Admin override: User ${req.user.userId} uploading photo for staff ${staffId}`);
       }
 
       // Find staff member
-      const staff = await Staff.findById(staffId);
+      const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId }));
 
       if (!staff) {
-        console.log(`[Staff Photo] Staff not found: ${staffId}`);
-        return res.status(404).json({
-          error: 'Staff not found',
-          message: `No staff member found with ID: ${staffId}`
-        });
+        return res.status(404).json({ error: 'Staff not found' });
       }
 
       // Check if photo file is present
       if (!req.body || !req.body.photo) {
-        console.log(`[Staff Photo] No photo data provided`);
-        return res.status(400).json({
-          error: 'No photo provided',
-          message: 'Photo data is required'
-        });
+        return res.status(400).json({ error: 'Photo data is required' });
       }
 
       const photoData = req.body.photo;
-
-      console.log(`[Staff Photo] Processing photo upload (${photoData.length} bytes)`);
 
       // Import cloudinary
       const { v2: cloudinary } = await import('cloudinary');
@@ -930,16 +897,11 @@ router.post('/staff/:staffId/photo',
       // Check if Cloudinary is configured
       const config = (await import('../config/environment.js')).config;
       if (!config.cloudinary.configured) {
-        console.warn(`[Staff Photo] Cloudinary not configured, using base64 fallback`);
-        // Use base64 fallback
         staff.picture = photoData;
         await staff.save();
-        console.log(`[Staff Photo] Photo saved as base64`);
       } else {
         // Upload to Cloudinary
         try {
-          console.log(`[Staff Photo] Uploading to Cloudinary folder: staff-photos`);
-
           const uploadOptions = {
             folder: 'staff-photos',
             public_id: `staff-${staffId}`,
@@ -955,16 +917,11 @@ router.post('/staff/:staffId/photo',
           const result = await cloudinary.uploader.upload(photoData, uploadOptions);
 
           const photoUrl = result.secure_url;
-          console.log(`[Staff Photo] Cloudinary upload successful: ${photoUrl}`);
 
           // Update staff picture
           const previousPicture = staff.picture;
           staff.picture = photoUrl;
           await staff.save();
-
-          console.log(`[Staff Photo] Photo updated in database`);
-          console.log(`[Staff Photo] Previous picture: ${previousPicture ? 'exists' : 'none'}`);
-          console.log(`[Staff Photo] New picture: ${photoUrl}`);
 
           // Create audit log entry
           const auditLog = new StaffProfileAudit({
@@ -980,25 +937,10 @@ router.post('/staff/:staffId/photo',
           });
 
           await auditLog.save();
-          console.log(`[Staff Photo] Audit log created`);
-
-          // Emit socket event for real-time updates
-          emitStaffUpdate(
-            staffId,
-            ['picture'],
-            'mobile_app',
-            {
-              name: staff.name,
-              role: staff.role,
-              department: staff.department,
-              status: staff.status,
-              phone: staff.phone,
-              email: staff.email,
-              picture: photoUrl
-            }
-          );
-
-          console.log(`[Staff Photo] Socket event emitted: staff_updated`);
+          emitStaffUpdate(staffId, ['picture'], 'mobile_app', {
+            name: staff.name, role: staff.role, department: staff.department,
+            status: staff.status, phone: staff.phone, email: staff.email, picture: photoUrl
+          });
 
           // Return success response
           return res.json({
@@ -1008,8 +950,7 @@ router.post('/staff/:staffId/photo',
           });
 
         } catch (cloudinaryError) {
-          console.error('[Staff Photo] Cloudinary upload failed:', cloudinaryError);
-          console.warn('[Staff Photo] Falling back to base64 storage');
+          logger.warn({ err: cloudinaryError }, 'Cloudinary upload failed, using base64 fallback');
 
           // Fallback: store as base64
           staff.picture = photoData;
@@ -1051,11 +992,8 @@ router.post('/staff/:staffId/photo',
       }
 
     } catch (error) {
-      console.error('[Staff Photo] Error uploading photo:', error);
-      res.status(500).json({
-        error: 'Failed to upload photo',
-        message: error.message
-      });
+      logger.error({ err: error }, 'Error uploading staff photo');
+      res.status(500).json({ error: 'Failed to upload photo' });
     }
   }
 );

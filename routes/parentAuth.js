@@ -3,7 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 import { Parent } from '../database.js';
 import { Student } from '../database.js';
 import jwt from 'jsonwebtoken';
-import admin from '../config/firebase.js';
+import admin, { getFirebaseInitializationError, isFirebaseConfigured } from '../config/firebase.js';
 import { getRequiredSecret } from '../config/environment.js';
 import { ensureDocumentSchool, extractSchoolId, resolveSchool, serializeSchool } from '../utils/schoolContext.js';
 
@@ -44,6 +44,57 @@ const parentRefreshLimiter = rateLimit({
 
 const getJwtSecret = () => getRequiredSecret('JWT_SECRET');
 const getJwtRefreshSecret = () => getRequiredSecret('JWT_REFRESH_SECRET');
+
+function normalizePhoneNumber(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function phoneNumbersMatch(requestedPhone, tokenPhone) {
+  const requested = normalizePhoneNumber(requestedPhone);
+  const token = normalizePhoneNumber(tokenPhone);
+
+  if (!requested || !token) {
+    return false;
+  }
+
+  // Exact match OR country-code prefix tolerance:
+  // e.g. "919876543210" matches "9876543210" only when the longer number
+  // consists of the shorter number with a 1-3 digit country code prefix.
+  if (requested === token) return true;
+
+  // Only allow prefix tolerance for numbers of the same local part length
+  // i.e., both must share the same last 10 digits
+  const last10Requested = requested.slice(-10);
+  const last10Token = token.slice(-10);
+  const MIN_LOCAL_DIGITS = 10;
+
+  if (
+    last10Requested.length === MIN_LOCAL_DIGITS &&
+    last10Token.length === MIN_LOCAL_DIGITS &&
+    last10Requested === last10Token
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildFirebaseUnavailablePayload() {
+  const initializationError = getFirebaseInitializationError();
+  const payload = {
+    success: false,
+    error: {
+      code: 'OTP_PROVIDER_NOT_CONFIGURED',
+      message: 'OTP login is not configured on the server. Please contact support.',
+    }
+  };
+
+  if (process.env.NODE_ENV !== 'production' && initializationError?.message) {
+    payload.error.details = initializationError.message;
+  }
+
+  return payload;
+}
 
 async function findMatchingParents({ identifier, phone, schoolId, schoolCode }) {
   const query = {};
@@ -288,6 +339,10 @@ router.post('/login', parentLoginLimiter, async (req, res) => {
 // This endpoint triggers Firebase Phone Auth by checking if phone exists
 router.post('/send-otp', parentOtpRequestLimiter, async (req, res) => {
   try {
+    if (!isFirebaseConfigured()) {
+      return res.status(503).json(buildFirebaseUnavailablePayload());
+    }
+
     const { phone, schoolId, schoolCode } = req.body;
 
     if (!phone) {
@@ -306,15 +361,11 @@ router.post('/send-otp', parentOtpRequestLimiter, async (req, res) => {
       schoolCode,
     });
 
-    // For security, don't reveal if phone exists or not
-    // Just return success - Firebase handles the actual OTP sending
+    // Don't reveal if phone exists — always return same response to prevent enumeration.
+    // Firebase handles actual OTP delivery on client side.
     res.json({
       success: true,
-      message: 'OTP sent to registered phone number',
-      data: {
-        phoneExists: parents.length > 0 && !schoolLookupFailed,
-        requiresSchoolSelection: parents.length > 1 && !(schoolId || schoolCode),
-      }
+      message: 'If this phone number is registered, an OTP has been sent.',
     });
   } catch (error) {
     console.error('Send OTP error:', error);
@@ -344,9 +395,23 @@ router.post('/verify-otp', parentOtpVerificationLimiter, async (req, res) => {
       });
     }
 
+    if (!isFirebaseConfigured()) {
+      return res.status(503).json(buildFirebaseUnavailablePayload());
+    }
+
     // 1. Verify Firebase token
     const decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
     const firebaseUid = decodedToken.uid;
+
+    if (!phoneNumbersMatch(phone, decodedToken.phone_number)) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'PHONE_MISMATCH',
+          message: 'The verified phone number does not match the requested phone number'
+        }
+      });
+    }
 
     const { parents, schoolLookupFailed } = await findMatchingParents({
       phone,
@@ -382,6 +447,16 @@ router.post('/verify-otp', parentOtpVerificationLimiter, async (req, res) => {
         error: {
           code: 'PARENT_NOT_FOUND',
           message: 'No parent account found for this phone number. Please contact school administration.'
+        }
+      });
+    }
+
+    if (parent.status !== 'active') {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'ACCOUNT_INACTIVE',
+          message: 'Your account is not active. Please contact school administration.'
         }
       });
     }

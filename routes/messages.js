@@ -5,16 +5,23 @@ import UserPresence from '../models/UserPresence.js';
 import { Staff, Student } from '../database.js';
 import { hasPermission, canMessageUser, getUserChatPermissions, CHAT_PERMISSIONS } from '../middleware/chatPermissions.js';
 import { authenticate } from '../middleware/auth.js';
+import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+const logger = createLogger('Messages');
 
-// Get unread count for a user
-router.get('/unread-count', async (req, res) => {
+// Get unread count for a user — requires auth; user may only query their own count
+router.get('/unread-count', authenticate, async (req, res) => {
   try {
     const { userId, userType } = req.query;
 
     if (!userId || !userType) {
       return res.status(400).json({ error: 'userId and userType are required' });
+    }
+
+    // Enforce: authenticated user may only query their own unread count
+    if (req.user.id !== userId && req.user.userId !== userId) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     // Find all conversations for this user
@@ -34,18 +41,23 @@ router.get('/unread-count', async (req, res) => {
 
     res.json({ count: totalUnread });
   } catch (error) {
-    console.error('❌ Get unread count error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get unread count error');
+    res.status(500).json({ error: 'Failed to get unread count' });
   }
 });
 
-// Get user's chat permissions
-router.get('/permissions', async (req, res) => {
+// Get user's chat permissions — requires auth; user may only query their own permissions
+router.get('/permissions', authenticate, async (req, res) => {
   try {
     const { userId, userType } = req.query;
 
     if (!userId || !userType) {
       return res.status(400).json({ error: 'userId and userType are required' });
+    }
+
+    // Enforce: authenticated user may only query their own permissions
+    if (req.user.id !== userId && req.user.userId !== userId) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     const permissions = await getUserChatPermissions(userId, userType);
@@ -56,8 +68,8 @@ router.get('/permissions', async (req, res) => {
 
     res.json(permissions);
   } catch (error) {
-    console.error('❌ Get permissions error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get permissions error');
+    res.status(500).json({ error: 'Failed to get permissions' });
   }
 });
 
@@ -83,53 +95,79 @@ router.get('/conversations', authenticate, async (req, res) => {
       .sort({ 'lastMessage.timestamp': -1 })
       .lean();
 
-    // Populate participant details
-    const enrichedConversations = await Promise.all(
-      conversations.map(async (conv) => {
-        const participants = await Promise.all(
-          conv.participants.map(async (p) => {
-            const UserModel = p.userModel === 'Staff' ? Staff : Student;
-            const user = await UserModel.findById(p.userId).select('name photo role email');
-            
-            // Get presence
-            const presence = await UserPresence.findOne({ userId: p.userId });
+    // Collect all unique participant user IDs grouped by model type to avoid N+1
+    const staffIds = [];
+    const studentIds = [];
+    const presenceUserIds = [];
 
-            return {
-              userId: p.userId,
-              userType: p.userModel.toLowerCase(),
-              name: user?.name || 'Unknown',
-              avatar: user?.photo || null,
-              role: user?.role || null,
-              unreadCount: p.unreadCount || 0,
-              online: presence?.status === 'online',
-              lastSeen: presence?.lastSeen
-            };
-          })
-        );
+    for (const conv of conversations) {
+      for (const p of conv.participants) {
+        presenceUserIds.push(p.userId.toString());
+        if (p.userModel === 'Staff') {
+          staffIds.push(p.userId);
+        } else {
+          studentIds.push(p.userId);
+        }
+      }
+    }
 
-        // Get the other participant (for direct chats)
-        const otherParticipant = participants.find(
-          p => p.userId.toString() !== userId
-        );
+    // Batch fetch all participants at once
+    const [staffList, studentList, presenceList] = await Promise.all([
+      staffIds.length
+        ? Staff.find({ _id: { $in: staffIds } }).select('name photo role').lean()
+        : Promise.resolve([]),
+      studentIds.length
+        ? Student.find({ _id: { $in: studentIds } }).select('name photo role').lean()
+        : Promise.resolve([]),
+      presenceUserIds.length
+        ? UserPresence.find({ userId: { $in: presenceUserIds } }).lean()
+        : Promise.resolve([]),
+    ]);
+
+    // Build lookup maps
+    const staffMap = new Map(staffList.map(s => [s._id.toString(), s]));
+    const studentMap = new Map(studentList.map(s => [s._id.toString(), s]));
+    const presenceMap = new Map(presenceList.map(p => [p.userId.toString(), p]));
+
+    const enrichedConversations = conversations.map((conv) => {
+      const participants = conv.participants.map((p) => {
+        const uid = p.userId.toString();
+        const user = p.userModel === 'Staff' ? staffMap.get(uid) : studentMap.get(uid);
+        const presence = presenceMap.get(uid);
 
         return {
-          id: conv._id,
-          type: conv.type,
-          participants,
-          otherParticipant,
-          groupName: conv.groupName,
-          groupAvatar: conv.groupAvatar,
-          lastMessage: conv.lastMessage,
-          unreadCount: conv.participants.find(p => p.userId.toString() === userId)?.unreadCount || 0,
-          updatedAt: conv.updatedAt
+          userId: p.userId,
+          userType: p.userModel.toLowerCase(),
+          name: user?.name || 'Unknown',
+          avatar: user?.photo || null,
+          role: user?.role || null,
+          unreadCount: p.unreadCount || 0,
+          online: presence?.status === 'online',
+          lastSeen: presence?.lastSeen
         };
-      })
-    );
+      });
+
+      const otherParticipant = participants.find(
+        p => p.userId.toString() !== userId
+      );
+
+      return {
+        id: conv._id,
+        type: conv.type,
+        participants,
+        otherParticipant,
+        groupName: conv.groupName,
+        groupAvatar: conv.groupAvatar,
+        lastMessage: conv.lastMessage,
+        unreadCount: conv.participants.find(p => p.userId.toString() === userId)?.unreadCount || 0,
+        updatedAt: conv.updatedAt
+      };
+    });
 
     res.json(enrichedConversations);
   } catch (error) {
-    console.error('❌ Get conversations error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get conversations error');
+    res.status(500).json({ error: 'Failed to get conversations' });
   }
 });
 
@@ -186,8 +224,8 @@ router.get('/conversations/:conversationId/messages', authenticate, async (req, 
 
     res.json(formattedMessages);
   } catch (error) {
-    console.error('❌ Get messages error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get messages error');
+    res.status(500).json({ error: 'Failed to get messages' });
   }
 });
 
@@ -202,9 +240,9 @@ router.post('/conversations', authenticate, async (req, res) => {
 
     // Check if user1 can message user2
     const canMessage = await canMessageUser(user1Id, user1Type, user2Id, user2Type);
-    
+
     if (!canMessage) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'Permission denied',
         message: 'You do not have permission to message this user. Please contact your administrator.'
       });
@@ -220,21 +258,30 @@ router.post('/conversations', authenticate, async (req, res) => {
       user2Model
     );
 
-    // Populate participant details
-    const participants = await Promise.all(
-      conversation.participants.map(async (p) => {
-        const UserModel = p.userModel === 'Staff' ? Staff : Student;
-        const user = await UserModel.findById(p.userId).select('name photo role');
-        
-        return {
-          userId: p.userId,
-          userType: p.userModel.toLowerCase(),
-          name: user?.name,
-          avatar: user?.photo,
-          role: user?.role
-        };
-      })
-    );
+    // Batch fetch both participants
+    const participantIds = conversation.participants.map(p => p.userId);
+    const staffIds = conversation.participants.filter(p => p.userModel === 'Staff').map(p => p.userId);
+    const studentIds = conversation.participants.filter(p => p.userModel === 'Student').map(p => p.userId);
+
+    const [staffList, studentList] = await Promise.all([
+      staffIds.length ? Staff.find({ _id: { $in: staffIds } }).select('name photo role').lean() : [],
+      studentIds.length ? Student.find({ _id: { $in: studentIds } }).select('name photo role').lean() : [],
+    ]);
+
+    const staffMap = new Map(staffList.map(s => [s._id.toString(), s]));
+    const studentMap = new Map(studentList.map(s => [s._id.toString(), s]));
+
+    const participants = conversation.participants.map((p) => {
+      const uid = p.userId.toString();
+      const user = p.userModel === 'Staff' ? staffMap.get(uid) : studentMap.get(uid);
+      return {
+        userId: p.userId,
+        userType: p.userModel.toLowerCase(),
+        name: user?.name,
+        avatar: user?.photo,
+        role: user?.role
+      };
+    });
 
     res.json({
       id: conversation._id,
@@ -244,8 +291,8 @@ router.post('/conversations', authenticate, async (req, res) => {
       createdAt: conversation.createdAt
     });
   } catch (error) {
-    console.error('❌ Create conversation error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Create conversation error');
+    res.status(500).json({ error: 'Failed to create conversation' });
   }
 });
 
@@ -351,8 +398,8 @@ router.post('/', authenticate, async (req, res) => {
       forwardedFrom: message.forwardedFrom?.messageId ? message.forwardedFrom : null
     });
   } catch (error) {
-    console.error('❌ Send message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Send message error');
+    res.status(500).json({ error: 'Failed to send message' });
   }
 });
 
@@ -385,8 +432,8 @@ router.put('/read', authenticate, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Mark read error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Mark read error');
+    res.status(500).json({ error: 'Failed to mark messages as read' });
   }
 });
 
@@ -397,7 +444,7 @@ router.delete('/:messageId', authenticate, async (req, res) => {
     const { userId } = req.query;
 
     const message = await Message.findById(messageId);
-    
+
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
     }
@@ -417,13 +464,13 @@ router.delete('/:messageId', authenticate, async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Delete message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Delete message error');
+    res.status(500).json({ error: 'Failed to delete message' });
   }
 });
 
-// Search messages
-router.get('/search', async (req, res) => {
+// Search messages — requires auth
+router.get('/search', authenticate, async (req, res) => {
   try {
     const { userId, query, limit = 20 } = req.query;
 
@@ -452,13 +499,13 @@ router.get('/search', async (req, res) => {
 
     res.json(messages);
   } catch (error) {
-    console.error('❌ Search messages error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Search messages error');
+    res.status(500).json({ error: 'Failed to search messages' });
   }
 });
 
-// Get user presence
-router.get('/presence/:userId', async (req, res) => {
+// Get user presence — requires auth
+router.get('/presence/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -473,13 +520,13 @@ router.get('/presence/:userId', async (req, res) => {
       lastSeen: presence.lastSeen
     });
   } catch (error) {
-    console.error('❌ Get presence error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get presence error');
+    res.status(500).json({ error: 'Failed to get presence' });
   }
 });
 
-// Get online users
-router.get('/presence/online', async (req, res) => {
+// Get online users — requires auth
+router.get('/presence/online', authenticate, async (req, res) => {
   try {
     const onlineUsers = await UserPresence.find({ status: 'online' })
       .select('userId userModel lastSeen')
@@ -487,15 +534,15 @@ router.get('/presence/online', async (req, res) => {
 
     res.json(onlineUsers);
   } catch (error) {
-    console.error('❌ Get online users error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get online users error');
+    res.status(500).json({ error: 'Failed to get online users' });
   }
 });
 
 // ============ ENHANCED MESSAGE ACTIONS ============
 
-// Edit message
-router.put('/:messageId/edit', async (req, res) => {
+// Edit message — requires auth
+router.put('/:messageId/edit', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const { content, userId } = req.body;
@@ -539,13 +586,13 @@ router.put('/:messageId/edit', async (req, res) => {
 
     res.json(message);
   } catch (error) {
-    console.error('❌ Edit message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Edit message error');
+    res.status(500).json({ error: 'Failed to edit message' });
   }
 });
 
-// React to message
-router.post('/:messageId/react', async (req, res) => {
+// React to message — requires auth
+router.post('/:messageId/react', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const { emoji, userId, userModel } = req.body;
@@ -589,13 +636,13 @@ router.post('/:messageId/react', async (req, res) => {
 
     res.json({ reactions: message.reactions });
   } catch (error) {
-    console.error('❌ React to message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'React to message error');
+    res.status(500).json({ error: 'Failed to react to message' });
   }
 });
 
-// Reply to message
-router.post('/:messageId/reply', async (req, res) => {
+// Reply to message — requires auth
+router.post('/:messageId/reply', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const { content, senderId, senderModel, receiverId, receiverModel } = req.body;
@@ -639,13 +686,13 @@ router.post('/:messageId/reply', async (req, res) => {
 
     res.json(reply);
   } catch (error) {
-    console.error('❌ Reply to message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Reply to message error');
+    res.status(500).json({ error: 'Failed to reply to message' });
   }
 });
 
-// Forward message
-router.post('/:messageId/forward', async (req, res) => {
+// Forward message — requires auth
+router.post('/:messageId/forward', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const { conversationIds, senderId, senderModel } = req.body;
@@ -691,7 +738,7 @@ router.post('/:messageId/forward', async (req, res) => {
           messageId: originalMessage._id,
           conversationId: originalMessage.conversationId,
           forwardedBy: senderId,
-          originalSenderName: null // Will be populated
+          originalSenderName: null
         }
       });
 
@@ -715,13 +762,13 @@ router.post('/:messageId/forward', async (req, res) => {
 
     res.json(forwardedMessages);
   } catch (error) {
-    console.error('❌ Forward message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Forward message error');
+    res.status(500).json({ error: 'Failed to forward message' });
   }
 });
 
-// Pin/unpin message
-router.post('/:messageId/pin', async (req, res) => {
+// Pin/unpin message — requires auth
+router.post('/:messageId/pin', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const { userId, pinned } = req.body;
@@ -773,13 +820,13 @@ router.post('/:messageId/pin', async (req, res) => {
 
     res.json({ pinned: message.pinned });
   } catch (error) {
-    console.error('❌ Pin message error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Pin message error');
+    res.status(500).json({ error: 'Failed to pin message' });
   }
 });
 
-// Get pinned messages in conversation
-router.get('/conversations/:conversationId/pinned-messages', async (req, res) => {
+// Get pinned messages in conversation — requires auth
+router.get('/conversations/:conversationId/pinned-messages', authenticate, async (req, res) => {
   try {
     const { conversationId } = req.params;
 
@@ -793,13 +840,13 @@ router.get('/conversations/:conversationId/pinned-messages', async (req, res) =>
 
     res.json(conversation.pinnedMessages || []);
   } catch (error) {
-    console.error('❌ Get pinned messages error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get pinned messages error');
+    res.status(500).json({ error: 'Failed to get pinned messages' });
   }
 });
 
-// Pin/unpin conversation
-router.post('/conversations/:conversationId/pin', async (req, res) => {
+// Pin/unpin conversation — requires auth
+router.post('/conversations/:conversationId/pin', authenticate, async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { userId, pinned } = req.body;
@@ -834,13 +881,13 @@ router.post('/conversations/:conversationId/pin', async (req, res) => {
 
     res.json({ pinned: conversation.pinnedBy.some(p => p.userId.toString() === userId) });
   } catch (error) {
-    console.error('❌ Pin conversation error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Pin conversation error');
+    res.status(500).json({ error: 'Failed to pin conversation' });
   }
 });
 
-// Mute/unmute conversation
-router.post('/conversations/:conversationId/mute', async (req, res) => {
+// Mute/unmute conversation — requires auth
+router.post('/conversations/:conversationId/mute', authenticate, async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { userId, muted, mutedUntil } = req.body;
@@ -875,13 +922,13 @@ router.post('/conversations/:conversationId/mute', async (req, res) => {
 
     res.json({ muted: conversation.mutedBy.some(m => m.userId.toString() === userId) });
   } catch (error) {
-    console.error('❌ Mute conversation error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Mute conversation error');
+    res.status(500).json({ error: 'Failed to mute conversation' });
   }
 });
 
-// Delete conversation
-router.delete('/conversations/:conversationId', async (req, res) => {
+// Delete conversation — requires auth
+router.delete('/conversations/:conversationId', authenticate, async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { userId } = req.body;
@@ -921,12 +968,12 @@ router.delete('/conversations/:conversationId', async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Delete conversation error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Delete conversation error');
+    res.status(500).json({ error: 'Failed to delete conversation' });
   }
 });
 
-// Get available contacts (staff and students for starting new conversations)
+// Get available contacts — requires auth
 router.get('/contacts', authenticate, async (req, res) => {
   try {
     const { userType } = req.query;
@@ -967,8 +1014,8 @@ router.get('/contacts', authenticate, async (req, res) => {
       students: formattedStudents
     });
   } catch (error) {
-    console.error('❌ Get contacts error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error({ err: error }, 'Get contacts error');
+    res.status(500).json({ error: 'Failed to get contacts' });
   }
 });
 

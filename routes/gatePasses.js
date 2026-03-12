@@ -3,6 +3,19 @@ import GatePass from '../models/GatePass.js';
 import { Student, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 const router = express.Router();
 
@@ -83,7 +96,8 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
     }
 
     // Execute query
-    const gatePasses = await GatePass.find(query)
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePasses = await GatePass.find(scopeBySchool(schoolId, query))
       .sort({ leavingDate: 1, leavingTime: 1 })
       .populate('studentId', 'name admissionId photo rollNo')
       .populate('approvedByStaffId', 'name code')
@@ -198,7 +212,8 @@ router.get('/pending', authenticate, checkPermission('front-office', 'view'), as
  */
 router.get('/:id', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id)
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }))
       .populate('studentId', 'name admissionId photo rollNo classId')
       .populate('approvedByStaffId', 'name code phone')
       .populate('requestedById', 'name code phone');
@@ -354,6 +369,7 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
 
     gatePassData.approvedByStaffId = approverStaffId;
     gatePassData.approvedByName = requestingStaff.name;
+    gatePassData.schoolId = await resolveRequestSchoolId(req);
 
     // Create gate pass
     const gatePass = await GatePass.create(gatePassData);
@@ -393,7 +409,8 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
  */
 router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!gatePass) {
       return res.status(404).json({
@@ -486,7 +503,8 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
  */
 router.post('/:id/approve', authenticate, checkPermission('front-office', 'approve'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!gatePass) {
       return res.status(404).json({
@@ -541,7 +559,8 @@ router.post('/:id/approve', authenticate, checkPermission('front-office', 'appro
  */
 router.post('/:id/reject', authenticate, checkPermission('front-office', 'approve'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!gatePass) {
       return res.status(404).json({
@@ -596,7 +615,8 @@ router.post('/:id/reject', authenticate, checkPermission('front-office', 'approv
  */
 router.post('/:id/mark-used', authenticate, checkPermission('front-office', 'edit'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!gatePass) {
       return res.status(404).json({
@@ -659,7 +679,8 @@ router.post('/:id/mark-used', authenticate, checkPermission('front-office', 'edi
  */
 router.post('/:id/cancel', authenticate, checkPermission('front-office', 'edit'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!gatePass) {
       return res.status(404).json({
@@ -714,7 +735,8 @@ router.post('/:id/cancel', authenticate, checkPermission('front-office', 'edit')
  */
 router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id);
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     if (!gatePass) {
       return res.status(404).json({
@@ -731,7 +753,7 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
       });
     }
 
-    await GatePass.deleteOne({ _id: req.params.id });
+    await GatePass.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
     res.json({
       success: true,
@@ -754,7 +776,8 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
  */
 router.get('/:id/download', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
   try {
-    const gatePass = await GatePass.findById(req.params.id)
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }))
       .populate('studentId', 'name admissionId photo rollNo');
 
     if (!gatePass) {

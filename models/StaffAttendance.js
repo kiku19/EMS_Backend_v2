@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 
 const staffAttendanceSchema = new mongoose.Schema({
-  staffId: { 
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
+  staffId: {
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Staff', 
     required: true 
@@ -72,7 +73,7 @@ const staffAttendanceSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Compound index for efficient queries
-staffAttendanceSchema.index({ staffId: 1, date: 1 }, { unique: true });
+staffAttendanceSchema.index({ schoolId: 1, staffId: 1, date: 1 }, { unique: true });
 staffAttendanceSchema.index({ date: 1 });
 staffAttendanceSchema.index({ status: 1 });
 

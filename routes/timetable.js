@@ -4,8 +4,21 @@ import { Timetable, Class, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { validate, schemas } from '../middleware/validation.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 // IMPORTANT: More specific routes must be defined BEFORE parameterized routes (:classId)
 // Otherwise, /generate-all would be matched by /:classId
@@ -19,7 +32,7 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
   try {
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-    const timetables = await Timetable.find({ academicYear })
+    const timetables = await Timetable.find(scopeBySchool(req.user?.schoolId, { academicYear }))
       .populate('classId', 'name section teacher')
       .sort({ 'classId.name': 1, 'classId.section': 1 });
 
@@ -39,7 +52,7 @@ router.post('/generate-all', authenticate, checkPermission('classes', 'edit'), a
     const { academicYear = CURRENT_ACADEMIC_YEAR, periodRules } = req.body;
 
     // Get all classes
-    const classes = await Class.find({}).sort({ name: 1, section: 1 });
+    const classes = await Class.find(scopeBySchool(req.user?.schoolId)).sort({ name: 1, section: 1 });
 
     if (classes.length === 0) {
       return res.status(404).json({ error: 'No classes found' });
@@ -73,13 +86,15 @@ router.post('/generate-all', authenticate, checkPermission('classes', 'edit'), a
         }
 
         // Check if timetable exists
-        let timetable = await Timetable.findOne({ classId: cls._id, academicYear });
+        let timetable = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId: cls._id, academicYear }));
 
         if (!timetable) {
           // Create new timetable
+          const resolvedSchoolId = await resolveRequestSchoolId(req);
           timetable = new Timetable({
             classId: cls._id,
             academicYear,
+            schoolId: resolvedSchoolId,
             periods: defaultPeriods,
             schedule: {
               Monday: [],
@@ -231,7 +246,7 @@ router.get('/:classId', authenticate, checkPermission('classes', 'view'), async 
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-    const timetable = await Timetable.findOne({ classId, academicYear });
+    const timetable = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
 
     if (!timetable) {
       return res.status(404).json({ error: 'Timetable not found for this class' });
@@ -253,13 +268,13 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
     const { classId, academicYear = CURRENT_ACADEMIC_YEAR, periods, schedule } = req.body;
 
     // Validate class exists
-    const classData = await Class.findById(classId);
+    const classData = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: classId }));
     if (!classData) {
       return res.status(404).json({ error: 'Class not found' });
     }
 
     // Check if timetable already exists
-    const existing = await Timetable.findOne({ classId, academicYear });
+    const existing = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
     if (existing) {
       return res.status(400).json({ error: 'Timetable already exists for this class and academic year' });
     }
@@ -267,6 +282,7 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
     const timetable = new Timetable({
       classId,
       academicYear,
+      schoolId: await resolveRequestSchoolId(req),
       periods: periods || [],
       schedule: schedule || {
         Monday: [],
@@ -313,14 +329,14 @@ router.put('/:classId/slot', authenticate, checkPermission('classes', 'edit'), a
 
     // Validate teacher if provided
     if (teacherId) {
-      const teacher = await Staff.findById(teacherId);
+      const teacher = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: teacherId }));
       if (!teacher) {
         return res.status(404).json({ error: 'Teacher not found' });
       }
     }
 
     // Find timetable
-    const timetable = await Timetable.findOne({ classId, academicYear });
+    const timetable = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
     if (!timetable) {
       return res.status(404).json({ error: 'Timetable not found' });
     }
@@ -375,7 +391,7 @@ router.post('/:classId/batch', authenticate, checkPermission('classes', 'edit'),
     }
 
     // Find timetable
-    const timetable = await Timetable.findOne({ classId, academicYear });
+    const timetable = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
     if (!timetable) {
       return res.status(404).json({ error: 'Timetable not found' });
     }
@@ -446,7 +462,7 @@ router.put('/:classId/periods', authenticate, checkPermission('classes', 'edit')
     }
 
     // Find timetable
-    const timetable = await Timetable.findOne({ classId, academicYear });
+    const timetable = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
     if (!timetable) {
       return res.status(404).json({ error: 'Timetable not found' });
     }
@@ -478,13 +494,13 @@ router.put('/:classId', authenticate, checkPermission('classes', 'edit'), async 
     const { academicYear = CURRENT_ACADEMIC_YEAR, periods, schedule } = req.body;
 
     // Validate class exists
-    const classData = await Class.findById(classId);
+    const classData = await Class.findOne(scopeBySchool(req.user?.schoolId, { _id: classId }));
     if (!classData) {
       return res.status(404).json({ error: 'Class not found' });
     }
 
     // Find existing timetable
-    let timetable = await Timetable.findOne({ classId, academicYear });
+    let timetable = await Timetable.findOne(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
 
     if (timetable) {
       // Update existing timetable
@@ -497,6 +513,7 @@ router.put('/:classId', authenticate, checkPermission('classes', 'edit'), async 
       timetable = new Timetable({
         classId,
         academicYear,
+        schoolId: await resolveRequestSchoolId(req),
         periods: periods || [],
         schedule: schedule || {
           Monday: [], Tuesday: [], Wednesday: [],
@@ -525,7 +542,7 @@ router.delete('/:classId', authenticate, checkPermission('classes', 'delete'), a
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-    const timetable = await Timetable.findOneAndDelete({ classId, academicYear });
+    const timetable = await Timetable.findOneAndDelete(scopeBySchool(req.user?.schoolId, { classId, academicYear }));
 
     if (!timetable) {
       return res.status(404).json({ error: 'Timetable not found' });

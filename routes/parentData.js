@@ -5,8 +5,21 @@ import { Parent, Student, Class, FeePayment } from '../database.js';
 import { authenticateParent, validateParentChildAccess } from '../middleware/parentAuth.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import { emitFeePaymentCreated } from '../utils/socketEmitter.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.parent?.schoolId) return extractSchoolId(req.parent.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 // Apply authentication to all routes
 router.use(authenticateParent);
@@ -510,7 +523,7 @@ router.get('/students/:id/remarks', validateParentChildAccess, async (req, res) 
 
     const Remark = (await import('../models/Remark.js')).default;
 
-    const remarks = await Remark.find({ studentId: id })
+    const remarks = await Remark.find({ studentId: id, sentToParent: true })
       .sort({ date: -1 })
       .limit(parseInt(limit))
       .lean();
@@ -652,7 +665,8 @@ router.get('/announcements', async (req, res) => {
     // Import Announcement model
     const { Announcement } = await import('../database.js');
 
-    // Get announcements for these classes
+    // Get announcements for these classes, scoped to school
+    const schoolId = extractSchoolId(req.parent?.schoolId);
     const announcements = await Announcement.find({
       $or: [
         { targetClasses: { $in: classIds } },
@@ -660,7 +674,8 @@ router.get('/announcements', async (req, res) => {
         { targetType: 'parents' }
       ],
       status: 'published',
-      publishedAt: { $lte: new Date() }
+      publishedAt: { $lte: new Date() },
+      ...(schoolId && { schoolId })
     })
     .sort({ publishedAt: -1 })
     .limit(parseInt(limit))
@@ -708,10 +723,10 @@ router.get('/timetable/:studentId', validateParentChildAccess, async (req, res) 
     // Get timetable
     const { Timetable } = await import('../database.js');
 
-    const timetable = await Timetable.findOne({
+    const timetable = await Timetable.findOne(scopeBySchool(req.parent?.schoolId, {
       classId: student.classId._id,
       academicYear: student.classId.academicYear
-    })
+    }))
     .select('periods schedule -_id')
     .lean();
 
@@ -782,8 +797,8 @@ router.post('/students/:id/payment/create-order', validateParentChildAccess, asy
 
     // Verify amount doesn't exceed balance
     const resolvedAcademicYear = await resolveAcademicYear(academicYear);
-    const feeStructure = await StudentFeeStructure.findOne({ studentId, academicYear: resolvedAcademicYear })
-      || await StudentFeeStructure.findOne({ studentId }).sort({ createdAt: -1 });
+    const feeStructure = await StudentFeeStructure.findOne(scopeBySchool(req.parent?.schoolId, { studentId, academicYear: resolvedAcademicYear }))
+      || await StudentFeeStructure.findOne(scopeBySchool(req.parent?.schoolId, { studentId })).sort({ createdAt: -1 });
 
     if (!feeStructure) {
       return res.status(404).json({
@@ -953,8 +968,8 @@ router.post('/students/:id/payment/verify', validateParentChildAccess, async (re
     await payment.save();
 
     // Update StudentFeeStructure
-    const feeStructure = await StudentFeeStructure.findOne({ studentId, academicYear: year })
-      || await StudentFeeStructure.findOne({ studentId }).sort({ createdAt: -1 });
+    const feeStructure = await StudentFeeStructure.findOne(scopeBySchool(req.parent?.schoolId, { studentId, academicYear: year }))
+      || await StudentFeeStructure.findOne(scopeBySchool(req.parent?.schoolId, { studentId })).sort({ createdAt: -1 });
 
     if (feeStructure) {
       // Update individual fee head payments if breakdown provided

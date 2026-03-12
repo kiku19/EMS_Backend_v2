@@ -1,16 +1,31 @@
 ﻿import express from 'express';
 import mongoose from 'mongoose';
 import { Class, Result, Remark, Student, StudentFeeStructure, getNextAdmissionId } from '../database.js';
-import TrashItem from '../models/TrashItem.js';
 import FeeHead from '../models/FeeHead.js';
+import { permanentlyDeleteStudentData } from '../services/studentDataErasureService.js';
 import { createOrUpdateParentAccount } from '../utils/parentAccountHelper.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
-import { validate, schemas } from '../middleware/validation.js';
+import { validate, schemas, sanitizeString } from '../middleware/validation.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
+import { assertSchoolWithinLimit, incrementUsageMetric } from '../services/billingService.js';
+import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { checkClassCapacity } from '../utils/classCapacity.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) return { ...query };
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+async function resolveRequestSchoolId(req) {
+  if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
+  const school = await ensureDefaultSchool();
+  return extractSchoolId(school._id);
+}
 
 function processParents(parents = []) {
   return parents.map((parent) => ({
@@ -64,8 +79,12 @@ function getStudentListSort(sortBy = 'name', sortOrder = 'asc') {
   }
 }
 
-async function buildStudentListQuery({ classId, status, academicYear, search, feeStatus }, resolvedAcademicYear) {
+async function buildStudentListQuery({ classId, status, academicYear, search, feeStatus, schoolId }, resolvedAcademicYear) {
   const conditions = [{ isDeleted: { $ne: true } }];
+
+  if (schoolId) {
+    conditions.push({ schoolId });
+  }
 
   if (classId) {
     conditions.push({
@@ -117,9 +136,11 @@ async function buildStudentListQuery({ classId, status, academicYear, search, fe
 }
 
 async function initializeFeeStructure(student) {
+  const academicYear = student.academicYear || CURRENT_ACADEMIC_YEAR;
+
   const existingFeeStructure = await StudentFeeStructure.findOne({
     studentId: student._id,
-    academicYear: student.academicYear || CURRENT_ACADEMIC_YEAR
+    academicYear
   });
 
   if (existingFeeStructure) {
@@ -134,14 +155,15 @@ async function initializeFeeStructure(student) {
   const classNumber = classInfo.name.replace('Class ', '');
   const applicableFeeHeads = await FeeHead.find({
     applicableClasses: classNumber,
-    academicYear: student.academicYear || CURRENT_ACADEMIC_YEAR,
+    academicYear,
     isActive: true
   });
 
   const feeStructure = new StudentFeeStructure({
     studentId: student._id,
     classId: student.classId,
-    academicYear: student.academicYear || CURRENT_ACADEMIC_YEAR,
+    academicYear,
+    schoolId: student.schoolId,
     feeHeads: applicableFeeHeads.map((feeHead) => ({
       feeHeadId: feeHead._id,
       name: feeHead.name,
@@ -166,6 +188,11 @@ async function initializeFeeStructure(student) {
 router.post('/:id/documents', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
     const { name, type, url, uploadDate, category, front, back } = req.body;
+
+    const scopedStudent = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedStudent) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
 
     const newDocument = {
       id: new mongoose.Types.ObjectId().toString(),
@@ -204,6 +231,11 @@ router.post('/:id/documents', authenticate, checkPermission('students', 'edit'),
 
 router.delete('/:id/documents/:docId', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
+    const scopedStudent = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedStudent) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const student = await Student.findByIdAndUpdate(
       req.params.id,
       { $pull: { documents: { id: req.params.docId } } },
@@ -223,6 +255,11 @@ router.delete('/:id/documents/:docId', authenticate, checkPermission('students',
 
 router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
+    const scopedStudent = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedStudent) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const student = await Student.findByIdAndUpdate(
       req.params.id,
       { photo: req.body.photo },
@@ -242,7 +279,7 @@ router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), asyn
 
 router.post('/:id/fix-documents', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
-    const student = await Student.findById(req.params.id);
+    const student = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
@@ -277,10 +314,9 @@ router.post('/:id/fix-documents', authenticate, checkPermission('students', 'edi
 router.get('/class/:classId/fee-status', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear);
-    const feeStructures = await StudentFeeStructure.find({
-      classId: req.params.classId,
-      academicYear
-    }).populate('studentId', 'name admissionId rollNo');
+    const feeStructures = await StudentFeeStructure.find(
+      scopeBySchool(req.user?.schoolId, { classId: req.params.classId, academicYear })
+    ).populate('studentId', 'name admissionId rollNo');
 
     const result = feeStructures.map((feeStructure) => ({
       studentId: feeStructure.studentId._id,
@@ -312,16 +348,20 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
       sortBy = 'name',
       sortOrder = 'asc'
     } = req.query;
-    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
-    const skip = (pageNum - 1) * limitNum;
+    const rawLimit = parseInt(limit, 10);
+    const noPagination = rawLimit === 0;
+    const pageNum = noPagination ? 1 : Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = noPagination ? 0 : Math.min(Math.max(rawLimit || 50, 1), 100);
+    const skip = noPagination ? 0 : (pageNum - 1) * limitNum;
     const resolvedAcademicYear = await resolveAcademicYear(academicYear);
+    const schoolId = await resolveRequestSchoolId(req);
     const query = await buildStudentListQuery({
       classId,
       status,
       academicYear,
       search,
-      feeStatus
+      feeStatus,
+      schoolId
     }, resolvedAcademicYear);
     const sort = getStudentListSort(sortBy, sortOrder);
 
@@ -329,7 +369,7 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
     let students;
 
     if (sortBy === 'class') {
-      students = await Student.aggregate([
+      const pipeline = [
         { $match: query },
         {
           $lookup: {
@@ -346,16 +386,19 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
           }
         },
         { $sort: sort },
-        { $skip: skip },
-        { $limit: limitNum }
-      ]);
+      ];
+      if (!noPagination) {
+        pipeline.push({ $skip: skip }, { $limit: limitNum });
+      }
+      students = await Student.aggregate(pipeline);
     } else {
-      students = await Student.find(query)
+      let q = Student.find(query)
         .populate('classId', 'name section')
-        .sort(sort)
-        .limit(limitNum)
-        .skip(skip)
-        .lean();
+        .sort(sort);
+      if (!noPagination) {
+        q = q.skip(skip).limit(limitNum);
+      }
+      students = await q.lean();
     }
 
     const studentIds = students.map((student) => student._id);
@@ -444,11 +487,15 @@ router.get('/next-admission-id', authenticate, async (req, res) => {
 
 router.get('/:id/fee-summary', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
+    const scopedStudent = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!scopedStudent) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const year = await resolveAcademicYear(req.query.academicYear);
-    const feeStructure = await StudentFeeStructure.findOne({
-      studentId: req.params.id,
-      academicYear: year
-    }).populate('feeHeads.feeHeadId');
+    const feeStructure = await StudentFeeStructure.findOne(
+      scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
+    ).populate('feeHeads.feeHeadId');
 
     if (!feeStructure) {
       return res.json({
@@ -491,6 +538,11 @@ router.get('/:id/fee-summary', authenticate, checkPermission('students', 'view')
 
 router.get('/:id/results', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
+    const student = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const query = {
       studentId: req.params.id,
       isPublished: true
@@ -515,6 +567,11 @@ router.get('/:id/results', authenticate, checkPermission('students', 'view'), as
 
 router.get('/:id/remarks', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
+    const student = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const query = { studentId: req.params.id };
     if (req.query.category && req.query.category !== 'all') {
       query.category = req.query.category;
@@ -534,10 +591,15 @@ router.get('/:id/remarks', authenticate, checkPermission('students', 'view'), as
 
 router.post('/:id/remarks', authenticate, checkPermission('students', 'edit'), async (req, res) => {
   try {
+    const student = await Student.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
     const remark = new Remark({
       studentId: req.params.id,
-      title: req.body.title,
-      description: req.body.description,
+      title: sanitizeString(req.body.title),
+      description: sanitizeString(req.body.description),
       category: req.body.category || 'general',
       authorId: req.user.userId,
       authorName: req.user.name || 'Unknown',
@@ -558,7 +620,9 @@ router.post('/:id/remarks', authenticate, checkPermission('students', 'edit'), a
 
 router.get('/:id', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
-    const student = await Student.findById(req.params.id).populate('classId', 'name section');
+    const student = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    ).populate('classId', 'name section');
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
@@ -580,7 +644,17 @@ router.get('/:id', authenticate, checkPermission('students', 'view'), async (req
 
 router.post('/', authenticate, checkPermission('students', 'create'), validate(schemas.createStudent), async (req, res) => {
   try {
-    const existingAdmission = await Student.findOne({ admissionId: req.body.admissionId });
+    if (req.user?.schoolId) {
+      await assertSchoolWithinLimit({
+        schoolId: req.user.schoolId,
+        metric: 'students',
+        delta: 1,
+      });
+    }
+
+    const existingAdmission = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, { admissionId: req.body.admissionId, isDeleted: { $ne: true } })
+    );
     if (existingAdmission) {
       return res.status(409).json({
         error: 'Admission ID already exists',
@@ -598,11 +672,24 @@ router.post('/', authenticate, checkPermission('students', 'create'), validate(s
       });
     }
 
-    const existingRollNo = await Student.findOne({
-      rollNo: req.body.rollNo,
-      classId: req.body.classId,
-      academicYear: req.body.academicYear
-    });
+    // Check class capacity before allowing student creation
+    const capacityResult = await checkClassCapacity(req.body.classId, req.user?.schoolId);
+    if (capacityResult && capacityResult.isFull) {
+      return res.status(400).json({
+        error: `Class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}). Cannot add more students.`,
+        field: 'classId',
+        value: req.body.classId
+      });
+    }
+
+    const existingRollNo = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, {
+        rollNo: req.body.rollNo,
+        classId: req.body.classId,
+        academicYear: req.body.academicYear,
+        isDeleted: { $ne: true }
+      })
+    );
 
     if (existingRollNo) {
       return res.status(409).json({
@@ -618,6 +705,7 @@ router.post('/', authenticate, checkPermission('students', 'create'), validate(s
       academicYear: req.body.academicYear,
       rollNo: req.body.rollNo,
       classId: req.body.classId,
+      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
       gender: req.body.gender,
       dateOfBirth: req.body.dateOfBirth,
       bloodGroup: req.body.bloodGroup,
@@ -659,6 +747,10 @@ router.post('/', authenticate, checkPermission('students', 'create'), validate(s
 
     const student = new Student(studentData);
     await student.save();
+
+    if (req.user?.schoolId) {
+      await incrementUsageMetric(req.user.schoolId, 'students', 1);
+    }
 
     try {
       await createOrUpdateParentAccount(student);
@@ -717,7 +809,10 @@ router.post('/', authenticate, checkPermission('students', 'create'), validate(s
       });
     }
 
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({
+      error: error.message,
+      details: error.details,
+    });
   }
 });
 
@@ -768,9 +863,42 @@ router.put('/:id', authenticate, checkPermission('students', 'edit'), async (req
 
     cleanObject(updateData);
 
-    const originalStudent = await Student.findById(req.params.id);
+    const originalStudent = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
     if (!originalStudent) {
       return res.status(404).json({ error: 'Student not found' });
+    }
+
+    // Check roll number uniqueness on update if rollNo, classId, or academicYear changed
+    const rollNoChanged = updateData.rollNo !== undefined && updateData.rollNo !== originalStudent.rollNo;
+    const classChanged = updateData.classId && updateData.classId !== originalStudent.classId?.toString();
+    const academicYearChanged = updateData.academicYear && updateData.academicYear !== originalStudent.academicYear;
+
+    if (rollNoChanged || classChanged || academicYearChanged) {
+      const checkRollNo = updateData.rollNo ?? originalStudent.rollNo;
+      const checkClassId = updateData.classId ?? originalStudent.classId?.toString();
+      const checkAcademicYear = updateData.academicYear ?? originalStudent.academicYear;
+
+      if (checkRollNo) {
+        const duplicateRollNo = await Student.findOne(
+          scopeBySchool(req.user?.schoolId, {
+            _id: { $ne: req.params.id },
+            rollNo: checkRollNo,
+            classId: checkClassId,
+            academicYear: checkAcademicYear,
+            isDeleted: { $ne: true }
+          })
+        );
+
+        if (duplicateRollNo) {
+          return res.status(409).json({
+            error: 'Roll number already exists in this class for the academic year',
+            field: 'rollNo',
+            value: checkRollNo
+          });
+        }
+      }
     }
 
     const student = await Student.findByIdAndUpdate(req.params.id, updateData, { new: true })
@@ -780,11 +908,25 @@ router.put('/:id', authenticate, checkPermission('students', 'edit'), async (req
     }
 
     try {
-      const classChanged = updateData.classId && updateData.classId !== originalStudent.classId?.toString();
-      const academicYearChanged = updateData.academicYear && updateData.academicYear !== originalStudent.academicYear;
+      await createOrUpdateParentAccount(student);
+    } catch (parentError) {
+      console.error('Error auto-syncing parent accounts:', parentError);
+    }
 
+    try {
       if (classChanged || academicYearChanged) {
-        await StudentFeeStructure.deleteMany({ studentId: student._id });
+        // Warn if there are unpaid fees before wiping the fee structure
+        const unpaidFees = await StudentFeeStructure.find({
+          studentId: student._id,
+          totalBalance: { $gt: 0 }
+        });
+
+        if (unpaidFees.length > 0) {
+          const totalUnpaid = unpaidFees.reduce((sum, fs) => sum + fs.totalBalance, 0);
+          console.warn(`Deleting fee structures for student ${student._id} with ₹${totalUnpaid} unpaid balance`);
+        }
+
+        await StudentFeeStructure.deleteMany({ studentId: student._id, academicYear: student.academicYear || CURRENT_ACADEMIC_YEAR });
         await initializeFeeStructure(student);
       }
 
@@ -819,51 +961,29 @@ router.put('/:id', authenticate, checkPermission('students', 'edit'), async (req
 
 router.delete('/:id', authenticate, checkPermission('students', 'delete'), async (req, res) => {
   try {
-    const student = await Student.findOneAndUpdate(
-      { _id: req.params.id, isDeleted: { $ne: true } },
-      {
-        isDeleted: true,
-        deletedAt: new Date(),
-        deletedBy: req.user.id
-      },
-      { new: true }
-    ).lean();
-
+    // Verify student belongs to this school before deleting
+    const student = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
     if (!student) {
-      return res.status(404).json({ error: 'Student not found or already deleted' });
+      return res.status(404).json({ error: 'Student not found' });
     }
 
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
+    const { student: deletedStudent, deletedRecords } = await permanentlyDeleteStudentData(req.params.id);
 
-    const trashItem = await TrashItem.create({
-      itemType: 'Student',
-      itemId: student._id,
-      itemName: student.name,
-      deletedBy: req.user.id,
-      deletedAt: new Date(),
-      expiresAt,
-      originalData: {
-        _id: student._id,
-        name: student.name,
-        admissionId: student.admissionId,
-        classId: student.classId,
-        status: student.status,
-      },
-      deletionContext: {
-        classId: student.classId
-      }
-    });
+    if (req.user?.schoolId && student.status === 'active') {
+      await incrementUsageMetric(req.user.schoolId, 'students', -1);
+    }
 
     res.json({
       success: true,
-      message: 'Student moved to trash',
-      expiresAt,
-      trashItemId: trashItem._id
+      message: 'Student and linked personal data permanently deleted',
+      deletedStudentId: student._id,
+      deletedRecords,
     });
   } catch (error) {
-    console.error('Error soft deleting student:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error permanently deleting student:', error);
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 

@@ -2,8 +2,8 @@ import express from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { Student, Staff, Class } from '../database.js';
-import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import TrashItem from '../models/TrashItem.js';
+import { permanentlyDeleteStudentData } from '../services/studentDataErasureService.js';
 
 const router = express.Router();
 
@@ -241,13 +241,8 @@ router.delete('/:trashItemId', authenticate, checkPermission('settings', 'delete
     // Delete based on item type
     switch (trashItem.itemType) {
       case 'Student':
-        // First delete related StudentFeeStructure records
-        await StudentFeeStructure.deleteMany({ studentId: trashItem.itemId });
-        console.log(`✅ StudentFeeStructure records deleted for student: ${trashItem.itemId}`);
-
-        // Then delete the student
-        await Student.findByIdAndDelete(trashItem.itemId);
-        console.log(`✅ Student permanently deleted: ${trashItem.itemId}`);
+        await permanentlyDeleteStudentData(trashItem.itemId);
+        console.log(`✅ Student personal data permanently deleted: ${trashItem.itemId}`);
         break;
 
       case 'Staff':
@@ -426,11 +421,7 @@ router.delete('/bulk-delete', authenticate, checkPermission('settings', 'delete'
         // Delete based on item type
         switch (trashItem.itemType) {
           case 'Student':
-            // First delete related StudentFeeStructure records
-            await StudentFeeStructure.deleteMany({ studentId: trashItem.itemId });
-
-            // Then delete the student
-            await Student.findByIdAndDelete(trashItem.itemId);
+            await permanentlyDeleteStudentData(trashItem.itemId);
             break;
 
           case 'Staff':

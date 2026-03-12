@@ -3,15 +3,60 @@ import Joi from 'joi';
 // Validation schemas
 export const schemas = {
   // Authentication
+  signup: Joi.object({
+    name: Joi.string().required().min(2).max(100).trim(),
+    email: Joi.string().email().required(),
+    schoolName: Joi.string().required().min(2).max(200).trim(),
+    password: Joi.string().required().min(8).max(128),
+    inviteToken: Joi.string().required(),
+  }),
+
   login: Joi.object({
     phone: Joi.string().pattern(/^[0-9]{10}$/).messages({
       'string.pattern.base': 'Phone number must be 10 digits'
     }),
     email: Joi.string().email(),
-    password: Joi.string().required().min(4).max(50),
+    password: Joi.string().required().min(8).max(128),
     schoolId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).allow('', null),
     schoolCode: Joi.string().max(40).allow('', null),
   }).xor('phone', 'email'), // Must have either phone or email, not both
+
+  superAdminCreateSchool: Joi.object({
+    schoolName: Joi.string().required().min(2).max(200).trim(),
+    schoolCode: Joi.string().max(40).allow('', null),
+    contactEmail: Joi.string().email().allow('', null),
+    contactPhone: Joi.string().max(20).allow('', null),
+    plan: Joi.string().valid('starter', 'growth', 'enterprise').default('starter'),
+    planStatus: Joi.string().valid('trialing', 'active', 'past_due', 'cancelled').default('trialing'),
+    trialEndsAt: Joi.date().iso().allow(null),
+    frontendUrl: Joi.string().uri().allow('', null),
+    backendUrl: Joi.string().uri().allow('', null),
+    adminName: Joi.string().required().min(2).max(100).trim(),
+    adminEmail: Joi.string().email().required(),
+    adminPassword: Joi.string().min(8).max(50).allow('', null),
+    schoolSettings: Joi.object().default({})
+  }),
+
+  superAdminUpdateSchool: Joi.object({
+    schoolName: Joi.string().min(2).max(200).trim(),
+    schoolCode: Joi.string().max(40).allow('', null),
+    status: Joi.string().valid('active', 'inactive'),
+    contactEmail: Joi.string().email().allow('', null),
+    contactPhone: Joi.string().max(20).allow('', null),
+    plan: Joi.string().valid('starter', 'growth', 'enterprise'),
+    planStatus: Joi.string().valid('trialing', 'active', 'past_due', 'cancelled'),
+    trialEndsAt: Joi.date().iso().allow(null),
+    frontendUrl: Joi.string().uri().allow('', null),
+    backendUrl: Joi.string().uri().allow('', null)
+  }).min(1),
+
+  superAdminProvisionSchool: Joi.object({
+    adminName: Joi.string().min(2).max(100).trim().allow('', null),
+    adminEmail: Joi.string().email().allow('', null),
+    adminPassword: Joi.string().min(8).max(50).allow('', null),
+    contactPhone: Joi.string().max(20).allow('', null),
+    schoolSettings: Joi.object().default({})
+  }),
 
   // Staff creation
   createStaff: Joi.object({
@@ -120,6 +165,11 @@ export const schemas = {
     phone: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
     email: Joi.string().email().allow('', null),
     address: Joi.string().max(500).allow('', null),
+    city: Joi.string().max(100).allow('', null),
+    state: Joi.string().max(100).allow('', null),
+    zipCode: Joi.string().max(10).allow('', null),
+    isWhatsapp: Joi.boolean().allow(null),
+    whatsappNumber: Joi.string().pattern(/^[0-9]{10}$/).allow('', null),
 
     // Parent Information
     parentName: Joi.string().max(100).allow('', null),
@@ -133,8 +183,16 @@ export const schemas = {
       relationship: Joi.string(),
       phone: Joi.string().pattern(/^[0-9]{10}$/),
       email: Joi.string().email().allow('', null),
-      occupation: Joi.string().allow('', null)
+      occupation: Joi.string().allow('', null),
+      isWhatsapp: Joi.boolean().allow(null),
+      isParent: Joi.boolean().allow(null)
     })).allow(null),
+    siblings: Joi.array().items(Joi.object({
+      name: Joi.string().allow('', null),
+      age: Joi.number().integer().allow(null),
+      class: Joi.string().allow('', null),
+      school: Joi.string().allow('', null)
+    }).unknown(true)).allow(null),
 
     // Academic Information
     previousSchool: Joi.string().max(200).allow('', null),
@@ -156,15 +214,35 @@ export const schemas = {
     status: Joi.string().valid('active', 'inactive', 'graduated', 'transferred').default('active'),
 
     // Documents & Photo
-    documents: Joi.array().items(Joi.object({
-      id: Joi.string(),
-      name: Joi.string().required(),
-      type: Joi.string().required(),
-      url: Joi.string().uri().required(),
-      uploadDate: Joi.string(),
-      size: Joi.string(),
-      date: Joi.string()
-    })).allow(null),
+    documents: Joi.array().items(Joi.alternatives().try(
+      Joi.object({
+        id: Joi.string(),
+        name: Joi.string().required(),
+        type: Joi.string().required(),
+        url: Joi.string().uri().required(),
+        uploadDate: Joi.string(),
+        size: Joi.string(),
+        date: Joi.string(),
+        category: Joi.string().allow('', null)
+      }),
+      Joi.object({
+        id: Joi.string(),
+        name: Joi.string().required(),
+        type: Joi.string().required(),
+        category: Joi.string().allow('', null),
+        front: Joi.object({
+          url: Joi.string().uri().required(),
+          uploadDate: Joi.string()
+        }),
+        back: Joi.object({
+          url: Joi.string().uri().required(),
+          uploadDate: Joi.string()
+        }),
+        uploadDate: Joi.string(),
+        size: Joi.string(),
+        date: Joi.string()
+      })
+    )).allow(null),
     photo: Joi.string().uri().allow('', null)
   }),
 
@@ -204,6 +282,12 @@ export const schemas = {
   // MongoDB ObjectId validation
   mongoId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).messages({
     'string.pattern.base': 'Invalid ID format'
+  }),
+
+  mongoIdParam: Joi.object({
+    id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required().messages({
+      'string.pattern.base': 'Invalid ID format'
+    })
   })
 };
 

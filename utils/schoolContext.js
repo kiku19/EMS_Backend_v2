@@ -37,7 +37,20 @@ export function serializeSchool(school) {
     name: school.name || null,
     code: school.code || null,
     status: school.status || null,
+    plan: school.plan || 'starter',
+    planStatus: school.planStatus || 'trialing',
+    trialEndsAt: school.trialEndsAt || null,
     isDefault: Boolean(school.isDefault),
+    contactEmail: school.contactEmail || null,
+    contactPhone: school.contactPhone || null,
+    frontendUrl: school.frontendUrl || null,
+    backendUrl: school.backendUrl || null,
+    provisioning: school.provisioning || {
+      status: 'pending',
+      lastProvisionedAt: null,
+      lastProvisionedBy: null,
+      notes: null,
+    },
   };
 }
 
