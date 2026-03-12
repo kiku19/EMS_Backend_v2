@@ -107,6 +107,7 @@ async function authenticateStaff({ phone, email, password, schoolId, schoolCode 
   }
 
   const matchingStaff = await Staff.find(query).limit(2);
+  logger.warn({ query, matchCount: matchingStaff.length }, 'DEBUG: Login staff lookup');
   if (matchingStaff.length === 0) {
     return { error: 'Invalid credentials', status: 401 };
   }
@@ -121,7 +122,9 @@ async function authenticateStaff({ phone, email, password, schoolId, schoolCode 
   const [staff] = matchingStaff;
   await ensureDocumentSchool(staff);
 
+  const hasPassword = !!staff.password;
   const isPasswordValid = await staff.comparePassword(password);
+  logger.warn({ hasPassword, isPasswordValid, staffId: staff._id.toString() }, 'DEBUG: Password check');
   if (!isPasswordValid) {
     return { error: 'Invalid credentials', status: 401 };
   }
