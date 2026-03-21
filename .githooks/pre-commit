@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Pre-commit hook: scan staged files for likely secrets before they enter git history.
+# Install: git config core.hooksPath .githooks   (run once in the repo root)
+#
+# Patterns detected:
+#   - MongoDB Atlas URIs with embedded credentials
+#   - AWS access key IDs / secret keys
+#   - Cloudinary API secrets
+#   - Generic high-entropy assignments: KEY=<long-value>, SECRET=<long-value>, PASSWORD=<long-value>
+#   - Private key headers (-----BEGIN ... PRIVATE KEY-----)
+
+set -euo pipefail
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+FOUND=0
+
+# --- Pattern definitions ---
+# Each entry: "description|regex"
+PATTERNS=(
+  "MongoDB Atlas URI with credentials|mongodb(\+srv)?://[^:]+:[^@]+@"
+  "AWS Access Key ID|AKIA[0-9A-Z]{16}"
+  "AWS Secret Access Key|(?i)(aws_secret_access_key|aws_secret)\s*=\s*[A-Za-z0-9/+=]{40}"
+  "Private key header|-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+  "Cloudinary secret assignment|(?i)cloudinary[_-]?(api[_-]?secret|secret)\s*=\s*[A-Za-z0-9]{20,}"
+  "High-entropy secret assignment|(?i)(secret|password|passwd|api_key|apikey|auth_key|access_token|private_key)\s*=\s*[A-Za-z0-9+/=_-]{32,}"
+)
+
+for FILE in $STAGED; do
+  # Skip binary files and safe template/example files
+  case "$FILE" in
+    *.png|*.jpg|*.jpeg|*.gif|*.ico|*.woff|*.woff2|*.ttf|*.eot|*.mp4|*.zip|*.tar.gz)
+      continue ;;
+    *.example|*.sample)
+      continue ;;
+  esac
+
+  # Skip .env.example, .env.render, .env.docker (they are templates with placeholder values)
+  BASENAME=$(basename "$FILE")
+  case "$BASENAME" in
+    .env.example|.env.render|.env.docker)
+      continue ;;
+  esac
+
+  CONTENT=$(git show ":$FILE" 2>/dev/null || true)
+  if [ -z "$CONTENT" ]; then
+    continue
+  fi
+
+  for ENTRY in "${PATTERNS[@]}"; do
+    DESC="${ENTRY%%|*}"
+    REGEX="${ENTRY##*|}"
+
+    MATCHES=$(echo "$CONTENT" | grep -Pn "$REGEX" 2>/dev/null || true)
+    if [ -n "$MATCHES" ]; then
+      echo -e "${RED}[SECRET DETECTED]${NC} ${YELLOW}${DESC}${NC} in ${FILE}:"
+      echo "$MATCHES" | head -5 | sed 's/^/  /'
+      FOUND=1
+    fi
+  done
+done
+
+if [ "$FOUND" -eq 1 ]; then
+  echo ""
+  echo -e "${RED}Commit blocked.${NC} Remove secrets from the staged files listed above."
+  echo "If this is a false positive, use: git commit --no-verify"
+  exit 1
+fi
+
+exit 0

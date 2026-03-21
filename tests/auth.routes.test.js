@@ -23,9 +23,7 @@ describe('auth routes', () => {
 
     expect(response.body.error).toBe('Validation failed');
     expect(response.body.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ field: 'inviteToken' }),
-      ])
+      expect.arrayContaining([expect.objectContaining({ field: 'inviteToken' })])
     );
   });
 
@@ -223,9 +221,7 @@ describe('auth routes', () => {
     });
     expect(loginResponse.headers['set-cookie']).toBeTruthy();
 
-    const sessionResponse = await agent
-      .get('/api/auth/session')
-      .expect(200);
+    const sessionResponse = await agent.get('/api/auth/session').expect(200);
 
     expect(sessionResponse.body).toMatchObject({
       id: teacher._id.toString(),
@@ -279,7 +275,7 @@ describe('auth routes', () => {
       .set('X-Auth-Mode', 'cookie')
       .send({
         email: 'superid@test.com',
-        password: '12345',
+        password: 'super12345',
       })
       .expect(200);
 
@@ -291,9 +287,7 @@ describe('auth routes', () => {
       token: expect.any(String),
     });
 
-    const sessionResponse = await agent
-      .get('/api/auth/session')
-      .expect(200);
+    const sessionResponse = await agent.get('/api/auth/session').expect(200);
 
     expect(sessionResponse.body).toMatchObject({
       id: 'super-admin',
@@ -436,9 +430,7 @@ describe('auth routes', () => {
 
     expect(response.body.error).toBe('Validation failed');
     expect(response.body.details).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ field: 'password' }),
-      ])
+      expect.arrayContaining([expect.objectContaining({ field: 'password' })])
     );
   });
 
@@ -533,9 +525,7 @@ describe('auth routes', () => {
   it('returns 401 when no token is provided to the session endpoint', async () => {
     const { app } = createTestApp();
 
-    const response = await request(app)
-      .get('/api/auth/session')
-      .expect(401);
+    const response = await request(app).get('/api/auth/session').expect(401);
 
     expect(response.body.error).toBeDefined();
   });
@@ -704,9 +694,7 @@ describe('auth routes', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
-    const returnedIds = staffListResponse.body.map(
-      (s) => (s.id || s._id)?.toString()
-    );
+    const returnedIds = staffListResponse.body.map((s) => (s.id || s._id)?.toString());
     expect(returnedIds).not.toContain(staffB._id.toString());
   });
 

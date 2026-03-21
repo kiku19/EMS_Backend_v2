@@ -3,6 +3,7 @@ import express from 'express';
 import { TeacherTimetable, Staff, Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { validateZod, zodSchemas } from '../middleware/validation.js';
 import timetableService from '../services/timetableService.js';
 import conflictDetectionService from '../services/conflictDetectionService.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
@@ -11,7 +12,7 @@ const router = express.Router();
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
-  if (!normalizedSchoolId) return { ...query };
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
   return { ...query, schoolId: normalizedSchoolId };
 }
 
@@ -34,7 +35,7 @@ const canEditTeacherTimetable = async (req, res, next) => {
     // Fetch user permissions from database
     const { UserPermission } = await import('../database.js');
     const userPermission = await UserPermission.findOne({ userId });
-    
+
     // If user is admin, allow
     if (userPermission && userPermission.role === 'admin') {
       req.userPermissions = userPermission;
@@ -48,8 +49,8 @@ const canEditTeacherTimetable = async (req, res, next) => {
         type: 'PermissionError',
         message: 'Teachers cannot edit their own timetable. Please contact an administrator.',
         details: {
-          reason: 'Teachers can only view their timetable, not edit it'
-        }
+          reason: 'Teachers can only view their timetable, not edit it',
+        },
       });
     }
 
@@ -59,15 +60,15 @@ const canEditTeacherTimetable = async (req, res, next) => {
       type: 'PermissionError',
       message: 'You do not have permission to edit teacher timetables',
       details: {
-        reason: 'Only administrators can edit teacher timetables'
-      }
+        reason: 'Only administrators can edit teacher timetables',
+      },
     });
   } catch (error) {
     console.error('Error checking timetable edit permission:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to verify permissions',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -85,7 +86,7 @@ const canViewTeacherTimetable = async (req, res, next) => {
     // Fetch user permissions from database
     const { UserPermission } = await import('../database.js');
     const userPermission = await UserPermission.findOne({ userId });
-    
+
     // If user is admin, allow
     if (userPermission && userPermission.role === 'admin') {
       req.userPermissions = userPermission;
@@ -100,7 +101,7 @@ const canViewTeacherTimetable = async (req, res, next) => {
 
     // Otherwise, check if they have staff view permission
     if (userPermission) {
-      const staffPermission = userPermission.permissions?.find(p => p.module === 'staff');
+      const staffPermission = userPermission.permissions?.find((p) => p.module === 'staff');
       if (staffPermission && staffPermission.view) {
         req.userPermissions = userPermission;
         return next();
@@ -111,17 +112,17 @@ const canViewTeacherTimetable = async (req, res, next) => {
     return res.status(403).json({
       success: false,
       type: 'PermissionError',
-      message: 'You do not have permission to view this teacher\'s timetable',
+      message: "You do not have permission to view this teacher's timetable",
       details: {
-        reason: 'You can only view your own timetable or need staff view permission'
-      }
+        reason: 'You can only view your own timetable or need staff view permission',
+      },
     });
   } catch (error) {
     console.error('Error checking timetable view permission:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to verify permissions',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -141,7 +142,7 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
     if (!teacher) {
       return res.status(404).json({
         success: false,
-        message: 'Teacher not found'
+        message: 'Teacher not found',
       });
     }
 
@@ -159,9 +160,9 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
           Wednesday: [],
           Thursday: [],
           Friday: [],
-          Saturday: []
+          Saturday: [],
         },
-        schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
+        schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
       });
       await newTimetable.save();
 
@@ -171,8 +172,8 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
         teacher: {
           _id: teacher._id,
           name: teacher.name,
-          code: teacher.code
-        }
+          code: teacher.code,
+        },
       });
     }
 
@@ -182,15 +183,15 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
       teacher: {
         _id: teacher._id,
         name: teacher.name,
-        code: teacher.code
-      }
+        code: teacher.code,
+      },
     });
   } catch (error) {
     console.error('Error fetching teacher timetable:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch teacher timetable',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -210,17 +211,19 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
     if (!teacher) {
       return res.status(404).json({
         success: false,
-        message: 'Teacher not found'
+        message: 'Teacher not found',
       });
     }
 
     // Check if timetable already exists
-    let timetable = await TeacherTimetable.findOne(scopeBySchool(req.user?.schoolId, { teacherId, academicYear }));
+    let timetable = await TeacherTimetable.findOne(
+      scopeBySchool(req.user?.schoolId, { teacherId, academicYear })
+    );
 
     if (timetable) {
       return res.status(400).json({
         success: false,
-        message: 'Teacher timetable already exists for this academic year'
+        message: 'Teacher timetable already exists for this academic year',
       });
     }
 
@@ -234,9 +237,9 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
         Wednesday: [],
         Thursday: [],
         Friday: [],
-        Saturday: []
+        Saturday: [],
       },
-      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined
+      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
     });
 
     await timetable.save();
@@ -244,14 +247,14 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
     res.status(201).json({
       success: true,
       message: 'Teacher timetable created successfully',
-      timetable
+      timetable,
     });
   } catch (error) {
     console.error('Error creating teacher timetable:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to create teacher timetable',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -261,109 +264,106 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
  * Update a specific slot in teacher timetable with validation
  * Body: { day, periodIndex, classId, subject, room, academicYear }
  */
-router.put('/:teacherId/slot', authenticate, canEditTeacherTimetable, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const { day, periodIndex, classId, subject, room, academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
+router.put(
+  '/:teacherId/slot',
+  authenticate,
+  canEditTeacherTimetable,
+  validateZod(zodSchemas.teacherUpdateSlot),
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const {
+        day,
+        periodIndex,
+        classId,
+        subject,
+        room,
+        academicYear = CURRENT_ACADEMIC_YEAR,
+      } = req.body;
 
-    // Validate required fields
-    if (!day || periodIndex === undefined) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required fields: day and periodIndex are required'
-      });
-    }
-
-    // Validate day
-    const validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    if (!validDays.includes(day)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid day. Must be one of: ' + validDays.join(', ')
-      });
-    }
-
-    // Validate teacher exists
-    const teacher = await Staff.findById(teacherId);
-    if (!teacher) {
-      return res.status(404).json({
-        success: false,
-        message: 'Teacher not found'
-      });
-    }
-
-    // If classId is provided, validate class exists and teacher qualification
-    if (classId) {
-      const classDoc = await Class.findById(classId);
-      if (!classDoc) {
+      // Validate teacher exists
+      const teacher = await Staff.findById(teacherId);
+      if (!teacher) {
         return res.status(404).json({
           success: false,
-          message: 'Class not found'
+          message: 'Teacher not found',
         });
       }
 
-      // Validate teacher qualification for this subject and class
-      // Use flexible mode (strictMode=false) to allow scheduling without formal assignments
-      if (subject) {
-        const validation = await conflictDetectionService.validateSlotAssignment(
-          teacherId,
-          classId,
-          subject,
-          day,
-          periodIndex,
-          false // Flexible mode - allow scheduling without formal assignments
-        );
-
-        if (!validation.isValid) {
-          return res.status(409).json({
+      // If classId is provided, validate class exists and teacher qualification
+      if (classId) {
+        const classDoc = await Class.findOne({ _id: classId, isDeleted: { $ne: true } });
+        if (!classDoc) {
+          return res.status(404).json({
             success: false,
-            type: validation.error.type,
-            message: validation.error.message,
-            conflict: validation.error
+            message: 'Class not found',
           });
         }
 
-        // If there's a warning (teacher not formally assigned), log it but allow the operation
-        if (validation.warning) {
-          console.warn('Timetable assignment warning:', validation.warning.message);
+        // Validate teacher qualification for this subject and class
+        // Use flexible mode (strictMode=false) to allow scheduling without formal assignments
+        if (subject) {
+          const validation = await conflictDetectionService.validateSlotAssignment(
+            teacherId,
+            classId,
+            subject,
+            day,
+            periodIndex,
+            false // Flexible mode - allow scheduling without formal assignments
+          );
+
+          if (!validation.isValid) {
+            return res.status(409).json({
+              success: false,
+              type: validation.error.type,
+              message: validation.error.message,
+              conflict: validation.error,
+            });
+          }
+
+          // If there's a warning (teacher not formally assigned), log it but allow the operation
+          if (validation.warning) {
+            console.warn('Timetable assignment warning:', validation.warning.message);
+          }
         }
       }
+
+      // Prepare slot data
+      const slotData = {
+        classId: classId || null,
+        subject: subject || '',
+        room: room || '',
+      };
+
+      // Sync timetables (this will update both teacher and class timetables)
+      const result = await timetableService.syncTimetables({
+        sourceType: 'teacher',
+        sourceId: teacherId,
+        day,
+        periodIndex,
+        slotData,
+        academicYear,
+        modifiedBy: req.user?.id || null,
+        schoolId: req.user?.schoolId,
+      });
+
+      res.json({
+        success: true,
+        message: 'Teacher timetable slot updated successfully',
+        timetable: result.teacherTimetable,
+        oldClassId: result.oldClassId,
+        newClassId: result.newClassId,
+      });
+    } catch (error) {
+      console.error('Error updating teacher timetable slot:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update teacher timetable slot',
+        error: error.message,
+      });
     }
-
-    // Prepare slot data
-    const slotData = {
-      classId: classId || null,
-      subject: subject || '',
-      room: room || ''
-    };
-
-    // Sync timetables (this will update both teacher and class timetables)
-    const result = await timetableService.syncTimetables({
-      sourceType: 'teacher',
-      sourceId: teacherId,
-      day,
-      periodIndex,
-      slotData,
-      academicYear,
-      modifiedBy: req.user?.id || null
-    });
-
-    res.json({
-      success: true,
-      message: 'Teacher timetable slot updated successfully',
-      timetable: result.teacherTimetable,
-      oldClassId: result.oldClassId,
-      newClassId: result.newClassId
-    });
-  } catch (error) {
-    console.error('Error updating teacher timetable slot:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update teacher timetable slot',
-      error: error.message
-    });
   }
-});
+);
 
 /**
  * GET /api/teacher-timetable/:teacherId/conflicts
@@ -380,7 +380,7 @@ router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async
     if (!teacher) {
       return res.status(404).json({
         success: false,
-        message: 'Teacher not found'
+        message: 'Teacher not found',
       });
     }
 
@@ -394,15 +394,15 @@ router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async
       teacher: {
         _id: teacher._id,
         name: teacher.name,
-        code: teacher.code
-      }
+        code: teacher.code,
+      },
     });
   } catch (error) {
     console.error('Error fetching teacher conflicts:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch teacher conflicts',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -412,122 +412,110 @@ router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async
  * Switch class for a teacher in a specific time slot
  * Body: { day, periodIndex, oldClassId, newClassId, subject, room, academicYear }
  */
-router.post('/:teacherId/switch-class', authenticate, canEditTeacherTimetable, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const {
-      day,
-      periodIndex,
-      oldClassId,
-      newClassId,
-      subject,
-      room,
-      academicYear = CURRENT_ACADEMIC_YEAR
-    } = req.body;
+router.post(
+  '/:teacherId/switch-class',
+  authenticate,
+  canEditTeacherTimetable,
+  validateZod(zodSchemas.switchClass),
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const {
+        day,
+        periodIndex,
+        oldClassId,
+        newClassId,
+        subject,
+        room,
+        academicYear = CURRENT_ACADEMIC_YEAR,
+      } = req.body;
 
-    // Validate required fields
-    if (!day || periodIndex === undefined || !newClassId || !subject) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required fields: day, periodIndex, newClassId, and subject are required'
-      });
-    }
-
-    // Validate day
-    const validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    if (!validDays.includes(day)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid day. Must be one of: ' + validDays.join(', ')
-      });
-    }
-
-    // Validate teacher exists
-    const teacher = await Staff.findById(teacherId);
-    if (!teacher) {
-      return res.status(404).json({
-        success: false,
-        message: 'Teacher not found'
-      });
-    }
-
-    // Validate new class exists
-    const newClass = await Class.findById(newClassId);
-    if (!newClass) {
-      return res.status(404).json({
-        success: false,
-        message: 'New class not found'
-      });
-    }
-
-    // Validate old class exists if provided
-    if (oldClassId) {
-      const oldClass = await Class.findById(oldClassId);
-      if (!oldClass) {
+      // Validate teacher exists
+      const teacher = await Staff.findById(teacherId);
+      if (!teacher) {
         return res.status(404).json({
           success: false,
-          message: 'Old class not found'
+          message: 'Teacher not found',
         });
       }
-    }
 
-    // Check for conflicts in the new class slot
-    const conflict = await conflictDetectionService.checkTeacherConflict(
-      teacherId,
-      day,
-      periodIndex,
-      oldClassId // Exclude old class from conflict check
-    );
+      // Validate new class exists
+      const newClass = await Class.findOne({ _id: newClassId, isDeleted: { $ne: true } });
+      if (!newClass) {
+        return res.status(404).json({
+          success: false,
+          message: 'New class not found',
+        });
+      }
 
-    if (conflict) {
-      return res.status(409).json({
+      // Validate old class exists if provided
+      if (oldClassId) {
+        const oldClass = await Class.findOne({ _id: oldClassId, isDeleted: { $ne: true } });
+        if (!oldClass) {
+          return res.status(404).json({
+            success: false,
+            message: 'Old class not found',
+          });
+        }
+      }
+
+      // Check for conflicts in the new class slot
+      const conflict = await conflictDetectionService.checkTeacherConflict(
+        teacherId,
+        day,
+        periodIndex,
+        oldClassId // Exclude old class from conflict check
+      );
+
+      if (conflict) {
+        return res.status(409).json({
+          success: false,
+          type: 'ConflictError',
+          message: conflict.message,
+          conflict: conflict,
+        });
+      }
+
+      // Perform the class switch
+      const result = await timetableService.switchClass({
+        teacherId,
+        oldClassId,
+        newClassId,
+        day,
+        periodIndex,
+        subject,
+        room,
+        academicYear,
+        modifiedBy: req.user?.id || null,
+      });
+
+      res.json({
+        success: true,
+        message: 'Class switched successfully',
+        oldClassId: result.oldClassId,
+        newClassId: result.newClassId,
+        oldClassTimetable: result.oldClassTimetable,
+        newClassTimetable: result.newClassTimetable,
+        teacherTimetable: result.teacherTimetable,
+      });
+    } catch (error) {
+      console.error('Error switching class:', error);
+
+      // Check if it's a validation error
+      if (error.message.includes('not qualified') || error.message.includes('not found')) {
+        return res.status(400).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      res.status(500).json({
         success: false,
-        type: 'ConflictError',
-        message: conflict.message,
-        conflict: conflict
+        message: 'Failed to switch class',
+        error: error.message,
       });
     }
-
-    // Perform the class switch
-    const result = await timetableService.switchClass({
-      teacherId,
-      oldClassId,
-      newClassId,
-      day,
-      periodIndex,
-      subject,
-      room,
-      academicYear,
-      modifiedBy: req.user?.id || null
-    });
-
-    res.json({
-      success: true,
-      message: 'Class switched successfully',
-      oldClassId: result.oldClassId,
-      newClassId: result.newClassId,
-      oldClassTimetable: result.oldClassTimetable,
-      newClassTimetable: result.newClassTimetable,
-      teacherTimetable: result.teacherTimetable
-    });
-  } catch (error) {
-    console.error('Error switching class:', error);
-    
-    // Check if it's a validation error
-    if (error.message.includes('not qualified') || error.message.includes('not found')) {
-      return res.status(400).json({
-        success: false,
-        message: error.message
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to switch class',
-      error: error.message
-    });
   }
-});
+);
 
 export default router;
-

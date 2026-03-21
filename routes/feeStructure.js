@@ -9,7 +9,7 @@ const router = express.Router();
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
-  if (!normalizedSchoolId) return { ...query };
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
   return { ...query, schoolId: normalizedSchoolId };
 }
 
@@ -23,12 +23,15 @@ async function resolveRequestSchoolId(req) {
 router.get('/class/:classId', authenticate, checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { classId } = req.params;
-    const resolvedAcademicYear = await resolveAcademicYear(req.query.academicYear);
+    const resolvedAcademicYear = await resolveAcademicYear(
+      req.query.academicYear,
+      req.user?.schoolId
+    );
 
     const feeStructure = await FeeStructure.findOne(
       scopeBySchool(req.user?.schoolId, {
         classId,
-        academicYear: resolvedAcademicYear
+        academicYear: resolvedAcademicYear,
       })
     ).populate('templateId', 'name section totalAnnualFee');
 
@@ -45,8 +48,9 @@ router.get('/class/:classId', authenticate, checkPermission('fees', 'view'), asy
 // Create or update fee structure for a class (upsert)
 router.post('/', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
-    const { classId, academicYear, templateId, feeHeads, collectionSchedule, totalAnnualFee } = req.body;
-    const resolvedAcademicYear = await resolveAcademicYear(academicYear);
+    const { classId, academicYear, templateId, feeHeads, collectionSchedule, totalAnnualFee } =
+      req.body;
+    const resolvedAcademicYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
     const schoolId = await resolveRequestSchoolId(req);
 
     if (!classId) {
@@ -77,70 +81,79 @@ router.post('/', authenticate, checkPermission('fees', 'create'), async (req, re
 });
 
 // Apply class fee structure to all students in the class
-router.post('/apply-to-students', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
-  try {
-    const { classId, academicYear } = req.body;
-    const resolvedAcademicYear = await resolveAcademicYear(academicYear);
-    const schoolId = await resolveRequestSchoolId(req);
+router.post(
+  '/apply-to-students',
+  authenticate,
+  checkPermission('fees', 'edit'),
+  async (req, res) => {
+    try {
+      const { classId, academicYear } = req.body;
+      const resolvedAcademicYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
+      const schoolId = await resolveRequestSchoolId(req);
 
-    const classStructure = await FeeStructure.findOne(
-      scopeBySchool(req.user?.schoolId, { classId, academicYear: resolvedAcademicYear })
-    );
-    if (!classStructure) {
-      return res.status(404).json({ error: 'Fee structure not found for this class. Please save a fee structure first.' });
-    }
+      const classStructure = await FeeStructure.findOne(
+        scopeBySchool(req.user?.schoolId, { classId, academicYear: resolvedAcademicYear })
+      );
+      if (!classStructure) {
+        return res
+          .status(404)
+          .json({
+            error: 'Fee structure not found for this class. Please save a fee structure first.',
+          });
+      }
 
-    const students = await Student.find(
-      scopeBySchool(req.user?.schoolId, { classId, status: 'active' })
-    );
-
-    let appliedCount = 0;
-
-    for (const student of students) {
-      const existing = await StudentFeeStructure.findOne(
-        scopeBySchool(req.user?.schoolId, {
-          studentId: student._id,
-          academicYear: resolvedAcademicYear
-        })
+      const students = await Student.find(
+        scopeBySchool(req.user?.schoolId, { classId, status: 'active' })
       );
 
-      if (!existing) {
-        const newStructure = new StudentFeeStructure({
-          schoolId,
-          studentId: student._id,
-          classId,
-          academicYear: resolvedAcademicYear,
-          feeHeads: classStructure.feeHeads.map((feeHead) => ({
-            feeHeadId: feeHead._id || feeHead.feeHeadId,
-            name: feeHead.name,
-            category: feeHead.category,
-            amount: feeHead.amount,
-            mandatory: feeHead.mandatory,
-            frequency: feeHead.frequency,
-            paidAmount: 0,
-            balanceAmount: feeHead.amount,
-            status: 'pending'
-          }))
-        });
+      let appliedCount = 0;
 
-        newStructure.totalFee = newStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
-        newStructure.totalPaid = 0;
-        newStructure.totalBalance = newStructure.totalFee;
-        newStructure.overallStatus = 'pending';
+      for (const student of students) {
+        const existing = await StudentFeeStructure.findOne(
+          scopeBySchool(req.user?.schoolId, {
+            studentId: student._id,
+            academicYear: resolvedAcademicYear,
+          })
+        );
 
-        await newStructure.save();
-        appliedCount += 1;
+        if (!existing) {
+          const newStructure = new StudentFeeStructure({
+            schoolId,
+            studentId: student._id,
+            classId,
+            academicYear: resolvedAcademicYear,
+            feeHeads: classStructure.feeHeads.map((feeHead) => ({
+              feeHeadId: feeHead._id || feeHead.feeHeadId,
+              name: feeHead.name,
+              category: feeHead.category,
+              amount: feeHead.amount,
+              mandatory: feeHead.mandatory,
+              frequency: feeHead.frequency,
+              paidAmount: 0,
+              balanceAmount: feeHead.amount,
+              status: 'pending',
+            })),
+          });
+
+          newStructure.totalFee = newStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
+          newStructure.totalPaid = 0;
+          newStructure.totalBalance = newStructure.totalFee;
+          newStructure.overallStatus = 'pending';
+
+          await newStructure.save();
+          appliedCount += 1;
+        }
       }
-    }
 
-    res.json({
-      success: true,
-      message: `Fee structure applied to ${appliedCount} students (${students.length - appliedCount} already had a structure)`,
-      appliedCount
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      res.json({
+        success: true,
+        message: `Fee structure applied to ${appliedCount} students (${students.length - appliedCount} already had a structure)`,
+        appliedCount,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
 export default router;

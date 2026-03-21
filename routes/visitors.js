@@ -67,12 +67,12 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
         { name: searchRegex },
         { phone: searchRegex },
         { email: searchRegex },
-        { whomToMeet: searchRegex }
+        { whomToMeet: searchRegex },
       ];
     }
 
     // Execute query with populate
-    let visitorsQuery = Visitor.find(query)
+    const visitorsQuery = Visitor.find(query)
       .sort({ checkInTime: -1 })
       .populate('checkedInBy', 'name code')
       .populate('checkedOutBy', 'name code')
@@ -83,14 +83,14 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
     res.json({
       success: true,
       data: visitors,
-      count: visitors.length
+      count: visitors.length,
     });
   } catch (error) {
     console.error('❌ Get visitors error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch visitors'
+      message: 'Failed to fetch visitors',
     });
   }
 });
@@ -105,14 +105,14 @@ router.get('/active', authenticate, checkPermission('front-office', 'view'), asy
     res.json({
       success: true,
       data: visitors,
-      count: visitors.length
+      count: visitors.length,
     });
   } catch (error) {
     console.error('❌ Get active visitors error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch active visitors'
+      message: 'Failed to fetch active visitors',
     });
   }
 });
@@ -127,14 +127,14 @@ router.get('/today', authenticate, checkPermission('front-office', 'view'), asyn
     res.json({
       success: true,
       data: visitors,
-      count: visitors.length
+      count: visitors.length,
     });
   } catch (error) {
-    console.error('❌ Get today\'s visitors error:', error);
+    console.error("❌ Get today's visitors error:", error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch today\'s visitors'
+      message: "Failed to fetch today's visitors",
     });
   }
 });
@@ -150,22 +150,22 @@ router.get('/search', authenticate, checkPermission('front-office', 'view'), asy
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
         success: false,
-        error: 'Search query must be at least 2 characters'
+        error: 'Search query must be at least 2 characters',
       });
     }
 
-    const visitors = await Visitor.searchVisitors(q.trim());
+    const visitors = await Visitor.searchVisitors(q.trim(), req.user.schoolId);
     res.json({
       success: true,
       data: visitors,
-      count: visitors.length
+      count: visitors.length,
     });
   } catch (error) {
     console.error('❌ Search visitors error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to search visitors'
+      message: 'Failed to search visitors',
     });
   }
 });
@@ -174,57 +174,64 @@ router.get('/search', authenticate, checkPermission('front-office', 'view'), asy
  * GET /api/visitors/parents/search?q=
  * Search parents from student database
  */
-router.get('/parents/search', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
-  try {
-    const { q } = req.query;
+router.get(
+  '/parents/search',
+  authenticate,
+  checkPermission('front-office', 'view'),
+  async (req, res) => {
+    try {
+      const { q } = req.query;
 
-    if (!q || q.trim().length < 2) {
-      return res.status(400).json({
+      if (!q || q.trim().length < 2) {
+        return res.status(400).json({
+          success: false,
+          error: 'Search query must be at least 2 characters',
+        });
+      }
+
+      const searchRegex = new RegExp(q.trim(), 'i');
+
+      // Search in parent fields of students (scoped to school)
+      const students = await Student.find({
+        schoolId: req.user.schoolId,
+        isDeleted: { $ne: true },
+        $or: [
+          { parentName: searchRegex },
+          { parentPhone: searchRegex },
+          { parentEmail: searchRegex },
+        ],
+      })
+        .select('name admissionId parentName parentPhone parentEmail classId')
+        .populate('classId', 'name section')
+        .limit(20);
+
+      // Format results
+      const parents = students.map((student) => ({
+        studentId: student._id,
+        studentName: student.name,
+        admissionId: student.admissionId,
+        parentName: student.parentName,
+        parentPhone: student.parentPhone,
+        parentEmail: student.parentEmail,
+        class: student.classId?.name,
+        section: student.classId?.section,
+      }));
+
+      res.json({
+        success: true,
+        data: parents,
+        count: parents.length,
+      });
+    } catch (error) {
+      console.error('❌ Search parents error:', error);
+      res.status(500).json({
         success: false,
-        error: 'Search query must be at least 2 characters'
+        error: error.message,
+        message: 'Failed to search parents',
       });
     }
-
-    const searchRegex = new RegExp(q.trim(), 'i');
-
-    // Search in parent fields of students
-    const students = await Student.find({
-      $or: [
-        { parentName: searchRegex },
-        { parentPhone: searchRegex },
-        { parentEmail: searchRegex }
-      ]
-    })
-      .select('name admissionId parentName parentPhone parentEmail classId')
-      .populate('classId', 'name section')
-      .limit(20);
-
-    // Format results
-    const parents = students.map(student => ({
-      studentId: student._id,
-      studentName: student.name,
-      admissionId: student.admissionId,
-      parentName: student.parentName,
-      parentPhone: student.parentPhone,
-      parentEmail: student.parentEmail,
-      class: student.classId?.name,
-      section: student.classId?.section
-    }));
-
-    res.json({
-      success: true,
-      data: parents,
-      count: parents.length
-    });
-  } catch (error) {
-    console.error('❌ Search parents error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to search parents'
-    });
   }
-});
+);
 
 /**
  * GET /api/visitors/:id
@@ -243,20 +250,20 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
     if (!visitor) {
       return res.status(404).json({
         success: false,
-        error: 'Visitor not found'
+        error: 'Visitor not found',
       });
     }
 
     res.json({
       success: true,
-      data: visitor
+      data: visitor,
     });
   } catch (error) {
     console.error('❌ Get visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch visitor'
+      message: 'Failed to fetch visitor',
     });
   }
 });
@@ -283,7 +290,7 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
       deliveryPerson,
       otherPurpose,
       itemsDeclared,
-      notes
+      notes,
     } = req.body;
 
     // Validation
@@ -291,7 +298,7 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
       return res.status(400).json({
         success: false,
         error: 'Missing required fields',
-        message: 'Name, phone, and purpose are required'
+        message: 'Name, phone, and purpose are required',
       });
     }
 
@@ -300,7 +307,7 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
     if (!phoneRegex.test(phone)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid phone number format'
+        error: 'Invalid phone number format',
       });
     }
 
@@ -314,7 +321,7 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
       whomToMeet,
       department,
       checkedInBy: req.user.id,
-      notes
+      notes,
     };
 
     // Add purpose-specific fields
@@ -369,14 +376,14 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
     res.status(201).json({
       success: true,
       data: visitor,
-      message: 'Visitor checked in successfully'
+      message: 'Visitor checked in successfully',
     });
   } catch (error) {
     console.error('❌ Create visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to check in visitor'
+      message: 'Failed to check in visitor',
     });
   }
 });
@@ -392,7 +399,7 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
     if (!visitor) {
       return res.status(404).json({
         success: false,
-        error: 'Visitor not found'
+        error: 'Visitor not found',
       });
     }
 
@@ -400,19 +407,11 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
     if (visitor.status === 'CHECKED_OUT') {
       return res.status(400).json({
         success: false,
-        error: 'Cannot update checked-out visitor'
+        error: 'Cannot update checked-out visitor',
       });
     }
 
-    const {
-      name,
-      phone,
-      email,
-      photoUrl,
-      whomToMeet,
-      department,
-      notes
-    } = req.body;
+    const { name, phone, email, photoUrl, whomToMeet, department, notes } = req.body;
 
     // Update allowed fields
     if (name) visitor.name = name;
@@ -436,14 +435,14 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
     res.json({
       success: true,
       data: visitor,
-      message: 'Visitor updated successfully'
+      message: 'Visitor updated successfully',
     });
   } catch (error) {
     console.error('❌ Update visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to update visitor'
+      message: 'Failed to update visitor',
     });
   }
 });
@@ -452,50 +451,55 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
  * POST /api/visitors/:id/check-out
  * Check-out visitor
  */
-router.post('/:id/check-out', authenticate, checkPermission('front-office', 'edit'), async (req, res) => {
-  try {
-    const visitor = await Visitor.findById(req.params.id);
+router.post(
+  '/:id/check-out',
+  authenticate,
+  checkPermission('front-office', 'edit'),
+  async (req, res) => {
+    try {
+      const visitor = await Visitor.findById(req.params.id);
 
-    if (!visitor) {
-      return res.status(404).json({
+      if (!visitor) {
+        return res.status(404).json({
+          success: false,
+          error: 'Visitor not found',
+        });
+      }
+
+      // Check if already checked out
+      if (visitor.status === 'CHECKED_OUT') {
+        return res.status(400).json({
+          success: false,
+          error: 'Visitor already checked out',
+        });
+      }
+
+      const { notes } = req.body;
+
+      // Check out visitor
+      await visitor.checkOut(req.user.id, notes);
+
+      // Populate for response
+      await visitor.populate('checkedOutBy', 'name code');
+      if (visitor.studentId) {
+        await visitor.populate('studentId', 'name admissionId rollNo');
+      }
+
+      res.json({
+        success: true,
+        data: visitor,
+        message: 'Visitor checked out successfully',
+      });
+    } catch (error) {
+      console.error('❌ Check-out visitor error:', error);
+      res.status(500).json({
         success: false,
-        error: 'Visitor not found'
+        error: error.message,
+        message: 'Failed to check out visitor',
       });
     }
-
-    // Check if already checked out
-    if (visitor.status === 'CHECKED_OUT') {
-      return res.status(400).json({
-        success: false,
-        error: 'Visitor already checked out'
-      });
-    }
-
-    const { notes } = req.body;
-
-    // Check out visitor
-    await visitor.checkOut(req.user.id, notes);
-
-    // Populate for response
-    await visitor.populate('checkedOutBy', 'name code');
-    if (visitor.studentId) {
-      await visitor.populate('studentId', 'name admissionId rollNo');
-    }
-
-    res.json({
-      success: true,
-      data: visitor,
-      message: 'Visitor checked out successfully'
-    });
-  } catch (error) {
-    console.error('❌ Check-out visitor error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to check out visitor'
-    });
   }
-});
+);
 
 /**
  * DELETE /api/visitors/:id
@@ -508,7 +512,7 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
     if (!visitor) {
       return res.status(404).json({
         success: false,
-        error: 'Visitor not found'
+        error: 'Visitor not found',
       });
     }
 
@@ -516,14 +520,14 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
 
     res.json({
       success: true,
-      message: 'Visitor deleted successfully'
+      message: 'Visitor deleted successfully',
     });
   } catch (error) {
     console.error('❌ Delete visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to delete visitor'
+      message: 'Failed to delete visitor',
     });
   }
 });
@@ -533,42 +537,49 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
  * Generate visitor badge (PDF)
  * TODO: Implement PDF generation
  */
-router.get('/:id/badge', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
-  try {
-    const visitor = await Visitor.findById(req.params.id)
-      .populate('studentId', 'name admissionId');
+router.get(
+  '/:id/badge',
+  authenticate,
+  checkPermission('front-office', 'view'),
+  async (req, res) => {
+    try {
+      const visitor = await Visitor.findById(req.params.id).populate(
+        'studentId',
+        'name admissionId'
+      );
 
-    if (!visitor) {
-      return res.status(404).json({
+      if (!visitor) {
+        return res.status(404).json({
+          success: false,
+          error: 'Visitor not found',
+        });
+      }
+
+      // TODO: Generate PDF badge
+      // For now, return visitor data for badge generation
+      res.json({
+        success: true,
+        data: {
+          visitor: visitor,
+          badgeData: {
+            name: visitor.name,
+            purpose: visitor.purpose.replace(/_/g, ' '),
+            checkInTime: visitor.checkInTime,
+            whomToMeet: visitor.whomToMeet,
+            studentName: visitor.studentName,
+          },
+        },
+        message: 'Badge data retrieved. PDF generation to be implemented.',
+      });
+    } catch (error) {
+      console.error('❌ Generate badge error:', error);
+      res.status(500).json({
         success: false,
-        error: 'Visitor not found'
+        error: error.message,
+        message: 'Failed to generate badge',
       });
     }
-
-    // TODO: Generate PDF badge
-    // For now, return visitor data for badge generation
-    res.json({
-      success: true,
-      data: {
-        visitor: visitor,
-        badgeData: {
-          name: visitor.name,
-          purpose: visitor.purpose.replace(/_/g, ' '),
-          checkInTime: visitor.checkInTime,
-          whomToMeet: visitor.whomToMeet,
-          studentName: visitor.studentName
-        }
-      },
-      message: 'Badge data retrieved. PDF generation to be implemented.'
-    });
-  } catch (error) {
-    console.error('❌ Generate badge error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to generate badge'
-    });
   }
-});
+);
 
 export default router;

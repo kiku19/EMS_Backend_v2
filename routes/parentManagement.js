@@ -2,7 +2,10 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import Parent from '../models/Parent.js';
 import { Student } from '../database.js';
-import { generateParentPassword, createOrUpdateParentAccount } from '../utils/parentAccountHelper.js';
+import {
+  generateParentPassword,
+  createOrUpdateParentAccount,
+} from '../utils/parentAccountHelper.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
@@ -25,11 +28,7 @@ router.get('/', async (req, res) => {
 
     if (search) {
       const searchRegex = new RegExp(search, 'i');
-      query.$or = [
-        { name: searchRegex },
-        { phone: searchRegex },
-        { email: searchRegex }
-      ];
+      query.$or = [{ name: searchRegex }, { phone: searchRegex }, { email: searchRegex }];
     }
 
     if (status) {
@@ -43,7 +42,7 @@ router.get('/', async (req, res) => {
         .skip(skip)
         .limit(parseInt(limit))
         .lean(),
-      Parent.countDocuments(query)
+      Parent.countDocuments(query),
     ]);
 
     // Populate children names for display
@@ -60,11 +59,17 @@ router.get('/', async (req, res) => {
                 studentId: child.studentId,
                 name: student?.name || 'Unknown',
                 admissionId: student?.admissionId,
-                class: student?.classId ? `${student.classId.name} ${student.classId.section}` : null,
-                relationship: child.relationship
+                class: student?.classId
+                  ? `${student.classId.name} ${student.classId.section}`
+                  : null,
+                relationship: child.relationship,
               };
             } catch {
-              return { studentId: child.studentId, name: 'Unknown', relationship: child.relationship };
+              return {
+                studentId: child.studentId,
+                name: 'Unknown',
+                relationship: child.relationship,
+              };
             }
           })
         );
@@ -80,13 +85,18 @@ router.get('/', async (req, res) => {
           page: parseInt(page),
           limit: parseInt(limit),
           total,
-          pages: Math.ceil(total / parseInt(limit))
-        }
-      }
+          pages: Math.ceil(total / parseInt(limit)),
+        },
+      },
     });
   } catch (error) {
     console.error('List parents error:', error);
-    res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to fetch parents' } });
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: 'Failed to fetch parents' },
+      });
   }
 });
 
@@ -98,7 +108,9 @@ router.get('/:id', async (req, res) => {
       .lean();
 
     if (!parent) {
-      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
+      return res
+        .status(404)
+        .json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
     }
 
     const childrenDetails = await Promise.all(
@@ -119,7 +131,7 @@ router.get('/:id', async (req, res) => {
             dateOfBirth: student?.dateOfBirth,
             feeDetails: student?.feeDetails,
             relationship: child.relationship,
-            isPrimary: child.isPrimary
+            isPrimary: child.isPrimary,
           };
         } catch {
           return { studentId: child.studentId, name: 'Unknown', relationship: child.relationship };
@@ -129,11 +141,13 @@ router.get('/:id', async (req, res) => {
 
     res.json({
       success: true,
-      data: { ...parent, children: childrenDetails }
+      data: { ...parent, children: childrenDetails },
     });
   } catch (error) {
     console.error('Get parent error:', error);
-    res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to fetch parent' } });
+    res
+      .status(500)
+      .json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to fetch parent' } });
   }
 });
 
@@ -142,24 +156,46 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
   try {
     const parent = await Parent.findOne(getParentQuery(req, { _id: req.params.id }));
     if (!parent) {
-      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
+      return res
+        .status(404)
+        .json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
     }
 
     if (parent.children.length === 0) {
-      return res.status(400).json({ success: false, error: { code: 'NO_CHILDREN', message: 'Parent has no linked children' } });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: { code: 'NO_CHILDREN', message: 'Parent has no linked children' },
+        });
     }
 
     // Use first child's DOB + admissionId to generate password
     const firstChild = parent.children[0];
-    const student = await Student.findById(firstChild.studentId).select('dateOfBirth admissionId').lean();
+    const student = await Student.findById(firstChild.studentId)
+      .select('dateOfBirth admissionId')
+      .lean();
 
     if (!student) {
-      return res.status(400).json({ success: false, error: { code: 'STUDENT_NOT_FOUND', message: 'Linked student not found' } });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: { code: 'STUDENT_NOT_FOUND', message: 'Linked student not found' },
+        });
     }
 
     const plainPassword = generateParentPassword(student.dateOfBirth, student.admissionId);
     if (!plainPassword) {
-      return res.status(400).json({ success: false, error: { code: 'CANNOT_GENERATE', message: 'Cannot generate password - student missing DOB or admission ID' } });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: {
+            code: 'CANNOT_GENERATE',
+            message: 'Cannot generate password - student missing DOB or admission ID',
+          },
+        });
     }
 
     parent.password = plainPassword;
@@ -168,11 +204,16 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
     res.json({
       success: true,
       message: 'Password reset successfully',
-      data: { generatedPassword: plainPassword }
+      data: { generatedPassword: plainPassword },
     });
   } catch (error) {
     console.error('Reset parent password error:', error);
-    res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to reset password' } });
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: 'Failed to reset password' },
+      });
   }
 });
 
@@ -181,7 +222,15 @@ router.put('/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
     if (!['active', 'inactive', 'suspended'].includes(status)) {
-      return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Status must be active, inactive, or suspended' } });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: {
+            code: 'INVALID_STATUS',
+            message: 'Status must be active, inactive, or suspended',
+          },
+        });
     }
 
     const parent = await Parent.findOneAndUpdate(
@@ -191,35 +240,50 @@ router.put('/:id/status', async (req, res) => {
     ).select('-password -fcmTokens -firebaseUid');
 
     if (!parent) {
-      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
+      return res
+        .status(404)
+        .json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
     }
 
     res.json({ success: true, message: `Parent account ${status}`, data: parent });
   } catch (error) {
     console.error('Update parent status error:', error);
-    res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to update status' } });
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: 'Failed to update status' },
+      });
   }
 });
 
 // POST /api/parents/bulk-create - Create parent accounts for all students that don't have one
 router.post('/bulk-create', async (req, res) => {
   try {
-    const students = await Student.find({
-      status: 'active',
-      isDeleted: { $ne: true }
-    }).select('name admissionId dateOfBirth parentName parentPhone parentEmail parentRelationship parents').lean();
+    const students = await Student.find(
+      getParentQuery(req, {
+        status: 'active',
+        isDeleted: { $ne: true },
+      })
+    )
+      .select(
+        'name admissionId dateOfBirth parentName parentPhone parentEmail parentRelationship parents schoolId'
+      )
+      .lean();
 
     let created = 0;
-    let updated = 0;
+    const updated = 0;
     let skipped = 0;
     let errors = 0;
 
     for (const student of students) {
       try {
         // Check if any parent already exists for this student
-        const existingParent = await Parent.findOne(getParentQuery(req, {
-          'children.studentId': student._id
-        }));
+        const existingParent = await Parent.findOne(
+          getParentQuery(req, {
+            'children.studentId': student._id,
+          })
+        );
 
         if (existingParent) {
           skipped++;
@@ -237,11 +301,16 @@ router.post('/bulk-create', async (req, res) => {
     res.json({
       success: true,
       message: `Bulk parent account creation complete`,
-      data: { totalStudents: students.length, created, updated, skipped, errors }
+      data: { totalStudents: students.length, created, updated, skipped, errors },
     });
   } catch (error) {
     console.error('Bulk create parents error:', error);
-    res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to bulk create parent accounts' } });
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: 'Failed to bulk create parent accounts' },
+      });
   }
 });
 

@@ -1,46 +1,55 @@
 import mongoose from 'mongoose';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
-const chapterProgressSchema = new mongoose.Schema({
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
-  subjectName: { type: String, required: true },
-  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
+const chapterProgressSchema = new mongoose.Schema(
+  {
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+    subjectId: { type: mongoose.Schema.Types.ObjectId }, // Legacy field, no Subject model exists — use subjectName instead
+    subjectName: { type: String, required: true },
+    teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
+    academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
 
-  // Chapter tracking
-  chapters: [{
-    chapterName: { type: String, required: true },
-    chapterNumber: { type: Number, required: true },
-    status: {
-      type: String,
-      enum: ['not_started', 'in_progress', 'completed'],
-      default: 'not_started'
-    },
-    progressPercentage: { type: Number, min: 0, max: 100, default: 0 },
-    startDate: Date,
-    completedDate: Date,
-    topics: [String] // List of topics in the chapter
-  }],
+    // Chapter tracking
+    chapters: [
+      {
+        chapterName: { type: String, required: true },
+        chapterNumber: { type: Number, required: true },
+        status: {
+          type: String,
+          enum: ['not_started', 'in_progress', 'completed'],
+          default: 'not_started',
+        },
+        progressPercentage: { type: Number, min: 0, max: 100, default: 0 },
+        startDate: Date,
+        completedDate: Date,
+        topics: [String], // List of topics in the chapter
+      },
+    ],
 
-  // Overall subject progress
-  overallProgress: { type: Number, min: 0, max: 100, default: 0 },
+    // Overall subject progress
+    overallProgress: { type: Number, min: 0, max: 100, default: 0 },
 
-  // Upcoming chapters
-  upcomingChapters: [String],
+    // Upcoming chapters
+    upcomingChapters: [String],
 
-  // Assigned students (empty means all students in class)
-  assignedStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }]
-}, {
-  timestamps: true
-});
+    // Assigned students (empty means all students in class)
+    assignedStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }],
+  },
+  {
+    timestamps: true,
+  }
+);
 
 // Indexes
-chapterProgressSchema.index({ classId: 1, subjectName: 1, academicYear: 1 }, { unique: true });
+chapterProgressSchema.index(
+  { schoolId: 1, classId: 1, subjectName: 1, academicYear: 1 },
+  { unique: true }
+);
 chapterProgressSchema.index({ teacherId: 1 });
 
 // Method to calculate overall progress
-chapterProgressSchema.methods.calculateOverallProgress = function() {
+chapterProgressSchema.methods.calculateOverallProgress = function () {
   if (this.chapters.length === 0) {
     this.overallProgress = 0;
     return 0;
@@ -52,4 +61,3 @@ chapterProgressSchema.methods.calculateOverallProgress = function() {
 };
 
 export default mongoose.model('ChapterProgress', chapterProgressSchema);
-

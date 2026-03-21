@@ -13,13 +13,14 @@ import {
   Result,
   Announcement,
   GatePass,
-  Appointment
+  Appointment,
 } from '../database.js';
 import Homework from '../models/Homework.js';
 import StaffProfileAudit from '../models/StaffProfileAudit.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateStaffProfileUpdate } from '../middleware/staffValidation.js';
 import { emitStaffUpdate } from '../utils/socketEmitter.js';
+import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -34,7 +35,7 @@ function requireSelfOrAdmin(req, res, next) {
   const { teacherId } = req.params;
   const userId = req.user?.id || req.user?.userId;
   const roles = Array.isArray(req.user?.role) ? req.user.role : [req.user?.role || ''];
-  const isAdmin = roles.some(r => /admin/i.test(r));
+  const isAdmin = roles.some((r) => /admin/i.test(r));
   if (isAdmin || userId === teacherId) {
     return next();
   }
@@ -43,7 +44,7 @@ function requireSelfOrAdmin(req, res, next) {
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
-  if (!normalizedSchoolId) return { ...query };
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
   return { ...query, schoolId: normalizedSchoolId };
 }
 
@@ -65,86 +66,98 @@ router.get('/teacher/:teacherId/dashboard', authenticate, requireSelfOrAdmin, as
     // Get teacher details
     const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
     if (!teacher) {
-        return res.status(404).json({ error: 'Teacher not found' });
+      return res.status(404).json({ error: 'Teacher not found' });
     }
 
     // Run queries in parallel for better performance
-    const [
-      classTeacherOf,
-      todayAttendance,
-      teacherTimetable,
-      substitutions,
-      unreadAnnouncements
-    ] = await Promise.all([
-      // Check if class teacher
-      Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId })).lean(),
-      
-      // Get today's attendance status
-      StaffAttendance.findOne({
-        staffId: teacherId,
-        date: today
-      }).lean(),
-      
-      // Get today's timetable
-      TeacherTimetable.findOne({ teacherId }).lean(),
-      
-      // Get substitution alerts (assigned as substitute)
-      Substitution.find({
-        substituteTeacherId: teacherId,
-        date: { $gte: today },
-        status: { $in: ['pending', 'confirmed'] }
-      })
-        .populate('classId', 'name section')
-        .populate('absentTeacherId', 'name')
-        .limit(10)
-        .lean(),
-      
-      // Get unread announcements count
-      Announcement.countDocuments({
-        targetAudience: { $in: ['all', 'staff'] },
-        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
-      })
-    ]);
+    const [classTeacherOf, todayAttendance, teacherTimetable, substitutions, unreadAnnouncements] =
+      await Promise.all([
+        // Check if class teacher
+        Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId })).lean(),
 
+        // Get today's attendance status
+        StaffAttendance.findOne(
+          scopeBySchool(schoolId, {
+            staffId: teacherId,
+            date: today,
+          })
+        ).lean(),
+
+        // Get today's timetable
+        TeacherTimetable.findOne(scopeBySchool(schoolId, { teacherId })).lean(),
+
+        // Get substitution alerts (assigned as substitute)
+        Substitution.find(
+          scopeBySchool(schoolId, {
+            substituteTeacherId: teacherId,
+            date: { $gte: today },
+            status: { $in: ['pending', 'confirmed'] },
+          })
+        )
+          .populate('classId', 'name section')
+          .populate('absentTeacherId', 'name')
+          .limit(10)
+          .lean(),
+
+        // Get unread announcements count
+        Announcement.countDocuments(
+          scopeBySchool(schoolId, {
+            targetAudience: { $in: ['all', 'staff'] },
+            createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          })
+        ),
+      ]);
 
     // Get today's schedule
-    const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const timezone = req.query.timezone || 'Asia/Kolkata';
+    const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
     const todaySchedule = teacherTimetable?.schedule?.[dayName] || [];
 
     // Get gate pass requests and appointments (if class teacher)
     let gatePasses = [];
     let appointments = [];
-    
+
     if (classTeacherOf) {
-      
       // Run class teacher queries in parallel
       // FIXED: Filter by status and isDeleted for consistency
       const [students, classAppointments] = await Promise.all([
-        Student.find(scopeBySchool(schoolId, { classId: classTeacherOf._id, status: 'active', isDeleted: { $ne: true } })).select('_id').lean(),
-        Appointment.find({
-          meetingWith: teacher.name,
-          fromDateTime: { $gte: new Date() },
-          status: 'scheduled'
-        })
+        Student.find(
+          scopeBySchool(schoolId, {
+            classId: classTeacherOf._id,
+            status: 'active',
+            isDeleted: { $ne: true },
+          })
+        )
+          .select('_id')
+          .lean(),
+        Appointment.find(
+          scopeBySchool(schoolId, {
+            meetingWith: teacher.name,
+            fromDateTime: { $gte: new Date() },
+            status: 'scheduled',
+          })
+        )
           .sort({ fromDateTime: 1 })
           .limit(5)
-          .lean()
+          .lean(),
       ]);
 
-      const studentIds = students.map(s => s._id);
-      
+      const studentIds = students.map((s) => s._id);
+
       // Get gate passes
       if (studentIds.length > 0) {
-        gatePasses = await GatePass.find({
-          studentId: { $in: studentIds },
-          date: { $gte: today },
-          status: 'pending'
-        })
+        gatePasses = await GatePass.find(
+          scopeBySchool(schoolId, {
+            studentId: { $in: studentIds },
+            date: { $gte: today },
+            status: 'pending',
+          })
+        )
           .populate('studentId', 'name rollNo')
           .limit(10)
           .lean();
       }
-      
+
       appointments = classAppointments;
     }
 
@@ -154,24 +167,26 @@ router.get('/teacher/:teacherId/dashboard', authenticate, requireSelfOrAdmin, as
         name: teacher.name,
         code: teacher.code,
         role: teacher.role,
-        photo: teacher.picture
+        photo: teacher.picture,
       },
-      classTeacher: classTeacherOf ? {
-        id: classTeacherOf._id,
-        name: classTeacherOf.name,
-        section: classTeacherOf.section
-      } : null,
+      classTeacher: classTeacherOf
+        ? {
+            id: classTeacherOf._id,
+            name: classTeacherOf.name,
+            section: classTeacherOf.section,
+          }
+        : null,
       attendance: {
         date: today,
         status: todayAttendance?.status || null,
         inTime: todayAttendance?.inTime || null,
-        outTime: todayAttendance?.outTime || null
+        outTime: todayAttendance?.outTime || null,
       },
       timetable: todaySchedule,
       substitutions: substitutions || [],
       gatePasses: gatePasses || [],
       appointments: appointments || [],
-      unreadAnnouncements: unreadAnnouncements || 0
+      unreadAnnouncements: unreadAnnouncements || 0,
     });
   } catch (error) {
     logger.error({ err: error }, 'Error loading teacher dashboard');
@@ -183,8 +198,9 @@ router.get('/teacher/:teacherId/dashboard', authenticate, requireSelfOrAdmin, as
 router.get('/teacher/:teacherId/timetable', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
+    const schoolId = req.user?.schoolId;
 
-    const teacherTimetable = await TeacherTimetable.findOne({ teacherId })
+    const teacherTimetable = await TeacherTimetable.findOne(scopeBySchool(schoolId, { teacherId }))
       .populate('schedule.Monday.classId', 'name section room')
       .populate('schedule.Tuesday.classId', 'name section room')
       .populate('schedule.Wednesday.classId', 'name section room')
@@ -203,309 +219,400 @@ router.get('/teacher/:teacherId/timetable', authenticate, requireSelfOrAdmin, as
 });
 
 // Mark teacher attendance (self)
-router.post('/teacher/:teacherId/attendance', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const { status, inTime, outTime } = req.body;
-    const today = new Date().toISOString().split('T')[0];
+router.post(
+  '/teacher/:teacherId/attendance',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const { status, inTime, outTime } = req.body;
+      const today = new Date().toISOString().split('T')[0];
+      const schoolId = await resolveRequestSchoolId(req);
 
-    const attendance = await StaffAttendance.findOneAndUpdate(
-      { staffId: teacherId, date: today },
-      { status, checkInTime: inTime, checkOutTime: outTime },
-      { new: true, upsert: true }
-    );
-
-    // Emit socket event (matches webapp's expected event structure)
-    const io = req.app.get('io');
-
-    const socketData = {
-      type: 'staff',
-      staffId: teacherId,
-      date: today,
-      status,
-      inTime: attendance.checkInTime || '-',
-      outTime: attendance.checkOutTime || '-',
-      reason: attendance.reason || ''
-    };
-
-    io.emit('attendance_updated', socketData);
-
-    res.json(attendance);
-  } catch (error) {
-    logger.error({ err: error }, 'Error marking teacher attendance');
-    res.status(500).json({ error: 'Failed to mark attendance' });
-  }
-});
-
-// Reset teacher attendance (dev/admin only)
-router.delete('/teacher/:teacherId/attendance', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const today = new Date().toISOString().split('T')[0];
-
-    const result = await StaffAttendance.findOneAndDelete({
-      staffId: teacherId,
-      date: today
-    });
-
-    if (!result) {
-      return res.status(404).json({ error: 'No attendance record found for today' });
-    }
-
-    // Emit socket event to update real-time views
-    const io = req.app.get('io');
-    io.emit('attendance_updated', {
-      type: 'staff',
-      staffId: teacherId,
-      date: today,
-      status: 'unmarked',
-      inTime: '-',
-      outTime: '-',
-      reason: ''
-    });
-
-    res.json({ success: true, message: 'Attendance reset successfully' });
-  } catch (error) {
-    logger.error({ err: error }, 'Error resetting teacher attendance');
-    res.status(500).json({ error: 'Failed to reset attendance' });
-  }
-});
-
-// Get class students for attendance (class teacher only)
-router.get('/teacher/:teacherId/class-students', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const schoolId = req.user?.schoolId;
-
-    // Find class where teacher is class teacher
-    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
-    if (!classData) {
-      return res.status(404).json({ error: 'Not a class teacher' });
-    }
-
-    // FIXED: Filter by status='active' AND isDeleted!=true for consistency
-    const students = await Student.find(
-      scopeBySchool(schoolId, {
-        classId: classData._id,
-        status: 'active',
-        isDeleted: { $ne: true }
-      })
-    ).sort({ rollNo: 1 });
-
-    res.json({
-      class: {
-        id: classData._id.toString(), // FIX: id as string
-        name: classData.name,
-        section: classData.section
-      },
-      students: students.map(s => ({
-        id: s._id.toString(), // FIX: id as string
-        name: s.name,
-        rollNo: s.rollNo,
-        admissionId: s.admissionId,
-        photo: s.photo
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get class attendance for a date
-router.get('/teacher/:teacherId/class-attendance/:date', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId, date } = req.params;
-    const schoolId = req.user?.schoolId;
-
-    // Find class where teacher is class teacher
-    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
-    if (!classData) {
-      return res.status(404).json({ error: 'Not a class teacher' });
-    }
-
-    const attendance = await Attendance.find({
-      classId: classData._id,
-      date
-    });
-
-    const attendanceMap = {};
-    attendance.forEach(att => {
-      attendanceMap[att.studentId.toString()] = att.status;
-    });
-
-    res.json(attendanceMap);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Mark class attendance (class teacher only)
-router.post('/teacher/:teacherId/class-attendance', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const { date, attendance } = req.body; // attendance: [{ studentId, status }]
-    const schoolId = req.user?.schoolId;
-
-    // Verify teacher is class teacher
-    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
-    if (!classData) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-
-    const results = [];
-    for (const record of attendance) {
-      const att = await Attendance.findOneAndUpdate(
-        { studentId: record.studentId, date },
-        {
-          studentId: record.studentId,
-          classId: classData._id,
-          date,
-          status: record.status,
-          markedBy: teacherId
-        },
+      const attendance = await StaffAttendance.findOneAndUpdate(
+        scopeBySchool(schoolId, { staffId: teacherId, date: today }),
+        { status, checkInTime: inTime, checkOutTime: outTime, schoolId },
         { new: true, upsert: true }
       );
-      results.push(att);
+
+      // Emit socket event (matches webapp's expected event structure)
+      const io = req.app.get('io');
+
+      emitEvent(io, EVENTS.ATTENDANCE_UPDATED, {
+        schoolId: req.user?.schoolId?.toString(),
+        type: 'staff',
+        staffId: teacherId?.toString(),
+        date: today,
+        status,
+        inTime: attendance.checkInTime || '-',
+        outTime: attendance.checkOutTime || '-',
+        reason: attendance.reason || '',
+      });
+
+      res.json(attendance);
+    } catch (error) {
+      logger.error({ err: error }, 'Error marking teacher attendance');
+      res.status(500).json({ error: 'Failed to mark attendance' });
     }
-
-    // Emit socket event
-    const io = req.app.get('io');
-    io.emit('class_attendance_marked', {
-      classId: classData._id,
-      date,
-      count: results.length,
-      timestamp: new Date()
-    });
-
-    res.json({
-      success: true,
-      message: `Attendance marked for ${results.length} students`,
-      results
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
+
+// Reset teacher attendance (dev/admin only)
+router.delete(
+  '/teacher/:teacherId/attendance',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const today = new Date().toISOString().split('T')[0];
+      const schoolId = await resolveRequestSchoolId(req);
+
+      const result = await StaffAttendance.findOneAndDelete(
+        scopeBySchool(schoolId, { staffId: teacherId, date: today })
+      );
+
+      if (!result) {
+        return res.status(404).json({ error: 'No attendance record found for today' });
+      }
+
+      // Emit socket event to update real-time views
+      const io = req.app.get('io');
+      emitEvent(io, EVENTS.ATTENDANCE_UPDATED, {
+        schoolId: req.user?.schoolId?.toString(),
+        type: 'staff',
+        staffId: teacherId?.toString(),
+        date: today,
+        status: 'unmarked',
+        inTime: '-',
+        outTime: '-',
+        reason: '',
+      });
+
+      res.json({ success: true, message: 'Attendance reset successfully' });
+    } catch (error) {
+      logger.error({ err: error }, 'Error resetting teacher attendance');
+      res.status(500).json({ error: 'Failed to reset attendance' });
+    }
+  }
+);
+
+// Get class students for attendance (class teacher only)
+router.get(
+  '/teacher/:teacherId/class-students',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const schoolId = req.user?.schoolId;
+
+      // Find class where teacher is class teacher
+      const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
+      if (!classData) {
+        return res.status(404).json({ error: 'Not a class teacher' });
+      }
+
+      // FIXED: Filter by status='active' AND isDeleted!=true for consistency
+      const students = await Student.find(
+        scopeBySchool(schoolId, {
+          classId: classData._id,
+          status: 'active',
+          isDeleted: { $ne: true },
+        })
+      ).sort({ rollNo: 1 });
+
+      res.json({
+        class: {
+          id: classData._id.toString(), // FIX: id as string
+          name: classData.name,
+          section: classData.section,
+        },
+        students: students.map((s) => ({
+          id: s._id.toString(), // FIX: id as string
+          name: s.name,
+          rollNo: s.rollNo,
+          admissionId: s.admissionId,
+          photo: s.photo,
+        })),
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+// Get class attendance for a date
+router.get(
+  '/teacher/:teacherId/class-attendance/:date',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId, date } = req.params;
+      const schoolId = req.user?.schoolId;
+
+      // Find class where teacher is class teacher
+      const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
+      if (!classData) {
+        return res.status(404).json({ error: 'Not a class teacher' });
+      }
+
+      const attendance = await Attendance.find({
+        classId: classData._id,
+        date,
+      });
+
+      const attendanceMap = {};
+      attendance.forEach((att) => {
+        attendanceMap[att.studentId.toString()] = att.status;
+      });
+
+      res.json(attendanceMap);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+// Mark class attendance (class teacher only)
+router.post(
+  '/teacher/:teacherId/class-attendance',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const { date, attendance } = req.body; // attendance: [{ studentId, status }]
+      const schoolId = req.user?.schoolId;
+
+      // Verify teacher is class teacher
+      const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
+      if (!classData) {
+        return res.status(403).json({ error: 'Not authorized' });
+      }
+
+      // Validate date is not in the future
+      const today = new Date().toISOString().split('T')[0];
+      if (date > today) {
+        return res.status(400).json({ error: 'Cannot mark attendance for a future date' });
+      }
+
+      if (!Array.isArray(attendance) || attendance.length === 0) {
+        return res.status(400).json({ error: 'attendance array is required' });
+      }
+
+      // Validate status values
+      const validStatuses = ['present', 'absent', 'late', 'leave', 'halfday'];
+      const invalidRecords = attendance.filter((r) => !validStatuses.includes(r.status));
+      if (invalidRecords.length > 0) {
+        return res
+          .status(400)
+          .json({ error: `Invalid status values. Must be one of: ${validStatuses.join(', ')}` });
+      }
+
+      // Validate all student IDs belong to this class
+      const studentIds = attendance.map((r) => r.studentId);
+      const classStudents = await Student.find(
+        scopeBySchool(schoolId, {
+          _id: { $in: studentIds },
+          classId: classData._id,
+          status: 'active',
+          isDeleted: { $ne: true },
+        })
+      ).select('_id');
+      const validStudentIds = new Set(classStudents.map((s) => s._id.toString()));
+      const invalidStudents = studentIds.filter((id) => !validStudentIds.has(id));
+      if (invalidStudents.length > 0) {
+        return res
+          .status(400)
+          .json({ error: `${invalidStudents.length} student(s) do not belong to this class` });
+      }
+
+      const results = [];
+      for (const record of attendance) {
+        const att = await Attendance.findOneAndUpdate(
+          scopeBySchool(schoolId, { studentId: record.studentId, date }),
+          {
+            studentId: record.studentId,
+            classId: classData._id,
+            date,
+            status: record.status,
+            markedBy: teacherId,
+            schoolId: extractSchoolId(schoolId),
+          },
+          { new: true, upsert: true }
+        );
+        results.push(att);
+      }
+
+      // Emit socket event
+      const io = req.app.get('io');
+      io?.emit('class_attendance_marked', {
+        classId: classData._id,
+        date,
+        count: results.length,
+        timestamp: new Date(),
+      });
+
+      res.json({
+        success: true,
+        message: `Attendance marked for ${results.length} students`,
+        results,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 // Get class overview (for class teacher)
-router.get('/teacher/:teacherId/class-overview', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId } = req.params;
-    const schoolId = req.user?.schoolId;
+router.get(
+  '/teacher/:teacherId/class-overview',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const schoolId = req.user?.schoolId;
 
-    const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
-    if (!classData) {
-      return res.status(404).json({ error: 'Not a class teacher' });
-    }
-
-    // Get all students
-    // FIXED: Filter by status and isDeleted for consistency
-    const students = await Student.find(scopeBySchool(schoolId, { classId: classData._id, status: 'active', isDeleted: { $ne: true } }));
-
-    // Get low attendance students (< 75%)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const attendanceRecords = await Attendance.find({
-      studentId: { $in: students.map(s => s._id) },
-      date: { $gte: thirtyDaysAgo.toISOString().split('T')[0] }
-    });
-
-    const studentAttendance = {};
-    attendanceRecords.forEach(att => {
-      const sid = att.studentId.toString();
-      if (!studentAttendance[sid]) {
-        studentAttendance[sid] = { present: 0, total: 0 };
+      const classData = await Class.findOne(scopeBySchool(schoolId, { classTeacherId: teacherId }));
+      if (!classData) {
+        return res.status(404).json({ error: 'Not a class teacher' });
       }
-      studentAttendance[sid].total++;
-      if (att.status === 'present' || att.status === 'late') {
-        studentAttendance[sid].present++;
-      }
-    });
 
-    const lowAttendanceStudents = students.filter(s => {
-      const stats = studentAttendance[s._id.toString()];
-      if (!stats || stats.total === 0) return true;
-      const percentage = (stats.present / stats.total) * 100;
-      return percentage < 75;
-    }).map(s => ({
-      id: s._id,
-      name: s.name,
-      rollNo: s.rollNo,
-      attendancePercentage: studentAttendance[s._id.toString()] ?
-        Math.round((studentAttendance[s._id.toString()].present / studentAttendance[s._id.toString()].total) * 100) : 0
-    }));
+      // Get all students
+      // FIXED: Filter by status and isDeleted for consistency
+      const students = await Student.find(
+        scopeBySchool(schoolId, {
+          classId: classData._id,
+          status: 'active',
+          isDeleted: { $ne: true },
+        })
+      );
 
-    // Get failed students (from recent results)
-    const recentResults = await Result.find({
-      studentId: { $in: students.map(s => s._id) },
-      isPublished: true
-    }).sort({ createdAt: -1 }).limit(100);
+      // Get low attendance students (< 75%)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const failedStudents = [];
-    recentResults.forEach(r => {
-      if (r.status === 'failed') {
-        const student = students.find(s => s._id.toString() === r.studentId.toString());
-        if (student && !failedStudents.find(f => f.id.toString() === student._id.toString())) {
-          failedStudents.push({
-            id: student._id,
-            name: student.name,
-            rollNo: student.rollNo,
-            percentage: r.percentage
-          });
+      const attendanceRecords = await Attendance.find(
+        scopeBySchool(schoolId, {
+          studentId: { $in: students.map((s) => s._id) },
+          date: { $gte: thirtyDaysAgo.toISOString().split('T')[0] },
+        })
+      );
+
+      const studentAttendance = {};
+      attendanceRecords.forEach((att) => {
+        const sid = att.studentId.toString();
+        if (!studentAttendance[sid]) {
+          studentAttendance[sid] = { present: 0, total: 0 };
         }
-      }
-    });
+        studentAttendance[sid].total++;
+        if (att.status === 'present' || att.status === 'late') {
+          studentAttendance[sid].present++;
+        }
+      });
 
-    // Get fee pending students
-    const StudentFeeStructure = (await import('../models/StudentFeeStructure.js')).default;
-    const feeStructures = await StudentFeeStructure.find({
-      studentId: { $in: students.map(s => s._id) },
-      overallStatus: { $in: ['pending', 'partial'] }
-    }).populate('studentId', 'name rollNo');
+      const lowAttendanceStudents = students
+        .filter((s) => {
+          const stats = studentAttendance[s._id.toString()];
+          if (!stats || stats.total === 0) return true;
+          const percentage = (stats.present / stats.total) * 100;
+          return percentage < 75;
+        })
+        .map((s) => ({
+          id: s._id,
+          name: s.name,
+          rollNo: s.rollNo,
+          attendancePercentage: studentAttendance[s._id.toString()]
+            ? Math.round(
+                (studentAttendance[s._id.toString()].present /
+                  studentAttendance[s._id.toString()].total) *
+                  100
+              )
+            : 0,
+        }));
 
-    const feePendingStudents = feeStructures.map(fs => ({
-      id: fs.studentId._id,
-      name: fs.studentId.name,
-      rollNo: fs.studentId.rollNo,
-      totalFee: fs.totalFee,
-      totalPaid: fs.totalPaid,
-      balance: fs.totalBalance,
-      status: fs.overallStatus
-    }));
+      // Get failed students (from recent results)
+      const recentResults = await Result.find({
+        studentId: { $in: students.map((s) => s._id) },
+        isPublished: true,
+      })
+        .sort({ createdAt: -1 })
+        .limit(100);
 
-    res.json({
-      class: {
-        id: classData._id,
-        name: classData.name,
-        section: classData.section,
-        totalStudents: students.length
-      },
-      lowAttendanceStudents,
-      failedStudents,
-      feePendingStudents
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      const failedStudents = [];
+      recentResults.forEach((r) => {
+        if (r.status === 'failed') {
+          const student = students.find((s) => s._id.toString() === r.studentId.toString());
+          if (student && !failedStudents.find((f) => f.id.toString() === student._id.toString())) {
+            failedStudents.push({
+              id: student._id,
+              name: student.name,
+              rollNo: student.rollNo,
+              percentage: r.percentage,
+            });
+          }
+        }
+      });
+
+      // Get fee pending students
+      const StudentFeeStructure = (await import('../models/StudentFeeStructure.js')).default;
+      const feeStructures = await StudentFeeStructure.find({
+        studentId: { $in: students.map((s) => s._id) },
+        overallStatus: { $in: ['pending', 'partial'] },
+      }).populate('studentId', 'name rollNo');
+
+      const feePendingStudents = feeStructures.map((fs) => ({
+        id: fs.studentId._id,
+        name: fs.studentId.name,
+        rollNo: fs.studentId.rollNo,
+        totalFee: fs.totalFee,
+        totalPaid: fs.totalPaid,
+        balance: fs.totalBalance,
+        status: fs.overallStatus,
+      }));
+
+      res.json({
+        class: {
+          id: classData._id,
+          name: classData.name,
+          section: classData.section,
+          totalStudents: students.length,
+        },
+        lowAttendanceStudents,
+        failedStudents,
+        feePendingStudents,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
 // Get announcements for teachers
-router.get('/teacher/:teacherId/announcements', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { limit = 20 } = req.query;
+router.get(
+  '/teacher/:teacherId/announcements',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { limit = 20 } = req.query;
 
-    const announcements = await Announcement.find({
-      targetAudience: { $in: ['all', 'staff'] }
-    })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit));
+      const announcements = await Announcement.find({
+        targetAudience: { $in: ['all', 'staff'] },
+      })
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit));
 
-    res.json(announcements);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      res.json(announcements);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
 // Get teacher leaves (mobile-specific endpoint)
 router.get('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async (req, res) => {
@@ -535,14 +642,7 @@ router.get('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async
 router.post('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const {
-      leaveType,
-      reason,
-      startDate,
-      endDate,
-      days,
-      attachments
-    } = req.body;
+    const { leaveType, reason, startDate, endDate, days, attachments } = req.body;
 
     // Import TeacherLeave model
     const TeacherLeave = (await import('../models/TeacherLeave.js')).default;
@@ -562,24 +662,22 @@ router.post('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, asyn
       startDate,
       endDate,
       days: calculatedDays,
-      attachments: attachments || []
+      attachments: attachments || [],
     });
 
     await leave.save();
 
     // Emit socket event for real-time notification
     const io = req.app.get('io');
-    if (io) {
-      io.emit('leave_applied', {
-        leaveId: leave._id,
-        teacherId,
-        leaveType,
-        startDate,
-        endDate,
-        days: calculatedDays,
-        timestamp: new Date()
-      });
-    }
+    emitEvent(io, EVENTS.LEAVE_APPLIED, {
+      schoolId: req.user?.schoolId?.toString(),
+      leaveId: leave._id.toString(),
+      teacherId: teacherId?.toString(),
+      leaveType,
+      startDate,
+      endDate,
+      days: calculatedDays,
+    });
 
     const populatedLeave = await TeacherLeave.findById(leave._id)
       .populate('teacherId', 'name code')
@@ -593,74 +691,83 @@ router.post('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, asyn
 });
 
 // Get student details (for mobile view)
-router.get('/teacher/:teacherId/student/:studentId', authenticate, requireSelfOrAdmin, async (req, res) => {
-  try {
-    const { teacherId, studentId } = req.params;
-    const schoolId = req.user?.schoolId;
+router.get(
+  '/teacher/:teacherId/student/:studentId',
+  authenticate,
+  requireSelfOrAdmin,
+  async (req, res) => {
+    try {
+      const { teacherId, studentId } = req.params;
+      const schoolId = req.user?.schoolId;
 
-    // Get student with class info (MongoDB/Mongoose)
-    const student = await Student.findOne(scopeBySchool(schoolId, { _id: studentId }))
-      .populate('classId', 'name section')
-      .lean();
+      // Get student with class info (MongoDB/Mongoose)
+      const student = await Student.findOne(scopeBySchool(schoolId, { _id: studentId }))
+        .populate('classId', 'name section')
+        .lean();
 
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-
-    // Get attendance stats (last 30 days)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
-
-    const attendanceRecords = await Attendance.find({
-      studentId: student._id,
-      date: { $gte: dateStr }
-    }).lean();
-
-    const stats = { present: 0, absent: 0, late: 0 };
-    attendanceRecords.forEach(record => {
-      const status = record.status.toLowerCase();
-      if (stats[status] !== undefined) {
-        stats[status]++;
+      if (!student) {
+        return res.status(404).json({ error: 'Student not found' });
       }
-    });
 
-    // Handle legacy parent fields if parents array is empty
-    let parents = student.parents || [];
+      // Get attendance stats (last 30 days)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
 
-    if (!parents || parents.length === 0) {
-      parents = [{
-        name: student.parentName,
-        phone: student.parentPhone,
-        email: student.parentEmail,
-        relationship: student.parentRelationship || 'Parent'
-      }];
+      const attendanceRecords = await Attendance.find({
+        studentId: student._id,
+        date: { $gte: dateStr },
+      }).lean();
+
+      const stats = { present: 0, absent: 0, late: 0 };
+      attendanceRecords.forEach((record) => {
+        const status = record.status.toLowerCase();
+        if (stats[status] !== undefined) {
+          stats[status]++;
+        }
+      });
+
+      // Handle legacy parent fields if parents array is empty
+      let parents = student.parents || [];
+
+      if (!parents || parents.length === 0) {
+        parents = [
+          {
+            name: student.parentName,
+            phone: student.parentPhone,
+            email: student.parentEmail,
+            relationship: student.parentRelationship || 'Parent',
+          },
+        ];
+      }
+
+      res.json({
+        student: {
+          id: student._id,
+          name: student.name,
+          rollNo: student.rollNo,
+          admissionId: student.admissionId,
+          photo: student.photo,
+          class: student.classId
+            ? {
+                name: student.classId.name,
+                section: student.classId.section,
+              }
+            : null,
+          dob: student.dateOfBirth,
+          gender: student.gender,
+          address: student.address,
+          phone: student.phone,
+        },
+        parents,
+        attendance: stats,
+      });
+    } catch (error) {
+      logger.error({ err: error }, 'Error fetching student details');
+      res.status(500).json({ error: 'Failed to fetch student details' });
     }
-
-    res.json({
-      student: {
-        id: student._id,
-        name: student.name,
-        rollNo: student.rollNo,
-        admissionId: student.admissionId,
-        photo: student.photo,
-        class: student.classId ? {
-          name: student.classId.name,
-          section: student.classId.section
-        } : null,
-        dob: student.dateOfBirth,
-        gender: student.gender,
-        address: student.address,
-        phone: student.phone
-      },
-      parents,
-      attendance: stats
-    });
-  } catch (error) {
-    logger.error({ err: error }, 'Error fetching student details');
-    res.status(500).json({ error: 'Failed to fetch student details' });
   }
-});
+);
 
 // ============ STAFF PROFILE API ============
 
@@ -674,14 +781,13 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
   try {
     const { staffId } = req.params;
 
-
     // Find staff member
     const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId })).lean();
 
     if (!staff) {
       return res.status(404).json({
         error: 'Staff not found',
-        message: `No staff member found with ID: ${staffId}`
+        message: `No staff member found with ID: ${staffId}`,
       });
     }
 
@@ -700,7 +806,7 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
       picture: staff.picture,
       role: staff.role,
       department: staff.department,
-      updatedAt: staff.updatedAt
+      updatedAt: staff.updatedAt,
     };
 
     res.json(profileData);
@@ -708,7 +814,7 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
     logger.error({ err: error }, 'Error fetching staff profile');
     res.status(500).json({
       error: 'Failed to fetch profile',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -722,14 +828,14 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
  * - Emits socket event for real-time updates
  * - Authentication required
  */
-router.put('/staff/:staffId/profile',
+router.put(
+  '/staff/:staffId/profile',
   authenticate,
   validateStaffProfileUpdate,
   async (req, res) => {
     try {
       const { staffId } = req.params;
       const updateData = req.body;
-
 
       // Verify staffId matches authenticated user (self-service only)
       if (req.user.userId !== staffId) {
@@ -740,7 +846,7 @@ router.put('/staff/:staffId/profile',
         if (!permissions || permissions.role !== 'admin') {
           return res.status(403).json({
             error: 'Access denied',
-            message: 'You can only edit your own profile'
+            message: 'You can only edit your own profile',
           });
         }
       }
@@ -756,7 +862,7 @@ router.put('/staff/:staffId/profile',
       const fieldsChanged = [];
       const previousValues = {};
 
-      Object.keys(updateData).forEach(field => {
+      Object.keys(updateData).forEach((field) => {
         const oldValue = staff[field];
         const newValue = updateData[field];
 
@@ -771,12 +877,12 @@ router.put('/staff/:staffId/profile',
         return res.json({
           success: true,
           message: 'No changes to update',
-          profile: staff
+          profile: staff,
         });
       }
 
       // Update staff profile
-      Object.keys(updateData).forEach(field => {
+      Object.keys(updateData).forEach((field) => {
         staff[field] = updateData[field];
       });
 
@@ -792,26 +898,21 @@ router.put('/staff/:staffId/profile',
         newValues: updateData,
         source: 'mobile_app',
         ipAddress: req.ip || req.connection.remoteAddress,
-        userAgent: req.get('user-agent')
+        userAgent: req.get('user-agent'),
       });
 
       await auditLog.save();
 
       // Emit socket event for real-time updates
-      emitStaffUpdate(
-        staffId,
-        fieldsChanged,
-        'mobile_app',
-        {
-          name: staff.name,
-          role: staff.role,
-          department: staff.department,
-          status: staff.status,
-          phone: staff.phone,
-          email: staff.email,
-          picture: staff.picture
-        }
-      );
+      emitStaffUpdate(staffId, fieldsChanged, 'mobile_app', {
+        name: staff.name,
+        role: staff.role,
+        department: staff.department,
+        status: staff.status,
+        phone: staff.phone,
+        email: staff.email,
+        picture: staff.picture,
+      });
 
       // Return updated profile
       const updatedProfile = {
@@ -828,16 +929,15 @@ router.put('/staff/:staffId/profile',
         picture: staff.picture,
         role: staff.role,
         department: staff.department,
-        updatedAt: staff.updatedAt
+        updatedAt: staff.updatedAt,
       };
 
       res.json({
         success: true,
         message: 'Profile updated successfully',
         fieldsChanged: fieldsChanged,
-        profile: updatedProfile
+        profile: updatedProfile,
       });
-
     } catch (error) {
       logger.error({ err: error }, 'Error updating staff profile');
       res.status(500).json({ error: 'Failed to update profile' });
@@ -857,145 +957,177 @@ router.put('/staff/:staffId/profile',
  * - Overwrites existing photo
  * - Emits socket event for real-time updates
  */
-router.post('/staff/:staffId/photo',
-  authenticate,
-  async (req, res) => {
-    try {
-      const { staffId } = req.params;
+router.post('/staff/:staffId/photo', authenticate, async (req, res) => {
+  try {
+    const { staffId } = req.params;
 
-      // Verify staffId matches authenticated user (self-service only)
-      if (req.user.userId !== staffId) {
-        // Check if user is admin (admin can upload any staff photo)
-        const UserPermission = (await import('../database.js')).UserPermission;
-        const permissions = await UserPermission.findOne({ userId: req.user.userId });
+    // Verify staffId matches authenticated user (self-service only)
+    if (req.user.userId !== staffId) {
+      // Check if user is admin (admin can upload any staff photo)
+      const UserPermission = (await import('../database.js')).UserPermission;
+      const permissions = await UserPermission.findOne({ userId: req.user.userId });
 
-        if (!permissions || permissions.role !== 'admin') {
-          return res.status(403).json({
-            error: 'Access denied',
-            message: 'You can only upload your own photo'
-          });
-        }
+      if (!permissions || permissions.role !== 'admin') {
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'You can only upload your own photo',
+        });
       }
+    }
 
-      // Find staff member
-      const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId }));
+    // Find staff member
+    const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId }));
 
-      if (!staff) {
-        return res.status(404).json({ error: 'Staff not found' });
-      }
+    if (!staff) {
+      return res.status(404).json({ error: 'Staff not found' });
+    }
 
-      // Check if photo file is present
-      if (!req.body || !req.body.photo) {
-        return res.status(400).json({ error: 'Photo data is required' });
-      }
+    // Check if photo file is present
+    if (!req.body || !req.body.photo) {
+      return res.status(400).json({ error: 'Photo data is required' });
+    }
 
-      const photoData = req.body.photo;
+    const photoData = req.body.photo;
 
-      // Import cloudinary
-      const { v2: cloudinary } = await import('cloudinary');
+    // Import cloudinary
+    const { v2: cloudinary } = await import('cloudinary');
 
-      // Check if Cloudinary is configured
-      const config = (await import('../config/environment.js')).config;
-      if (!config.cloudinary.configured) {
+    // Check if Cloudinary is configured
+    const config = (await import('../config/environment.js')).config;
+    if (!config.cloudinary.configured) {
+      staff.picture = photoData;
+      await staff.save();
+    } else {
+      // Upload to Cloudinary
+      try {
+        const uploadOptions = {
+          folder: 'staff-photos',
+          public_id: `staff-${staffId}`,
+          overwrite: true,
+          transformation: [{ width: 300, height: 300, crop: 'fill' }, { quality: 'auto' }],
+          resource_type: 'image',
+        };
+
+        // Upload to Cloudinary
+        const result = await cloudinary.uploader.upload(photoData, uploadOptions);
+
+        const photoUrl = result.secure_url;
+
+        // Update staff picture
+        const previousPicture = staff.picture;
+        staff.picture = photoUrl;
+        await staff.save();
+
+        // Create audit log entry
+        const auditLog = new StaffProfileAudit({
+          timestamp: new Date(),
+          staffId: staffId,
+          action: 'profile_update',
+          fieldsChanged: ['picture'],
+          previousValues: { picture: previousPicture },
+          newValues: { picture: photoUrl },
+          source: 'mobile_app',
+          ipAddress: req.ip || req.connection.remoteAddress,
+          userAgent: req.get('user-agent'),
+        });
+
+        await auditLog.save();
+        emitStaffUpdate(staffId, ['picture'], 'mobile_app', {
+          name: staff.name,
+          role: staff.role,
+          department: staff.department,
+          status: staff.status,
+          phone: staff.phone,
+          email: staff.email,
+          picture: photoUrl,
+        });
+
+        // Return success response
+        return res.json({
+          success: true,
+          url: photoUrl,
+          message: 'Photo uploaded successfully',
+        });
+      } catch (cloudinaryError) {
+        logger.warn({ err: cloudinaryError }, 'Cloudinary upload failed, using base64 fallback');
+
+        // Fallback: store as base64
         staff.picture = photoData;
         await staff.save();
-      } else {
-        // Upload to Cloudinary
-        try {
-          const uploadOptions = {
-            folder: 'staff-photos',
-            public_id: `staff-${staffId}`,
-            overwrite: true,
-            transformation: [
-              { width: 300, height: 300, crop: 'fill' },
-              { quality: 'auto' }
-            ],
-            resource_type: 'image'
-          };
 
-          // Upload to Cloudinary
-          const result = await cloudinary.uploader.upload(photoData, uploadOptions);
+        // Create audit log and emit event even for fallback
+        const auditLog = new StaffProfileAudit({
+          timestamp: new Date(),
+          staffId: staffId,
+          action: 'profile_update',
+          fieldsChanged: ['picture'],
+          previousValues: { picture: staff.picture },
+          newValues: { picture: photoData },
+          source: 'mobile_app',
+          ipAddress: req.ip || req.connection.remoteAddress,
+          userAgent: req.get('user-agent'),
+        });
 
-          const photoUrl = result.secure_url;
+        await auditLog.save();
 
-          // Update staff picture
-          const previousPicture = staff.picture;
-          staff.picture = photoUrl;
-          await staff.save();
+        emitStaffUpdate(staffId, ['picture'], 'mobile_app', {
+          name: staff.name,
+          role: staff.role,
+          picture: photoData,
+        });
 
-          // Create audit log entry
-          const auditLog = new StaffProfileAudit({
-            timestamp: new Date(),
-            staffId: staffId,
-            action: 'profile_update',
-            fieldsChanged: ['picture'],
-            previousValues: { picture: previousPicture },
-            newValues: { picture: photoUrl },
-            source: 'mobile_app',
-            ipAddress: req.ip || req.connection.remoteAddress,
-            userAgent: req.get('user-agent')
-          });
-
-          await auditLog.save();
-          emitStaffUpdate(staffId, ['picture'], 'mobile_app', {
-            name: staff.name, role: staff.role, department: staff.department,
-            status: staff.status, phone: staff.phone, email: staff.email, picture: photoUrl
-          });
-
-          // Return success response
-          return res.json({
-            success: true,
-            url: photoUrl,
-            message: 'Photo uploaded successfully'
-          });
-
-        } catch (cloudinaryError) {
-          logger.warn({ err: cloudinaryError }, 'Cloudinary upload failed, using base64 fallback');
-
-          // Fallback: store as base64
-          staff.picture = photoData;
-          await staff.save();
-
-          // Create audit log and emit event even for fallback
-          const auditLog = new StaffProfileAudit({
-            timestamp: new Date(),
-            staffId: staffId,
-            action: 'profile_update',
-            fieldsChanged: ['picture'],
-            previousValues: { picture: staff.picture },
-            newValues: { picture: photoData },
-            source: 'mobile_app',
-            ipAddress: req.ip || req.connection.remoteAddress,
-            userAgent: req.get('user-agent')
-          });
-
-          await auditLog.save();
-
-          emitStaffUpdate(
-            staffId,
-            ['picture'],
-            'mobile_app',
-            {
-              name: staff.name,
-              role: staff.role,
-              picture: photoData
-            }
-          );
-
-          return res.json({
-            success: true,
-            url: photoData,
-            warning: 'Photo stored locally. Cloud upload failed.',
-            message: 'Photo uploaded successfully (local fallback)'
-          });
-        }
+        return res.json({
+          success: true,
+          url: photoData,
+          warning: 'Photo stored locally. Cloud upload failed.',
+          message: 'Photo uploaded successfully (local fallback)',
+        });
       }
-
-    } catch (error) {
-      logger.error({ err: error }, 'Error uploading staff photo');
-      res.status(500).json({ error: 'Failed to upload photo' });
     }
+  } catch (error) {
+    logger.error({ err: error }, 'Error uploading staff photo');
+    res.status(500).json({ error: 'Failed to upload photo' });
   }
-);
+});
+
+// ============ APP VERSION CHECK ============
+
+/**
+ * GET /api/v1/mobile/app-version
+ * Public endpoint — no auth required.
+ * Returns minimum required version, latest version, and store URLs for the staff app.
+ * Configure via environment variables:
+ *   STAFF_APP_MIN_VERSION       e.g. "1.0.0"
+ *   STAFF_APP_LATEST_VERSION    e.g. "1.2.0"
+ *   STAFF_APP_FORCE_UPDATE      "true" | "false"
+ *   STAFF_APP_STORE_URL_IOS     App Store URL
+ *   STAFF_APP_STORE_URL_ANDROID Play Store URL
+ *   STAFF_APP_UPDATE_MESSAGE    Custom message shown in the update prompt
+ */
+router.get('/app-version', async (req, res) => {
+  try {
+    const minimumVersion = process.env.STAFF_APP_MIN_VERSION || '1.0.0';
+    const latestVersion = process.env.STAFF_APP_LATEST_VERSION || '1.0.0';
+    const forceUpdate = process.env.STAFF_APP_FORCE_UPDATE === 'true';
+    const storeUrlIos = process.env.STAFF_APP_STORE_URL_IOS || null;
+    const storeUrlAndroid = process.env.STAFF_APP_STORE_URL_ANDROID || null;
+    const updateMessage =
+      process.env.STAFF_APP_UPDATE_MESSAGE ||
+      'A new version of the app is required. Please update to continue.';
+
+    return res.json({
+      success: true,
+      minimumVersion,
+      latestVersion,
+      forceUpdate,
+      storeUrlIos,
+      storeUrlAndroid,
+      updateMessage,
+    });
+  } catch (error) {
+    logger.error({ err: error }, 'Error fetching app version config');
+    res.status(500).json({ error: 'Failed to fetch app version' });
+  }
+});
 
 export default router;

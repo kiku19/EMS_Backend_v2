@@ -1,0 +1,150 @@
+# OBS-03: Grafana Alerting — Log-Based Alert Rules
+#
+# These rules fire when Loki detects patterns in EMS backend logs that indicate
+# production incidents:
+#
+#   1. 5xx Spike  — more than 10 server errors in 5 minutes
+#   2. Auth Failure Spike — more than 20 failed auth attempts in 5 minutes
+#      (credential-stuffing / brute-force indicator)
+#
+# How to use:
+#   - This file is auto-loaded by Grafana when mounted at:
+#       /etc/grafana/provisioning/alerting/
+#   - Configure a notification channel (Slack, PagerDuty, email) in Grafana UI
+#     under Alerting → Contact Points, then reference it in a notification policy.
+#
+# Query language: LogQL (Loki Query Language)
+# Docs: https://grafana.com/docs/loki/latest/query/
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: EMS Backend — Log Alerts
+    folder: EMS Observability
+    interval: 1m   # evaluate every minute
+
+    rules:
+      # ── 5xx Spike ──────────────────────────────────────────────────────
+      # Fires when the count of HTTP 5xx log lines exceeds the threshold
+      # over the last 5 minutes across any school tenant.
+      - uid: obs03-5xx-spike
+        title: '5xx Error Spike'
+        condition: C
+        for: 2m   # must remain above threshold for 2 min to avoid flapping
+        annotations:
+          summary: 'EMS backend 5xx error spike detected'
+          description: >
+            More than {{ $values.B.Value }} server errors (5xx) were logged
+            in the last 5 minutes.  Check Loki for details:
+            {job="ems-backend"} | json | statusCode >= 500
+        labels:
+          severity: critical
+          team: backend
+        data:
+          - refId: A
+            datasourceUid: loki
+            model:
+              expr: >
+                count_over_time(
+                  {job="ems-backend"}
+                  | json
+                  | statusCode >= 500
+                  [5m]
+                )
+              queryType: range
+              refId: A
+          # Reduce: last value of the count
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [], type: gt }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+              type: reduce
+              refId: B
+          # Threshold: fire when count > 10
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [10], type: gt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: B
+              threshold:
+                conditions:
+                  - evaluator: { params: [10], type: gt }
+              type: threshold
+              refId: C
+
+      # ── Auth Failure Spike ─────────────────────────────────────────────
+      # Fires when the count of 401/403 responses exceeds the threshold
+      # over the last 5 minutes (brute-force / credential-stuffing indicator).
+      - uid: obs03-auth-failure-spike
+        title: 'Auth Failure Spike'
+        condition: C
+        for: 2m
+        annotations:
+          summary: 'EMS backend authentication failure spike detected'
+          description: >
+            More than {{ $values.B.Value }} auth failures (401/403) were logged
+            in the last 5 minutes.  This may indicate a brute-force or
+            credential-stuffing attack.  Check Loki:
+            {job="ems-backend"} | json | statusCode =~ "401|403"
+        labels:
+          severity: high
+          team: security
+        data:
+          - refId: A
+            datasourceUid: loki
+            model:
+              expr: >
+                count_over_time(
+                  {job="ems-backend"}
+                  | json
+                  | statusCode =~ "401|403"
+                  [5m]
+                )
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [], type: gt }
+                  operator: { type: and }
+                  query: { params: [A] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+              type: reduce
+              refId: B
+          # Threshold: fire when count > 20
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [20], type: gt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: B
+              threshold:
+                conditions:
+                  - evaluator: { params: [20], type: gt }
+              type: threshold
+              refId: C

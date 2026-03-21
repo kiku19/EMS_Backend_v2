@@ -2,10 +2,14 @@ import Reminder from '../models/Reminder.js';
 import ReminderLog from '../models/ReminderLog.js';
 import ReminderTemplate from '../models/ReminderTemplate.js';
 import { FeePayment, Attendance, Staff, Student, Class } from '../database.js';
+import Parent from '../models/Parent.js';
 import { sendReminderEmail } from './emailService.js';
-import { sendFeeReminderSMS, sendAttendanceAlertSMS } from './smsService.js';
+import { sendFeeReminderSMS, sendAttendanceAlertSMS, sendAnnouncementSMS } from './smsService.js';
 import { sendFeeReminderWhatsApp, sendAttendanceAlertWhatsApp } from './whatsappService.js';
-import { sendNotification } from './notifications.js';
+import { sendNotification } from '../routes/notifications.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('ReminderProcessor');
 
 // Helper function to resolve reminder recipients
 async function resolveReminderRecipients(recipients) {
@@ -14,44 +18,48 @@ async function resolveReminderRecipients(recipients) {
   for (const recipient of recipients) {
     if (recipient.type === 'all' || recipient.type === 'staff') {
       const staff = await Staff.find({ isActive: true });
-      staff.forEach(s => recipientList.push({
-        userId: s._id,
-        userType: 'Staff',
-        name: s.name,
-        email: s.email,
-        phone: s.phone
-      }));
+      staff.forEach((s) =>
+        recipientList.push({
+          userId: s._id,
+          userType: 'Staff',
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+        })
+      );
     }
 
     if (recipient.type === 'all' || recipient.type === 'students') {
       if (recipient.classIds && recipient.classIds.length > 0) {
         const classes = await Class.find({ _id: { $in: recipient.classIds } }).populate('students');
         for (const cls of classes) {
-          cls.students.forEach(student => {
+          cls.students.forEach((student) => {
             recipientList.push({
               userId: student._id,
               userType: 'Student',
               name: student.name,
               email: student.email,
-              phone: student.phone
+              phone: student.phone,
             });
           });
         }
       } else {
         const students = await Student.find({ isActive: true });
-        students.forEach(s => recipientList.push({
-          userId: s._id,
-          userType: 'Student',
-          name: s.name,
-          email: s.email,
-          phone: s.phone
-        }));
+        students.forEach((s) =>
+          recipientList.push({
+            userId: s._id,
+            userType: 'Student',
+            name: s.name,
+            email: s.email,
+            phone: s.phone,
+          })
+        );
       }
     }
 
     if (recipient.type === 'parents') {
       const students = await Student.find({ isActive: true }).populate('parent');
-      students.forEach(s => {
+      students.forEach((s) => {
         if (s.parent && s.parent.email) {
           recipientList.push({
             userId: s._id,
@@ -59,7 +67,7 @@ async function resolveReminderRecipients(recipients) {
             name: s.parent.name || s.name + "'s Parent",
             email: s.parent.email,
             phone: s.parent.phone,
-            studentName: s.name
+            studentName: s.name,
           });
         }
       });
@@ -74,7 +82,7 @@ async function resolveReminderRecipients(recipients) {
             userType: 'Staff',
             name: staff.name,
             email: staff.email,
-            phone: staff.phone
+            phone: staff.phone,
           });
         } else {
           const student = await Student.findById(userId);
@@ -84,7 +92,7 @@ async function resolveReminderRecipients(recipients) {
               userType: 'Student',
               name: student.name,
               email: student.email,
-              phone: student.phone
+              phone: student.phone,
             });
           }
         }
@@ -109,8 +117,6 @@ async function resolveReminderRecipients(recipients) {
 // Function to check and process reminder triggers
 export async function checkReminderTriggers() {
   try {
-    console.log('⏰ Checking reminder triggers...');
-
     // Get all active reminders
     const activeReminders = await Reminder.find({ isActive: true });
 
@@ -120,8 +126,6 @@ export async function checkReminderTriggers() {
       if (reminder.nextExecutionAt && reminder.nextExecutionAt > now) {
         continue; // Not time yet
       }
-
-      console.log(`  Processing reminder: ${reminder.title}`);
 
       // Process based on type
       let matchedRecipients = [];
@@ -143,15 +147,44 @@ export async function checkReminderTriggers() {
       // Send reminders to matched recipients
       if (matchedRecipients.length > 0) {
         await sendReminderMessages(reminder, matchedRecipients);
+
+        // For fee reminders, also push to parents of the affected students
+        if (reminder.type === 'fee') {
+          const studentIds = matchedRecipients
+            .filter((r) => r.userType === 'Student')
+            .map((r) => r.userId);
+
+          if (studentIds.length > 0) {
+            try {
+              const { default: pushService } = await import('./pushNotificationService.js');
+              const parents = await Parent.find({
+                'children.studentId': { $in: studentIds },
+              }).select('_id fcmTokens');
+
+              for (const parent of parents) {
+                if (parent.fcmTokens?.length > 0) {
+                  pushService
+                    .sendToParent(parent._id.toString(), reminder.title, reminder.message, {
+                      type: 'payment',
+                      actionUrl: '/fees',
+                    })
+                    .catch((err) =>
+                      logger.warn({ err, parentId: parent._id }, 'Fee reminder parent push failed')
+                    );
+                }
+              }
+            } catch (pushErr) {
+              logger.warn({ err: pushErr }, 'Fee reminder parent push error');
+            }
+          }
+        }
       }
 
       // Update next execution time
       await reminder.markExecuted();
     }
-
-    console.log('✅ Reminder check completed');
   } catch (error) {
-    console.error('Error checking reminder triggers:', error);
+    logger.error({ err: error }, 'Error checking reminder triggers');
   }
 }
 
@@ -169,35 +202,9 @@ async function processFeeReminder(reminder) {
       const feePayments = await FeePayment.find({
         dueDate: {
           $gte: new Date(dueDate.setHours(0, 0, 0, 0)),
-          $lt: new Date(dueDate.setHours(23, 59, 59, 999))
+          $lt: new Date(dueDate.setHours(23, 59, 59, 999)),
         },
-        status: { $in: ['pending', 'partial'] }
-      }).populate('studentId');
-
-      for (const fee of feePayments) {
-        if (fee.studentId) {
-          matchedRecipients.push({
-            userId: fee.studentId._id,
-            userType: 'Student',
-            name: fee.studentId.name,
-            email: fee.studentId.email,
-            phone: fee.studentId.phone,
-            triggerData: {
-              feeType: fee.feeType,
-              amount: fee.amount,
-              dueDate: fee.dueDate
-            }
-          });
-        }
-      }
-    } else if (trigger.condition === 'days_after_overdue') {
-      // Find fees overdue by X days
-      const overdueDate = new Date(now);
-      overdueDate.setDate(overdueDate.getDate() - trigger.value);
-
-      const feePayments = await FeePayment.find({
-        dueDate: { $lte: overdueDate },
-        status: { $in: ['pending', 'partial'] }
+        status: { $in: ['pending', 'partial'] },
       }).populate('studentId');
 
       for (const fee of feePayments) {
@@ -212,8 +219,34 @@ async function processFeeReminder(reminder) {
               feeType: fee.feeType,
               amount: fee.amount,
               dueDate: fee.dueDate,
-              overdueDays: trigger.value
-            }
+            },
+          });
+        }
+      }
+    } else if (trigger.condition === 'days_after_overdue') {
+      // Find fees overdue by X days
+      const overdueDate = new Date(now);
+      overdueDate.setDate(overdueDate.getDate() - trigger.value);
+
+      const feePayments = await FeePayment.find({
+        dueDate: { $lte: overdueDate },
+        status: { $in: ['pending', 'partial'] },
+      }).populate('studentId');
+
+      for (const fee of feePayments) {
+        if (fee.studentId) {
+          matchedRecipients.push({
+            userId: fee.studentId._id,
+            userType: 'Student',
+            name: fee.studentId.name,
+            email: fee.studentId.email,
+            phone: fee.studentId.phone,
+            triggerData: {
+              feeType: fee.feeType,
+              amount: fee.amount,
+              dueDate: fee.dueDate,
+              overdueDays: trigger.value,
+            },
           });
         }
       }
@@ -228,14 +261,17 @@ async function processAttendanceReminder(reminder) {
   const matchedRecipients = [];
 
   for (const trigger of reminder.triggers) {
-    if (trigger.condition === 'absent_without_notice' || trigger.condition === 'absent_with_notice') {
+    if (
+      trigger.condition === 'absent_without_notice' ||
+      trigger.condition === 'absent_with_notice'
+    ) {
       // Check today's attendance
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
       const attendanceRecords = await Attendance.find({
         date: today,
-        status: 'absent'
+        status: 'absent',
       }).populate('studentId');
 
       for (const record of attendanceRecords) {
@@ -251,8 +287,8 @@ async function processAttendanceReminder(reminder) {
             triggerData: {
               date: record.date,
               status: record.status,
-              reason: record.reason
-            }
+              reason: record.reason,
+            },
           });
         }
       }
@@ -263,7 +299,7 @@ async function processAttendanceReminder(reminder) {
       for (const student of students) {
         const attendanceRecords = await Attendance.find({
           studentId: student._id,
-          status: 'present'
+          status: { $in: ['present', 'late'] },
         });
 
         const totalDays = await Attendance.countDocuments({ studentId: student._id });
@@ -279,8 +315,8 @@ async function processAttendanceReminder(reminder) {
               phone: student.phone,
               triggerData: {
                 attendancePercentage: percentage.toFixed(2),
-                threshold: trigger.value
-              }
+                threshold: trigger.value,
+              },
             });
           }
         }
@@ -311,7 +347,7 @@ async function sendReminderMessages(reminder, recipients) {
       let message = reminder.message;
       const data = { ...recipient.triggerData };
 
-      Object.keys(data).forEach(key => {
+      Object.keys(data).forEach((key) => {
         message = message.replace(new RegExp(`{${key}}`, 'g'), data[key]);
       });
 
@@ -320,7 +356,7 @@ async function sendReminderMessages(reminder, recipients) {
         reminderId: reminder._id,
         recipientId: recipient.userId,
         recipientType: recipient.userType,
-        triggerData: recipient.triggerData
+        triggerData: recipient.triggerData,
       });
 
       // Send via configured channels
@@ -363,7 +399,10 @@ async function sendReminderMessages(reminder, recipients) {
       // Update reminder stats
       reminder.stats.totalSent++;
     } catch (error) {
-      console.error(`  Error sending reminder to ${recipient.name}:`, error.message);
+      logger.error(
+        { err: error, recipientName: recipient.name, reminderId: reminder._id },
+        'Error sending reminder to recipient'
+      );
       reminder.stats.totalFailed++;
     }
   }

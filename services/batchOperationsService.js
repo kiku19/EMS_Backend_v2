@@ -3,6 +3,9 @@ import { Timetable, TeacherTimetable } from '../database.js';
 import timetableService from './timetableService.js';
 import conflictDetectionService from './conflictDetectionService.js';
 import cacheService from './cacheService.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('BatchOperations');
 
 /**
  * Service for handling batch operations on timetables
@@ -28,13 +31,13 @@ class BatchOperationsService {
     const results = {
       success: [],
       conflicts: [],
-      errors: []
+      errors: [],
     };
 
     // Step 1: Validate all slots for conflicts before making any changes
     const validationPromises = slots.map(async (slot) => {
       const { day, periodIndex, teacherId, subject } = slot;
-      
+
       if (!teacherId) {
         return { valid: true, slot };
       }
@@ -71,7 +74,7 @@ class BatchOperationsService {
     const validations = await Promise.all(validationPromises);
 
     // Collect conflicts and errors
-    const invalidSlots = validations.filter(v => !v.valid);
+    const invalidSlots = validations.filter((v) => !v.valid);
     if (invalidSlots.length > 0) {
       invalidSlots.forEach(({ slot, conflict, error }) => {
         if (conflict) {
@@ -85,7 +88,7 @@ class BatchOperationsService {
       return {
         success: false,
         message: 'Batch update aborted due to conflicts or validation errors',
-        results
+        results,
       };
     }
 
@@ -124,7 +127,7 @@ class BatchOperationsService {
           teacherId: teacherId || null,
           room: room || '',
           lastModified: new Date(),
-          modifiedBy: modifiedBy || null
+          modifiedBy: modifiedBy || null,
         };
 
         // Track teacher updates
@@ -146,7 +149,7 @@ class BatchOperationsService {
             periodIndex,
             classId,
             subject,
-            room
+            room,
           });
         }
 
@@ -165,14 +168,14 @@ class BatchOperationsService {
         async ([teacherId, updates]) => {
           let teacherTimetable = await TeacherTimetable.findOne({
             teacherId,
-            academicYear
+            academicYear,
           });
 
           if (!teacherTimetable) {
             teacherTimetable = new TeacherTimetable({
               teacherId,
               academicYear,
-              schedule: {}
+              schedule: {},
             });
           }
 
@@ -180,7 +183,11 @@ class BatchOperationsService {
           for (const { day, periodIndex } of updates.remove) {
             if (teacherTimetable.schedule[day]) {
               teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-                slot => !(slot.periodIndex === periodIndex && slot.classId?.toString() === classId.toString())
+                (slot) =>
+                  !(
+                    slot.periodIndex === periodIndex &&
+                    slot.classId?.toString() === classId.toString()
+                  )
               );
             }
           }
@@ -193,7 +200,7 @@ class BatchOperationsService {
 
             // Remove existing slot at this period
             teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-              slot => slot.periodIndex !== periodIndex
+              (slot) => slot.periodIndex !== periodIndex
             );
 
             // Add new slot
@@ -202,7 +209,7 @@ class BatchOperationsService {
               classId: cId,
               subject,
               room,
-              lastModified: new Date()
+              lastModified: new Date(),
             });
 
             // Sort by periodIndex
@@ -227,19 +234,16 @@ class BatchOperationsService {
       return {
         success: true,
         message: `Successfully updated ${slots.length} slots`,
-        results
+        results,
       };
     } catch (error) {
       // Rollback class timetable on failure
-      console.error('Batch update failed, rolling back:', error);
+      logger.error({ err: error }, 'Batch update failed, rolling back');
 
       try {
-        await Timetable.findOneAndUpdate(
-          { classId, academicYear },
-          { schedule: originalSchedule }
-        );
+        await Timetable.findOneAndUpdate({ classId, academicYear }, { schedule: originalSchedule });
       } catch (rollbackError) {
-        console.error('Rollback failed:', rollbackError);
+        logger.error({ err: rollbackError }, 'Rollback failed');
       }
 
       throw error;
@@ -264,7 +268,7 @@ class BatchOperationsService {
     const results = {
       success: [],
       conflicts: [],
-      errors: []
+      errors: [],
     };
 
     // Validate all slots first
@@ -307,7 +311,7 @@ class BatchOperationsService {
     const validations = await Promise.all(validationPromises);
 
     // Collect conflicts and errors
-    const invalidSlots = validations.filter(v => !v.valid);
+    const invalidSlots = validations.filter((v) => !v.valid);
     if (invalidSlots.length > 0) {
       invalidSlots.forEach(({ slot, conflict, error }) => {
         if (conflict) {
@@ -320,7 +324,7 @@ class BatchOperationsService {
       return {
         success: false,
         message: 'Batch update aborted due to conflicts or validation errors',
-        results
+        results,
       };
     }
 
@@ -330,7 +334,7 @@ class BatchOperationsService {
       teacherTimetable = new TeacherTimetable({
         teacherId,
         academicYear,
-        schedule: {}
+        schedule: {},
       });
     }
 
@@ -349,12 +353,12 @@ class BatchOperationsService {
         }
 
         // Get old class ID
-        const oldSlot = teacherTimetable.schedule[day].find(s => s.periodIndex === periodIndex);
+        const oldSlot = teacherTimetable.schedule[day].find((s) => s.periodIndex === periodIndex);
         const oldClassId = oldSlot?.classId;
 
         // Remove old slot
         teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-          s => s.periodIndex !== periodIndex
+          (s) => s.periodIndex !== periodIndex
         );
 
         // Add new slot if classId provided
@@ -364,7 +368,7 @@ class BatchOperationsService {
             classId,
             subject,
             room,
-            lastModified: new Date()
+            lastModified: new Date(),
           });
         }
 
@@ -388,7 +392,7 @@ class BatchOperationsService {
             periodIndex,
             teacherId,
             subject,
-            room
+            room,
           });
         }
 
@@ -408,13 +412,16 @@ class BatchOperationsService {
           // Apply updates
           for (const { day, periodIndex } of updates.remove) {
             if (classTimetable.schedule[day] && classTimetable.schedule[day][periodIndex]) {
-              if (classTimetable.schedule[day][periodIndex].teacherId?.toString() === teacherId.toString()) {
+              if (
+                classTimetable.schedule[day][periodIndex].teacherId?.toString() ===
+                teacherId.toString()
+              ) {
                 classTimetable.schedule[day][periodIndex] = {
                   subject: '',
                   teacherId: null,
                   room: '',
                   lastModified: new Date(),
-                  modifiedBy: null
+                  modifiedBy: null,
                 };
               }
             }
@@ -434,7 +441,7 @@ class BatchOperationsService {
               teacherId,
               room,
               lastModified: new Date(),
-              modifiedBy: null
+              modifiedBy: null,
             };
           }
 
@@ -455,10 +462,10 @@ class BatchOperationsService {
       return {
         success: true,
         message: `Successfully updated ${slots.length} slots`,
-        results
+        results,
       };
     } catch (error) {
-      console.error('Batch update failed, rolling back:', error);
+      logger.error({ err: error }, 'Batch update failed, rolling back');
 
       try {
         await TeacherTimetable.findOneAndUpdate(
@@ -466,7 +473,7 @@ class BatchOperationsService {
           { schedule: originalSchedule }
         );
       } catch (rollbackError) {
-        console.error('Rollback failed:', rollbackError);
+        logger.error({ err: rollbackError }, 'Rollback failed');
       }
 
       throw error;
@@ -475,5 +482,3 @@ class BatchOperationsService {
 }
 
 export default new BatchOperationsService();
-
-

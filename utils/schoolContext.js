@@ -51,6 +51,7 @@ export function serializeSchool(school) {
       lastProvisionedBy: null,
       notes: null,
     },
+    emailVerified: Boolean(school.metadata?.emailVerified),
   };
 }
 

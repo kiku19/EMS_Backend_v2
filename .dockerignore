@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.docker
+tests
+coverage
+.nyc_output
+*.test.js
+*.spec.js
+vitest.config.js
+.git
+.gitignore
+docs
+scripts
+*.md

@@ -1,9 +1,23 @@
 import express from 'express';
-import { Timetable, TeacherTimetable, Staff, Class, ConflictLog, Substitution } from '../database.js';
+import {
+  Timetable,
+  TeacherTimetable,
+  Staff,
+  Class,
+  ConflictLog,
+  Substitution,
+} from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
+  return { ...query, schoolId: normalizedSchoolId };
+}
 
 /**
  * GET /api/timetable-cleanup/preview
@@ -11,30 +25,40 @@ const router = express.Router();
  */
 router.get('/preview', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
-    // Count all timetable-related data
-    const timetablesCount = await Timetable.countDocuments();
-    const teacherTimetablesCount = await TeacherTimetable.countDocuments();
-    const conflictsCount = await ConflictLog.countDocuments();
-    const substitutionsCount = await Substitution.countDocuments();
+    const schoolId = req.user?.schoolId;
+    // Count timetable-related data for this school
+    const timetablesCount = await Timetable.countDocuments(scopeBySchool(schoolId));
+    const teacherTimetablesCount = await TeacherTimetable.countDocuments(scopeBySchool(schoolId));
+    const conflictsCount = await ConflictLog.countDocuments(scopeBySchool(schoolId));
+    const substitutionsCount = await Substitution.countDocuments(scopeBySchool(schoolId));
 
     // Count staff with teacher assignments
-    const staffWithAssignments = await Staff.countDocuments({
-      teacherAssignments: { $exists: true, $ne: [] }
-    });
+    const staffWithAssignments = await Staff.countDocuments(
+      scopeBySchool(schoolId, {
+        teacherAssignments: { $exists: true, $ne: [] },
+      })
+    );
 
     // Count classes with class teachers
-    const classesWithTeachers = await Class.countDocuments({
-      classTeacherId: { $exists: true, $ne: null }
-    });
+    const classesWithTeachers = await Class.countDocuments(
+      scopeBySchool(schoolId, {
+        classTeacherId: { $exists: true, $ne: null },
+      })
+    );
 
     // Get sample data for preview
-    const sampleTimetables = await Timetable.find().limit(3)
+    const sampleTimetables = await Timetable.find(scopeBySchool(schoolId))
+      .limit(3)
       .populate('classId', 'name section')
       .select('classId academicYear version');
 
-    const sampleAssignments = await Staff.find({
-      teacherAssignments: { $exists: true, $ne: [] }
-    }).limit(5).select('name code teacherAssignments');
+    const sampleAssignments = await Staff.find(
+      scopeBySchool(schoolId, {
+        teacherAssignments: { $exists: true, $ne: [] },
+      })
+    )
+      .limit(5)
+      .select('name code teacherAssignments');
 
     res.json({
       success: true,
@@ -44,19 +68,19 @@ router.get('/preview', authenticate, checkPermission('classes', 'delete'), async
         conflictLogs: conflictsCount,
         substitutions: substitutionsCount,
         staffWithAssignments,
-        classesWithTeachers
+        classesWithTeachers,
       },
       sampleData: {
         timetables: sampleTimetables,
-        staffAssignments: sampleAssignments
-      }
+        staffAssignments: sampleAssignments,
+      },
     });
   } catch (error) {
     console.error('Error previewing cleanup:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to preview cleanup data',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -68,84 +92,75 @@ router.get('/preview', authenticate, checkPermission('classes', 'delete'), async
  */
 router.post('/execute', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
   try {
+    const schoolId = req.user?.schoolId;
     const {
       timetables = true,
       teacherTimetables = true,
       staffAssignments = true,
       classTeachers = true,
       conflicts = true,
-      substitutions = true
+      substitutions = true,
     } = req.body.options || {};
 
     const results = {
       deleted: {},
       updated: {},
-      errors: []
+      errors: [],
     };
 
-    // 1. Delete all class timetables
+    // 1. Delete class timetables for this school
     if (timetables) {
-      const result = await Timetable.deleteMany({});
+      const result = await Timetable.deleteMany(scopeBySchool(schoolId));
       results.deleted.classTimetables = result.deletedCount;
-      console.log(`✅ Deleted ${result.deletedCount} class timetables`);
     }
 
-    // 2. Delete all teacher timetables
+    // 2. Delete teacher timetables for this school
     if (teacherTimetables) {
-      const result = await TeacherTimetable.deleteMany({});
+      const result = await TeacherTimetable.deleteMany(scopeBySchool(schoolId));
       results.deleted.teacherTimetables = result.deletedCount;
-      console.log(`✅ Deleted ${result.deletedCount} teacher timetables`);
     }
 
-    // 3. Clear staff teacher assignments
+    // 3. Clear staff teacher assignments for this school
     if (staffAssignments) {
-      const result = await Staff.updateMany(
-        {},
-        { $set: { teacherAssignments: [] } }
-      );
+      const result = await Staff.updateMany(scopeBySchool(schoolId), {
+        $set: { teacherAssignments: [] },
+      });
       results.updated.staffAssignments = result.modifiedCount;
-      console.log(`✅ Cleared assignments for ${result.modifiedCount} staff members`);
     }
 
-    // 4. Clear class teacher assignments
+    // 4. Clear class teacher assignments for this school
     if (classTeachers) {
-      const result = await Class.updateMany(
-        {},
-        { $set: { classTeacherId: null } }
-      );
+      const result = await Class.updateMany(scopeBySchool(schoolId), {
+        $set: { classTeacherId: null },
+      });
       results.updated.classTeachers = result.modifiedCount;
-      console.log(`✅ Cleared class teachers for ${result.modifiedCount} classes`);
     }
 
-    // 5. Delete all conflict logs
+    // 5. Delete conflict logs for this school
     if (conflicts) {
-      const result = await ConflictLog.deleteMany({});
+      const result = await ConflictLog.deleteMany(scopeBySchool(schoolId));
       results.deleted.conflictLogs = result.deletedCount;
-      console.log(`✅ Deleted ${result.deletedCount} conflict logs`);
     }
 
-    // 6. Delete all substitutions
+    // 6. Delete substitutions for this school
     if (substitutions) {
-      const result = await Substitution.deleteMany({});
+      const result = await Substitution.deleteMany(scopeBySchool(schoolId));
       results.deleted.substitutions = result.deletedCount;
-      console.log(`✅ Deleted ${result.deletedCount} substitutions`);
     }
 
     // Log the action
-    console.log(`🗑️ Timetable cleanup completed by user ${req.user?.id || 'unknown'}`);
-    console.log('Results:', results);
 
     res.json({
       success: true,
       message: 'Timetable data cleanup completed successfully',
-      results
+      results,
     });
   } catch (error) {
     console.error('Error executing cleanup:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to execute cleanup',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -154,44 +169,50 @@ router.post('/execute', authenticate, checkPermission('classes', 'delete'), asyn
  * POST /api/timetable-cleanup/reset-staff
  * Reset a specific staff member's assignments
  */
-router.post('/reset-staff/:staffId', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
-  try {
-    const { staffId } = req.params;
+router.post(
+  '/reset-staff/:staffId',
+  authenticate,
+  checkPermission('classes', 'edit'),
+  async (req, res) => {
+    try {
+      const { staffId } = req.params;
+      const schoolId = req.user?.schoolId;
 
-    // Clear staff assignments
-    const staff = await Staff.findByIdAndUpdate(
-      staffId,
-      { $set: { teacherAssignments: [], isClassTeacher: false, classTeacherOf: null } },
-      { new: true }
-    );
+      // Clear staff assignments — scoped to this school
+      const staff = await Staff.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: staffId }),
+        { $set: { teacherAssignments: [], isClassTeacher: false, classTeacherOf: null } },
+        { new: true }
+      );
 
-    if (!staff) {
-      return res.status(404).json({
+      if (!staff) {
+        return res.status(404).json({
+          success: false,
+          message: 'Staff not found',
+        });
+      }
+
+      // Delete teacher timetable
+      await TeacherTimetable.deleteMany(scopeBySchool(schoolId, { teacherId: staffId }));
+
+      res.json({
+        success: true,
+        message: `Reset timetable data for ${staff.name}`,
+        staff: {
+          id: staff._id,
+          name: staff.name,
+          code: staff.code,
+        },
+      });
+    } catch (error) {
+      console.error('Error resetting staff:', error);
+      res.status(500).json({
         success: false,
-        message: 'Staff not found'
+        message: 'Failed to reset staff data',
+        error: error.message,
       });
     }
-
-    // Delete teacher timetable
-    await TeacherTimetable.deleteMany({ teacherId: staffId });
-
-    res.json({
-      success: true,
-      message: `Reset timetable data for ${staff.name}`,
-      staff: {
-        id: staff._id,
-        name: staff.name,
-        code: staff.code
-      }
-    });
-  } catch (error) {
-    console.error('Error resetting staff:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to reset staff data',
-      error: error.message
-    });
   }
-});
+);
 
 export default router;

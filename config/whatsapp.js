@@ -14,7 +14,6 @@ const MSG91_WHATSAPP_ENABLED = process.env.MSG91_WHATSAPP_ENABLED === 'true';
 export const sendWhatsAppMessage = async (to, templateName, templateParams = {}) => {
   try {
     if (!MSG91_WHATSAPP_ENABLED) {
-      console.log('⚠️  WhatsApp is disabled');
       return { success: false, error: 'WhatsApp not enabled' };
     }
 
@@ -24,24 +23,31 @@ export const sendWhatsAppMessage = async (to, templateName, templateParams = {})
 
     const recipients = Array.isArray(to) ? to : [to];
 
-    const response = await fetch('https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/', {
-      method: 'POST',
-      headers: {
-        'authkey': MSG91_AUTH_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        mobiles: recipients,
-        template_name: templateName,
-        template_params: templateParams,
-        sender: process.env.MSG91_WHATSAPP_SENDER_PHONE
-      })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+    const response = await fetch(
+      'https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/',
+      {
+        method: 'POST',
+        headers: {
+          authkey: MSG91_AUTH_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mobiles: recipients,
+          template_name: templateName,
+          template_params: templateParams,
+          sender: process.env.MSG91_WHATSAPP_SENDER_PHONE,
+        }),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeoutId);
 
     const data = await response.json();
 
     if (data.status === 'success') {
-      console.log('✅ WhatsApp message sent');
       return { success: true, messageId: data.messageId };
     } else {
       throw new Error(data.message || 'WhatsApp message failed');
@@ -70,28 +76,35 @@ export const sendWhatsAppMedia = async (to, templateName, templateParams, media)
       throw new Error('MSG91 credentials not configured');
     }
 
-    const response = await fetch('https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/', {
-      method: 'POST',
-      headers: {
-        'authkey': MSG91_AUTH_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        mobiles: [to],
-        template_name: templateName,
-        template_params: templateParams,
-        media: {
-          url: media.url,
-          type: media.type, // image, video, document
-          caption: media.caption || ''
-        }
-      })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+    const response = await fetch(
+      'https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/',
+      {
+        method: 'POST',
+        headers: {
+          authkey: MSG91_AUTH_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mobiles: [to],
+          template_name: templateName,
+          template_params: templateParams,
+          media: {
+            url: media.url,
+            type: media.type, // image, video, document
+            caption: media.caption || '',
+          },
+        }),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeoutId);
 
     const data = await response.json();
 
     if (data.status === 'success') {
-      console.log('✅ WhatsApp media sent');
       return { success: true, messageId: data.messageId };
     } else {
       throw new Error(data.message || 'WhatsApp media failed');

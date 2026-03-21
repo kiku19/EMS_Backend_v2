@@ -1,6 +1,7 @@
 ﻿import express from 'express';
 import { Class, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
+import { extractSchoolId } from '../utils/schoolContext.js';
 import validationService from '../services/validationService.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
 
@@ -8,7 +9,7 @@ const router = express.Router();
 
 router.get('/class/:classId/empty-slots', authenticate, async (req, res) => {
   try {
-    const academicYear = await resolveAcademicYear(req.query.academicYear);
+    const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const emptySlots = await validationService.identifyEmptySlots(req.params.classId, academicYear);
 
     res.json({
@@ -16,71 +17,80 @@ router.get('/class/:classId/empty-slots', authenticate, async (req, res) => {
       classId: req.params.classId,
       academicYear,
       emptySlots,
-      count: emptySlots.length
+      count: emptySlots.length,
     });
   } catch (error) {
     console.error('Error identifying empty slots:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to identify empty slots'
+      message: error.message || 'Failed to identify empty slots',
     });
   }
 });
 
 router.get('/teacher/:teacherId/gaps', authenticate, async (req, res) => {
   try {
-    const academicYear = await resolveAcademicYear(req.query.academicYear);
-    const gaps = await validationService.identifyTeacherScheduleGaps(req.params.teacherId, academicYear);
+    const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
+    const gaps = await validationService.identifyTeacherScheduleGaps(
+      req.params.teacherId,
+      academicYear
+    );
 
     res.json({
       success: true,
       teacherId: req.params.teacherId,
       academicYear,
       gaps,
-      count: gaps.length
+      count: gaps.length,
     });
   } catch (error) {
     console.error('Error identifying teacher schedule gaps:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to identify teacher schedule gaps'
+      message: error.message || 'Failed to identify teacher schedule gaps',
     });
   }
 });
 
 router.get('/class/:classId/report', authenticate, async (req, res) => {
   try {
-    const academicYear = await resolveAcademicYear(req.query.academicYear);
-    const report = await validationService.generateClassValidationReport(req.params.classId, academicYear);
+    const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
+    const report = await validationService.generateClassValidationReport(
+      req.params.classId,
+      academicYear
+    );
 
     res.json({ success: true, report });
   } catch (error) {
     console.error('Error generating class validation report:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to generate class validation report'
+      message: error.message || 'Failed to generate class validation report',
     });
   }
 });
 
 router.get('/teacher/:teacherId/report', authenticate, async (req, res) => {
   try {
-    const academicYear = await resolveAcademicYear(req.query.academicYear);
-    const report = await validationService.generateTeacherValidationReport(req.params.teacherId, academicYear);
+    const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
+    const report = await validationService.generateTeacherValidationReport(
+      req.params.teacherId,
+      academicYear
+    );
 
     res.json({ success: true, report });
   } catch (error) {
     console.error('Error generating teacher validation report:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to generate teacher validation report'
+      message: error.message || 'Failed to generate teacher validation report',
     });
   }
 });
 
 router.get('/classes/comprehensive', authenticate, async (req, res) => {
   try {
-    const academicYear = await resolveAcademicYear(req.query.academicYear);
+    const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateComprehensiveClassReport(academicYear);
 
     res.json({ success: true, report });
@@ -88,14 +98,14 @@ router.get('/classes/comprehensive', authenticate, async (req, res) => {
     console.error('Error generating comprehensive class report:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to generate comprehensive class report'
+      message: error.message || 'Failed to generate comprehensive class report',
     });
   }
 });
 
 router.get('/teachers/comprehensive', authenticate, async (req, res) => {
   try {
-    const academicYear = await resolveAcademicYear(req.query.academicYear);
+    const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateComprehensiveTeacherReport(academicYear);
 
     res.json({ success: true, report });
@@ -103,15 +113,17 @@ router.get('/teachers/comprehensive', authenticate, async (req, res) => {
     console.error('Error generating comprehensive teacher report:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to generate comprehensive teacher report'
+      message: error.message || 'Failed to generate comprehensive teacher report',
     });
   }
 });
 
 router.get('/class-teachers/check-duplicates', authenticate, async (req, res) => {
   try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
     const classesWithTeachers = await Class.find({
-      classTeacherId: { $exists: true, $ne: null }
+      schoolId,
+      classTeacherId: { $exists: true, $ne: null },
     }).populate('classTeacherId', 'name code');
 
     const teacherMap = new Map();
@@ -122,9 +134,9 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
           teacher: {
             id: classDoc.classTeacherId._id,
             name: classDoc.classTeacherId.name,
-            code: classDoc.classTeacherId.code
+            code: classDoc.classTeacherId.code,
           },
-          classes: []
+          classes: [],
         });
       }
 
@@ -132,7 +144,7 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
         classId: classDoc._id,
         className: `${classDoc.name} ${classDoc.section}`,
         createdAt: classDoc.createdAt,
-        updatedAt: classDoc.updatedAt
+        updatedAt: classDoc.updatedAt,
       });
     });
 
@@ -142,7 +154,9 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
         return;
       }
 
-      const sortedClasses = [...data.classes].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+      const sortedClasses = [...data.classes].sort(
+        (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+      );
       violations.push({
         teacherId,
         teacherName: data.teacher.name,
@@ -152,10 +166,10 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
           classId: classInfo.classId,
           className: classInfo.className,
           createdAt: classInfo.createdAt,
-          updatedAt: classInfo.updatedAt
+          updatedAt: classInfo.updatedAt,
         })),
         recommendedToKeep: sortedClasses[0].classId,
-        recommendedToRemove: sortedClasses.slice(1).map((classInfo) => classInfo.classId)
+        recommendedToRemove: sortedClasses.slice(1).map((classInfo) => classInfo.classId),
       });
     });
 
@@ -165,7 +179,7 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
       violationCount: violations.length,
       violations,
       totalClassesWithTeachers: classesWithTeachers.length,
-      timestamp: new Date()
+      timestamp: new Date(),
     });
   } catch (error) {
     console.error('Error checking for duplicates:', error);
@@ -175,7 +189,8 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
 
 router.get('/class-teachers/check-consistency', authenticate, async (req, res) => {
   try {
-    const staffWithClassTeacher = await Staff.find({ isClassTeacher: true });
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    const staffWithClassTeacher = await Staff.find({ schoolId, isClassTeacher: true });
     const inconsistencies = [];
 
     for (const staff of staffWithClassTeacher) {
@@ -183,21 +198,24 @@ router.get('/class-teachers/check-consistency', authenticate, async (req, res) =
         continue;
       }
 
-      const classMatch = staff.classTeacherOf.match(/Class\s*(\d+)[-\s]?([A-Z])?/i)
-        || staff.classTeacherOf.match(/^(\d+)[-\s]?([A-Z])?$/i);
+      const classMatch =
+        staff.classTeacherOf.match(/Class\s*(\d+)[-\s]?([A-Z])?/i) ||
+        staff.classTeacherOf.match(/^(\d+)[-\s]?([A-Z])?$/i);
       if (!classMatch) {
         continue;
       }
 
       const className = `Class ${classMatch[1]}`;
       const section = classMatch[2] || 'A';
-      const targetClass = await Class.findOne({ name: className, section });
+      const targetClass = await Class.findOne({ schoolId, name: className, section });
       if (!targetClass) {
         continue;
       }
 
       const expectedTeacherId = staff._id.toString();
-      const actualTeacherId = targetClass.classTeacherId ? targetClass.classTeacherId.toString() : null;
+      const actualTeacherId = targetClass.classTeacherId
+        ? targetClass.classTeacherId.toString()
+        : null;
       if (actualTeacherId !== expectedTeacherId) {
         inconsistencies.push({
           staffId: staff._id,
@@ -206,17 +224,18 @@ router.get('/class-teachers/check-consistency', authenticate, async (req, res) =
           classTeacherOf: staff.classTeacherOf,
           expectedClassId: targetClass._id,
           actualClassTeacherId: actualTeacherId,
-          status: actualTeacherId ? 'mismatch' : 'unassigned'
+          status: actualTeacherId ? 'mismatch' : 'unassigned',
         });
       }
     }
 
     const classesWithTeachers = await Class.find({
-      classTeacherId: { $exists: true, $ne: null }
+      schoolId,
+      classTeacherId: { $exists: true, $ne: null },
     });
 
     for (const classDoc of classesWithTeachers) {
-      const staff = await Staff.findById(classDoc.classTeacherId);
+      const staff = await Staff.findOne({ _id: classDoc.classTeacherId, schoolId });
       if (staff && !staff.isClassTeacher) {
         inconsistencies.push({
           staffId: staff._id,
@@ -226,7 +245,7 @@ router.get('/class-teachers/check-consistency', authenticate, async (req, res) =
           classId: classDoc._id,
           className: `${classDoc.name} ${classDoc.section}`,
           isClassTeacher: staff.isClassTeacher,
-          status: 'isClassTeacher_false'
+          status: 'isClassTeacher_false',
         });
       }
     }
@@ -236,7 +255,7 @@ router.get('/class-teachers/check-consistency', authenticate, async (req, res) =
       hasInconsistencies: inconsistencies.length > 0,
       inconsistencyCount: inconsistencies.length,
       inconsistencies,
-      timestamp: new Date()
+      timestamp: new Date(),
     });
   } catch (error) {
     console.error('Error checking consistency:', error);
@@ -246,8 +265,10 @@ router.get('/class-teachers/check-consistency', authenticate, async (req, res) =
 
 router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => {
   try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
     const classesWithTeachers = await Class.find({
-      classTeacherId: { $exists: true, $ne: null }
+      schoolId,
+      classTeacherId: { $exists: true, $ne: null },
     }).populate('classTeacherId', 'name code');
 
     const teacherMap = new Map();
@@ -258,9 +279,9 @@ router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => 
           teacher: {
             id: classDoc.classTeacherId._id,
             name: classDoc.classTeacherId.name,
-            code: classDoc.classTeacherId.code
+            code: classDoc.classTeacherId.code,
           },
-          classes: []
+          classes: [],
         });
       }
 
@@ -268,7 +289,7 @@ router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => 
         classId: classDoc._id,
         className: `${classDoc.name} ${classDoc.section}`,
         createdAt: classDoc.createdAt,
-        updatedAt: classDoc.updatedAt
+        updatedAt: classDoc.updatedAt,
       });
     });
 
@@ -278,22 +299,27 @@ router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => 
         return;
       }
 
-      const sortedClasses = [...data.classes].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+      const sortedClasses = [...data.classes].sort(
+        (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+      );
       fixes.push({
         teacherId,
         teacherName: data.teacher.name,
         teacherCode: data.teacher.code,
         classKept: sortedClasses[0],
-        classesRemoved: sortedClasses.slice(1)
+        classesRemoved: sortedClasses.slice(1),
       });
     });
 
     const fixResults = [];
     for (const fix of fixes) {
       for (const classToRemove of fix.classesRemoved) {
-        await Class.findByIdAndUpdate(classToRemove.classId, {
-          $unset: { classTeacherId: 1 }
-        });
+        await Class.findOneAndUpdate(
+          { _id: classToRemove.classId, schoolId },
+          {
+            $unset: { classTeacherId: 1 },
+          }
+        );
       }
 
       fixResults.push({
@@ -301,12 +327,12 @@ router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => 
         teacherCode: fix.teacherCode,
         classKept: {
           classId: fix.classKept.classId.toString(),
-          className: fix.classKept.className
+          className: fix.classKept.className,
         },
         classesRemoved: fix.classesRemoved.map((classInfo) => ({
           classId: classInfo.classId.toString(),
-          className: classInfo.className
-        }))
+          className: classInfo.className,
+        })),
       });
     }
 
@@ -315,7 +341,7 @@ router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => 
       message: `Fixed ${fixes.length} duplicate class teacher assignments`,
       fixesApplied: fixResults.length,
       details: fixResults,
-      timestamp: new Date()
+      timestamp: new Date(),
     });
   } catch (error) {
     console.error('Error fixing duplicates:', error);

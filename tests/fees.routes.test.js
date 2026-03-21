@@ -75,9 +75,7 @@ async function insertPaymentDirect(fields) {
     updatedAt: new Date(),
     ...rest,
     // Store schoolId as ObjectId so it matches Mongoose's ObjectId query filter.
-    ...(schoolId != null
-      ? { schoolId: new mongoose.Types.ObjectId(schoolId.toString()) }
-      : {}),
+    ...(schoolId != null ? { schoolId: new mongoose.Types.ObjectId(schoolId.toString()) } : {}),
     receiptNumber: rest.receiptNumber || `RCP-DIRECT-${Date.now()}-${Math.random()}`,
   });
   return result.insertedId;
@@ -186,28 +184,24 @@ describe('POST /api/fees/payments', () => {
       .expect(401);
   });
 
-  it('returns 500 when studentId is missing (Mongoose required field)', async () => {
-    // The route passes body fields directly to new FeePayment(). When
-    // studentId is absent the schema validation fails and the route's catch
-    // block returns 500.
+  it('returns 400 when studentId is missing (Zod validation)', async () => {
+    // The Zod schema requires studentId, so the validation middleware
+    // rejects the request with 400 before it reaches the route handler.
     const accountant = await createAccountant();
     const classRecord = await createClassRecord({ name: 'Class 9', section: 'C' });
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const res = await request(app)
-      .post('/api/fees/payments')
-      .set(authHeaders)
-      .send({
-        // studentId intentionally omitted
-        classId: classRecord._id.toString(),
-        academicYear: '2025-26',
-        paymentDate: '2026-03-06',
-        amount: 300,
-        paymentMode: 'cash',
-      });
+    const res = await request(app).post('/api/fees/payments').set(authHeaders).send({
+      // studentId intentionally omitted
+      classId: classRecord._id.toString(),
+      academicYear: '2025-26',
+      paymentDate: '2026-03-06',
+      amount: 300,
+      paymentMode: 'cash',
+    });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
   });
 
   it('still creates a payment record when studentId does not exist in DB (non-blocking student update)', async () => {
@@ -235,7 +229,9 @@ describe('POST /api/fees/payments', () => {
     expect(saved.amount).toBe(500);
   });
 
-  it('returns 500 when amount is missing (Mongoose required field)', async () => {
+  it('returns 400 when amount is missing (Zod validation)', async () => {
+    // The Zod schema requires amount, so the validation middleware
+    // rejects the request with 400 before it reaches the route handler.
     const accountant = await createAccountant();
     const classRecord = await createClassRecord({ name: 'Class 10', section: 'B' });
     const student = await createStudentRecord({
@@ -246,24 +242,20 @@ describe('POST /api/fees/payments', () => {
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const res = await request(app)
-      .post('/api/fees/payments')
-      .set(authHeaders)
-      .send({
-        studentId: student._id.toString(),
-        classId: classRecord._id.toString(),
-        academicYear: '2025-26',
-        paymentDate: '2026-03-06',
-        // amount intentionally omitted
-        paymentMode: 'cash',
-      });
+    const res = await request(app).post('/api/fees/payments').set(authHeaders).send({
+      studentId: student._id.toString(),
+      classId: classRecord._id.toString(),
+      academicYear: '2025-26',
+      paymentDate: '2026-03-06',
+      // amount intentionally omitted
+      paymentMode: 'cash',
+    });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
   });
 
-  it('creates a payment with amount 0 (no minimum enforced by schema or route)', async () => {
-    // The schema requires amount but does not enforce a positive minimum,
-    // so 0 is accepted.
+  it('returns 400 when amount is 0 (Zod enforces min 1)', async () => {
+    // The Zod schema enforces amount >= 1, so a zero amount is rejected.
     const accountant = await createAccountant();
     const classRecord = await createClassRecord({ name: 'Class 10', section: 'C' });
     const student = await createStudentRecord({
@@ -277,11 +269,9 @@ describe('POST /api/fees/payments', () => {
     const res = await request(app)
       .post('/api/fees/payments')
       .set(authHeaders)
-      .send(validPaymentBody(student._id, classRecord._id, { amount: 0 }))
-      .expect(201);
+      .send(validPaymentBody(student._id, classRecord._id, { amount: 0 }));
 
-    expect(res.body.amount).toBe(0);
-    expect(res.body.status).toBe('completed');
+    expect(res.status).toBe(400);
   });
 
   it('auto-generates a receipt number when none is supplied', async () => {
@@ -301,7 +291,7 @@ describe('POST /api/fees/payments', () => {
       .send(validPaymentBody(student._id, classRecord._id))
       .expect(201);
 
-    expect(res.body.receiptNumber).toMatch(/^RCP-\d+$/);
+    expect(res.body.receiptNumber).toMatch(/^RCP-\d{4}-\d+$/);
   });
 
   it('uses the supplied receipt number when one is provided', async () => {
@@ -359,7 +349,11 @@ describe('POST /api/fees/payments', () => {
     // scopeBySchool scopes the student lookup to School A's schoolId, so the
     // student is not found. The payment itself is still saved (201) but the
     // student's fee totals remain unchanged.
-    const schoolA = await createSchoolRecord({ name: 'School A', code: 'SCH-A-MT', isDefault: true });
+    const schoolA = await createSchoolRecord({
+      name: 'School A',
+      code: 'SCH-A-MT',
+      isDefault: true,
+    });
     const schoolB = await createSchoolRecord({ name: 'School B', code: 'SCH-B-MT' });
 
     const accountantA = await createAccountant({ schoolId: schoolA._id });
@@ -400,9 +394,7 @@ describe('GET /api/fees/payments', () => {
   it('returns 401 when no auth token is provided', async () => {
     const { app } = createTestApp();
 
-    await request(app)
-      .get('/api/fees/payments')
-      .expect(401);
+    await request(app).get('/api/fees/payments').expect(401);
   });
 
   it('returns an empty array when no payments exist', async () => {
@@ -410,10 +402,7 @@ describe('GET /api/fees/payments', () => {
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const res = await request(app)
-      .get('/api/fees/payments')
-      .set(authHeaders)
-      .expect(200);
+    const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toHaveLength(0);
@@ -423,22 +412,41 @@ describe('GET /api/fees/payments', () => {
     // Insert payments directly into MongoDB so that schoolId is persisted.
     // (The FeePayment schema has no schoolId field, so Mongoose strict mode
     // would drop it on a regular save.)
-    const school = await createSchoolRecord({ name: 'List School', code: 'LST-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'List School',
+      code: 'LST-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 7', section: 'A' });
-    const studentA = await createStudentRecord({ name: 'Student A', rollNo: 1, classId: classRecord._id });
-    const studentB = await createStudentRecord({ name: 'Student B', rollNo: 2, classId: classRecord._id });
+    const studentA = await createStudentRecord({
+      name: 'Student A',
+      rollNo: 1,
+      classId: classRecord._id,
+    });
+    const studentB = await createStudentRecord({
+      name: 'Student B',
+      rollNo: 2,
+      classId: classRecord._id,
+    });
 
-    await insertPaymentDirect({ studentId: studentA._id, classId: classRecord._id, schoolId: school._id, amount: 100 });
-    await insertPaymentDirect({ studentId: studentB._id, classId: classRecord._id, schoolId: school._id, amount: 200 });
+    await insertPaymentDirect({
+      studentId: studentA._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 100,
+    });
+    await insertPaymentDirect({
+      studentId: studentB._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 200,
+    });
 
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const res = await request(app)
-      .get('/api/fees/payments')
-      .set(authHeaders)
-      .expect(200);
+    const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
     expect(res.body).toHaveLength(2);
     const amounts = res.body.map((p) => p.amount).sort((a, b) => a - b);
@@ -446,14 +454,36 @@ describe('GET /api/fees/payments', () => {
   });
 
   it('filters payments by studentId', async () => {
-    const school = await createSchoolRecord({ name: 'Filter School', code: 'FLT-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'Filter School',
+      code: 'FLT-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 7', section: 'B' });
-    const studentA = await createStudentRecord({ name: 'Filter Student A', rollNo: 1, classId: classRecord._id });
-    const studentB = await createStudentRecord({ name: 'Filter Student B', rollNo: 2, classId: classRecord._id });
+    const studentA = await createStudentRecord({
+      name: 'Filter Student A',
+      rollNo: 1,
+      classId: classRecord._id,
+    });
+    const studentB = await createStudentRecord({
+      name: 'Filter Student B',
+      rollNo: 2,
+      classId: classRecord._id,
+    });
 
-    await insertPaymentDirect({ studentId: studentA._id, classId: classRecord._id, schoolId: school._id, amount: 150 });
-    await insertPaymentDirect({ studentId: studentB._id, classId: classRecord._id, schoolId: school._id, amount: 250 });
+    await insertPaymentDirect({
+      studentId: studentA._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 150,
+    });
+    await insertPaymentDirect({
+      studentId: studentB._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 250,
+    });
 
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
@@ -469,7 +499,11 @@ describe('GET /api/fees/payments', () => {
   });
 
   it('filters payments by academicYear', async () => {
-    const school = await createSchoolRecord({ name: 'AcYear School', code: 'ACY-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'AcYear School',
+      code: 'ACY-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 7', section: 'C' });
     const student = await createStudentRecord({ name: 'AcYear Student', classId: classRecord._id });
@@ -504,7 +538,11 @@ describe('GET /api/fees/payments', () => {
   });
 
   it('filters payments by status', async () => {
-    const school = await createSchoolRecord({ name: 'Status School', code: 'STS-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'Status School',
+      code: 'STS-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 7', section: 'D' });
     const student = await createStudentRecord({ name: 'Status Student', classId: classRecord._id });
@@ -549,23 +587,42 @@ describe('GET /api/fees/payments', () => {
   });
 
   it('returns payments sorted by paymentDate descending', async () => {
-    const school = await createSchoolRecord({ name: 'Sort School', code: 'SRT-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'Sort School',
+      code: 'SRT-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 8', section: 'A' });
     const student = await createStudentRecord({ name: 'Sort Student', classId: classRecord._id });
 
     // Insert out of chronological order to verify the sort guarantee.
-    await insertPaymentDirect({ studentId: student._id, classId: classRecord._id, schoolId: school._id, amount: 100, paymentDate: '2026-01-01' });
-    await insertPaymentDirect({ studentId: student._id, classId: classRecord._id, schoolId: school._id, amount: 200, paymentDate: '2026-03-01' });
-    await insertPaymentDirect({ studentId: student._id, classId: classRecord._id, schoolId: school._id, amount: 150, paymentDate: '2026-02-01' });
+    await insertPaymentDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 100,
+      paymentDate: '2026-01-01',
+    });
+    await insertPaymentDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 200,
+      paymentDate: '2026-03-01',
+    });
+    await insertPaymentDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: school._id,
+      amount: 150,
+      paymentDate: '2026-02-01',
+    });
 
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const res = await request(app)
-      .get('/api/fees/payments')
-      .set(authHeaders)
-      .expect(200);
+    const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
     expect(res.body).toHaveLength(3);
     expect(res.body[0].paymentDate).toBe('2026-03-01');
@@ -576,35 +633,41 @@ describe('GET /api/fees/payments', () => {
   it('multi-tenancy: School A admin cannot see School B payments', async () => {
     // Payments inserted with School B's schoolId should not be visible to
     // School A's accountant, whose query filter uses School A's schoolId.
-    const schoolA = await createSchoolRecord({ name: 'List School A', code: 'LST-A', isDefault: true });
+    const schoolA = await createSchoolRecord({
+      name: 'List School A',
+      code: 'LST-A',
+      isDefault: true,
+    });
     const schoolB = await createSchoolRecord({ name: 'List School B', code: 'LST-B' });
 
     const accountantA = await createAccountant({ schoolId: schoolA._id });
     const accountantB = await createAccountant({ schoolId: schoolB._id });
 
     const classRecord = await createClassRecord({ name: 'Class 6', section: 'A' });
-    const student = await createStudentRecord({ name: 'School B Student', classId: classRecord._id });
+    const student = await createStudentRecord({
+      name: 'School B Student',
+      classId: classRecord._id,
+    });
 
     // Insert a payment scoped to School B.
-    await insertPaymentDirect({ studentId: student._id, classId: classRecord._id, schoolId: schoolB._id, amount: 750 });
+    await insertPaymentDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: schoolB._id,
+      amount: 750,
+    });
 
     const { app } = createTestApp();
 
     // School A accountant should see zero payments.
     const authHeadersA = authHeadersFor(accountantA, 'accountant');
-    const resA = await request(app)
-      .get('/api/fees/payments')
-      .set(authHeadersA)
-      .expect(200);
+    const resA = await request(app).get('/api/fees/payments').set(authHeadersA).expect(200);
 
     expect(resA.body).toHaveLength(0);
 
     // School B accountant should see that payment.
     const authHeadersB = authHeadersFor(accountantB, 'accountant');
-    const resB = await request(app)
-      .get('/api/fees/payments')
-      .set(authHeadersB)
-      .expect(200);
+    const resB = await request(app).get('/api/fees/payments').set(authHeadersB).expect(200);
 
     expect(resB.body).toHaveLength(1);
     expect(resB.body[0].amount).toBe(750);
@@ -620,16 +683,21 @@ describe('GET /api/fees/payments/:id', () => {
     const { app } = createTestApp();
     const fakeId = '000000000000000000000001';
 
-    await request(app)
-      .get(`/api/fees/payments/${fakeId}`)
-      .expect(401);
+    await request(app).get(`/api/fees/payments/${fakeId}`).expect(401);
   });
 
   it('returns the correct payment when the ID exists', async () => {
-    const school = await createSchoolRecord({ name: 'GetById School', code: 'GBY-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'GetById School',
+      code: 'GBY-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 9', section: 'D' });
-    const student = await createStudentRecord({ name: 'GetById Student', classId: classRecord._id });
+    const student = await createStudentRecord({
+      name: 'GetById Student',
+      classId: classRecord._id,
+    });
 
     const insertedId = await insertPaymentDirect({
       studentId: student._id,
@@ -657,10 +725,7 @@ describe('GET /api/fees/payments/:id', () => {
     const authHeaders = authHeadersFor(accountant, 'accountant');
     const nonExistentId = '000000000000000000000001';
 
-    await request(app)
-      .get(`/api/fees/payments/${nonExistentId}`)
-      .set(authHeaders)
-      .expect(404);
+    await request(app).get(`/api/fees/payments/${nonExistentId}`).set(authHeaders).expect(404);
   });
 
   it('returns 500 for a malformed payment ID', async () => {
@@ -670,9 +735,7 @@ describe('GET /api/fees/payments/:id', () => {
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const res = await request(app)
-      .get('/api/fees/payments/not-a-valid-objectid')
-      .set(authHeaders);
+    const res = await request(app).get('/api/fees/payments/not-a-valid-objectid').set(authHeaders);
 
     expect(res.status).toBe(500);
   });
@@ -680,14 +743,21 @@ describe('GET /api/fees/payments/:id', () => {
   it('multi-tenancy: School A admin cannot retrieve a payment belonging to School B', async () => {
     // The GET /:id route appends schoolId to the findOne query.
     // School B's payment is only visible to School B's accountant — not School A's.
-    const schoolA = await createSchoolRecord({ name: 'GetId School A', code: 'GID-A', isDefault: true });
+    const schoolA = await createSchoolRecord({
+      name: 'GetId School A',
+      code: 'GID-A',
+      isDefault: true,
+    });
     const schoolB = await createSchoolRecord({ name: 'GetId School B', code: 'GID-B' });
 
     const accountantA = await createAccountant({ schoolId: schoolA._id });
     const accountantB = await createAccountant({ schoolId: schoolB._id });
 
     const classRecord = await createClassRecord({ name: 'Class 9', section: 'E' });
-    const student = await createStudentRecord({ name: 'MT GetById Student', classId: classRecord._id });
+    const student = await createStudentRecord({
+      name: 'MT GetById Student',
+      classId: classRecord._id,
+    });
 
     // Payment scoped to School B.
     const insertedId = await insertPaymentDirect({
@@ -702,23 +772,21 @@ describe('GET /api/fees/payments/:id', () => {
 
     // School A accountant: should get 404.
     const authHeadersA = authHeadersFor(accountantA, 'accountant');
-    await request(app)
-      .get(paymentPath)
-      .set(authHeadersA)
-      .expect(404);
+    await request(app).get(paymentPath).set(authHeadersA).expect(404);
 
     // School B accountant: should get 200.
     const authHeadersB = authHeadersFor(accountantB, 'accountant');
-    const resB = await request(app)
-      .get(paymentPath)
-      .set(authHeadersB)
-      .expect(200);
+    const resB = await request(app).get(paymentPath).set(authHeadersB).expect(200);
 
     expect(resB.body.amount).toBe(550);
   });
 
   it('populates the studentId field with student name and admissionId', async () => {
-    const school = await createSchoolRecord({ name: 'Populate School', code: 'POP-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'Populate School',
+      code: 'POP-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 10', section: 'D' });
     const student = await createStudentRecord({
@@ -750,7 +818,11 @@ describe('GET /api/fees/payments/:id', () => {
   });
 
   it('returns all expected fields on a payment document', async () => {
-    const school = await createSchoolRecord({ name: 'Fields School', code: 'FLD-MAIN', isDefault: true });
+    const school = await createSchoolRecord({
+      name: 'Fields School',
+      code: 'FLD-MAIN',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: school._id });
     const classRecord = await createClassRecord({ name: 'Class 10', section: 'E' });
     const student = await createStudentRecord({ name: 'Fields Student', classId: classRecord._id });

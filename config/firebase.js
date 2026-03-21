@@ -19,7 +19,9 @@ function parseServiceAccountJson(rawValue, sourceLabel) {
     }
     return parsed;
   } catch (error) {
-    throw new Error(`Invalid Firebase service account JSON from ${sourceLabel}: ${error.message}`);
+    throw new Error(`Invalid Firebase service account JSON from ${sourceLabel}: ${error.message}`, {
+      cause: error,
+    });
   }
 }
 
@@ -42,7 +44,7 @@ function loadServiceAccountFromEnv() {
   if (!projectId || !clientEmail || !privateKey) {
     throw new Error(
       'Incomplete Firebase configuration. Set FIREBASE_SERVICE_ACCOUNT_JSON or all of ' +
-      'FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY.'
+        'FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY.'
     );
   }
 

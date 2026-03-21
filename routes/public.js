@@ -1,11 +1,19 @@
 import express from 'express';
 import { rateLimit } from 'express-rate-limit';
+import { z } from 'zod';
 import { FormAssignment, FormSubmission, IntakeForm } from '../database.js';
 import crypto from 'crypto';
 import { createLogger } from '../utils/logger.js';
+import { optionalPhone, optionalEmail } from '../validators/zodHelpers.js';
 
 const router = express.Router();
 const logger = createLogger('Public');
+
+// Prevent token leakage via Referer headers
+router.use((req, res, next) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 
 // Per-token rate limiter: max 10 submissions per hour per IP
 const formSubmissionLimiter = rateLimit({
@@ -48,7 +56,7 @@ router.get('/form-assignment/:token', async (req, res) => {
     if (!validation.valid) {
       return res.status(401).json({
         error: validation.error,
-        code: 'INVALID_TOKEN'
+        code: 'INVALID_TOKEN',
       });
     }
 
@@ -62,7 +70,7 @@ router.get('/form-assignment/:token', async (req, res) => {
     if (!populatedAssignment.formId) {
       return res.status(404).json({
         error: 'Associated form not found',
-        code: 'FORM_NOT_FOUND'
+        code: 'FORM_NOT_FOUND',
       });
     }
 
@@ -70,13 +78,13 @@ router.get('/form-assignment/:token', async (req, res) => {
     if (populatedAssignment.formId.status !== 'active') {
       return res.status(403).json({
         error: 'Form is not currently active',
-        code: 'FORM_INACTIVE'
+        code: 'FORM_INACTIVE',
       });
     }
 
     // Check if already submitted
     const existingSubmission = await FormSubmission.findOne({
-      assignmentId: assignment._id
+      assignmentId: assignment._id,
     });
 
     // Return form details for rendering
@@ -87,35 +95,59 @@ router.get('/form-assignment/:token', async (req, res) => {
         status: populatedAssignment.status,
         assignedAt: populatedAssignment.assignedAt,
         expiresAt: populatedAssignment.expiresAt,
-        assignedBy: populatedAssignment.assignedBy
+        assignedBy: populatedAssignment.assignedBy,
       },
       form: {
         id: populatedAssignment.formId._id,
         name: populatedAssignment.formId.formName,
         type: populatedAssignment.formId.formType,
-        fields: populatedAssignment.formId.fields
+        fields: populatedAssignment.formId.fields,
       },
       alreadySubmitted: !!existingSubmission,
-      submission: existingSubmission ? {
-        id: existingSubmission._id,
-        submittedAt: existingSubmission.submittedAt,
-        reviewStatus: existingSubmission.reviewStatus
-      } : null
+      submission: existingSubmission
+        ? {
+            id: existingSubmission._id,
+            submittedAt: existingSubmission.submittedAt,
+            reviewStatus: existingSubmission.reviewStatus,
+          }
+        : null,
     });
   } catch (error) {
     logger.error({ err: error }, 'Error fetching form assignment');
     res.status(500).json({
       error: 'Failed to fetch form details',
-      details: error.message
+      details: error.message,
     });
   }
+});
+
+// Zod schema for public form submission
+const formSubmissionBodySchema = z.object({
+  submissionData: z.record(z.string(), z.unknown()),
+  submittedByEmail: optionalEmail,
+  submittedByPhone: optionalPhone,
 });
 
 // POST /api/public/form-submission/:token - Submit form data
 router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) => {
   try {
     const { token } = req.params;
-    const { submissionData, submittedByEmail, submittedByPhone } = req.body;
+
+    // Validate request body with Zod
+    const parseResult = formSubmissionBodySchema.safeParse(req.body);
+    if (!parseResult.success) {
+      const errors = parseResult.error.issues.map((issue) => ({
+        field: issue.path.join('.'),
+        message: issue.message,
+      }));
+      return res.status(400).json({
+        error: 'Validation failed',
+        code: 'VALIDATION_ERROR',
+        details: errors,
+      });
+    }
+
+    const { submissionData, submittedByEmail, submittedByPhone } = parseResult.data;
 
     // Validate access token
     const validation = await validateAccessToken(token);
@@ -123,7 +155,7 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
     if (!validation.valid) {
       return res.status(401).json({
         error: validation.error,
-        code: 'INVALID_TOKEN'
+        code: 'INVALID_TOKEN',
       });
     }
 
@@ -131,14 +163,14 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
 
     // Check if already submitted
     const existingSubmission = await FormSubmission.findOne({
-      assignmentId: assignment._id
+      assignmentId: assignment._id,
     });
 
     if (existingSubmission) {
       return res.status(400).json({
         error: 'Form has already been submitted',
         code: 'ALREADY_SUBMITTED',
-        submissionId: existingSubmission._id
+        submissionId: existingSubmission._id,
       });
     }
 
@@ -146,39 +178,39 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
     if (!submissionData || typeof submissionData !== 'object' || Array.isArray(submissionData)) {
       return res.status(400).json({
         error: 'Submission data is required and must be an object',
-        code: 'INVALID_DATA'
+        code: 'INVALID_DATA',
       });
     }
 
     // Enforce a reasonable size limit on submissionData to prevent oversized documents
     const submissionDataStr = JSON.stringify(submissionData);
-    if (submissionDataStr.length > 512 * 1024) { // 512 KB
+    if (submissionDataStr.length > 512 * 1024) {
+      // 512 KB
       return res.status(400).json({
         error: 'Submission data is too large',
-        code: 'DATA_TOO_LARGE'
+        code: 'DATA_TOO_LARGE',
       });
     }
 
     // Populate form to get form details and validate fields against schema
-    const populatedAssignment = await FormAssignment.findById(assignment._id)
-      .populate('formId');
+    const populatedAssignment = await FormAssignment.findById(assignment._id).populate('formId');
 
     if (!populatedAssignment.formId) {
       return res.status(404).json({
         error: 'Associated form not found',
-        code: 'FORM_NOT_FOUND'
+        code: 'FORM_NOT_FOUND',
       });
     }
 
     // Validate submissionData keys against form field definitions
     const formFields = populatedAssignment.formId.fields || [];
     if (formFields.length > 0) {
-      const allowedKeys = new Set(formFields.map(f => f.name || f.id || f.key).filter(Boolean));
-      const unknownKeys = Object.keys(submissionData).filter(k => !allowedKeys.has(k));
+      const allowedKeys = new Set(formFields.map((f) => f.name || f.id || f.key).filter(Boolean));
+      const unknownKeys = Object.keys(submissionData).filter((k) => !allowedKeys.has(k));
       if (unknownKeys.length > 0) {
         return res.status(400).json({
           error: `Unknown fields in submission: ${unknownKeys.join(', ')}`,
-          code: 'UNKNOWN_FIELDS'
+          code: 'UNKNOWN_FIELDS',
         });
       }
     }
@@ -203,7 +235,7 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
       submissionData: sanitizedData,
       submittedByEmail: submittedByEmail || assignment.assignedToEmail,
       submittedByPhone: submittedByPhone || assignment.assignedToPhone,
-      submittedAt: new Date()
+      submittedAt: new Date(),
     });
 
     await submission.save();
@@ -218,14 +250,14 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
       submission: {
         id: submission._id,
         submittedAt: submission.submittedAt,
-        reviewStatus: submission.reviewStatus
-      }
+        reviewStatus: submission.reviewStatus,
+      },
     });
   } catch (error) {
     logger.error({ err: error }, 'Error creating form submission');
     res.status(500).json({
       error: 'Failed to submit form',
-      details: error.message
+      details: error.message,
     });
   }
 });
@@ -241,7 +273,7 @@ router.get('/form-submission/:token/status', async (req, res) => {
     if (!validation.valid) {
       return res.status(401).json({
         error: validation.error,
-        code: 'INVALID_TOKEN'
+        code: 'INVALID_TOKEN',
       });
     }
 
@@ -249,14 +281,14 @@ router.get('/form-submission/:token/status', async (req, res) => {
 
     // Check for existing submission
     const submission = await FormSubmission.findOne({
-      assignmentId: assignment._id
+      assignmentId: assignment._id,
     });
 
     if (!submission) {
       return res.json({
         success: true,
         submitted: false,
-        message: 'Form has not been submitted yet'
+        message: 'Form has not been submitted yet',
       });
     }
 
@@ -269,14 +301,14 @@ router.get('/form-submission/:token/status', async (req, res) => {
         submittedAt: submission.submittedAt,
         reviewStatus: submission.reviewStatus,
         reviewNotes: submission.reviewNotes,
-        reviewedAt: submission.reviewedAt
-      }
+        reviewedAt: submission.reviewedAt,
+      },
     });
   } catch (error) {
     logger.error({ err: error }, 'Error checking submission status');
     res.status(500).json({
       error: 'Failed to check submission status',
-      details: error.message
+      details: error.message,
     });
   }
 });
@@ -293,7 +325,7 @@ router.put('/form-submission/:token', async (req, res) => {
     if (!validation.valid) {
       return res.status(401).json({
         error: validation.error,
-        code: 'INVALID_TOKEN'
+        code: 'INVALID_TOKEN',
       });
     }
 
@@ -301,13 +333,13 @@ router.put('/form-submission/:token', async (req, res) => {
 
     // Find existing submission
     const submission = await FormSubmission.findOne({
-      assignmentId: assignment._id
+      assignmentId: assignment._id,
     });
 
     if (!submission) {
       return res.status(404).json({
         error: 'No submission found for this assignment',
-        code: 'NO_SUBMISSION'
+        code: 'NO_SUBMISSION',
       });
     }
 
@@ -316,14 +348,14 @@ router.put('/form-submission/:token', async (req, res) => {
       return res.status(403).json({
         error: 'Form cannot be edited at this stage',
         code: 'CANNOT_EDIT',
-        currentStatus: submission.reviewStatus
+        currentStatus: submission.reviewStatus,
       });
     }
 
     // Update submission data
     submission.submissionData = {
       ...submission.submissionData,
-      ...submissionData
+      ...submissionData,
     };
 
     // Reset review status
@@ -333,21 +365,20 @@ router.put('/form-submission/:token', async (req, res) => {
 
     await submission.save();
 
-
     res.json({
       success: true,
       message: 'Form updated successfully',
       submission: {
         id: submission._id,
         submittedAt: submission.submittedAt,
-        reviewStatus: submission.reviewStatus
-      }
+        reviewStatus: submission.reviewStatus,
+      },
     });
   } catch (error) {
     logger.error({ err: error }, 'Error updating form submission');
     res.status(500).json({
       error: 'Failed to update form',
-      details: error.message
+      details: error.message,
     });
   }
 });

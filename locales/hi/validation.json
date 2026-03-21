@@ -1,0 +1,15 @@
+{
+  "required": "{{field}} आवश्यक है",
+  "invalidType": "{{field}} का प्रकार अमान्य है",
+  "tooShort": "{{field}} कम से कम {{min}} अक्षर का होना चाहिए",
+  "tooLong": "{{field}} {{max}} अक्षर से अधिक नहीं होना चाहिए",
+  "invalidEmail": "अमान्य ईमेल पता",
+  "invalidPhone": "अमान्य फोन नंबर प्रारूप",
+  "invalidEnum": "{{field}} इनमें से एक होना चाहिए: {{values}}",
+  "invalidUrl": "अमान्य URL प्रारूप",
+  "invalidDate": "अमान्य दिनांक प्रारूप",
+  "minValue": "{{field}} कम से कम {{min}} होना चाहिए",
+  "maxValue": "{{field}} {{max}} से अधिक नहीं होना चाहिए",
+  "invalidObjectId": "{{field}} के लिए अमान्य आईडी प्रारूप",
+  "invalidFormat": "{{field}} का प्रारूप अमान्य है"
+}

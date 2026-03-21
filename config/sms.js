@@ -20,24 +20,28 @@ export const sendSMS = async (to, message) => {
     const recipients = Array.isArray(to) ? to : [to];
 
     // MSG91 Send SMS API
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
     const response = await fetch('https://control.msg91.com/api/v5/flow/', {
       method: 'POST',
       headers: {
-        'authkey': MSG91_AUTH_KEY,
+        authkey: MSG91_AUTH_KEY,
         'Content-Type': 'application/json',
-        'accept': 'application/json'
+        accept: 'application/json',
       },
       body: JSON.stringify({
-        to: recipients.map(mobile => ({ mobiles: String(mobile) })),
+        to: recipients.map((mobile) => ({ mobiles: String(mobile) })),
         sender: MSG91_SENDER_ID,
-        template: message
-      })
+        template: message,
+      }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     const data = await response.json();
 
     if (data.type === 'success') {
-      console.log('✅ SMS sent successfully');
       return { success: true, messageId: data.requestId };
     } else {
       throw new Error(data.message || 'SMS sending failed');
@@ -63,21 +67,25 @@ export const sendSMSWithFlow = async (to, flowId, variables = {}) => {
 
     const recipients = Array.isArray(to) ? to : [to];
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
     const response = await fetch(`https://control.msg91.com/api/v5/flow/${flowId}/`, {
       method: 'POST',
       headers: {
-        'authkey': MSG91_AUTH_KEY,
-        'Content-Type': 'application/json'
+        authkey: MSG91_AUTH_KEY,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        to: recipients.map(mobile => ({ mobiles: String(mobile), ...variables }))
-      })
+        to: recipients.map((mobile) => ({ mobiles: String(mobile), ...variables })),
+      }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     const data = await response.json();
 
     if (data.type === 'success') {
-      console.log('✅ SMS sent via Flow API');
       return { success: true, messageId: data.requestId };
     } else {
       throw new Error(data.message || 'SMS sending failed');

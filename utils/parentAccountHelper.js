@@ -1,5 +1,6 @@
 import Parent from '../models/Parent.js';
 import { ensureDefaultSchool } from './schoolContext.js';
+import { piiMatch } from './encryption.js';
 
 /**
  * Generate parent password from student's DOB and admission ID
@@ -64,7 +65,8 @@ function collectStudentParents(studentDoc) {
       name: existing.name || normalized.name,
       phone,
       email: existing.email || normalized.email,
-      relationship: existing.relationship !== 'guardian' ? existing.relationship : normalized.relationship,
+      relationship:
+        existing.relationship !== 'guardian' ? existing.relationship : normalized.relationship,
     });
   };
 
@@ -93,9 +95,8 @@ export async function createOrUpdateParentAccount(studentDoc) {
   if (!studentDoc?._id) return;
 
   const parentsToProcess = collectStudentParents(studentDoc);
-  const defaultSchool = (studentDoc.schoolId || parentsToProcess.length === 0)
-    ? null
-    : await ensureDefaultSchool();
+  const defaultSchool =
+    studentDoc.schoolId || parentsToProcess.length === 0 ? null : await ensureDefaultSchool();
   const targetSchoolId = studentDoc.schoolId || defaultSchool?._id || null;
   const currentPhones = new Set(parentsToProcess.map((parent) => parent.phone));
 
@@ -125,23 +126,23 @@ export async function createOrUpdateParentAccount(studentDoc) {
     try {
       const relationship = parentInfo.relationship || 'guardian';
 
-      // Find existing parent by phone
-      let parent = await Parent.findOne({
-        phone: parentInfo.phone,
+      // Find existing parent by phone (use piiMatch for encrypted phone lookup)
+      const parent = await Parent.findOne({
+        ...piiMatch('phone', parentInfo.phone),
         ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
       });
 
       if (parent) {
         // Check if this child is already linked
         const alreadyLinked = parent.children.some(
-          c => c.studentId.toString() === studentDoc._id.toString()
+          (c) => c.studentId.toString() === studentDoc._id.toString()
         );
 
         if (!alreadyLinked) {
           parent.children.push({
             studentId: studentDoc._id,
             relationship,
-            isPrimary: parent.children.length === 0
+            isPrimary: parent.children.length === 0,
           });
         }
 
@@ -172,16 +173,21 @@ export async function createOrUpdateParentAccount(studentDoc) {
           email: parentInfo.email,
           password: plainPassword,
           status: 'active',
-          children: [{
-            studentId: studentDoc._id,
-            relationship,
-            isPrimary: true
-          }]
+          children: [
+            {
+              studentId: studentDoc._id,
+              relationship,
+              isPrimary: true,
+            },
+          ],
         });
         await newParent.save();
       }
     } catch (err) {
-      console.error(`⚠️ Error creating/updating parent account for ${parentInfo.phone}:`, err.message);
+      console.error(
+        `⚠️ Error creating/updating parent account for ${parentInfo.phone}:`,
+        err.message
+      );
     }
   }
 }

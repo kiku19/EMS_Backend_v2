@@ -1,0 +1,15 @@
+{
+  "errors": {
+    "classNotFound": "Class not found",
+    "requiredFields": "classId, date, and attendance array are required",
+    "dateRangeRequired": "startDate and endDate are required",
+    "studentFieldsRequired": "studentId, classId, date, and status are required",
+    "invalidStatus": "Invalid status. Must be present, absent, late, leave, or halfday",
+    "fetchFailed": "Failed to fetch attendance",
+    "updateFailed": "Failed to update attendance"
+  },
+  "success": {
+    "marked": "Attendance marked for {{count}} students",
+    "updated": "Attendance updated successfully"
+  }
+}

@@ -1,5 +1,12 @@
 node_modules/
-.env
 *.db
 .DS_Store
 nul
+
+# Environment files — never commit files with real secrets
+# .env.example, .env.render, and .env.docker are TEMPLATES (safe to commit — placeholder values only)
+.env
+.env.local
+.env.*.local
+.env.staging
+.env.production

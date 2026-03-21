@@ -4,10 +4,27 @@ import { PERMISSION_TEMPLATES } from '../../models/UserPermission.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
 
 let sequence = 0;
+let defaultSchool = null;
 
 function nextSequence() {
   sequence += 1;
   return sequence;
+}
+
+async function getDefaultSchool() {
+  if (!defaultSchool) {
+    defaultSchool = await School.create({
+      name: 'Test School',
+      code: 'TEST-DEFAULT',
+      isDefault: true,
+      status: 'active',
+    });
+  }
+  return defaultSchool;
+}
+
+export function resetDefaultSchool() {
+  defaultSchool = null;
 }
 
 function toPermissionsArray(template) {
@@ -29,9 +46,13 @@ export async function createStaffUser({
   staffRole = ['Admin'],
   permissionRole = 'admin',
   status = 'active',
-  schoolId = null,
+  schoolId,
 } = {}) {
   const id = nextSequence();
+  if (!schoolId) {
+    const school = await getDefaultSchool();
+    schoolId = school._id;
+  }
   const staff = await Staff.create({
     schoolId,
     code: `EMP${String(id).padStart(4, '0')}`,
@@ -81,13 +102,19 @@ export async function createClassRecord({
   classTeacherId = null,
   subjects = ['Math'],
   academicYear = '2025-26',
+  schoolId,
 } = {}) {
+  if (!schoolId) {
+    const school = await getDefaultSchool();
+    schoolId = school._id;
+  }
   return Class.create({
     name,
     section,
     classTeacherId,
     subjects,
     academicYear,
+    schoolId,
   });
 }
 
@@ -97,6 +124,7 @@ export async function createStudentRecord({
   academicYear = '2025-26',
   rollNo = 1,
   classId,
+  schoolId,
   parentName = 'Parent One',
   parentPhone = '9876543210',
   dateOfBirth = '2010-05-15',
@@ -106,12 +134,18 @@ export async function createStudentRecord({
   feeDetails = undefined,
 } = {}) {
   const id = nextSequence();
-  const normalizedParents = parents || [{
-    name: parentName,
-    relationship: 'father',
-    phone: parentPhone,
-    isWhatsapp: true,
-  }];
+  if (!schoolId) {
+    const school = await getDefaultSchool();
+    schoolId = school._id;
+  }
+  const normalizedParents = parents || [
+    {
+      name: parentName,
+      relationship: 'father',
+      phone: parentPhone,
+      isWhatsapp: true,
+    },
+  ];
 
   return Student.create({
     name,
@@ -119,6 +153,7 @@ export async function createStudentRecord({
     academicYear,
     rollNo,
     classId,
+    schoolId,
     parentName,
     parentPhone,
     parents: normalizedParents,

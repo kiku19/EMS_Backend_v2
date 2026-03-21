@@ -1,0 +1,81 @@
+# OBS-03: Local Centralized Log Aggregation Stack
+#
+# Starts Grafana Loki + Grafana + Promtail for local/staging log aggregation.
+# Promtail collects JSON logs from the EMS backend container's stdout and ships
+# them to Loki.  Grafana provides the search dashboard and alert management UI.
+#
+# Usage:
+#   docker compose -f docker-compose.logging.yml up -d
+#
+# Then open Grafana at http://localhost:3000  (admin / admin)
+#
+# To use with the main EMS backend container, ensure both compose files share
+# the same Docker network, and that your EMS backend service is named
+# "ems-backend" (or update the job name in promtail-config.yml).
+
+version: '3.8'
+
+networks:
+  logging:
+    driver: bridge
+
+volumes:
+  loki-data:
+  grafana-data:
+
+services:
+  # ── Grafana Loki ─────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: ems-loki
+    ports:
+      - '3100:3100'
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - logging
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q --spider http://localhost:3100/ready || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Promtail (log collector) ──────────────────────────────────────────────
+  # Reads Docker container stdout logs and ships them to Loki.
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: ems-promtail
+    volumes:
+      - ./loki/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - logging
+    restart: unless-stopped
+
+  # ── Grafana (dashboard + alerting UI) ────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: ems-grafana
+    ports:
+      - '3000:3000'
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - logging
+    restart: unless-stopped

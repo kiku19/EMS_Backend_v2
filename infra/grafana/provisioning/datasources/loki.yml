@@ -1,0 +1,27 @@
+# OBS-03: Grafana Datasource Provisioning — Grafana Loki
+#
+# This file is auto-loaded by Grafana on startup when mounted at:
+#   /etc/grafana/provisioning/datasources/
+#
+# It connects Grafana to the local Loki instance so log queries work
+# immediately without manual UI configuration.
+
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    version: 1
+    editable: false
+    jsonData:
+      maxLines: 5000
+      # Derive fields let you click a requestId in a log line to jump to
+      # all other log lines for the same request (correlation link).
+      derivedFields:
+        - name: RequestID
+          matcherRegex: '"requestId":"([^"]+)"'
+          url: '/explore?orgId=1&left={"datasource":"Loki","queries":[{"expr":"{job=\"ems-backend\"} |= \"$${__value.raw}\"","refId":"A"}],"range":{"from":"now-1h","to":"now"}}'
+          urlDisplayLabel: 'Trace by requestId'

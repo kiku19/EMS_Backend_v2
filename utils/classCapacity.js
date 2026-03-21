@@ -3,7 +3,7 @@ import { extractSchoolId } from './schoolContext.js';
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
-  if (!normalizedSchoolId) return { ...query };
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
   return { ...query, schoolId: normalizedSchoolId };
 }
 

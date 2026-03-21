@@ -1,0 +1,32 @@
+{
+  "errors": {
+    "notFound": "Staff not found",
+    "fetchFailed": "Failed to fetch staff list",
+    "fetchProfileFailed": "Failed to fetch profile",
+    "fetchTimetableFailed": "Failed to fetch timetable",
+    "fetchClassesFailed": "Failed to fetch staff classes",
+    "fetchDetailsFailed": "Failed to fetch staff details",
+    "emailExists": "Email already used by {{name}} ({{code}})",
+    "createFailed": "Failed to create staff member",
+    "updateFailed": "Failed to update staff member",
+    "credentialsRequired": "Username or password required",
+    "usernameTaken": "Username already taken",
+    "passwordTooShort": "Password must be at least 8 characters long",
+    "updateCredentialsFailed": "Failed to update credentials",
+    "ownPasswordOnly": "You can only change your own password",
+    "passwordBothRequired": "Current password and new password are required",
+    "currentPasswordIncorrect": "Current password is incorrect",
+    "changePasswordFailed": "Failed to change password",
+    "ownProfileOnly": "You can only update your own profile",
+    "updateProfileFailed": "Failed to update profile",
+    "deleteFailed": "Failed to delete staff member"
+  },
+  "success": {
+    "created": "Staff member created successfully",
+    "updated": "Staff member updated successfully",
+    "deleted": "Staff member deleted successfully",
+    "credentialsUpdated": "Credentials updated successfully",
+    "passwordChanged": "Password changed successfully",
+    "profileUpdated": "Profile updated successfully"
+  }
+}

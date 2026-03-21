@@ -7,6 +7,9 @@
 import { TrashItem } from '../models/TrashItem.js';
 import { Staff } from '../database.js';
 import { permanentlyDeleteStudentData } from './studentDataErasureService.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('TrashCleanup');
 
 /**
  * Permanently delete expired items from trash
@@ -15,8 +18,7 @@ import { permanentlyDeleteStudentData } from './studentDataErasureService.js';
  * @returns {Promise<{purged: number, errors: number}>} Statistics about the cleanup operation
  */
 export async function purgeExpiredTrashItems() {
-  console.log('🧹 Starting trash cleanup...');
-
+  logger.info('Starting trash cleanup');
   let purged = 0;
   let errors = 0;
 
@@ -26,51 +28,44 @@ export async function purgeExpiredTrashItems() {
 
     // If no expired items, return early
     if (!expiredItems || expiredItems.length === 0) {
-      console.log('✅ No expired items found in trash');
+      logger.info('No expired items found in trash');
       return { purged: 0, errors: 0 };
     }
 
-    console.log(`📦 Found ${expiredItems.length} expired items to purge`);
+    logger.info({ count: expiredItems.length }, 'Found expired items to purge');
 
     // Process each expired item
     for (const trashItem of expiredItems) {
       try {
-        console.log(`🗑️ Processing ${trashItem.itemType} (ID: ${trashItem.itemId})...`);
-
         // Delete based on item type
         switch (trashItem.itemType) {
           case 'Student':
             await permanentlyDeleteStudentData(trashItem.itemId);
-            console.log(`   👤 Deleted student personal data ${trashItem.itemId}`);
             break;
 
           case 'Staff':
             // Delete the staff record
             await Staff.findByIdAndDelete(trashItem.itemId);
-            console.log(`   👨‍🏫 Deleted staff record ${trashItem.itemId}`);
             break;
 
           default:
-            console.log(`⚠️ Unknown item type: ${trashItem.itemType}`);
         }
 
         // Delete the trash item record itself
         await TrashItem.findByIdAndDelete(trashItem._id);
-        console.log(`   ✅ Removed from trash`);
 
         purged++;
-
       } catch (itemError) {
-        console.error(`❌ Error processing item ${trashItem._id}:`, itemError.message);
+        logger.error(
+          { err: itemError, trashItemId: trashItem._id, itemType: trashItem.itemType },
+          'Error processing trash item'
+        );
         errors++;
         // Continue processing other items even if one fails
       }
     }
-
-    console.log(`✅ Trash cleanup complete: ${purged} purged, ${errors} errors`);
-
   } catch (error) {
-    console.error('❌ Fatal error in trash cleanup:', error);
+    logger.error({ err: error }, 'Fatal error in trash cleanup');
     errors++;
   }
 
@@ -84,6 +79,5 @@ export async function purgeExpiredTrashItems() {
  * @returns {Promise<{purged: number, errors: number}>} Statistics about the cleanup operation
  */
 export async function manualTrashCleanup() {
-  console.log('🔧 Manual trash cleanup triggered');
   return await purgeExpiredTrashItems();
 }

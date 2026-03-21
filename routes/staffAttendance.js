@@ -6,7 +6,7 @@ import substitutionService from '../services/substitutionService.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
-import { sanitizeString } from '../middleware/validation.js';
+import { sanitizeString, sanitizeQueryStr } from '../middleware/validation.js';
 
 const router = express.Router();
 
@@ -22,7 +22,7 @@ const mobileAttendanceLimiter = rateLimit({
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
-  if (!normalizedSchoolId) return { ...query };
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
   return { ...query, schoolId: normalizedSchoolId };
 }
 
@@ -32,31 +32,52 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
-// Get all attendance records (for initial data load)
+// Get all attendance records (with pagination and date filter)
 router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
-    console.log('[StaffAttendance Routes] Fetching all staff attendance');
-    const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId)).sort({ date: -1 });
-    console.log('[StaffAttendance Routes] Found', attendance.length, 'records');
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const skip = (page - 1) * limit;
+
+    const query = scopeBySchool(req.user?.schoolId);
+
+    // Date filter support
+    const filterDate = sanitizeQueryStr(req.query.date);
+    const filterStart = sanitizeQueryStr(req.query.startDate);
+    const filterEnd = sanitizeQueryStr(req.query.endDate);
+    if (filterDate) {
+      query.date = filterDate;
+    } else if (filterStart && filterEnd) {
+      query.date = { $gte: filterStart, $lte: filterEnd };
+    }
+
+    const [attendance, total] = await Promise.all([
+      StaffAttendance.find(query).sort({ date: -1 }).skip(skip).limit(limit),
+      StaffAttendance.countDocuments(query),
+    ]);
 
     // Return as array of objects to match what webapp expects
-    const attendanceArray = attendance.map(att => ({
+    const attendanceArray = attendance.map((att) => ({
       staffId: att.staffId.toString(),
       date: att.date,
       status: att.status,
       checkInTime: att.checkInTime || '-',
       checkOutTime: att.checkOutTime || '-',
-      reason: att.reason || ''
+      reason: att.reason || '',
     }));
 
-    console.log('[StaffAttendance Routes] Returning', attendanceArray.length, 'records');
-    if (attendanceArray.length > 0) {
-      console.log('[StaffAttendance Routes] Sample record:', attendanceArray[0]);
-    }
-    res.json(attendanceArray);
+    res.json({
+      data: attendanceArray,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
-    console.error('[StaffAttendance Routes] Error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error fetching attendance:', error);
+    res.status(500).json({ error: 'Failed to fetch staff attendance records' });
   }
 });
 
@@ -71,7 +92,8 @@ router.get('/date/:date', authenticate, checkPermission('staff', 'view'), async 
 
     res.json(attendance);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error fetching attendance by date:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance for the specified date' });
   }
 });
 
@@ -79,7 +101,8 @@ router.get('/date/:date', authenticate, checkPermission('staff', 'view'), async 
 router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { staffId } = req.params;
-    const { startDate, endDate } = req.query;
+    const startDate = sanitizeQueryStr(req.query.startDate);
+    const endDate = sanitizeQueryStr(req.query.endDate);
 
     const query = { staffId };
     if (startDate && endDate) {
@@ -92,7 +115,8 @@ router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), as
 
     res.json(attendance);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error fetching staff attendance:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance for the specified staff member' });
   }
 });
 
@@ -100,14 +124,26 @@ router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), as
 router.get('/staff/:staffId/today', authenticate, async (req, res) => {
   try {
     const { staffId } = req.params;
+
+    // Non-admins can only view their own today's attendance
+    const isAdmin =
+      req.user.role === 'admin' ||
+      (Array.isArray(req.user.role) &&
+        req.user.role.some((r) => ['admin', 'Admin', 'Principal', 'principal'].includes(r)));
+    if (!isAdmin && req.user.id.toString() !== staffId) {
+      return res
+        .status(403)
+        .json({ error: "Not authorized to view another staff member's attendance" });
+    }
+
     const today = new Date().toISOString().split('T')[0];
 
-    console.log('[StaffAttendance] Getting today attendance for staff:', staffId, 'date:', today);
-
-    const todayAttendance = await StaffAttendance.findOne(scopeBySchool(req.user?.schoolId, {
-      staffId,
-      date: today
-    }));
+    const todayAttendance = await StaffAttendance.findOne(
+      scopeBySchool(req.user?.schoolId, {
+        staffId,
+        date: today,
+      })
+    );
 
     if (todayAttendance) {
       res.json({
@@ -117,7 +153,7 @@ router.get('/staff/:staffId/today', authenticate, async (req, res) => {
         status: todayAttendance.status,
         checkInTime: todayAttendance.checkInTime || null,
         checkOutTime: todayAttendance.checkOutTime || null,
-        reason: todayAttendance.reason || ''
+        reason: todayAttendance.reason || '',
       });
     } else {
       // Return unmarked status
@@ -127,19 +163,26 @@ router.get('/staff/:staffId/today', authenticate, async (req, res) => {
         status: 'unmarked',
         checkInTime: null,
         checkOutTime: null,
-        reason: ''
+        reason: '',
       });
     }
   } catch (error) {
     console.error('[StaffAttendance] Error getting today attendance:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: "Failed to fetch today's attendance" });
   }
 });
 
 // Mark attendance (admin/manual)
 router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
-    const { staffId, date, status, checkInTime, checkOutTime, reason, markedBy } = req.body;
+    const { staffId, date, status, checkInTime, checkOutTime, reason } = req.body;
+    const markedBy = req.user.id;
+
+    // Prevent marking attendance for future dates
+    const today = new Date().toISOString().split('T')[0];
+    if (date > today) {
+      return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
+    }
 
     const schoolId = await resolveRequestSchoolId(req);
 
@@ -156,7 +199,7 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
         lastModifiedBy: markedBy,
         checkInMethod: 'admin',
         checkOutMethod: 'admin',
-        schoolId
+        schoolId,
       },
       { upsert: true, new: true }
     ).populate('staffId', 'name code department role');
@@ -172,7 +215,7 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
         status: status,
         inTime: attendance.checkInTime,
         outTime: attendance.checkOutTime,
-        reason: reason || ''
+        reason: reason || '',
       });
     }
 
@@ -180,12 +223,9 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
     if (status === 'absent' || status === 'leave') {
       try {
         const staff = attendance.staffId;
-        const isTeacher = staff?.role?.includes('Teacher') ||
-          staff?.staffType?.includes('Teacher');
+        const isTeacher = staff?.role?.includes('Teacher') || staff?.staffType?.includes('Teacher');
 
         if (isTeacher) {
-          console.log(`[StaffAttendance] Admin marked teacher ${staff.name} as ${status}, triggering substitution alerts...`);
-
           const substitutions = await substitutionService.createSubstitutionFromAbsence(
             staffId,
             date,
@@ -200,7 +240,7 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
               teacherId: staffId,
               date: date,
               count: substitutions.length,
-              markedBy: 'admin'
+              markedBy: req.user.name || req.user.id,
             });
           }
         }
@@ -211,14 +251,22 @@ router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res
 
     res.json(attendance);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error marking attendance:', error);
+    res.status(500).json({ error: 'Failed to mark attendance' });
   }
 });
 
 // Bulk mark attendance
 router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
-    const { date, staffIds, status, markedBy, reason, checkInTime, checkOutTime } = req.body;
+    const { date, staffIds, status, reason, checkInTime, checkOutTime } = req.body;
+    const markedBy = req.user.id;
+
+    // Prevent marking attendance for future dates
+    const today = new Date().toISOString().split('T')[0];
+    if (date > today) {
+      return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
+    }
 
     // Default times if not provided
     const defaultInTime = checkInTime || (status === 'present' ? '09:00' : '-');
@@ -227,7 +275,7 @@ router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req,
 
     const schoolId = await resolveRequestSchoolId(req);
 
-    const operations = staffIds.map(staffId => ({
+    const operations = staffIds.map((staffId) => ({
       updateOne: {
         filter: scopeBySchool(schoolId, { staffId, date }),
         update: {
@@ -239,17 +287,18 @@ router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req,
             markedBy,
             lastModifiedBy: markedBy,
             checkInMethod: 'admin',
-            schoolId
-          }
+            schoolId,
+          },
         },
-        upsert: true
-      }
+        upsert: true,
+      },
     }));
 
     const result = await StaffAttendance.bulkWrite(operations);
     res.json({ success: true, modified: result.modifiedCount, upserted: result.upsertedCount });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error bulk marking attendance:', error);
+    res.status(500).json({ error: 'Failed to bulk mark attendance' });
   }
 });
 
@@ -257,7 +306,16 @@ router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req,
 router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { date, status, checkInTime, checkOutTime, reason, regularizedBy } = req.body;
+    const { date, status, checkInTime, checkOutTime, reason } = req.body;
+    const regularizedBy = req.user.id;
+
+    // Prevent regularizing attendance for future dates
+    if (date) {
+      const today = new Date().toISOString().split('T')[0];
+      if (date > today) {
+        return res.status(400).json({ error: 'Cannot regularize attendance for future dates' });
+      }
+    }
 
     const schoolId = await resolveRequestSchoolId(req);
 
@@ -291,11 +349,11 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
           regularizedBy,
           regularizedAt: new Date(),
           previousStatus: 'unmarked',
-          regularizationReason: reason
-        }
+          regularizationReason: reason,
+        },
       });
       await attendance.save();
-      
+
       // Emit socket event for real-time update
       if (req.app?.get('io')) {
         const staff = await Staff.findById(attendance.staffId);
@@ -307,10 +365,10 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
           status: attendance.status,
           inTime: attendance.checkInTime,
           outTime: attendance.checkOutTime,
-          reason: attendance.reason || ''
+          reason: attendance.reason || '',
         });
       }
-      
+
       return res.json(attendance);
     }
 
@@ -322,7 +380,7 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
       regularizedBy,
       regularizedAt: new Date(),
       previousStatus: attendance.status,
-      regularizationReason: reason
+      regularizationReason: reason,
     };
 
     attendance.status = status;
@@ -344,13 +402,14 @@ router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), as
         status: attendance.status,
         inTime: attendance.checkInTime,
         outTime: attendance.checkOutTime,
-        reason: attendance.reason || ''
+        reason: attendance.reason || '',
       });
     }
 
     res.json(attendance);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error regularizing attendance:', error);
+    res.status(500).json({ error: 'Failed to regularize attendance' });
   }
 });
 
@@ -363,16 +422,18 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
     const reason = sanitizeString(req.body.reason);
     const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
-    const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-
-    console.log('[StaffAttendance] Mobile mark request:', { staffId, status, reason, date });
+    const currentTime = new Date().toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
 
     // Validate staff exists
     const staff = await Staff.findById(staffId);
     if (!staff) {
       return res.status(404).json({
         success: false,
-        error: 'Staff not found'
+        error: 'Staff not found',
       });
     }
 
@@ -381,16 +442,18 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be one of: present, absent, leave, halfday'
+        error: 'Invalid status. Must be one of: present, absent, leave, halfday',
       });
     }
 
     // Check for duplicate submission
-    const existingAttendance = await StaffAttendance.findOne(scopeBySchool(req.user?.schoolId, { staffId, date }));
+    const existingAttendance = await StaffAttendance.findOne(
+      scopeBySchool(req.user?.schoolId, { staffId, date })
+    );
     if (existingAttendance) {
       return res.status(400).json({
         success: false,
-        error: 'Attendance already marked for today'
+        error: 'Attendance already marked for today',
       });
     }
 
@@ -398,7 +461,7 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
     if (status !== 'present' && !reason?.trim()) {
       return res.status(400).json({
         success: false,
-        error: 'Reason is required for absent/leave/halfday'
+        error: 'Reason is required for absent/leave/halfday',
       });
     }
 
@@ -415,32 +478,27 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
       checkInLocation: location || null,
       markedBy: staffId,
       lastModifiedBy: staffId,
-      schoolId: mobileSchoolId
+      schoolId: mobileSchoolId,
     });
 
     await newAttendance.save();
-
-    console.log('[StaffAttendance] Attendance marked successfully:', newAttendance._id);
 
     // TRIGGER: Create substitution alerts if teacher is absent
     if (status === 'absent' || status === 'leave') {
       try {
         // Check if staff is a teacher
-        const isTeacher = staff.role?.includes('Teacher') ||
+        const isTeacher =
+          staff.role?.includes('Teacher') ||
           staff.staffType?.includes('Teacher') ||
           staff.teacherAssignments?.length > 0;
 
         if (isTeacher) {
-          console.log(`[StaffAttendance] Teacher ${staff.name} is ${status}, triggering substitution alerts...`);
-
           // Create substitution alerts for this teacher's classes today
           const substitutions = await substitutionService.createSubstitutionFromAbsence(
             staffId,
             date,
             reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`
           );
-
-          console.log(`[StaffAttendance] Created ${substitutions.length} substitution alert(s)`);
 
           // Emit substitution alert to dashboard
           if (req.app?.get('io') && substitutions.length > 0) {
@@ -450,11 +508,11 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
               teacherId: staffId,
               date: date,
               count: substitutions.length,
-              substitutions: substitutions.map(s => ({
+              substitutions: substitutions.map((s) => ({
                 id: s._id,
                 classId: s.classId,
-                period: s.period
-              }))
+                period: s.period,
+              })),
             });
           }
         }
@@ -474,7 +532,7 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
         status: status,
         inTime: newAttendance.checkInTime,
         outTime: '-',
-        reason: reason || ''
+        reason: reason || '',
       });
     }
 
@@ -487,12 +545,12 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
         date: newAttendance.date,
         status: newAttendance.status,
         checkInTime: newAttendance.checkInTime,
-        reason: newAttendance.reason
-      }
+        reason: newAttendance.reason,
+      },
     });
   } catch (error) {
-    console.error('[StaffAttendance] Error marking attendance:', error);
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error marking mobile attendance:', error);
+    res.status(500).json({ error: 'Failed to mark attendance' });
   }
 });
 
@@ -502,9 +560,24 @@ router.post('/mobile/checkin', mobileAttendanceLimiter, authenticate, async (req
     const { location } = req.body;
     const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
-    const checkInTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    const checkInTime = new Date().toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
 
     const checkinSchoolId = await resolveRequestSchoolId(req);
+
+    // Check if an admin-marked non-present record exists — don't overwrite it
+    const existing = await StaffAttendance.findOne(
+      scopeBySchool(checkinSchoolId, { staffId, date })
+    );
+    if (existing && existing.checkInMethod === 'admin' && existing.status !== 'present') {
+      return res.status(409).json({
+        success: false,
+        error: `Attendance already marked as '${existing.status}' by admin. Contact your administrator to modify.`,
+      });
+    }
 
     const attendance = await StaffAttendance.findOneAndUpdate(
       scopeBySchool(checkinSchoolId, { staffId, date }),
@@ -516,14 +589,15 @@ router.post('/mobile/checkin', mobileAttendanceLimiter, authenticate, async (req
         checkInLocation: location,
         checkInMethod: 'mobile',
         lastModifiedBy: staffId,
-        schoolId: checkinSchoolId
+        schoolId: checkinSchoolId,
       },
       { upsert: true, new: true }
     ).populate('staffId', 'name code department role');
 
     res.json({ success: true, attendance });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error during mobile check-in:', error);
+    res.status(500).json({ error: 'Failed to check in' });
   }
 });
 
@@ -533,7 +607,11 @@ router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (re
     const { location } = req.body;
     const staffId = req.user.id;
     const date = new Date().toISOString().split('T')[0];
-    const checkOutTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    const checkOutTime = new Date().toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
 
     const attendance = await StaffAttendance.findOneAndUpdate(
       scopeBySchool(req.user?.schoolId, { staffId, date }),
@@ -541,7 +619,7 @@ router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (re
         checkOutTime,
         checkOutLocation: location,
         checkOutMethod: 'mobile',
-        lastModifiedBy: staffId
+        lastModifiedBy: staffId,
       },
       { new: true }
     ).populate('staffId', 'name code department role');
@@ -552,7 +630,8 @@ router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (re
 
     res.json({ success: true, attendance });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error during mobile check-out:', error);
+    res.status(500).json({ error: 'Failed to check out' });
   }
 });
 
@@ -592,14 +671,14 @@ router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, async 
                 startDate,
                 endDate,
                 numberOfDays,
-                approvalStatus: 'pending'
+                approvalStatus: 'pending',
               },
               lastModifiedBy: staffId,
-              schoolId: leaveSchoolId
-            }
+              schoolId: leaveSchoolId,
+            },
           },
-          upsert: true
-        }
+          upsert: true,
+        },
       });
     }
 
@@ -610,83 +689,134 @@ router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, async 
       message: 'Leave application submitted successfully',
       numberOfDays,
       modified: result.modifiedCount,
-      upserted: result.upsertedCount
+      upserted: result.upsertedCount,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error applying for leave:', error);
+    res.status(500).json({ error: 'Failed to submit leave application' });
   }
 });
 
 // Get pending leave applications
 router.get('/leave/pending', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
-    const pendingLeaves = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, {
-      'leaveApplication.approvalStatus': 'pending'
-    }))
+    const pendingLeaves = await StaffAttendance.find(
+      scopeBySchool(req.user?.schoolId, {
+        'leaveApplication.approvalStatus': 'pending',
+      })
+    )
       .populate('staffId', 'name code department role')
       .sort({ 'leaveApplication.appliedAt': -1 });
 
     res.json(pendingLeaves);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('[StaffAttendance] Error fetching pending leaves:', error);
+    res.status(500).json({ error: 'Failed to fetch pending leave applications' });
   }
 });
 
 // Approve/Reject leave
-router.put('/leave/:id/approve', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { approvalStatus, approvedBy, rejectionReason } = req.body;
+router.put(
+  '/leave/:id/approve',
+  authenticate,
+  checkPermission('staff', 'edit'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { approvalStatus, rejectionReason } = req.body;
+      const approvedBy = req.user.id;
 
-    const attendance = await StaffAttendance.findOne(scopeBySchool(req.user?.schoolId, { _id: id }));
-    if (!attendance) {
-      return res.status(404).json({ error: 'Leave application not found' });
+      const attendance = await StaffAttendance.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: id })
+      );
+      if (!attendance) {
+        return res.status(404).json({ error: 'Leave application not found' });
+      }
+
+      attendance.leaveApplication.approvalStatus = approvalStatus;
+      attendance.leaveApplication.approvedBy = approvedBy;
+      attendance.leaveApplication.approvedAt = new Date();
+
+      if (approvalStatus === 'rejected') {
+        attendance.leaveApplication.rejectionReason = rejectionReason;
+        attendance.status = 'unmarked'; // Reset status if rejected
+      }
+
+      await attendance.save();
+
+      // Update all other attendance records for the same multi-day leave application
+      if (
+        attendance.leaveApplication &&
+        attendance.leaveApplication.startDate &&
+        attendance.leaveApplication.endDate
+      ) {
+        const updateFields = {
+          'leaveApplication.approvalStatus': approvalStatus,
+          'leaveApplication.approvedBy': approvedBy,
+          'leaveApplication.approvedAt': new Date(),
+        };
+        if (approvalStatus === 'rejected') {
+          updateFields['leaveApplication.rejectionReason'] = rejectionReason;
+          updateFields.status = 'unmarked';
+        }
+        await StaffAttendance.updateMany(
+          scopeBySchool(req.user?.schoolId, {
+            _id: { $ne: attendance._id },
+            staffId: attendance.staffId,
+            date: {
+              $gte: attendance.leaveApplication.startDate,
+              $lte: attendance.leaveApplication.endDate,
+            },
+            'leaveApplication.approvalStatus': 'pending',
+          }),
+          { $set: updateFields }
+        );
+      }
+
+      res.json({ success: true, attendance });
+    } catch (error) {
+      console.error('[StaffAttendance] Error approving/rejecting leave:', error);
+      res.status(500).json({ error: 'Failed to process leave application' });
     }
-
-    attendance.leaveApplication.approvalStatus = approvalStatus;
-    attendance.leaveApplication.approvedBy = approvedBy;
-    attendance.leaveApplication.approvedAt = new Date();
-
-    if (approvalStatus === 'rejected') {
-      attendance.leaveApplication.rejectionReason = rejectionReason;
-      attendance.status = 'unmarked'; // Reset status if rejected
-    }
-
-    await attendance.save();
-
-    res.json({ success: true, attendance });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Get staff attendance summary
-router.get('/summary/:staffId', authenticate, checkPermission('staff', 'view'), async (req, res) => {
-  try {
-    const { staffId } = req.params;
-    const { month, year } = req.query;
+router.get(
+  '/summary/:staffId',
+  authenticate,
+  checkPermission('staff', 'view'),
+  async (req, res) => {
+    try {
+      const { staffId } = req.params;
+      const month = parseInt(req.query.month);
+      const year = parseInt(req.query.year);
 
-    const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-    const endDate = `${year}-${String(month).padStart(2, '0')}-31`;
+      const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+      const endDate = `${year}-${String(month).padStart(2, '0')}-31`;
 
-    const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, {
-      staffId,
-      date: { $gte: startDate, $lte: endDate }
-    }));
+      const attendance = await StaffAttendance.find(
+        scopeBySchool(req.user?.schoolId, {
+          staffId,
+          date: { $gte: startDate, $lte: endDate },
+        })
+      );
 
-    const summary = {
-      present: attendance.filter(a => a.status === 'present').length,
-      absent: attendance.filter(a => a.status === 'absent').length,
-      leave: attendance.filter(a => a.status === 'leave').length,
-      halfday: attendance.filter(a => a.status === 'halfday').length,
-      unmarked: attendance.filter(a => a.status === 'unmarked').length,
-      total: attendance.length
-    };
+      const summary = {
+        present: attendance.filter((a) => a.status === 'present').length,
+        absent: attendance.filter((a) => a.status === 'absent').length,
+        leave: attendance.filter((a) => a.status === 'leave').length,
+        halfday: attendance.filter((a) => a.status === 'halfday').length,
+        unmarked: attendance.filter((a) => a.status === 'unmarked').length,
+        total: attendance.length,
+      };
 
-    res.json(summary);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      res.json(summary);
+    } catch (error) {
+      console.error('[StaffAttendance] Error fetching attendance summary:', error);
+      res.status(500).json({ error: 'Failed to fetch attendance summary' });
+    }
   }
-});
+);
 
 export default router;

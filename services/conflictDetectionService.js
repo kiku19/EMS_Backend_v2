@@ -2,6 +2,9 @@
 import { Staff, Timetable, TeacherTimetable, ConflictLog } from '../database.js';
 import { debounceAsync } from '../utils/debounce.js';
 import cacheService from './cacheService.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('ConflictDetection');
 
 /**
  * Service for detecting and managing timetable conflicts
@@ -23,23 +26,29 @@ class ConflictDetectionService {
    * @param {boolean} skipDebounce - Skip debouncing for immediate checks
    * @returns {Object|null} Conflict details if found, null otherwise
    */
-  async checkTeacherConflict(teacherId, day, periodIndex, excludeClassId = null, skipDebounce = false) {
+  async checkTeacherConflict(
+    teacherId,
+    day,
+    periodIndex,
+    excludeClassId = null,
+    skipDebounce = false
+  ) {
     // Check cache first
     const cacheKey = `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}`;
-    const cached = cacheService.get(cacheKey);
+    const cached = await cacheService.get(cacheKey);
     if (cached !== null) {
       return cached;
     }
 
     // Skip debounce in test environment or when explicitly requested
     const shouldSkipDebounce = skipDebounce || process.env.NODE_ENV === 'test';
-    
-    const result = shouldSkipDebounce 
+
+    const result = shouldSkipDebounce
       ? await this._checkTeacherConflictInternal(teacherId, day, periodIndex, excludeClassId)
       : await this.debouncedConflictCheck(teacherId, day, periodIndex, excludeClassId);
 
     // Cache the result for 30 seconds
-    cacheService.set(cacheKey, result, 30000);
+    cacheService.set(cacheKey, result, 30000).catch(() => {}); // fire-and-forget
     return result;
   }
 
@@ -52,10 +61,9 @@ class ConflictDetectionService {
       // Find all timetables where this teacher is assigned at this time slot
       const query = {};
       query[`schedule.${day}.teacherId`] = teacherId;
-      
-      const conflictingTimetables = await Timetable.find(query)
-        .populate('classId', 'name section');
-      
+
+      const conflictingTimetables = await Timetable.find(query).populate('classId', 'name section');
+
       // Filter to the specific period and exclude the specified class if provided
       const conflicts = [];
       for (const timetable of conflictingTimetables) {
@@ -71,13 +79,13 @@ class ConflictDetectionService {
                 subject: slot.subject,
                 room: slot.room,
                 day: day,
-                periodIndex: periodIndex
+                periodIndex: periodIndex,
               });
             }
           }
         }
       }
-      
+
       // If conflicts found, return the first one with details
       if (conflicts.length > 0) {
         const teacher = await Staff.findById(teacherId).select('name code');
@@ -89,13 +97,13 @@ class ConflictDetectionService {
           day: day,
           periodIndex: periodIndex,
           conflicts: conflicts,
-          message: `Teacher ${teacher ? teacher.name : 'Unknown'} is already assigned to ${conflicts[0].className} for ${conflicts[0].subject} at ${day} Period ${periodIndex + 1}`
+          message: `Teacher ${teacher ? teacher.name : 'Unknown'} is already assigned to ${conflicts[0].className} for ${conflicts[0].subject} at ${day} Period ${periodIndex + 1}`,
         };
       }
-      
+
       return null;
     } catch (error) {
-      console.error('Error checking teacher conflict:', error);
+      logger.error({ err: error, teacherId }, 'Error checking teacher conflict');
       throw error;
     }
   }
@@ -110,18 +118,18 @@ class ConflictDetectionService {
     try {
       const conflicts = [];
       const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      
+
       // Get all timetables for this academic year where the teacher is assigned
       const timetables = await Timetable.find({
         academicYear: academicYear,
-        $or: days.map(day => ({
-          [`schedule.${day}.teacherId`]: teacherId
-        }))
+        $or: days.map((day) => ({
+          [`schedule.${day}.teacherId`]: teacherId,
+        })),
       }).populate('classId', 'name section');
-      
+
       // Build a map of teacher assignments by day and period
       const assignmentMap = {};
-      
+
       for (const timetable of timetables) {
         for (const day of days) {
           const daySchedule = timetable.schedule[day];
@@ -136,20 +144,20 @@ class ConflictDetectionService {
                   classId: timetable.classId._id,
                   className: `${timetable.classId.name} ${timetable.classId.section}`,
                   subject: slot.subject,
-                  room: slot.room
+                  room: slot.room,
                 });
               }
             });
           }
         }
       }
-      
+
       // Find conflicts (where teacher is assigned to multiple classes at same time)
       for (const [key, assignments] of Object.entries(assignmentMap)) {
         if (assignments.length > 1) {
           const [day, periodIndex] = key.split('-');
           const teacher = await Staff.findById(teacherId).select('name code');
-          
+
           conflicts.push({
             type: 'double_booking',
             teacherId: teacherId,
@@ -158,14 +166,14 @@ class ConflictDetectionService {
             day: day,
             periodIndex: parseInt(periodIndex),
             conflicts: assignments,
-            message: `Teacher ${teacher ? teacher.name : 'Unknown'} is assigned to multiple classes at ${day} Period ${parseInt(periodIndex) + 1}`
+            message: `Teacher ${teacher ? teacher.name : 'Unknown'} is assigned to multiple classes at ${day} Period ${parseInt(periodIndex) + 1}`,
           });
         }
       }
-      
+
       return conflicts;
     } catch (error) {
-      console.error('Error getting teacher conflicts:', error);
+      logger.error({ err: error, teacherId }, 'Error getting teacher conflicts');
       throw error;
     }
   }
@@ -187,10 +195,10 @@ class ConflictDetectionService {
       if (timeConflict) {
         return {
           isValid: false,
-          error: timeConflict
+          error: timeConflict,
         };
       }
-      
+
       // Check if teacher is qualified (has assignment for this subject and class)
       const teacher = await Staff.findById(teacherId);
       if (!teacher) {
@@ -198,16 +206,17 @@ class ConflictDetectionService {
           isValid: false,
           error: {
             type: 'invalid_assignment',
-            message: 'Teacher not found'
-          }
+            message: 'Teacher not found',
+          },
         };
       }
-      
-      const hasQualification = teacher.teacherAssignments.some(assignment => 
-        assignment.subject === subject && 
-        assignment.classes.some(c => c.toString() === classId.toString())
+
+      const hasQualification = teacher.teacherAssignments.some(
+        (assignment) =>
+          assignment.subject === subject &&
+          assignment.classes.some((c) => c.toString() === classId.toString())
       );
-      
+
       // In strict mode, qualification is required
       // In flexible mode (default), qualification is optional (just a warning)
       if (!hasQualification) {
@@ -220,8 +229,8 @@ class ConflictDetectionService {
               teacherName: teacher.name,
               classId: classId,
               subject: subject,
-              message: `Teacher ${teacher.name} is not qualified to teach ${subject} in this class`
-            }
+              message: `Teacher ${teacher.name} is not qualified to teach ${subject} in this class`,
+            },
           };
         } else {
           // Flexible mode: allow assignment but return a warning
@@ -233,17 +242,17 @@ class ConflictDetectionService {
               teacherName: teacher.name,
               classId: classId,
               subject: subject,
-              message: `Teacher ${teacher.name} is not formally assigned to teach ${subject} in this class. Consider adding this assignment in Staff Management.`
-            }
+              message: `Teacher ${teacher.name} is not formally assigned to teach ${subject} in this class. Consider adding this assignment in Staff Management.`,
+            },
           };
         }
       }
-      
+
       return {
-        isValid: true
+        isValid: true,
       };
     } catch (error) {
-      console.error('Error validating slot assignment:', error);
+      logger.error({ err: error, teacherId, classId, subject }, 'Error validating slot assignment');
       throw error;
     }
   }
@@ -260,14 +269,18 @@ class ConflictDetectionService {
         conflictType: conflictData.type,
         day: conflictData.day,
         periodIndex: conflictData.periodIndex,
-        classes: conflictData.conflicts ? conflictData.conflicts.map(c => c.classId) : [],
-        subject: conflictData.subject || (conflictData.conflicts && conflictData.conflicts[0] ? conflictData.conflicts[0].subject : null),
-        status: 'active'
+        classes: conflictData.conflicts ? conflictData.conflicts.map((c) => c.classId) : [],
+        subject:
+          conflictData.subject ||
+          (conflictData.conflicts && conflictData.conflicts[0]
+            ? conflictData.conflicts[0].subject
+            : null),
+        status: 'active',
       });
-      
+
       return conflictLog;
     } catch (error) {
-      console.error('Error logging conflict:', error);
+      logger.error({ err: error }, 'Error logging conflict');
       throw error;
     }
   }
@@ -287,20 +300,17 @@ class ConflictDetectionService {
           status: 'resolved',
           resolvedAt: new Date(),
           resolvedBy: resolvedBy,
-          resolution: resolution
+          resolution: resolution,
         },
         { new: true }
       );
-      
+
       return conflictLog;
     } catch (error) {
-      console.error('Error resolving conflict:', error);
+      logger.error({ err: error, conflictId }, 'Error resolving conflict');
       throw error;
     }
   }
 }
 
 export default new ConflictDetectionService();
-
-
-

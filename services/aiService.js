@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { extractSchoolId } from '../utils/schoolContext.js';
 import FeeHead from '../models/FeeHead.js';
 import { PERMISSION_TEMPLATES } from '../models/UserPermission.js';
 import {
@@ -10,9 +11,13 @@ import {
   StudentFeeStructure,
   UserPermission,
   getNextAdmissionId,
-  getNextRollNumber
+  getNextRollNumber,
 } from '../database.js';
-import { buildPermissionsArray, determineRole, ensurePermissionDocument } from '../middleware/permissions.js';
+import {
+  buildPermissionsArray,
+  determineRole,
+  ensurePermissionDocument,
+} from '../middleware/permissions.js';
 import { createOrUpdateParentAccount } from '../utils/parentAccountHelper.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
@@ -22,7 +27,7 @@ import {
   buildAiSystemPrompt,
   getDefaultAiModelId,
   getPublicAiModels,
-  resolveAiModel
+  resolveAiModel,
 } from '../config/ai.js';
 
 const STAFF_SAFE_FIELDS = [
@@ -43,13 +48,14 @@ const STAFF_SAFE_FIELDS = [
   'professionalQualifications',
   'totalExperience',
   'qualification',
-  'teacherAssignments'
+  'teacherAssignments',
 ].join(' ');
 
 const TOOL_DEFINITIONS = [
   {
     name: 'create_student',
-    description: 'Create a new student in the school system when the user explicitly asks to add a student.',
+    description:
+      'Create a new student in the school system when the user explicitly asks to add a student.',
     parameters: {
       type: 'object',
       properties: {
@@ -61,10 +67,10 @@ const TOOL_DEFINITIONS = [
         parentName: { type: 'string' },
         parentPhone: { type: 'string' },
         parentEmail: { type: 'string' },
-        academicYear: { type: 'string', description: 'Academic year in YYYY-YY format' }
+        academicYear: { type: 'string', description: 'Academic year in YYYY-YY format' },
       },
-      required: ['name', 'classId', 'parentName', 'parentPhone']
-    }
+      required: ['name', 'classId', 'parentName', 'parentPhone'],
+    },
   },
   {
     name: 'send_form',
@@ -76,20 +82,20 @@ const TOOL_DEFINITIONS = [
         recipientId: { type: 'string' },
         recipientType: { type: 'string', enum: ['staff', 'student'] },
         dueDate: { type: 'string', description: 'Optional due or expiration date in ISO format' },
-        notes: { type: 'string' }
+        notes: { type: 'string' },
       },
-      required: ['formId', 'recipientId', 'recipientType']
-    }
+      required: ['formId', 'recipientId', 'recipientType'],
+    },
   },
   {
     name: 'get_classes',
     description: 'Get the list of school classes.',
-    parameters: { type: 'object', properties: {} }
+    parameters: { type: 'object', properties: {} },
   },
   {
     name: 'get_forms',
     description: 'Get the list of intake forms available in the school system.',
-    parameters: { type: 'object', properties: {} }
+    parameters: { type: 'object', properties: {} },
   },
   {
     name: 'get_staff',
@@ -99,9 +105,9 @@ const TOOL_DEFINITIONS = [
       properties: {
         name: { type: 'string' },
         role: { type: 'string' },
-        department: { type: 'string' }
-      }
-    }
+        department: { type: 'string' },
+      },
+    },
   },
   {
     name: 'get_staff_details',
@@ -109,10 +115,10 @@ const TOOL_DEFINITIONS = [
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string' }
+        id: { type: 'string' },
       },
-      required: ['id']
-    }
+      required: ['id'],
+    },
   },
   {
     name: 'get_students',
@@ -121,9 +127,9 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         classId: { type: 'string' },
-        name: { type: 'string' }
-      }
-    }
+        name: { type: 'string' },
+      },
+    },
   },
   {
     name: 'get_student_details',
@@ -131,11 +137,11 @@ const TOOL_DEFINITIONS = [
     parameters: {
       type: 'object',
       properties: {
-        id: { type: 'string' }
+        id: { type: 'string' },
       },
-      required: ['id']
-    }
-  }
+      required: ['id'],
+    },
+  },
 ];
 
 class AiRequestError extends Error {
@@ -155,15 +161,20 @@ function getResolvedModel(modelId) {
 }
 
 function sanitizeMessageContent(content) {
-  return String(content || '').trim().slice(0, 4000);
+  return String(content || '')
+    .trim()
+    .slice(0, 4000);
 }
 
 function normalizeMessages(messages = []) {
   return messages
-    .filter((message) => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string')
+    .filter(
+      (message) =>
+        ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string'
+    )
     .map((message) => ({
       role: message.role,
-      content: sanitizeMessageContent(message.content)
+      content: sanitizeMessageContent(message.content),
     }))
     .filter((message) => message.content)
     .slice(-MAX_AI_HISTORY_MESSAGES);
@@ -208,7 +219,7 @@ async function getOrCreatePermissions(userId) {
         userId,
         role,
         permissions: buildPermissionsArray(defaultPermissions),
-        customPermissions: false
+        customPermissions: false,
       },
       { upsert: true, new: true }
     );
@@ -221,7 +232,9 @@ async function getOrCreatePermissions(userId) {
 
 async function requirePermission(userId, moduleName, action) {
   const permissionDoc = await getOrCreatePermissions(userId);
-  const modulePermission = permissionDoc.permissions.find((permission) => permission.module === moduleName);
+  const modulePermission = permissionDoc.permissions.find(
+    (permission) => permission.module === moduleName
+  );
 
   if (!modulePermission || !modulePermission[action]) {
     throw new AiRequestError(`You do not have permission to ${action} ${moduleName}.`, 403);
@@ -232,7 +245,7 @@ async function initializeFeeStructure(student) {
   const academicYear = student.academicYear || CURRENT_ACADEMIC_YEAR;
   const existingFeeStructure = await StudentFeeStructure.findOne({
     studentId: student._id,
-    academicYear
+    academicYear,
   });
 
   if (existingFeeStructure) {
@@ -246,9 +259,10 @@ async function initializeFeeStructure(student) {
 
   const classNumber = classInfo.name.replace('Class ', '');
   const applicableFeeHeads = await FeeHead.find({
+    schoolId: student.schoolId,
     applicableClasses: classNumber,
     academicYear,
-    isActive: true
+    isActive: true,
   });
 
   const feeStructure = new StudentFeeStructure({
@@ -264,8 +278,8 @@ async function initializeFeeStructure(student) {
       frequency: feeHead.frequency,
       paidAmount: 0,
       balanceAmount: feeHead.amount,
-      status: 'pending'
-    }))
+      status: 'pending',
+    })),
   });
 
   feeStructure.totalFee = feeStructure.feeHeads.reduce((sum, feeHead) => sum + feeHead.amount, 0);
@@ -280,7 +294,9 @@ async function createStudentTool(args, context) {
   await requirePermission(context.userId, 'students', 'create');
 
   if (!args.name || !args.classId || !args.parentName || !args.parentPhone) {
-    throw new AiRequestError('name, classId, parentName, and parentPhone are required to create a student.');
+    throw new AiRequestError(
+      'name, classId, parentName, and parentPhone are required to create a student.'
+    );
   }
 
   const classDoc = await Class.findById(args.classId);
@@ -289,8 +305,8 @@ async function createStudentTool(args, context) {
   }
 
   const academicYear = args.academicYear || CURRENT_ACADEMIC_YEAR;
-  const admissionId = args.admissionId || await getNextAdmissionId();
-  const rollNo = args.rollNo || await getNextRollNumber(args.classId);
+  const admissionId = args.admissionId || (await getNextAdmissionId(context.schoolId));
+  const rollNo = args.rollNo || (await getNextRollNumber(args.classId));
   const parents = [
     {
       name: args.parentName,
@@ -298,8 +314,8 @@ async function createStudentTool(args, context) {
       phone: args.parentPhone,
       email: args.parentEmail || '',
       occupation: args.parentOccupation || '',
-      isWhatsapp: true
-    }
+      isWhatsapp: true,
+    },
   ];
 
   const student = new Student({
@@ -308,6 +324,7 @@ async function createStudentTool(args, context) {
     academicYear,
     rollNo,
     classId: args.classId,
+    schoolId: context.schoolId,
     gender: args.gender || '',
     dateOfBirth: args.dateOfBirth || '',
     parentName: args.parentName,
@@ -317,7 +334,7 @@ async function createStudentTool(args, context) {
     parentOccupation: args.parentOccupation || '',
     parents,
     feeStatus: 'pending',
-    status: 'active'
+    status: 'active',
   });
 
   await student.save();
@@ -343,9 +360,9 @@ async function createStudentTool(args, context) {
       classId: student.classId,
       className: `${classDoc.name} ${classDoc.section}`,
       rollNo: student.rollNo,
-      academicYear: student.academicYear
+      academicYear: student.academicYear,
     },
-    message: `Student ${student.name} was created successfully.`
+    message: `Student ${student.name} was created successfully.`,
   };
 }
 
@@ -375,13 +392,16 @@ async function sendFormTool(args, context) {
   const assignedToPhone = recipientType === 'staff' ? recipient.phone : recipient.parentPhone;
 
   if (!assignedToEmail && !assignedToPhone) {
-    throw new AiRequestError(`The selected ${recipientType} does not have an email address or phone number on file.`);
+    throw new AiRequestError(
+      `The selected ${recipientType} does not have an email address or phone number on file.`
+    );
   }
 
   const parsedDueDate = args.dueDate ? new Date(args.dueDate) : null;
-  const expiresAt = parsedDueDate && !Number.isNaN(parsedDueDate.getTime())
-    ? parsedDueDate
-    : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const expiresAt =
+    parsedDueDate && !Number.isNaN(parsedDueDate.getTime())
+      ? parsedDueDate
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   const assignment = await FormAssignment.create({
     formId: form._id,
@@ -391,7 +411,7 @@ async function sendFormTool(args, context) {
     status: 'pending',
     accessToken: generateAccessToken(),
     expiresAt,
-    assignedAt: new Date()
+    assignedAt: new Date(),
   });
 
   return {
@@ -405,16 +425,17 @@ async function sendFormTool(args, context) {
       recipientType,
       assignedToEmail: assignedToEmail || null,
       assignedToPhone: assignedToPhone || null,
-      expiresAt: assignment.expiresAt
+      expiresAt: assignment.expiresAt,
     },
-    message: `${form.formName} was assigned to ${recipient.name}.`
+    message: `${form.formName} was assigned to ${recipient.name}.`,
   };
 }
 
 async function getClassesTool(_args, context) {
   await requirePermission(context.userId, 'classes', 'view');
 
-  const classes = await Class.find({})
+  const classQuery = context.schoolId ? { schoolId: context.schoolId } : {};
+  const classes = await Class.find(classQuery)
     .populate('classTeacherId', 'name')
     .sort({ name: 1, section: 1 })
     .lean();
@@ -427,16 +448,15 @@ async function getClassesTool(_args, context) {
       section: classDoc.section,
       displayName: `${classDoc.name} ${classDoc.section}`,
       academicYear: classDoc.academicYear,
-      classTeacherName: classDoc.classTeacherId?.name || null
+      classTeacherName: classDoc.classTeacherId?.name || null,
     })),
-    count: classes.length
+    count: classes.length,
   };
 }
 
-async function getFormsTool() {
-  const forms = await IntakeForm.find({})
-    .sort({ createdAt: -1 })
-    .lean();
+async function getFormsTool(_args, context) {
+  const formQuery = context.schoolId ? { schoolId: context.schoolId } : {};
+  const forms = await IntakeForm.find(formQuery).sort({ createdAt: -1 }).lean();
 
   return {
     success: true,
@@ -445,9 +465,9 @@ async function getFormsTool() {
       formName: form.formName,
       formType: form.formType,
       status: form.status,
-      fieldCount: Array.isArray(form.fields) ? form.fields.length : 0
+      fieldCount: Array.isArray(form.fields) ? form.fields.length : 0,
     })),
-    count: forms.length
+    count: forms.length,
   };
 }
 
@@ -455,6 +475,9 @@ async function getStaffTool(args, context) {
   await requirePermission(context.userId, 'staff', 'view');
 
   const query = {};
+  if (context.schoolId) {
+    query.schoolId = context.schoolId;
+  }
   if (args.name) {
     query.name = buildRegex(args.name);
   }
@@ -483,18 +506,19 @@ async function getStaffTool(args, context) {
       phone: staff.phone || '',
       email: staff.email || '',
       designation: staff.designation || '',
-      classTeacherOf: staff.classTeacherOf || ''
+      classTeacherOf: staff.classTeacherOf || '',
     })),
-    count: staffMembers.length
+    count: staffMembers.length,
   };
 }
 
 async function getStaffDetailsTool(args, context) {
   await requirePermission(context.userId, 'staff', 'view');
 
-  const staff = await Staff.findById(args.id)
-    .select(STAFF_SAFE_FIELDS)
-    .lean();
+  const staffQuery = context.schoolId
+    ? { _id: args.id, schoolId: context.schoolId }
+    : { _id: args.id };
+  const staff = await Staff.findOne(staffQuery).select(STAFF_SAFE_FIELDS).lean();
 
   if (!staff) {
     throw new AiRequestError('Staff member not found.', 404);
@@ -519,8 +543,8 @@ async function getStaffDetailsTool(args, context) {
       classTeacherOf: staff.classTeacherOf || '',
       qualifications: staff.professionalQualifications || [],
       totalExperience: staff.totalExperience || '',
-      qualificationSummary: staff.qualification || ''
-    }
+      qualificationSummary: staff.qualification || '',
+    },
   };
 }
 
@@ -528,15 +552,15 @@ async function getStudentsTool(args, context) {
   await requirePermission(context.userId, 'students', 'view');
 
   const query = { isDeleted: { $ne: true } };
+  if (context.schoolId) {
+    query.schoolId = context.schoolId;
+  }
   if (args.classId) {
     query.classId = args.classId;
   }
   if (args.name) {
     const regex = buildRegex(args.name);
-    query.$or = [
-      { name: regex },
-      { parentName: regex }
-    ];
+    query.$or = [{ name: regex }, { parentName: regex }];
   }
 
   const students = await Student.find(query)
@@ -556,18 +580,19 @@ async function getStudentsTool(args, context) {
       parentName: student.parentName || '',
       parentPhone: student.parentPhone || '',
       status: student.status || '',
-      feeStatus: student.feeStatus || ''
+      feeStatus: student.feeStatus || '',
     })),
-    count: students.length
+    count: students.length,
   };
 }
 
 async function getStudentDetailsTool(args, context) {
   await requirePermission(context.userId, 'students', 'view');
 
-  const student = await Student.findById(args.id)
-    .populate('classId', 'name section')
-    .lean();
+  const studentQuery = context.schoolId
+    ? { _id: args.id, schoolId: context.schoolId }
+    : { _id: args.id };
+  const student = await Student.findOne(studentQuery).populate('classId', 'name section').lean();
 
   if (!student) {
     throw new AiRequestError('Student not found.', 404);
@@ -592,8 +617,8 @@ async function getStudentDetailsTool(args, context) {
       transportRequired: Boolean(student.transportRequired),
       hostelRequired: Boolean(student.hostelRequired),
       feeStatus: student.feeStatus || '',
-      status: student.status || ''
-    }
+      status: student.status || '',
+    },
   };
 }
 
@@ -605,7 +630,7 @@ const TOOL_EXECUTORS = {
   get_staff: getStaffTool,
   get_staff_details: getStaffDetailsTool,
   get_students: getStudentsTool,
-  get_student_details: getStudentDetailsTool
+  get_student_details: getStudentDetailsTool,
 };
 
 async function executeTool(name, args, context) {
@@ -620,7 +645,7 @@ async function executeTool(name, args, context) {
   } catch (error) {
     return {
       success: false,
-      error: error.message || 'Tool execution failed'
+      error: error.message || 'Tool execution failed',
     };
   }
 }
@@ -629,9 +654,9 @@ async function callGroq(messages, model, context) {
   const requestMessages = [
     {
       role: 'system',
-      content: buildAiSystemPrompt(context.schoolName)
+      content: buildAiSystemPrompt(context.schoolName),
     },
-    ...messages
+    ...messages,
   ];
   const toolCalls = [];
 
@@ -640,24 +665,27 @@ async function callGroq(messages, model, context) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${model.apiKey}`
+        Authorization: `Bearer ${model.apiKey}`,
       },
       body: JSON.stringify({
         model: model.chatModel,
         messages: requestMessages,
         tools: TOOL_DEFINITIONS.map((tool) => ({
           type: 'function',
-          function: tool
+          function: tool,
         })),
         tool_choice: 'auto',
         temperature: 0.2,
-        max_completion_tokens: 1024
-      })
+        max_completion_tokens: 1024,
+      }),
     });
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new AiRequestError(data.error?.message || 'Failed to fetch response from Groq.', response.status);
+      throw new AiRequestError(
+        data.error?.message || 'Failed to fetch response from Groq.',
+        response.status
+      );
     }
 
     const assistantMessage = data.choices?.[0]?.message;
@@ -672,7 +700,7 @@ async function callGroq(messages, model, context) {
         functionCalled: lastTool?.name || null,
         functionArgs: lastTool?.args || null,
         functionResult: lastTool?.result || null,
-        toolCalls
+        toolCalls,
       };
     }
 
@@ -685,14 +713,14 @@ async function callGroq(messages, model, context) {
       toolCalls.push({
         name: toolCall.function?.name || 'unknown_tool',
         args,
-        result
+        result,
       });
 
       requestMessages.push({
         role: 'tool',
         tool_call_id: toolCall.id,
         name: toolCall.function?.name,
-        content: JSON.stringify(result)
+        content: JSON.stringify(result),
       });
     }
   }
@@ -703,7 +731,7 @@ async function callGroq(messages, model, context) {
 function toGeminiContents(messages) {
   return messages.map((message) => ({
     role: message.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: message.content }]
+    parts: [{ text: message.content }],
   }));
 }
 
@@ -716,11 +744,11 @@ async function callGemini(messages, model, context) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': model.apiKey
+        'x-goog-api-key': model.apiKey,
       },
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: buildAiSystemPrompt(context.schoolName) }]
+          parts: [{ text: buildAiSystemPrompt(context.schoolName) }],
         },
         contents,
         tools: [
@@ -728,19 +756,22 @@ async function callGemini(messages, model, context) {
             functionDeclarations: TOOL_DEFINITIONS.map((tool) => ({
               name: tool.name,
               description: tool.description,
-              parameters: tool.parameters
-            }))
-          }
+              parameters: tool.parameters,
+            })),
+          },
         ],
         generationConfig: {
-          temperature: 0.2
-        }
-      })
+          temperature: 0.2,
+        },
+      }),
     });
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new AiRequestError(data.error?.message || 'Failed to fetch response from Gemini.', response.status);
+      throw new AiRequestError(
+        data.error?.message || 'Failed to fetch response from Gemini.',
+        response.status
+      );
     }
 
     const candidate = data.candidates?.[0]?.content;
@@ -759,7 +790,7 @@ async function callGemini(messages, model, context) {
         functionCalled: lastTool?.name || null,
         functionArgs: lastTool?.args || null,
         functionResult: lastTool?.result || null,
-        toolCalls
+        toolCalls,
       };
     }
 
@@ -770,7 +801,7 @@ async function callGemini(messages, model, context) {
     toolCalls.push({
       name: functionName,
       args,
-      result
+      result,
     });
 
     contents.push(candidate);
@@ -780,10 +811,10 @@ async function callGemini(messages, model, context) {
         {
           functionResponse: {
             name: functionName,
-            response: result
-          }
-        }
-      ]
+            response: result,
+          },
+        },
+      ],
     });
   }
 
@@ -804,14 +835,15 @@ export async function processAiChat({ messages, selectedModel, user }) {
       functionCalled: null,
       functionArgs: null,
       functionResult: null,
-      toolCalls: []
+      toolCalls: [],
     };
   }
 
   const model = getResolvedModel(selectedModel || getDefaultAiModelId());
   const context = {
     userId: user.userId || user.id,
-    schoolName: process.env.SCHOOL_NAME || 'the school'
+    schoolId: user.schoolId ? extractSchoolId(user.schoolId) : undefined,
+    schoolName: process.env.SCHOOL_NAME || 'the school',
   };
 
   if (model.id === 'gemini') {
@@ -826,8 +858,9 @@ export async function transcribeAiAudio(file) {
     throw new AiRequestError('No audio file was provided.');
   }
 
-  const transcriptionModel = Object.values(getPublicAiModels())
-    .find((model) => model.available && model.id === 'groq');
+  const transcriptionModel = Object.values(getPublicAiModels()).find(
+    (model) => model.available && model.id === 'groq'
+  );
   const resolvedModel = getResolvedModel(transcriptionModel?.id || getDefaultAiModelId());
 
   if (!resolvedModel.supportsTranscription) {
@@ -844,9 +877,9 @@ export async function transcribeAiAudio(file) {
   const response = await fetch(resolvedModel.transcriptionEndpoint, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${resolvedModel.apiKey}`
+      Authorization: `Bearer ${resolvedModel.apiKey}`,
     },
-    body: formData
+    body: formData,
   });
 
   const data = await response.json().catch(() => ({}));
@@ -855,14 +888,14 @@ export async function transcribeAiAudio(file) {
   }
 
   return {
-    text: data.text || ''
+    text: data.text || '',
   };
 }
 
 export function getAiModelsPayload() {
   return {
     defaultModelId: getDefaultAiModelId(),
-    models: getPublicAiModels()
+    models: getPublicAiModels(),
   };
 }
 

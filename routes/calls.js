@@ -1,9 +1,18 @@
 import express from 'express';
 import CallHistory from '../models/CallHistory.js';
-import { verifyToken } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
+import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
-router.use(verifyToken);
+router.use(authenticate);
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) {
+    throw new Error('schoolId is required for scoped queries');
+  }
+  return { ...query, schoolId: normalizedSchoolId };
+}
 
 // POST /api/calls/initiate - Initiate call
 router.post('/initiate', async (req, res) => {
@@ -17,22 +26,23 @@ router.post('/initiate', async (req, res) => {
 
     // Create call record
     const call = new CallHistory({
+      schoolId: extractSchoolId(req.user?.schoolId),
       participants: [
         {
           userId: user.id,
           userModel: user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student',
-          joinedAt: new Date()
+          joinedAt: new Date(),
         },
         {
           userId: to.userId,
-          userModel: to.userModel
-        }
+          userModel: to.userModel,
+        },
       ],
       callType,
       initiatedBy: user.id,
       initiatorModel: user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student',
       status: 'initiated',
-      startTime: new Date()
+      startTime: new Date(),
     });
 
     await call.save();
@@ -45,7 +55,7 @@ router.post('/initiate', async (req, res) => {
       callerModel: user.role,
       callerName: user.name,
       callType,
-      timestamp: new Date()
+      timestamp: new Date(),
     });
 
     res.json(call);
@@ -58,7 +68,9 @@ router.post('/initiate', async (req, res) => {
 // POST /api/calls/:id/accept - Accept call
 router.post('/:id/accept', async (req, res) => {
   try {
-    const call = await CallHistory.findById(req.params.id);
+    const call = await CallHistory.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
 
     if (!call) {
       return res.status(404).json({ error: 'Call not found' });
@@ -67,7 +79,7 @@ router.post('/:id/accept', async (req, res) => {
     const user = req.user;
 
     // Add participant to call
-    const participant = call.participants.find(p => p.userId.toString() === user.id.toString());
+    const participant = call.participants.find((p) => p.userId.toString() === user.id.toString());
     if (participant) {
       participant.joinedAt = new Date();
     }
@@ -80,7 +92,7 @@ router.post('/:id/accept', async (req, res) => {
     const io = req.app.get('io');
     io.to(`user:${call.initiatedBy}`).emit('call_accepted', {
       callId: call._id,
-      acceptedBy: user.id
+      acceptedBy: user.id,
     });
 
     res.json(call);
@@ -93,7 +105,9 @@ router.post('/:id/accept', async (req, res) => {
 // POST /api/calls/:id/reject - Reject call
 router.post('/:id/reject', async (req, res) => {
   try {
-    const call = await CallHistory.findById(req.params.id);
+    const call = await CallHistory.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
 
     if (!call) {
       return res.status(404).json({ error: 'Call not found' });
@@ -111,7 +125,7 @@ router.post('/:id/reject', async (req, res) => {
     const io = req.app.get('io');
     io.to(`user:${call.initiatedBy}`).emit('call_rejected', {
       callId: call._id,
-      rejectedBy: user.id
+      rejectedBy: user.id,
     });
 
     res.json(call);
@@ -124,7 +138,9 @@ router.post('/:id/reject', async (req, res) => {
 // POST /api/calls/:id/end - End call
 router.post('/:id/end', async (req, res) => {
   try {
-    const call = await CallHistory.findById(req.params.id);
+    const call = await CallHistory.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
 
     if (!call) {
       return res.status(404).json({ error: 'Call not found' });
@@ -134,7 +150,7 @@ router.post('/:id/end', async (req, res) => {
     const { reason } = req.body;
 
     // Update participant leave time
-    const participant = call.participants.find(p => p.userId.toString() === user.id.toString());
+    const participant = call.participants.find((p) => p.userId.toString() === user.id.toString());
     if (participant) {
       participant.leftAt = new Date();
     }
@@ -147,12 +163,12 @@ router.post('/:id/end', async (req, res) => {
 
     // Notify other participants
     const io = req.app.get('io');
-    call.participants.forEach(p => {
+    call.participants.forEach((p) => {
       if (p.userId.toString() !== user.id.toString()) {
         io.to(`user:${p.userId}`).emit('call_ended', {
           callId: call._id,
           endedBy: user.id,
-          duration: call.duration
+          duration: call.duration,
         });
       }
     });
@@ -170,7 +186,13 @@ router.get('/history/me', async (req, res) => {
     const user = req.user;
     const { limit = 50 } = req.query;
 
-    const calls = await CallHistory.getUserCallHistory(user.id, parseInt(limit));
+    const calls = await CallHistory.find(
+      scopeBySchool(req.user?.schoolId, { 'participants.userId': user.id })
+    )
+      .sort({ startTime: -1 })
+      .limit(parseInt(limit))
+      .populate('participants.userId', 'name profileImage')
+      .populate('initiatedBy', 'name profileImage');
 
     res.json(calls);
   } catch (error) {
@@ -184,7 +206,14 @@ router.get('/missed/me', async (req, res) => {
   try {
     const user = req.user;
 
-    const missedCalls = await CallHistory.getMissedCalls(user.id);
+    const missedCalls = await CallHistory.find(
+      scopeBySchool(req.user?.schoolId, {
+        'participants.userId': user.id,
+        status: 'missed',
+      })
+    )
+      .sort({ startTime: -1 })
+      .populate('initiatedBy', 'name profileImage');
 
     res.json(missedCalls);
   } catch (error) {

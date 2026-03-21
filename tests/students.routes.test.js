@@ -7,6 +7,7 @@ import Homework from '../models/Homework.js';
 import Parent from '../models/Parent.js';
 import Remark from '../models/Remark.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
+import { piiMatch } from '../utils/encryption.js';
 import {
   createClassRecord,
   createSchoolRecord,
@@ -16,12 +17,14 @@ import {
 } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
-const defaultParent = [{
-  name: 'Test Parent',
-  relationship: 'father',
-  phone: '9000000001',
-  isWhatsapp: true,
-}];
+const defaultParent = [
+  {
+    name: 'Test Parent',
+    relationship: 'father',
+    phone: '9000000001',
+    isWhatsapp: true,
+  },
+];
 
 describe('students routes', () => {
   it('supports create, read, update, and permanent deletion for a student', async () => {
@@ -42,12 +45,14 @@ describe('students routes', () => {
         dateOfBirth: '2010-05-15',
         parentName: 'Mary Parent',
         parentPhone: '9876543210',
-        parents: [{
-          name: 'Mary Parent',
-          relationship: 'mother',
-          phone: '9876543210',
-          isWhatsapp: true,
-        }],
+        parents: [
+          {
+            name: 'Mary Parent',
+            relationship: 'mother',
+            phone: '9876543210',
+            isWhatsapp: true,
+          },
+        ],
       })
       .expect(201);
 
@@ -60,7 +65,7 @@ describe('students routes', () => {
       status: 'active',
     });
 
-    const parent = await Parent.findOne({ phone: '9876543210' }).lean();
+    const parent = await Parent.findOne(piiMatch('phone', '9876543210')).lean();
     expect(parent).toBeTruthy();
     expect(parent.children[0].studentId.toString()).toBe(studentId);
 
@@ -109,6 +114,7 @@ describe('students routes', () => {
     );
 
     await Remark.create({
+      schoolId: admin.schoolId,
       studentId,
       title: 'Medical note',
       description: 'Asthma inhaler kept at the front desk.',
@@ -124,10 +130,12 @@ describe('students routes', () => {
       classId: classRecord._id,
       teacherId: admin._id,
       dueDate: new Date('2025-01-25T00:00:00.000Z'),
-      submissions: [{
-        studentId,
-        remarks: 'Submitted',
-      }],
+      submissions: [
+        {
+          studentId,
+          remarks: 'Submitted',
+        },
+      ],
     });
 
     await ClassAnnouncement.create({
@@ -135,9 +143,11 @@ describe('students routes', () => {
       title: 'Exam reminder',
       description: 'Bring geometry tools.',
       sentBy: admin._id,
-      recipients: [{
-        studentId,
-      }],
+      recipients: [
+        {
+          studentId,
+        },
+      ],
     });
 
     const deleteResponse = await request(app)
@@ -155,7 +165,7 @@ describe('students routes', () => {
     });
 
     const deletedStudent = await Student.findById(studentId).lean();
-    const deletedParent = await Parent.findOne({ phone: '9876543210' }).lean();
+    const deletedParent = await Parent.findOne(piiMatch('phone', '9876543210')).lean();
     const attendanceCount = await Attendance.countDocuments({ studentId });
     const remarkCount = await Remark.countDocuments({ studentId });
     const feeStructureCount = await StudentFeeStructure.countDocuments({ studentId });
@@ -170,10 +180,7 @@ describe('students routes', () => {
     expect(homework?.submissions).toHaveLength(0);
     expect(announcement?.recipients).toHaveLength(0);
 
-    await request(app)
-      .get(`/api/students/${studentId}`)
-      .set(authHeaders)
-      .expect(404);
+    await request(app).get(`/api/students/${studentId}`).set(authHeaders).expect(404);
   });
 
   it('syncs parent accounts when parent contact info changes on update', async () => {
@@ -194,12 +201,14 @@ describe('students routes', () => {
         dateOfBirth: '2011-07-22',
         parentName: 'Old Parent',
         parentPhone: '9876543211',
-        parents: [{
-          name: 'Old Parent',
-          relationship: 'father',
-          phone: '9876543211',
-          isWhatsapp: true,
-        }],
+        parents: [
+          {
+            name: 'Old Parent',
+            relationship: 'father',
+            phone: '9876543211',
+            isWhatsapp: true,
+          },
+        ],
       })
       .expect(201);
 
@@ -212,28 +221,34 @@ describe('students routes', () => {
         parentName: 'New Parent',
         parentPhone: '9876543222',
         parentEmail: 'new.parent@example.com',
-        parents: [{
-          name: 'New Parent',
-          relationship: 'mother',
-          phone: '9876543222',
-          email: 'new.parent@example.com',
-          isWhatsapp: true,
-        }],
+        parents: [
+          {
+            name: 'New Parent',
+            relationship: 'mother',
+            phone: '9876543222',
+            email: 'new.parent@example.com',
+            isWhatsapp: true,
+          },
+        ],
       })
       .expect(200);
 
-    const oldParent = await Parent.findOne({ phone: '9876543211' }).lean();
-    const newParent = await Parent.findOne({ phone: '9876543222' }).lean();
+    const oldParent = await Parent.findOne(piiMatch('phone', '9876543211')).lean();
+    const newParent = await Parent.findOne(piiMatch('phone', '9876543222')).lean();
 
-    expect(oldParent?.children.some((child) => child.studentId.toString() === studentId)).toBe(false);
+    expect(oldParent?.children.some((child) => child.studentId.toString() === studentId)).toBe(
+      false
+    );
     expect(newParent).toBeTruthy();
     expect(newParent.name).toBe('New Parent');
     expect(newParent.email).toBe('new.parent@example.com');
-    expect(newParent.children).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        relationship: 'mother',
-      }),
-    ]));
+    expect(newParent.children).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relationship: 'mother',
+        }),
+      ])
+    );
     expect(newParent.children[0].studentId.toString()).toBe(studentId);
   });
 
@@ -468,10 +483,7 @@ describe('students routes', () => {
         parents: defaultParent,
       });
 
-      const response = await request(app)
-        .get('/api/students')
-        .set(authHeaders)
-        .expect(200);
+      const response = await request(app).get('/api/students').set(authHeaders).expect(200);
 
       expect(response.body).toHaveProperty('data');
       expect(response.body).toHaveProperty('pagination');
@@ -627,10 +639,7 @@ describe('students routes', () => {
         parents: defaultParent,
       });
 
-      const response = await request(app)
-        .get('/api/students')
-        .set(authHeadersA)
-        .expect(200);
+      const response = await request(app).get('/api/students').set(authHeadersA).expect(200);
 
       const names = response.body.data.map((s) => s.name);
       expect(names).toContain('School A Student');
@@ -640,9 +649,7 @@ describe('students routes', () => {
     it('returns 401 when request is unauthenticated', async () => {
       const { app } = createTestApp();
 
-      await request(app)
-        .get('/api/students')
-        .expect(401);
+      await request(app).get('/api/students').expect(401);
     });
   });
 
@@ -688,10 +695,7 @@ describe('students routes', () => {
       const authHeaders = authHeadersFor(admin, 'admin');
       const nonExistentId = new mongoose.Types.ObjectId().toString();
 
-      await request(app)
-        .get(`/api/students/${nonExistentId}`)
-        .set(authHeaders)
-        .expect(404);
+      await request(app).get(`/api/students/${nonExistentId}`).set(authHeaders).expect(404);
     });
 
     it('returns 404 when student belongs to a different school (multi-tenancy)', async () => {
@@ -723,9 +727,7 @@ describe('students routes', () => {
       const student = await createStudentRecord({ classId: classRecord._id });
       const { app } = createTestApp();
 
-      await request(app)
-        .get(`/api/students/${student._id.toString()}`)
-        .expect(401);
+      await request(app).get(`/api/students/${student._id.toString()}`).expect(401);
     });
   });
 
@@ -827,10 +829,7 @@ describe('students routes', () => {
       const authHeaders = authHeadersFor(admin, 'admin');
       const nonExistentId = new mongoose.Types.ObjectId().toString();
 
-      await request(app)
-        .delete(`/api/students/${nonExistentId}`)
-        .set(authHeaders)
-        .expect(404);
+      await request(app).delete(`/api/students/${nonExistentId}`).set(authHeaders).expect(404);
     });
 
     it('returns 401 when request is unauthenticated', async () => {
@@ -838,9 +837,7 @@ describe('students routes', () => {
       const student = await createStudentRecord({ classId: classRecord._id });
       const { app } = createTestApp();
 
-      await request(app)
-        .delete(`/api/students/${student._id.toString()}`)
-        .expect(401);
+      await request(app).delete(`/api/students/${student._id.toString()}`).expect(401);
     });
   });
 });

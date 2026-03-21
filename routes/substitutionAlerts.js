@@ -14,7 +14,8 @@ const router = express.Router();
  */
 router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const { date = new Date().toISOString().split('T')[0], academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+    const { date = new Date().toISOString().split('T')[0], academicYear = CURRENT_ACADEMIC_YEAR } =
+      req.query;
 
     // Get pending substitutions with details
     const alerts = await substitutionService.getPendingSubstitutionsWithDetails(date);
@@ -22,28 +23,28 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
     // Calculate summary stats
     const summary = {
       totalAlerts: alerts.length,
-      unassigned: alerts.filter(a => !a.substituteTeacherId).length,
-      assigned: alerts.filter(a => a.substituteTeacherId).length,
-      urgentAlerts: alerts.filter(a => {
+      unassigned: alerts.filter((a) => !a.substituteTeacherId).length,
+      assigned: alerts.filter((a) => a.substituteTeacherId).length,
+      urgentAlerts: alerts.filter((a) => {
         const now = new Date();
         const alertDate = new Date(date);
         const hoursUntil = (alertDate - now) / (1000 * 60 * 60);
         return hoursUntil < 2 && !a.substituteTeacherId;
-      }).length
+      }).length,
     };
 
     res.json({
       success: true,
       date,
       alerts,
-      summary
+      summary,
     });
   } catch (error) {
     console.error('Error fetching substitution alerts:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch substitution alerts',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -53,38 +54,43 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
  * Get available teachers for a specific substitution
  * Query params: classId, subject, day, period, date
  */
-router.get('/available-teachers', authenticate, checkPermission('classes', 'view'), async (req, res) => {
-  try {
-    const { classId, subject, day, period, date } = req.query;
+router.get(
+  '/available-teachers',
+  authenticate,
+  checkPermission('classes', 'view'),
+  async (req, res) => {
+    try {
+      const { classId, subject, day, period, date } = req.query;
 
-    if (!classId || !subject || !day || !period) {
-      return res.status(400).json({
+      if (!classId || !subject || !day || !period) {
+        return res.status(400).json({
+          success: false,
+          message: 'classId, subject, day, and period are required',
+        });
+      }
+
+      const availableTeachers = await substitutionService.getAvailableTeachersForSubstitution({
+        classId,
+        subject,
+        day,
+        period,
+        date,
+      });
+
+      res.json({
+        success: true,
+        ...availableTeachers,
+      });
+    } catch (error) {
+      console.error('Error fetching available teachers:', error);
+      res.status(500).json({
         success: false,
-        message: 'classId, subject, day, and period are required'
+        message: 'Failed to fetch available teachers',
+        error: error.message,
       });
     }
-
-    const availableTeachers = await substitutionService.getAvailableTeachersForSubstitution({
-      classId,
-      subject,
-      day,
-      period,
-      date
-    });
-
-    res.json({
-      success: true,
-      ...availableTeachers
-    });
-  } catch (error) {
-    console.error('Error fetching available teachers:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch available teachers',
-      error: error.message
-    });
   }
-});
+);
 
 /**
  * POST /api/substitution-alerts/from-absence
@@ -98,7 +104,7 @@ router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), a
     if (!teacherId || !date) {
       return res.status(400).json({
         success: false,
-        message: 'teacherId and date are required'
+        message: 'teacherId and date are required',
       });
     }
 
@@ -107,7 +113,7 @@ router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), a
     if (!teacher) {
       return res.status(404).json({
         success: false,
-        message: 'Teacher not found'
+        message: 'Teacher not found',
       });
     }
 
@@ -124,15 +130,15 @@ router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), a
       substitutions,
       teacher: {
         id: teacher._id,
-        name: teacher.name
-      }
+        name: teacher.name,
+      },
     });
   } catch (error) {
     console.error('Error creating substitution from absence:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to create substitution alerts',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -150,7 +156,7 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
     if (!substituteTeacherId) {
       return res.status(400).json({
         success: false,
-        message: 'substituteTeacherId is required'
+        message: 'substituteTeacherId is required',
       });
     }
 
@@ -159,7 +165,7 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
     if (!substitution) {
       return res.status(404).json({
         success: false,
-        message: 'Substitution not found'
+        message: 'Substitution not found',
       });
     }
 
@@ -168,7 +174,7 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
     if (!substitute || substitute.status !== 'active') {
       return res.status(400).json({
         success: false,
-        message: 'Substitute teacher not found or inactive'
+        message: 'Substitute teacher not found or inactive',
       });
     }
 
@@ -187,14 +193,14 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
     res.json({
       success: true,
       message: `Assigned ${substitute.name} as substitute`,
-      substitution
+      substitution,
     });
   } catch (error) {
     console.error('Error assigning substitute:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to assign substitute',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -215,23 +221,19 @@ router.post('/:id/notify', authenticate, checkPermission('classes', 'edit'), asy
     if (!substitution) {
       return res.status(404).json({
         success: false,
-        message: 'Substitution not found'
+        message: 'Substitution not found',
       });
     }
 
     if (!substitution.substituteTeacherId) {
       return res.status(400).json({
         success: false,
-        message: 'No substitute teacher assigned'
+        message: 'No substitute teacher assigned',
       });
     }
 
     // TODO: Implement actual notification service
     // For now, just log the notification
-    console.log(`[NOTIFICATION] Sending ${method} notification to ${substitution.substituteTeacherId.name}`);
-    console.log(`  Class: ${substitution.classId.name}-${substitution.classId.section}`);
-    console.log(`  Period: ${substitution.period}`);
-    console.log(`  Date: ${substitution.date}`);
 
     // Simulate notification sent
     const notificationSent = true;
@@ -242,15 +244,15 @@ router.post('/:id/notify', authenticate, checkPermission('classes', 'edit'), asy
       notification: {
         recipient: substitution.substituteTeacherId.name,
         method,
-        sentAt: new Date()
-      }
+        sentAt: new Date(),
+      },
     });
   } catch (error) {
     console.error('Error sending notification:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to send notification',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -275,17 +277,17 @@ router.get('/stats', authenticate, checkPermission('classes', 'view'), async (re
 
     const stats = {
       total: substitutions.length,
-      pending: substitutions.filter(s => s.status === 'pending').length,
-      confirmed: substitutions.filter(s => s.status === 'confirmed').length,
-      completed: substitutions.filter(s => s.status === 'completed').length,
-      auto: substitutions.filter(s => s.type === 'auto').length,
-      manual: substitutions.filter(s => s.type === 'manual').length,
+      pending: substitutions.filter((s) => s.status === 'pending').length,
+      confirmed: substitutions.filter((s) => s.status === 'confirmed').length,
+      completed: substitutions.filter((s) => s.status === 'completed').length,
+      auto: substitutions.filter((s) => s.type === 'auto').length,
+      manual: substitutions.filter((s) => s.type === 'manual').length,
       byDate: {},
-      byPeriod: {}
+      byPeriod: {},
     };
 
     // Group by date
-    substitutions.forEach(sub => {
+    substitutions.forEach((sub) => {
       if (!stats.byDate[sub.date]) {
         stats.byDate[sub.date] = 0;
       }
@@ -293,7 +295,7 @@ router.get('/stats', authenticate, checkPermission('classes', 'view'), async (re
     });
 
     // Group by period
-    substitutions.forEach(sub => {
+    substitutions.forEach((sub) => {
       if (!stats.byPeriod[sub.period]) {
         stats.byPeriod[sub.period] = 0;
       }
@@ -302,14 +304,14 @@ router.get('/stats', authenticate, checkPermission('classes', 'view'), async (re
 
     res.json({
       success: true,
-      stats
+      stats,
     });
   } catch (error) {
     console.error('Error fetching substitution stats:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch substitution statistics',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -326,13 +328,13 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
     if (!Array.isArray(assignments) || assignments.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'assignments array is required'
+        message: 'assignments array is required',
       });
     }
 
     const results = {
       success: [],
-      failed: []
+      failed: [],
     };
 
     for (const assignment of assignments) {
@@ -343,7 +345,7 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
         if (!substitution) {
           results.failed.push({
             substitutionId,
-            error: 'Substitution not found'
+            error: 'Substitution not found',
           });
           continue;
         }
@@ -352,7 +354,7 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
         if (!substitute || substitute.status !== 'active') {
           results.failed.push({
             substitutionId,
-            error: 'Invalid substitute teacher'
+            error: 'Invalid substitute teacher',
           });
           continue;
         }
@@ -363,12 +365,12 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
 
         results.success.push({
           substitutionId,
-          substituteName: substitute.name
+          substituteName: substitute.name,
         });
       } catch (err) {
         results.failed.push({
           substitutionId: assignment.substitutionId,
-          error: err.message
+          error: err.message,
         });
       }
     }
@@ -376,17 +378,16 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
     res.json({
       success: true,
       message: `Assigned ${results.success.length} substitutes, ${results.failed.length} failed`,
-      results
+      results,
     });
   } catch (error) {
     console.error('Error in bulk assign:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to bulk assign substitutes',
-      error: error.message
+      error: error.message,
     });
   }
 });
 
 export default router;
-

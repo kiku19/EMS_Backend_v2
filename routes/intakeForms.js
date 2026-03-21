@@ -1,7 +1,19 @@
 import express from 'express';
-import { IntakeForm, FormAssignment, FormSubmission, Student, Staff, StudentFeeStructure, Class } from '../database.js';
+import {
+  IntakeForm,
+  FormAssignment,
+  FormSubmission,
+  Student,
+  Staff,
+  StudentFeeStructure,
+  Class,
+} from '../database.js';
 import { authenticate } from '../middleware/auth.js';
-import { validateIndianPhone, validateInternationalPhone, mockThirdPartyValidation } from '../services/phoneValidation.js';
+import {
+  validateIndianPhone,
+  validateInternationalPhone,
+  mockThirdPartyValidation,
+} from '../services/phoneValidation.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { ensureDefaultSchool } from '../utils/schoolContext.js';
 import crypto from 'crypto';
@@ -22,9 +34,8 @@ function generateAccessToken() {
 router.get('/intake-forms', authenticate, async (req, res) => {
   try {
     const { type, status } = req.query;
-    console.log('📋 Fetching intake forms with filters:', { type, status });
 
-    const query = {};
+    const query = { schoolId: req.user.schoolId };
     if (type) query.formType = type;
     if (status) query.status = status;
 
@@ -32,14 +43,81 @@ router.get('/intake-forms', authenticate, async (req, res) => {
       .populate('createdBy', 'name code')
       .sort({ createdAt: -1 });
 
-    console.log(`✅ Found ${forms.length} intake forms`);
     res.json(forms);
   } catch (error) {
     console.error('❌ Error fetching intake forms:', error);
     res.status(500).json({
       error: 'Failed to fetch intake forms',
-      message: error.message
+      message: error.message,
     });
+  }
+});
+
+// GET /intake-forms/enrollment-funnel - Get admission-to-enrollment conversion funnel data
+router.get('/intake-forms/enrollment-funnel', authenticate, async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    if (!schoolId) {
+      return res.status(400).json({ error: 'schoolId missing from auth context' });
+    }
+
+    const schoolObjId = new mongoose.Types.ObjectId(schoolId);
+
+    // Total invitations (form links sent)
+    const totalInvited = await FormAssignment.countDocuments({ schoolId });
+
+    // Total submissions received
+    const totalSubmitted = await FormSubmission.countDocuments({ schoolId });
+
+    // Counts by review status
+    const statusAgg = await FormSubmission.aggregate([
+      { $match: { schoolId: schoolObjId } },
+      { $group: { _id: '$reviewStatus', count: { $sum: 1 } } },
+    ]);
+    const statusMap = {};
+    statusAgg.forEach((s) => {
+      statusMap[s._id] = s.count;
+    });
+
+    const pending = statusMap['pending'] || 0;
+    const approved = statusMap['approved'] || 0;
+    const rejected = statusMap['rejected'] || 0;
+    const needsRevision = statusMap['needs_revision'] || 0;
+
+    // Converted to student/staff (entity record created)
+    const totalEnrolled = await FormSubmission.countDocuments({
+      schoolId,
+      studentId: { $exists: true, $ne: null },
+    });
+    const totalStaffConverted = await FormSubmission.countDocuments({
+      schoolId,
+      staffId: { $exists: true, $ne: null },
+    });
+
+    // Conversion rates (safe division)
+    const pct = (num, den) => (den > 0 ? parseFloat(((num / den) * 100).toFixed(1)) : 0);
+
+    const funnel = {
+      invited: totalInvited,
+      submitted: totalSubmitted,
+      pending,
+      approved,
+      rejected,
+      needsRevision,
+      enrolled: totalEnrolled,
+      staffConverted: totalStaffConverted,
+      rates: {
+        submissionRate: pct(totalSubmitted, totalInvited),
+        approvalRate: pct(approved, totalSubmitted),
+        enrollmentRate: pct(totalEnrolled, approved),
+        overallRate: pct(totalEnrolled, totalInvited),
+      },
+    };
+
+    res.json({ success: true, data: funnel });
+  } catch (error) {
+    console.error('❌ Error fetching enrollment funnel:', error);
+    res.status(500).json({ error: 'Failed to fetch enrollment funnel', message: error.message });
   }
 });
 
@@ -47,26 +125,26 @@ router.get('/intake-forms', authenticate, async (req, res) => {
 router.get('/intake-forms/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('📋 Fetching intake form:', id);
 
-    const form = await IntakeForm.findById(id)
-      .populate('createdBy', 'name code');
+    const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId }).populate(
+      'createdBy',
+      'name code'
+    );
 
     if (!form) {
       console.warn('⚠️ Intake form not found:', id);
       return res.status(404).json({
         error: 'Intake form not found',
-        message: `No form found with ID: ${id}`
+        message: `No form found with ID: ${id}`,
       });
     }
 
-    console.log('✅ Intake form found:', form.formName);
     res.json(form);
   } catch (error) {
     console.error('❌ Error fetching intake form:', error);
     res.status(500).json({
       error: 'Failed to fetch intake form',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -76,41 +154,39 @@ router.post('/intake-forms', authenticate, async (req, res) => {
   try {
     const { formName, formType, fields, status } = req.body;
 
-    console.log('📝 Creating new intake form:', { formName, formType });
-
     // Validate required fields
     if (!formName) {
       return res.status(400).json({
         error: 'Validation failed',
-        message: 'formName is required'
+        message: 'formName is required',
       });
     }
 
     if (!formType) {
       return res.status(400).json({
         error: 'Validation failed',
-        message: 'formType is required (staff, student, or parent)'
+        message: 'formType is required (staff, student, or parent)',
       });
     }
 
     if (!fields || !Array.isArray(fields) || fields.length === 0) {
       return res.status(400).json({
         error: 'Validation failed',
-        message: 'fields must be a non-empty array'
+        message: 'fields must be a non-empty array',
       });
     }
 
     // Create intake form
     const form = new IntakeForm({
+      schoolId: req.user.schoolId,
       formName,
       formType,
       fields,
       status: status || 'active',
-      createdBy: req.user.id
+      createdBy: req.user.id,
     });
 
     await form.save();
-    console.log('✅ Intake form created:', form.formName);
 
     // Populate createdBy before returning
     await form.populate('createdBy', 'name code');
@@ -120,7 +196,7 @@ router.post('/intake-forms', authenticate, async (req, res) => {
     console.error('❌ Error creating intake form:', error);
     res.status(500).json({
       error: 'Failed to create intake form',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -131,16 +207,14 @@ router.put('/intake-forms/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const { formName, formType, fields, status } = req.body;
 
-    console.log('📝 Updating intake form:', id);
-
     // Find existing form
-    const form = await IntakeForm.findById(id);
+    const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
 
     if (!form) {
       console.warn('⚠️ Intake form not found:', id);
       return res.status(404).json({
         error: 'Intake form not found',
-        message: `No form found with ID: ${id}`
+        message: `No form found with ID: ${id}`,
       });
     }
 
@@ -151,7 +225,7 @@ router.put('/intake-forms/:id', authenticate, async (req, res) => {
       if (!Array.isArray(fields) || fields.length === 0) {
         return res.status(400).json({
           error: 'Validation failed',
-          message: 'fields must be a non-empty array'
+          message: 'fields must be a non-empty array',
         });
       }
       form.fields = fields;
@@ -159,7 +233,6 @@ router.put('/intake-forms/:id', authenticate, async (req, res) => {
     if (status !== undefined) form.status = status;
 
     await form.save();
-    console.log('✅ Intake form updated:', form.formName);
 
     // Populate createdBy before returning
     await form.populate('createdBy', 'name code');
@@ -169,7 +242,7 @@ router.put('/intake-forms/:id', authenticate, async (req, res) => {
     console.error('❌ Error updating intake form:', error);
     res.status(500).json({
       error: 'Failed to update intake form',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -178,15 +251,14 @@ router.put('/intake-forms/:id', authenticate, async (req, res) => {
 router.delete('/intake-forms/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('🗑️ Deleting intake form:', id);
 
-    const form = await IntakeForm.findByIdAndDelete(id);
+    const form = await IntakeForm.findOneAndDelete({ _id: id, schoolId: req.user.schoolId });
 
     if (!form) {
       console.warn('⚠️ Intake form not found:', id);
       return res.status(404).json({
         error: 'Intake form not found',
-        message: `No form found with ID: ${id}`
+        message: `No form found with ID: ${id}`,
       });
     }
 
@@ -195,17 +267,16 @@ router.delete('/intake-forms/:id', authenticate, async (req, res) => {
     // await FormAssignment.deleteMany({ formId: id });
     // await FormSubmission.deleteMany({ formId: id });
 
-    console.log('✅ Intake form deleted:', form.formName);
     res.json({
       success: true,
       message: 'Intake form deleted successfully',
-      id
+      id,
     });
   } catch (error) {
     console.error('❌ Error deleting intake form:', error);
     res.status(500).json({
       error: 'Failed to delete intake form',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -216,29 +287,27 @@ router.post('/intake-forms/:id/duplicate', authenticate, async (req, res) => {
     const { id } = req.params;
     const { createdBy } = req.body;
 
-    console.log('📋 Duplicating intake form:', id);
-
-    const originalForm = await IntakeForm.findById(id);
+    const originalForm = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
 
     if (!originalForm) {
       console.warn('⚠️ Intake form not found:', id);
       return res.status(404).json({
         error: 'Intake form not found',
-        message: `No form found with ID: ${id}`
+        message: `No form found with ID: ${id}`,
       });
     }
 
     // Create duplicate
     const duplicatedForm = new IntakeForm({
+      schoolId: req.user.schoolId,
       formName: `${originalForm.formName} (Copy)`,
       formType: originalForm.formType,
       fields: originalForm.fields,
       status: 'active',
-      createdBy: createdBy || req.user.id
+      createdBy: req.user.id,
     });
 
     await duplicatedForm.save();
-    console.log('✅ Intake form duplicated:', duplicatedForm.formName);
 
     // Populate createdBy before returning
     await duplicatedForm.populate('createdBy', 'name code');
@@ -248,7 +317,7 @@ router.post('/intake-forms/:id/duplicate', authenticate, async (req, res) => {
     console.error('❌ Error duplicating intake form:', error);
     res.status(500).json({
       error: 'Failed to duplicate intake form',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -261,51 +330,49 @@ router.post('/intake-forms/:id/duplicate', authenticate, async (req, res) => {
 router.post('/intake-forms/:id/assign', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { emails = [], phones = [], assignedToEmail, assignedToPhone, expiresInDays = 7, assignedBy } = req.body;
+    const {
+      emails = [],
+      phones = [],
+      assignedToEmail,
+      assignedToPhone,
+      expiresInDays = 7,
+    } = req.body;
     const enableThirdPartyValidation = req.query.validatePhone === 'true';
 
-    console.log('📤 Assigning intake form:', id, 'to:', { emails, phones, assignedToEmail, assignedToPhone });
-    if (enableThirdPartyValidation) {
-      console.log('🔍 Third-party phone validation enabled');
-    }
-
     // Validate form exists
-    const form = await IntakeForm.findById(id);
+    const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
     if (!form) {
       console.warn('⚠️ Intake form not found:', id);
       return res.status(404).json({
         error: 'Intake form not found',
-        message: `No form found with ID: ${id}`
+        message: `No form found with ID: ${id}`,
       });
     }
 
     // Support both array format (from frontend) and string format (backward compatibility)
-    const recipientEmails = emails?.length ? emails : (assignedToEmail ? [assignedToEmail] : []);
-    const recipientPhones = phones?.length ? phones : (assignedToPhone ? [assignedToPhone] : []);
+    const recipientEmails = emails?.length ? emails : assignedToEmail ? [assignedToEmail] : [];
+    const recipientPhones = phones?.length ? phones : assignedToPhone ? [assignedToPhone] : [];
 
     if (recipientEmails.length === 0 && recipientPhones.length === 0) {
       return res.status(400).json({
         error: 'Validation failed',
-        message: 'At least one email or phone is required'
+        message: 'At least one email or phone is required',
       });
     }
 
     // Validate phone numbers if provided
     if (recipientPhones.length > 0) {
-      console.log(`🔍 Validating ${recipientPhones.length} phone number(s)...`);
       const validationErrors = [];
 
       for (const phone of recipientPhones) {
         // Format validation (Indian phone numbers)
         const formatValidation = validateIndianPhone(phone);
 
-        console.log(`  Phone: ${phone} - Format validation: ${formatValidation.isValid ? '✅ Valid' : '❌ Invalid'}`);
-
         if (!formatValidation.isValid) {
           validationErrors.push({
             phone: phone,
             error: formatValidation.error,
-            stage: 'format_validation'
+            stage: 'format_validation',
           });
           continue;
         }
@@ -315,14 +382,12 @@ router.post('/intake-forms/:id/assign', authenticate, async (req, res) => {
           try {
             const thirdPartyValidation = await mockThirdPartyValidation(phone);
 
-            console.log(`  Phone: ${phone} - Third-party validation: ${thirdPartyValidation.isValid ? '✅ Valid' : '❌ Invalid'} (${thirdPartyValidation.provider})`);
-
             if (!thirdPartyValidation.isValid) {
               validationErrors.push({
                 phone: phone,
                 error: thirdPartyValidation.error,
                 stage: 'third_party_validation',
-                provider: thirdPartyValidation.provider
+                provider: thirdPartyValidation.provider,
               });
             }
           } catch (error) {
@@ -331,7 +396,7 @@ router.post('/intake-forms/:id/assign', authenticate, async (req, res) => {
               phone: phone,
               error: 'Third-party validation service unavailable',
               stage: 'third_party_validation',
-              details: error.message
+              details: error.message,
             });
           }
         }
@@ -343,11 +408,9 @@ router.post('/intake-forms/:id/assign', authenticate, async (req, res) => {
         return res.status(400).json({
           error: 'Phone validation failed',
           message: 'One or more phone numbers failed validation',
-          validationErrors: validationErrors
+          validationErrors: validationErrors,
         });
       }
-
-      console.log('✅ All phone numbers validated successfully');
     }
 
     // Calculate expiration date
@@ -356,59 +419,57 @@ router.post('/intake-forms/:id/assign', authenticate, async (req, res) => {
 
     // Create assignments for all recipients
     const assignments = [];
-    const assignedById = assignedBy || req.user.id;
+    const assignedById = req.user.id;
 
     for (const email of recipientEmails) {
       const accessToken = generateAccessToken();
       const assignment = new FormAssignment({
+        schoolId: req.user.schoolId,
         formId: id,
         assignedToEmail: email,
         assignedBy: assignedById,
         status: 'pending',
         accessToken,
         expiresAt,
-        assignedAt: new Date()
+        assignedAt: new Date(),
       });
       await assignment.save();
       await assignment.populate('formId', 'formName formType');
       await assignment.populate('assignedBy', 'name code');
       assignments.push(assignment);
-      console.log('✅ Form assignment created for email:', email);
     }
 
     for (const phone of recipientPhones) {
       const accessToken = generateAccessToken();
       const assignment = new FormAssignment({
+        schoolId: req.user.schoolId,
         formId: id,
         assignedToPhone: phone,
         assignedBy: assignedById,
         status: 'pending',
         accessToken,
         expiresAt,
-        assignedAt: new Date()
+        assignedAt: new Date(),
       });
       await assignment.save();
       await assignment.populate('formId', 'formName formType');
       await assignment.populate('assignedBy', 'name code');
       assignments.push(assignment);
-      console.log('✅ Form assignment created for phone:', phone);
     }
-
-    console.log(`✅ Created ${assignments.length} form assignments`);
 
     res.status(201).json({
       assignments,
       count: assignments.length,
       validation: {
         phonesValidated: recipientPhones.length,
-        thirdPartyEnabled: enableThirdPartyValidation
-      }
+        thirdPartyEnabled: enableThirdPartyValidation,
+      },
     });
   } catch (error) {
     console.error('❌ Error creating form assignment:', error);
     res.status(500).json({
       error: 'Failed to create form assignment',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -417,9 +478,8 @@ router.post('/intake-forms/:id/assign', authenticate, async (req, res) => {
 router.get('/form-assignments', authenticate, async (req, res) => {
   try {
     const { formId, status } = req.query;
-    console.log('📋 Fetching form assignments with filters:', { formId, status });
 
-    const query = {};
+    const query = { schoolId: req.user.schoolId };
     if (formId) query.formId = formId;
     if (status) query.status = status;
 
@@ -428,13 +488,12 @@ router.get('/form-assignments', authenticate, async (req, res) => {
       .populate('assignedBy', 'name code')
       .sort({ assignedAt: -1 });
 
-    console.log(`✅ Found ${assignments.length} form assignments`);
     res.json(assignments);
   } catch (error) {
     console.error('❌ Error fetching form assignments:', error);
     res.status(500).json({
       error: 'Failed to fetch form assignments',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -443,9 +502,8 @@ router.get('/form-assignments', authenticate, async (req, res) => {
 router.get('/form-assignments/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('📋 Fetching form assignment:', id);
 
-    const assignment = await FormAssignment.findById(id)
+    const assignment = await FormAssignment.findOne({ _id: id, schoolId: req.user.schoolId })
       .populate('formId', 'formName formType fields')
       .populate('assignedBy', 'name code');
 
@@ -453,17 +511,16 @@ router.get('/form-assignments/:id', authenticate, async (req, res) => {
       console.warn('⚠️ Form assignment not found:', id);
       return res.status(404).json({
         error: 'Form assignment not found',
-        message: `No assignment found with ID: ${id}`
+        message: `No assignment found with ID: ${id}`,
       });
     }
 
-    console.log('✅ Form assignment found');
     res.json(assignment);
   } catch (error) {
     console.error('❌ Error fetching form assignment:', error);
     res.status(500).json({
       error: 'Failed to fetch form assignment',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -474,15 +531,13 @@ router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
     const { id } = req.params;
     const { expiresInDays = 7 } = req.body;
 
-    console.log('📤 Resending form assignment:', id);
-
-    const assignment = await FormAssignment.findById(id);
+    const assignment = await FormAssignment.findOne({ _id: id, schoolId: req.user.schoolId });
 
     if (!assignment) {
       console.warn('⚠️ Form assignment not found:', id);
       return res.status(404).json({
         error: 'Form assignment not found',
-        message: `No assignment found with ID: ${id}`
+        message: `No assignment found with ID: ${id}`,
       });
     }
 
@@ -495,7 +550,6 @@ router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
     assignment.status = 'pending';
 
     await assignment.save();
-    console.log('✅ Form assignment resent');
 
     // Populate references
     await assignment.populate('formId', 'formName formType');
@@ -506,7 +560,7 @@ router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
     console.error('❌ Error resending form assignment:', error);
     res.status(500).json({
       error: 'Failed to resend form assignment',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -515,29 +569,30 @@ router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
 router.delete('/form-assignments/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('🗑️ Deleting form assignment:', id);
 
-    const assignment = await FormAssignment.findByIdAndDelete(id);
+    const assignment = await FormAssignment.findOneAndDelete({
+      _id: id,
+      schoolId: req.user.schoolId,
+    });
 
     if (!assignment) {
       console.warn('⚠️ Form assignment not found:', id);
       return res.status(404).json({
         error: 'Form assignment not found',
-        message: `No assignment found with ID: ${id}`
+        message: `No assignment found with ID: ${id}`,
       });
     }
 
-    console.log('✅ Form assignment deleted');
     res.json({
       success: true,
       message: 'Form assignment deleted successfully',
-      id
+      id,
     });
   } catch (error) {
     console.error('❌ Error deleting form assignment:', error);
     res.status(500).json({
       error: 'Failed to delete form assignment',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -550,9 +605,8 @@ router.delete('/form-assignments/:id', authenticate, async (req, res) => {
 router.get('/form-submissions', authenticate, async (req, res) => {
   try {
     const { formId, reviewStatus } = req.query;
-    console.log('📋 Fetching form submissions with filters:', { formId, reviewStatus });
 
-    const query = {};
+    const query = { schoolId: req.user.schoolId };
     if (formId) query.formId = formId;
     if (reviewStatus) query.reviewStatus = reviewStatus;
 
@@ -562,13 +616,12 @@ router.get('/form-submissions', authenticate, async (req, res) => {
       .populate('reviewedBy', 'name code')
       .sort({ submittedAt: -1 });
 
-    console.log(`✅ Found ${submissions.length} form submissions`);
     res.json(submissions);
   } catch (error) {
     console.error('❌ Error fetching form submissions:', error);
     res.status(500).json({
       error: 'Failed to fetch form submissions',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -577,9 +630,8 @@ router.get('/form-submissions', authenticate, async (req, res) => {
 router.get('/form-submissions/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('📋 Fetching form submission:', id);
 
-    const submission = await FormSubmission.findById(id)
+    const submission = await FormSubmission.findOne({ _id: id, schoolId: req.user.schoolId })
       .populate('assignmentId', 'assignedToEmail assignedToPhone assignedBy')
       .populate('formId', 'formName formType fields')
       .populate('reviewedBy', 'name code');
@@ -588,17 +640,16 @@ router.get('/form-submissions/:id', authenticate, async (req, res) => {
       console.warn('⚠️ Form submission not found:', id);
       return res.status(404).json({
         error: 'Form submission not found',
-        message: `No submission found with ID: ${id}`
+        message: `No submission found with ID: ${id}`,
       });
     }
 
-    console.log('✅ Form submission found');
     res.json(submission);
   } catch (error) {
     console.error('❌ Error fetching form submission:', error);
     res.status(500).json({
       error: 'Failed to fetch form submission',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -609,15 +660,13 @@ router.put('/form-submissions/:id/review', authenticate, async (req, res) => {
     const { id } = req.params;
     const { reviewStatus, reviewNotes, staffId, studentId } = req.body;
 
-    console.log('👁️ Reviewing form submission:', id, 'status:', reviewStatus);
-
-    const submission = await FormSubmission.findById(id);
+    const submission = await FormSubmission.findOne({ _id: id, schoolId: req.user.schoolId });
 
     if (!submission) {
       console.warn('⚠️ Form submission not found:', id);
       return res.status(404).json({
         error: 'Form submission not found',
-        message: `No submission found with ID: ${id}`
+        message: `No submission found with ID: ${id}`,
       });
     }
 
@@ -626,7 +675,7 @@ router.put('/form-submissions/:id/review', authenticate, async (req, res) => {
     if (!validStatuses.includes(reviewStatus)) {
       return res.status(400).json({
         error: 'Validation failed',
-        message: `reviewStatus must be one of: ${validStatuses.join(', ')}`
+        message: `reviewStatus must be one of: ${validStatuses.join(', ')}`,
       });
     }
 
@@ -651,14 +700,12 @@ router.put('/form-submissions/:id/review', authenticate, async (req, res) => {
     }
 
     await submission.save();
-    console.log('✅ Form submission reviewed');
 
     // Update assignment status
     if (submission.assignmentId) {
-      await FormAssignment.findByIdAndUpdate(
-        submission.assignmentId,
-        { status: reviewStatus === 'approved' ? 'approved' : 'submitted' }
-      );
+      await FormAssignment.findByIdAndUpdate(submission.assignmentId, {
+        status: reviewStatus === 'approved' ? 'approved' : 'submitted',
+      });
     }
 
     // Populate references
@@ -671,7 +718,7 @@ router.put('/form-submissions/:id/review', authenticate, async (req, res) => {
     console.error('❌ Error reviewing form submission:', error);
     res.status(500).json({
       error: 'Failed to review form submission',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -680,29 +727,30 @@ router.put('/form-submissions/:id/review', authenticate, async (req, res) => {
 router.delete('/form-submissions/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('🗑️ Deleting form submission:', id);
 
-    const submission = await FormSubmission.findByIdAndDelete(id);
+    const submission = await FormSubmission.findOneAndDelete({
+      _id: id,
+      schoolId: req.user.schoolId,
+    });
 
     if (!submission) {
       console.warn('⚠️ Form submission not found:', id);
       return res.status(404).json({
         error: 'Form submission not found',
-        message: `No submission found with ID: ${id}`
+        message: `No submission found with ID: ${id}`,
       });
     }
 
-    console.log('✅ Form submission deleted');
     res.json({
       success: true,
       message: 'Form submission deleted successfully',
-      id
+      id,
     });
   } catch (error) {
     console.error('❌ Error deleting form submission:', error);
     res.status(500).json({
       error: 'Failed to delete form submission',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -710,12 +758,15 @@ router.delete('/form-submissions/:id', authenticate, async (req, res) => {
 // PUT /api/form-submissions/:id/review - Enhanced review endpoint with auto entity creation
 router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, res) => {
   try {
-    const submission = await FormSubmission.findById(req.params.id);
+    const submission = await FormSubmission.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+    });
 
     if (!submission) {
       return res.status(404).json({
         success: false,
-        error: 'Submission not found'
+        error: 'Submission not found',
       });
     }
 
@@ -725,7 +776,7 @@ router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, re
       return res.status(400).json({
         success: false,
         error: 'Invalid decision',
-        message: 'Decision must be either approved or rejected'
+        message: 'Decision must be either approved or rejected',
       });
     }
 
@@ -734,7 +785,6 @@ router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, re
     submission.reviewNotes = reviewNotes;
     submission.reviewedBy = req.user.id;
     submission.reviewedAt = new Date();
-
     // If approved, create entity (Student or Staff)
     if (decision === 'approved') {
       const form = await IntakeForm.findById(submission.formId);
@@ -742,35 +792,43 @@ router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, re
       if (!form) {
         return res.status(404).json({
           success: false,
-          error: 'Associated form not found'
+          error: 'Associated form not found',
         });
       }
 
       // Create entity based on form type
       if (form.formType === 'student') {
         try {
-          const student = await createStudentFromSubmission(submission.submissionData, form);
+          const student = await createStudentFromSubmission(
+            submission.submissionData,
+            form,
+            req.user?.schoolId || null
+          );
           submission.studentId = student._id;
-          console.log('✅ Student created from submission:', student._id);
+          submission.convertedAt = new Date();
         } catch (studentError) {
           console.error('❌ Error creating student:', studentError);
           return res.status(500).json({
             success: false,
             error: 'Failed to create student record',
-            details: studentError.message
+            details: studentError.message,
           });
         }
       } else if (form.formType === 'staff') {
         try {
-          const staff = await createStaffFromSubmission(submission.submissionData, form, req.user?.schoolId || null);
+          const staff = await createStaffFromSubmission(
+            submission.submissionData,
+            form,
+            req.user?.schoolId || null
+          );
           submission.staffId = staff._id;
-          console.log('✅ Staff created from submission:', staff._id);
+          submission.convertedAt = new Date();
         } catch (staffError) {
           console.error('❌ Error creating staff:', staffError);
           return res.status(500).json({
             success: false,
             error: 'Failed to create staff record',
-            details: staffError.message
+            details: staffError.message,
           });
         }
       }
@@ -784,19 +842,17 @@ router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, re
     await submission.populate('studentId', 'name admissionId');
     await submission.populate('staffId', 'name code');
 
-    console.log('✅ Submission reviewed:', submission._id, decision);
-
     res.json({
       success: true,
       data: submission,
-      message: `Submission ${decision} successfully`
+      message: `Submission ${decision} successfully`,
     });
   } catch (error) {
     console.error('❌ Review submission error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to review submission'
+      message: 'Failed to review submission',
     });
   }
 });
@@ -804,12 +860,15 @@ router.put('/form-submissions/:id/review-enhanced', authenticate, async (req, re
 // POST /api/form-submissions/:id/request-edit - Request edits from parent
 router.post('/form-submissions/:id/request-edit', authenticate, async (req, res) => {
   try {
-    const submission = await FormSubmission.findById(req.params.id);
+    const submission = await FormSubmission.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+    });
 
     if (!submission) {
       return res.status(404).json({
         success: false,
-        error: 'Submission not found'
+        error: 'Submission not found',
       });
     }
 
@@ -819,7 +878,7 @@ router.post('/form-submissions/:id/request-edit', authenticate, async (req, res)
       return res.status(400).json({
         success: false,
         error: 'Notes are required',
-        message: 'Please provide notes explaining what needs to be edited'
+        message: 'Please provide notes explaining what needs to be edited',
       });
     }
 
@@ -837,7 +896,6 @@ router.post('/form-submissions/:id/request-edit', authenticate, async (req, res)
 
     // TODO: Send notification to parent about edit request
     if (assignment) {
-      console.log('📧 Edit request notification would be sent to:', assignment.assignedToEmail || assignment.assignedToPhone);
       // Implement email/SMS sending logic here
     }
 
@@ -845,19 +903,17 @@ router.post('/form-submissions/:id/request-edit', authenticate, async (req, res)
     await submission.populate('formId', 'formName formType');
     await submission.populate('editRequestedBy', 'name code');
 
-    console.log('✅ Edit request sent for submission:', submission._id);
-
     res.json({
       success: true,
       data: submission,
-      message: 'Edit request sent successfully'
+      message: 'Edit request sent successfully',
     });
   } catch (error) {
     console.error('❌ Request edit error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to request edits'
+      message: 'Failed to request edits',
     });
   }
 });
@@ -867,25 +923,23 @@ router.get('/form-submissions/student/:studentId', authenticate, async (req, res
   try {
     const { studentId } = req.params;
 
-    const submissions = await FormSubmission.find({ studentId })
+    const submissions = await FormSubmission.find({ studentId, schoolId: req.user.schoolId })
       .populate('formId', 'formName formType')
       .populate('assignmentId')
       .populate('reviewedBy', 'name code')
       .sort({ submittedAt: -1 });
 
-    console.log(`✅ Found ${submissions.length} submissions for student:`, studentId);
-
     res.json({
       success: true,
       data: submissions,
-      count: submissions.length
+      count: submissions.length,
     });
   } catch (error) {
     console.error('❌ Get student submissions error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch student submissions'
+      message: 'Failed to fetch student submissions',
     });
   }
 });
@@ -895,25 +949,23 @@ router.get('/form-submissions/staff/:staffId', authenticate, async (req, res) =>
   try {
     const { staffId } = req.params;
 
-    const submissions = await FormSubmission.find({ staffId })
+    const submissions = await FormSubmission.find({ staffId, schoolId: req.user.schoolId })
       .populate('formId', 'formName formType')
       .populate('assignmentId')
       .populate('reviewedBy', 'name code')
       .sort({ submittedAt: -1 });
 
-    console.log(`✅ Found ${submissions.length} submissions for staff:`, staffId);
-
     res.json({
       success: true,
       data: submissions,
-      count: submissions.length
+      count: submissions.length,
     });
   } catch (error) {
     console.error('❌ Get staff submissions error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch staff submissions'
+      message: 'Failed to fetch staff submissions',
     });
   }
 });
@@ -923,15 +975,12 @@ router.get('/form-assignments/token/:token', async (req, res) => {
   try {
     const { token } = req.params;
 
-    console.log('🔑 Fetching assignment by token');
-
-    const assignment = await FormAssignment.findOne({ accessToken: token })
-      .populate('formId');
+    const assignment = await FormAssignment.findOne({ accessToken: token }).populate('formId');
 
     if (!assignment) {
       return res.status(404).json({
         success: false,
-        error: 'Invalid access token'
+        error: 'Invalid access token',
       });
     }
 
@@ -940,11 +989,9 @@ router.get('/form-assignments/token/:token', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Access token has expired',
-        message: 'Please contact the school for a new link'
+        message: 'Please contact the school for a new link',
       });
     }
-
-    console.log('✅ Valid access token for form:', assignment.formId.formName);
 
     res.json({
       success: true,
@@ -952,15 +999,15 @@ router.get('/form-assignments/token/:token', async (req, res) => {
         formId: assignment.formId._id,
         formName: assignment.formId.formName,
         formType: assignment.formId.formType,
-        fields: assignment.formId.fields
-      }
+        fields: assignment.formId.fields,
+      },
     });
   } catch (error) {
     console.error('❌ Get assignment by token error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch assignment'
+      message: 'Failed to fetch assignment',
     });
   }
 });
@@ -968,22 +1015,28 @@ router.get('/form-assignments/token/:token', async (req, res) => {
 // PUT /api/form-assignments/:id/status - Update assignment status
 router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
   try {
-    const assignment = await FormAssignment.findById(req.params.id);
+    const assignment = await FormAssignment.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+    });
 
     if (!assignment) {
       return res.status(404).json({
         success: false,
-        error: 'Assignment not found'
+        error: 'Assignment not found',
       });
     }
 
     const { status } = req.body;
 
-    if (!status || !['pending', 'in_progress', 'submitted', 'approved', 'rejected'].includes(status)) {
+    if (
+      !status ||
+      !['pending', 'in_progress', 'submitted', 'approved', 'rejected'].includes(status)
+    ) {
       return res.status(400).json({
         success: false,
         error: 'Invalid status',
-        message: 'Status must be one of: pending, in_progress, submitted, approved, rejected'
+        message: 'Status must be one of: pending, in_progress, submitted, approved, rejected',
       });
     }
 
@@ -993,19 +1046,17 @@ router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
     await assignment.populate('formId', 'formName formType');
     await assignment.populate('assignedBy', 'name code');
 
-    console.log('✅ Assignment status updated:', assignment._id, status);
-
     res.json({
       success: true,
       data: assignment,
-      message: 'Assignment status updated successfully'
+      message: 'Assignment status updated successfully',
     });
   } catch (error) {
     console.error('❌ Update assignment status error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to update assignment status'
+      message: 'Failed to update assignment status',
     });
   }
 });
@@ -1018,16 +1069,17 @@ router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
 router.get('/form-submissions/public/:accessToken', async (req, res) => {
   try {
     const { accessToken } = req.params;
-    console.log('📋 Public form access request');
 
-    const assignment = await FormAssignment.findOne({ accessToken })
-      .populate('formId', 'formName formType fields');
+    const assignment = await FormAssignment.findOne({ accessToken }).populate(
+      'formId',
+      'formName formType fields'
+    );
 
     if (!assignment) {
       console.warn('⚠️ Invalid access token');
       return res.status(404).json({
         error: 'Invalid access token',
-        message: 'This form link is invalid or has been revoked'
+        message: 'This form link is invalid or has been revoked',
       });
     }
 
@@ -1037,7 +1089,7 @@ router.get('/form-submissions/public/:accessToken', async (req, res) => {
       return res.status(400).json({
         error: 'Link expired',
         message: 'This form link has expired. Please request a new one.',
-        expired: true
+        expired: true,
       });
     }
 
@@ -1050,11 +1102,10 @@ router.get('/form-submissions/public/:accessToken', async (req, res) => {
         message: 'This form has already been submitted',
         alreadySubmitted: true,
         submittedAt: existingSubmission.submittedAt,
-        reviewStatus: existingSubmission.reviewStatus
+        reviewStatus: existingSubmission.reviewStatus,
       });
     }
 
-    console.log('✅ Valid form access');
     res.json({
       success: true,
       data: {
@@ -1064,14 +1115,14 @@ router.get('/form-submissions/public/:accessToken', async (req, res) => {
         fields: assignment.formId.fields,
         assignedToEmail: assignment.assignedToEmail,
         assignedToPhone: assignment.assignedToPhone,
-        expiresAt: assignment.expiresAt
-      }
+        expiresAt: assignment.expiresAt,
+      },
     });
   } catch (error) {
     console.error('❌ Error fetching public form:', error);
     res.status(500).json({
       error: 'Failed to fetch form details',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -1082,17 +1133,14 @@ router.post('/form-submissions/public/:accessToken', async (req, res) => {
     const { accessToken } = req.params;
     const { submissionData } = req.body;
 
-    console.log('📝 Public form submission request');
-
     // Find assignment by access token
-    const assignment = await FormAssignment.findOne({ accessToken })
-      .populate('formId');
+    const assignment = await FormAssignment.findOne({ accessToken }).populate('formId');
 
     if (!assignment) {
       console.warn('⚠️ Invalid access token');
       return res.status(404).json({
         error: 'Invalid access token',
-        message: 'This form link is invalid or has been revoked'
+        message: 'This form link is invalid or has been revoked',
       });
     }
 
@@ -1101,7 +1149,7 @@ router.post('/form-submissions/public/:accessToken', async (req, res) => {
       console.warn('⚠️ Access token expired');
       return res.status(400).json({
         error: 'Link expired',
-        message: 'This form link has expired. Please request a new one.'
+        message: 'This form link has expired. Please request a new one.',
       });
     }
 
@@ -1111,7 +1159,7 @@ router.post('/form-submissions/public/:accessToken', async (req, res) => {
       console.warn('⚠️ Form already submitted');
       return res.status(400).json({
         error: 'Already submitted',
-        message: 'This form has already been submitted'
+        message: 'This form has already been submitted',
       });
     }
 
@@ -1119,23 +1167,23 @@ router.post('/form-submissions/public/:accessToken', async (req, res) => {
     if (!submissionData || typeof submissionData !== 'object') {
       return res.status(400).json({
         error: 'Validation failed',
-        message: 'submissionData is required and must be an object'
+        message: 'submissionData is required and must be an object',
       });
     }
 
-    // Create submission
+    // Create submission (carry schoolId from assignment for funnel scoping)
     const submission = new FormSubmission({
+      schoolId: assignment.schoolId,
       assignmentId: assignment._id,
       formId: assignment.formId._id,
       submissionData,
       submittedByEmail: assignment.assignedToEmail,
       submittedByPhone: assignment.assignedToPhone,
       submittedAt: new Date(),
-      reviewStatus: 'pending'
+      reviewStatus: 'pending',
     });
 
     await submission.save();
-    console.log('✅ Public form submission created');
 
     // Update assignment status
     assignment.status = 'submitted';
@@ -1147,13 +1195,13 @@ router.post('/form-submissions/public/:accessToken', async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Form submitted successfully. You will be notified after review.',
-      data: submission
+      data: submission,
     });
   } catch (error) {
     console.error('❌ Error submitting public form:', error);
     res.status(500).json({
       error: 'Failed to submit form',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -1165,15 +1213,14 @@ router.post('/form-submissions/public/:accessToken', async (req, res) => {
 /**
  * Create Student record from submission data
  */
-async function createStudentFromSubmission(submissionData, form) {
-  console.log('🎓 Creating student from submission data...');
-
+async function createStudentFromSubmission(submissionData, form, schoolId = null) {
   const { getNextAdmissionId, getNextRollNumber } = await import('../database.js');
 
   // Extract and map fields from submissionData
   const studentData = {
+    schoolId: schoolId || undefined,
     name: submissionData.name || submissionData.studentName,
-    admissionId: submissionData.admissionId || await getNextAdmissionId(),
+    admissionId: submissionData.admissionId || (await getNextAdmissionId(schoolId)),
     classId: submissionData.classId,
     rollNo: submissionData.rollNo,
 
@@ -1206,13 +1253,15 @@ async function createStudentFromSubmission(submissionData, form) {
     alternatePhone: submissionData.alternatePhone,
 
     // Additional Parents
-    parents: submissionData.parents || [{
-      name: submissionData.parentName || submissionData.fatherName,
-      relationship: submissionData.parentRelationship || 'Father',
-      phone: submissionData.parentPhone,
-      email: submissionData.parentEmail,
-      isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true
-    }],
+    parents: submissionData.parents || [
+      {
+        name: submissionData.parentName || submissionData.fatherName,
+        relationship: submissionData.parentRelationship || 'Father',
+        phone: submissionData.parentPhone,
+        email: submissionData.parentEmail,
+        isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true,
+      },
+    ],
 
     // Siblings
     siblings: submissionData.siblings || [],
@@ -1236,7 +1285,7 @@ async function createStudentFromSubmission(submissionData, form) {
 
     // Status
     status: 'active',
-    feeStatus: 'pending'
+    feeStatus: 'pending',
   };
 
   // Generate roll number if classId provided
@@ -1245,14 +1294,13 @@ async function createStudentFromSubmission(submissionData, form) {
   }
 
   const student = await Student.create(studentData);
-  console.log('✅ Student created:', student._id);
 
   // Auto-initialize fee structure for the new student
   try {
     // Check if fee structure already exists
     const existingFeeStructure = await StudentFeeStructure.findOne({
       studentId: student._id,
-      academicYear: studentData.academicYear || CURRENT_ACADEMIC_YEAR
+      academicYear: studentData.academicYear || CURRENT_ACADEMIC_YEAR,
     });
 
     if (!existingFeeStructure) {
@@ -1265,9 +1313,9 @@ async function createStudentFromSubmission(submissionData, form) {
         // Find FeeHead model to get applicable fee heads
         const FeeHead = mongoose.model('FeeHead');
         const applicableFeeHeads = await FeeHead.find({
+          schoolId: student.schoolId,
           applicableClasses: classNumber,
-          academicYear: studentData.academicYear || CURRENT_ACADEMIC_YEAR,
-          isActive: true
+          isActive: true,
         });
 
         // Create fee structure
@@ -1275,7 +1323,7 @@ async function createStudentFromSubmission(submissionData, form) {
           studentId: student._id,
           classId: studentData.classId,
           academicYear: studentData.academicYear || CURRENT_ACADEMIC_YEAR,
-          feeHeads: applicableFeeHeads.map(fh => ({
+          feeHeads: applicableFeeHeads.map((fh) => ({
             feeHeadId: fh._id,
             name: fh.name,
             category: fh.category,
@@ -1284,8 +1332,8 @@ async function createStudentFromSubmission(submissionData, form) {
             frequency: fh.frequency,
             paidAmount: 0,
             balanceAmount: fh.amount,
-            status: 'pending'
-          }))
+            status: 'pending',
+          })),
         });
 
         // Calculate totals
@@ -1295,12 +1343,14 @@ async function createStudentFromSubmission(submissionData, form) {
         feeStructure.overallStatus = 'pending';
 
         await feeStructure.save();
-        console.log('✅ Fee structure initialized for student:', student._id);
       }
     }
   } catch (feeError) {
     // Log fee initialization error but don't fail student creation
-    console.error('⚠️ Error auto-initializing fee structure for student from form submission:', feeError);
+    console.error(
+      '⚠️ Error auto-initializing fee structure for student from form submission:',
+      feeError
+    );
   }
 
   return student;
@@ -1310,8 +1360,6 @@ async function createStudentFromSubmission(submissionData, form) {
  * Create Staff record from submission data
  */
 async function createStaffFromSubmission(submissionData, form, schoolId = null) {
-  console.log('👔 Creating staff from submission data...');
-
   const { getNextStaffCode } = await import('../database.js');
   const staffCode = await getNextStaffCode();
   const effectiveSchoolId = schoolId || (await ensureDefaultSchool())._id;
@@ -1365,11 +1413,10 @@ async function createStaffFromSubmission(submissionData, form, schoolId = null) 
     // Login credentials (generate temporary password)
     username: submissionData.username || submissionData.email,
     password: submissionData.password || 'TempPassword123', // Should be changed on first login
-    joinDate: submissionData.joinDate || new Date().toISOString().split('T')[0]
+    joinDate: submissionData.joinDate || new Date().toISOString().split('T')[0],
   };
 
   const staff = await Staff.create(staffData);
-  console.log('✅ Staff created:', staff._id);
   return staff;
 }
 

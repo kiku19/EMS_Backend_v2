@@ -1,0 +1,33 @@
+{
+  "errors": {
+    "notFound": "Student not found",
+    "admissionIdExists": "A student with this admission ID already exists in this school",
+    "fetchFailed": "Failed to fetch students",
+    "createFailed": "Failed to create student",
+    "updateFailed": "Failed to update student",
+    "deleteFailed": "Failed to delete student",
+    "reminderSendFailed": "Failed to send reminder",
+    "remarkNotFound": "Remark not found",
+    "remarkCreateFailed": "Failed to create remark",
+    "remarkUpdateFailed": "Failed to update remark",
+    "remarkDeleteFailed": "Failed to delete remark",
+    "promoteFailed": "Failed to promote students",
+    "pinFailed": "Failed to pin/unpin student"
+  },
+  "success": {
+    "created": "Student created successfully",
+    "updated": "Student updated successfully",
+    "deleted": "Student deleted successfully",
+    "reminderSent": "Reminder sent successfully",
+    "documentAdded": "Document added successfully",
+    "documentDeleted": "Document deleted successfully",
+    "documentFixed": "Documents field fixed",
+    "photoUpdated": "Photo updated successfully",
+    "pinned": "Student pinned successfully",
+    "unpinned": "Student unpinned successfully",
+    "promoted": "Students promoted successfully",
+    "remarkCreated": "Remark created successfully",
+    "remarkUpdated": "Remark updated successfully",
+    "remarkDeleted": "Remark deleted successfully"
+  }
+}

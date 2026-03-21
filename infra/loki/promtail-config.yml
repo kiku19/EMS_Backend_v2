@@ -1,0 +1,72 @@
+# OBS-03: Promtail Configuration
+#
+# Promtail is the log-shipping agent that:
+#   1. Reads Docker container stdout/stderr logs from the host
+#   2. Parses the JSON log lines emitted by Pino
+#   3. Extracts labels (level, context, schoolId, requestId) from each line
+#   4. Ships them to Loki
+#
+# Promtail runs as a sidecar in docker-compose.logging.yml and requires
+# read access to:
+#   /var/lib/docker/containers  — raw Docker log files
+#   /var/run/docker.sock        — to discover container metadata
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # ── EMS Backend (Docker container) ─────────────────────────────────────
+  - job_name: ems-backend
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          # Adjust the container name filter to match your Docker service name
+          - name: name
+            values: ['ems-backend', 'school-backend']
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/?(.*)'
+        target_label: container
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: stream
+    pipeline_stages:
+      # Parse the JSON log line produced by Pino
+      - json:
+          expressions:
+            level: level
+            context: context
+            requestId: requestId
+            schoolId: schoolId
+            userId: userId
+            msg: msg
+            time: time
+
+      # Promote extracted fields to Loki labels (keep cardinality low —
+      # only add fields that are useful for filtering/alerting)
+      - labels:
+          level:
+          context:
+
+      # Promote requestId as a structured metadata field (not a label) to
+      # avoid high-cardinality label explosion while still being searchable
+      - structured_metadata:
+          requestId:
+          schoolId:
+          userId:
+
+      # Use Pino's ISO timestamp as the log timestamp
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+
+      # Use the msg field as the log line
+      - output:
+          source: msg

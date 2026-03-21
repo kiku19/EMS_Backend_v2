@@ -13,7 +13,7 @@ function validateIndianPhone(phone) {
   if (!phone) {
     return {
       isValid: false,
-      error: 'Phone number is required'
+      error: 'Phone number is required',
     };
   }
 
@@ -24,7 +24,7 @@ function validateIndianPhone(phone) {
   if (cleanedPhone.length !== 10) {
     return {
       isValid: false,
-      error: 'Phone number must be exactly 10 digits'
+      error: 'Phone number must be exactly 10 digits',
     };
   }
 
@@ -33,7 +33,7 @@ function validateIndianPhone(phone) {
   if (![6, 7, 8, 9].includes(firstDigit)) {
     return {
       isValid: false,
-      error: 'Phone number must start with 6, 7, 8, or 9'
+      error: 'Phone number must start with 6, 7, 8, or 9',
     };
   }
 
@@ -41,13 +41,13 @@ function validateIndianPhone(phone) {
   if (!/^\d+$/.test(cleanedPhone)) {
     return {
       isValid: false,
-      error: 'Phone number must contain only digits'
+      error: 'Phone number must contain only digits',
     };
   }
 
   return {
     isValid: true,
-    error: null
+    error: null,
   };
 }
 
@@ -61,46 +61,46 @@ function validateInternationalPhone(phone, countryCode) {
   if (!phone) {
     return {
       isValid: false,
-      error: 'Phone number is required'
+      error: 'Phone number is required',
     };
   }
 
   if (!countryCode) {
     return {
       isValid: false,
-      error: 'Country code is required for international validation'
+      error: 'Country code is required for international validation',
     };
   }
 
   // Remove spaces, dashes, parentheses
-  const cleanedPhone = phone.replace(/[\s\-\(\)]/g, '');
+  const cleanedPhone = phone.replace(/[\s\-()]/g, '');
 
   // Country-specific validation patterns
   const countryPatterns = {
     // US/Canada: 10 digits, optional +1 prefix
-    'US': /^(\+?1)?[2-9]\d{9}$/,
-    'CA': /^(\+?1)?[2-9]\d{9}$/,
+    US: /^(\+?1)?[2-9]\d{9}$/,
+    CA: /^(\+?1)?[2-9]\d{9}$/,
 
     // UK: 10-11 digits, optional +44 prefix
-    'UK': /^(\+?44)?[1-9]\d{8,10}$/,
+    UK: /^(\+?44)?[1-9]\d{8,10}$/,
 
     // UAE: 9 digits (after country code), starts with 5
-    'AE': /^(\+?971)?5[02468]\d{7}$/,
+    AE: /^(\+?971)?5[02468]\d{7}$/,
 
     // Australia: 9 digits, starts with 4
-    'AU': /^(\+?61)?4\d{8}$/,
+    AU: /^(\+?61)?4\d{8}$/,
 
     // Germany: 10-11 digits
-    'DE': /^(\+?49)?[1-9]\d{8,10}$/,
+    DE: /^(\+?49)?[1-9]\d{8,10}$/,
 
     // France: 9 digits (after country code)
-    'FR': /^(\+?33)?[1-9]\d{8}$/,
+    FR: /^(\+?33)?[1-9]\d{8}$/,
 
     // Singapore: 8 digits, starts with 8 or 9
-    'SG': /^(\+?65)?[89]\d{7}$/,
+    SG: /^(\+?65)?[89]\d{7}$/,
 
     // Default: Basic international format (7-15 digits with +)
-    'DEFAULT': /^\+?[1-9]\d{6,14}$/
+    DEFAULT: /^\+?[1-9]\d{6,14}$/,
   };
 
   // Get pattern for country, use DEFAULT if not found
@@ -109,7 +109,7 @@ function validateInternationalPhone(phone, countryCode) {
   if (!pattern.test(cleanedPhone)) {
     return {
       isValid: false,
-      error: `Invalid phone number format for country code: ${countryCode}`
+      error: `Invalid phone number format for country code: ${countryCode}`,
     };
   }
 
@@ -118,7 +118,7 @@ function validateInternationalPhone(phone, countryCode) {
   if (digitsOnly.length < 7) {
     return {
       isValid: false,
-      error: 'Phone number must be at least 7 digits'
+      error: 'Phone number must be at least 7 digits',
     };
   }
 
@@ -126,13 +126,13 @@ function validateInternationalPhone(phone, countryCode) {
   if (digitsOnly.length > 15) {
     return {
       isValid: false,
-      error: 'Phone number cannot exceed 15 digits'
+      error: 'Phone number cannot exceed 15 digits',
     };
   }
 
   return {
     isValid: true,
-    error: null
+    error: null,
   };
 }
 
@@ -146,7 +146,7 @@ async function mockThirdPartyValidation(phone) {
   // Simulate network delay (500-1500ms)
   const delay = Math.floor(Math.random() * 1000) + 500;
 
-  await new Promise(resolve => setTimeout(resolve, delay));
+  await new Promise((resolve) => setTimeout(resolve, delay));
 
   // Clean phone number
   const cleanedPhone = phone.replace(/\D/g, '');
@@ -173,7 +173,7 @@ async function mockThirdPartyValidation(phone) {
       return {
         isValid: false,
         error: 'Phone number is flagged as invalid by third-party service',
-        provider: 'MockPhoneValidationAPI'
+        provider: 'MockPhoneValidationAPI',
       };
     }
   }
@@ -185,7 +185,7 @@ async function mockThirdPartyValidation(phone) {
       return {
         isValid: false,
         error: 'Phone number does not match valid carrier ranges',
-        provider: 'MockPhoneValidationAPI'
+        provider: 'MockPhoneValidationAPI',
       };
     }
   }
@@ -195,7 +195,7 @@ async function mockThirdPartyValidation(phone) {
     return {
       isValid: false,
       error: 'Unable to verify phone number at this time',
-      provider: 'MockPhoneValidationAPI'
+      provider: 'MockPhoneValidationAPI',
     };
   }
 
@@ -203,7 +203,7 @@ async function mockThirdPartyValidation(phone) {
   return {
     isValid: true,
     error: null,
-    provider: 'MockPhoneValidationAPI'
+    provider: 'MockPhoneValidationAPI',
   };
 }
 
@@ -232,8 +232,8 @@ async function validatePhone(phone, countryCode = 'IN', useThirdParty = false) {
       details: {
         stage: 'format_validation',
         phone: phone,
-        countryCode: countryCode
-      }
+        countryCode: countryCode,
+      },
     };
   }
 
@@ -249,8 +249,8 @@ async function validatePhone(phone, countryCode = 'IN', useThirdParty = false) {
           stage: 'third_party_validation',
           phone: phone,
           countryCode: countryCode,
-          provider: thirdPartyResult.provider
-        }
+          provider: thirdPartyResult.provider,
+        },
       };
     }
 
@@ -261,8 +261,8 @@ async function validatePhone(phone, countryCode = 'IN', useThirdParty = false) {
         stage: 'completed',
         phone: phone,
         countryCode: countryCode,
-        provider: thirdPartyResult.provider
-      }
+        provider: thirdPartyResult.provider,
+      },
     };
   }
 
@@ -273,14 +273,9 @@ async function validatePhone(phone, countryCode = 'IN', useThirdParty = false) {
     details: {
       stage: 'format_validation_only',
       phone: phone,
-      countryCode: countryCode
-    }
+      countryCode: countryCode,
+    },
   };
 }
 
-export {
-  validateIndianPhone,
-  validateInternationalPhone,
-  mockThirdPartyValidation,
-  validatePhone
-};
+export { validateIndianPhone, validateInternationalPhone, mockThirdPartyValidation, validatePhone };

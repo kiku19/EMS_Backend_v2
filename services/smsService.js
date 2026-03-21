@@ -1,4 +1,5 @@
 import { sendSMS, sendSMSWithFlow, sendBulkSMS } from '../config/sms.js';
+import { buildSmsMessage } from '../utils/i18nTemplates.js';
 
 /**
  * Send SMS announcement
@@ -16,10 +17,18 @@ export const sendAnnouncementSMS = async (to, title, content) => {
 /**
  * Send fee reminder SMS
  * @param {string} to - Phone number
- * @param {Object} feeData - Fee details
+ * @param {Object} feeData - Fee details (amount, dueDate)
+ * @param {string} [locale='en'] - Recipient locale
  */
-export const sendFeeReminderSMS = async (to, feeData) => {
-  const message = `FEE REMINDER: Fee payment of ₹${feeData.amount} is due by ${new Date(feeData.dueDate).toLocaleDateString()}. Please pay on time to avoid late fees.`;
+export const sendFeeReminderSMS = async (to, feeData, locale = 'en') => {
+  const message = buildSmsMessage(
+    'fee_reminder',
+    {
+      amount: feeData.amount,
+      dueDate: new Date(feeData.dueDate).toLocaleDateString(),
+    },
+    locale
+  );
 
   return await sendSMS(to, message);
 };
@@ -27,10 +36,18 @@ export const sendFeeReminderSMS = async (to, feeData) => {
 /**
  * Send attendance alert SMS
  * @param {string} to - Phone number
- * @param {Object} attendanceData - Attendance details
+ * @param {Object} attendanceData - Attendance details (isPresent, date)
+ * @param {string} [locale='en'] - Recipient locale
  */
-export const sendAttendanceAlertSMS = async (to, attendanceData) => {
-  const message = `ATTENDANCE ALERT: Your child was ${attendanceData.isPresent ? 'PRESENT' : 'ABSENT'} on ${new Date(attendanceData.date).toLocaleDateString()}. ${!attendanceData.isPresent ? 'Please contact school if you have questions.' : ''}`;
+export const sendAttendanceAlertSMS = async (to, attendanceData, locale = 'en') => {
+  const type = attendanceData.isPresent ? 'attendance_present' : 'attendance_absent';
+  const message = buildSmsMessage(
+    type,
+    {
+      date: new Date(attendanceData.date).toLocaleDateString(),
+    },
+    locale
+  );
 
   return await sendSMS(to, message);
 };
@@ -39,9 +56,10 @@ export const sendAttendanceAlertSMS = async (to, attendanceData) => {
  * Send OTP via SMS
  * @param {string} to - Phone number
  * @param {string} otp - One-time password
+ * @param {string} [locale='en'] - Recipient locale
  */
-export const sendOTPSMS = async (to, otp) => {
-  const message = `Your verification code is: ${otp}. Valid for 5 minutes. Do not share this with anyone.`;
+export const sendOTPSMS = async (to, otp, locale = 'en') => {
+  const message = buildSmsMessage('otp', { otp }, locale);
 
   return await sendSMS(to, message);
 };
@@ -50,9 +68,10 @@ export const sendOTPSMS = async (to, otp) => {
  * Send emergency alert SMS
  * @param {string} to - Phone number
  * @param {string} alertMessage - Emergency message
+ * @param {string} [locale='en'] - Recipient locale
  */
-export const sendEmergencyAlertSMS = async (to, alertMessage) => {
-  const message = `🚨 EMERGENCY ALERT: ${alertMessage}`;
+export const sendEmergencyAlertSMS = async (to, alertMessage, locale = 'en') => {
+  const message = buildSmsMessage('emergency', { message: alertMessage }, locale);
 
   return await sendSMS(to, message);
 };

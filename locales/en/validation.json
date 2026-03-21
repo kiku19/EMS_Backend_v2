@@ -1,0 +1,15 @@
+{
+  "required": "{{field}} is required",
+  "invalidType": "Invalid type for {{field}}",
+  "tooShort": "{{field}} must be at least {{min}} characters",
+  "tooLong": "{{field}} must not exceed {{max}} characters",
+  "invalidEmail": "Invalid email address",
+  "invalidPhone": "Invalid phone number format",
+  "invalidEnum": "{{field}} must be one of: {{values}}",
+  "invalidUrl": "Invalid URL format",
+  "invalidDate": "Invalid date format",
+  "minValue": "{{field}} must be at least {{min}}",
+  "maxValue": "{{field}} must not exceed {{max}}",
+  "invalidObjectId": "Invalid ID format for {{field}}",
+  "invalidFormat": "{{field}} has an invalid format"
+}

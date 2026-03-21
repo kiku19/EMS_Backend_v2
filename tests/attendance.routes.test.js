@@ -1,7 +1,13 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { Attendance } from '../database.js';
-import { authHeadersFor, createClassRecord, createSchoolRecord, createStaffUser, createStudentRecord } from './helpers/factories.js';
+import {
+  authHeadersFor,
+  createClassRecord,
+  createSchoolRecord,
+  createStaffUser,
+  createStudentRecord,
+} from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
 describe('attendance routes', () => {
@@ -65,7 +71,9 @@ describe('attendance routes', () => {
 
       const savedRecords = await Attendance.find({ classId: classRecord._id, date }).lean();
       expect(savedRecords).toHaveLength(2);
-      expect(savedRecords.every((record) => record.markedBy.toString() === teacher._id.toString())).toBe(true);
+      expect(
+        savedRecords.every((record) => record.markedBy.toString() === teacher._id.toString())
+      ).toBe(true);
     });
 
     it('marks all students present', async () => {
@@ -176,7 +184,9 @@ describe('attendance routes', () => {
       });
 
       const savedRecords = await Attendance.find({ classId: classRecord._id, date }).lean();
-      const byStudent = Object.fromEntries(savedRecords.map((r) => [r.studentId.toString(), r.status]));
+      const byStudent = Object.fromEntries(
+        savedRecords.map((r) => [r.studentId.toString(), r.status])
+      );
       expect(byStudent[presentStudent._id.toString()]).toBe('present');
       expect(byStudent[absentStudent._id.toString()]).toBe('absent');
       expect(byStudent[lateStudent._id.toString()]).toBe('late');
@@ -270,13 +280,9 @@ describe('attendance routes', () => {
           date: '2026-03-10',
           attendance: [],
         })
-        .expect(200);
+        .expect(400);
 
-      expect(response.body).toMatchObject({
-        success: true,
-        message: 'Attendance marked for 0 students',
-      });
-      expect(response.body.results).toHaveLength(0);
+      expect(response.body.error).toBeDefined();
     });
   });
 
@@ -327,7 +333,11 @@ describe('attendance routes', () => {
 
     it('returns 401 when unauthenticated', async () => {
       const classRecord = await createClassRecord({ name: 'Class 6', section: 'B' });
-      const student = await createStudentRecord({ name: 'Unauth Student', rollNo: 1, classId: classRecord._id });
+      const student = await createStudentRecord({
+        name: 'Unauth Student',
+        rollNo: 1,
+        classId: classRecord._id,
+      });
       const { app } = createTestApp();
 
       await request(app)
@@ -446,12 +456,14 @@ describe('attendance routes', () => {
 
     it('returns 401 when unauthenticated', async () => {
       const classRecord = await createClassRecord({ name: 'Class 3', section: 'A' });
-      const student = await createStudentRecord({ name: 'Unauth Student 2', rollNo: 1, classId: classRecord._id });
+      const student = await createStudentRecord({
+        name: 'Unauth Student 2',
+        rollNo: 1,
+        classId: classRecord._id,
+      });
       const { app } = createTestApp();
 
-      await request(app)
-        .get(`/api/attendance/student/${student._id.toString()}`)
-        .expect(401);
+      await request(app).get(`/api/attendance/student/${student._id.toString()}`).expect(401);
     });
 
     it('returns no records for a student from a different school (multi-tenancy)', async () => {
@@ -471,8 +483,16 @@ describe('attendance routes', () => {
         schoolId: schoolB._id,
       });
 
-      const classB = await createClassRecord({ classTeacherId: teacherB._id, name: 'Class B1', section: 'A' });
-      const studentB = await createStudentRecord({ name: 'Student School B', rollNo: 1, classId: classB._id });
+      const classB = await createClassRecord({
+        classTeacherId: teacherB._id,
+        name: 'Class B1',
+        section: 'A',
+      });
+      const studentB = await createStudentRecord({
+        name: 'Student School B',
+        rollNo: 1,
+        classId: classB._id,
+      });
 
       // Mark attendance with School B's teacher (scoped to schoolB)
       await Attendance.create({
@@ -601,7 +621,11 @@ describe('attendance routes', () => {
         schoolId: schoolB._id,
       });
 
-      const classB = await createClassRecord({ classTeacherId: teacherB._id, name: 'Class MT-B', section: 'A' });
+      const classB = await createClassRecord({
+        classTeacherId: teacherB._id,
+        name: 'Class MT-B',
+        section: 'A',
+      });
       const studentB = await createStudentRecord({
         name: 'MT Student B',
         rollNo: 1,
@@ -650,7 +674,11 @@ describe('attendance routes', () => {
         schoolId: schoolB._id,
       });
 
-      const classB = await createClassRecord({ classTeacherId: teacherB._id, name: 'Class Cross-B', section: 'A' });
+      const classB = await createClassRecord({
+        classTeacherId: teacherB._id,
+        name: 'Class Cross-B',
+        section: 'A',
+      });
       const studentB = await createStudentRecord({
         name: 'Cross Student B',
         rollNo: 1,

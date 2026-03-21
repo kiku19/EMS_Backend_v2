@@ -14,9 +14,7 @@ function buildPermissionEntries(permissionRole) {
 }
 
 function sanitizeObject(input = {}) {
-  return Object.fromEntries(
-    Object.entries(input).filter(([, value]) => value !== undefined)
-  );
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 function normalizeEmail(value) {
@@ -105,13 +103,13 @@ export async function ensureAdminForSchool({
     (normalizedEmail
       ? await Staff.findOne({ schoolId: school._id, email: normalizedEmail })
       : null) ||
-    await Staff.findOne({ schoolId: school._id, role: 'Admin' }).sort({ createdAt: 1 });
+    (await Staff.findOne({ schoolId: school._id, role: 'Admin' }).sort({ createdAt: 1 }));
 
   let temporaryPassword = null;
   let created = false;
 
   if (!admin) {
-    const code = await getNextStaffCode();
+    const code = await getNextStaffCode(school._id);
     const baseUsername =
       normalizeNullableString(normalizedEmail?.split('@')[0]) || code.toLowerCase();
     const username = await ensureUniqueUsername(baseUsername.toLowerCase());

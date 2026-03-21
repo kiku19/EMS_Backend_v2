@@ -1,99 +1,115 @@
+import { randomBytes } from 'crypto';
 import Announcement from '../models/Announcement.js';
 import AnnouncementRecipient from '../models/AnnouncementRecipient.js';
 import { Staff, Student, Class } from '../database.js';
 import { sendAnnouncementEmail } from './emailService.js';
 import { sendAnnouncementSMS } from './smsService.js';
 import { sendAnnouncementWhatsApp } from './whatsappService.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('AnnouncementSender');
 
 // Helper function to resolve recipients
-async function resolveRecipients(recipients) {
+async function resolveRecipients(recipients, schoolId) {
   const recipientList = [];
+  const schoolFilter = schoolId ? { schoolId } : {};
 
   for (const recipient of recipients) {
     if (recipient.type === 'all') {
-      const staff = await Staff.find({ isActive: true });
-      staff.forEach(s => recipientList.push({
-        userId: s._id,
-        userType: 'Staff',
-        name: s.name,
-        email: s.email,
-        phone: s.phone
-      }));
+      const staff = await Staff.find({ isActive: true, ...schoolFilter });
+      staff.forEach((s) =>
+        recipientList.push({
+          userId: s._id,
+          userType: 'Staff',
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+        })
+      );
 
-      const students = await Student.find({ isActive: true });
-      students.forEach(s => recipientList.push({
-        userId: s._id,
-        userType: 'Student',
-        name: s.name,
-        email: s.email,
-        phone: s.phone
-      }));
+      const students = await Student.find({ isActive: true, ...schoolFilter });
+      students.forEach((s) =>
+        recipientList.push({
+          userId: s._id,
+          userType: 'Student',
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+        })
+      );
     } else if (recipient.type === 'staff') {
-      const staff = await Staff.find({ isActive: true });
-      staff.forEach(s => recipientList.push({
-        userId: s._id,
-        userType: 'Staff',
-        name: s.name,
-        email: s.email,
-        phone: s.phone
-      }));
+      const staff = await Staff.find({ isActive: true, ...schoolFilter });
+      staff.forEach((s) =>
+        recipientList.push({
+          userId: s._id,
+          userType: 'Staff',
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+        })
+      );
     } else if (recipient.type === 'students') {
       if (recipient.classIds && recipient.classIds.length > 0) {
-        const classes = await Class.find({ _id: { $in: recipient.classIds } }).populate('students');
+        const classes = await Class.find({
+          _id: { $in: recipient.classIds },
+          ...schoolFilter,
+        }).populate('students');
         for (const cls of classes) {
-          cls.students.forEach(student => {
+          cls.students.forEach((student) => {
             recipientList.push({
               userId: student._id,
               userType: 'Student',
               name: student.name,
               email: student.email,
-              phone: student.phone
+              phone: student.phone,
             });
           });
         }
       } else {
-        const students = await Student.find({ isActive: true });
-        students.forEach(s => recipientList.push({
-          userId: s._id,
-          userType: 'Student',
-          name: s.name,
-          email: s.email,
-          phone: s.phone
-        }));
+        const students = await Student.find({ isActive: true, ...schoolFilter });
+        students.forEach((s) =>
+          recipientList.push({
+            userId: s._id,
+            userType: 'Student',
+            name: s.name,
+            email: s.email,
+            phone: s.phone,
+          })
+        );
       }
     } else if (recipient.type === 'parents') {
-      const students = await Student.find({ isActive: true }).populate('parent');
-      students.forEach(s => {
+      const students = await Student.find({ isActive: true, ...schoolFilter }).populate('parent');
+      students.forEach((s) => {
         if (s.parent && s.parent.email) {
           recipientList.push({
             userId: s._id,
             userType: 'Parent',
             name: s.parent.name || s.name + "'s Parent",
             email: s.parent.email,
-            phone: s.parent.phone
+            phone: s.parent.phone,
           });
         }
       });
     } else if (recipient.type === 'custom' && recipient.userIds) {
       for (const userId of recipient.userIds) {
-        const staff = await Staff.findById(userId);
+        const staff = await Staff.findOne({ _id: userId, ...schoolFilter });
         if (staff) {
           recipientList.push({
             userId: staff._id,
             userType: 'Staff',
             name: staff.name,
             email: staff.email,
-            phone: staff.phone
+            phone: staff.phone,
           });
         } else {
-          const student = await Student.findById(userId);
+          const student = await Student.findOne({ _id: userId, ...schoolFilter });
           if (student) {
             recipientList.push({
               userId: student._id,
               userType: 'Student',
               name: student.name,
               email: student.email,
-              phone: student.phone
+              phone: student.phone,
             });
           }
         }
@@ -117,15 +133,16 @@ async function resolveRecipients(recipients) {
 
 // Main function to send scheduled announcement
 export async function sendScheduledAnnouncement(announcementId, specificRecipients = null) {
+  let announcement;
   try {
-    const announcement = await Announcement.findById(announcementId);
+    announcement = await Announcement.findById(announcementId);
 
     if (!announcement) {
-      console.error('Announcement not found:', announcementId);
+      logger.warn({ announcementId }, 'Announcement not found');
       return;
     }
 
-    console.log(`📤 Sending announcement: ${announcement.title}`);
+    logger.info({ announcementId, title: announcement.title }, 'Sending announcement');
 
     // Update status
     announcement.status = 'sending';
@@ -137,22 +154,25 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       // Get specific recipients for resend
       recipients = await AnnouncementRecipient.find({
         announcementId: announcement._id,
-        userId: { $in: specificRecipients }
+        userId: { $in: specificRecipients },
       });
     } else {
       // Resolve all recipients
-      const resolvedRecipients = await resolveRecipients(announcement.recipients);
+      const resolvedRecipients = await resolveRecipients(
+        announcement.recipients,
+        announcement.schoolId
+      );
 
       // Create recipient records
       recipients = await AnnouncementRecipient.create(
-        resolvedRecipients.map(r => ({
+        resolvedRecipients.map((r) => ({
           announcementId: announcement._id,
           userId: r.userId,
           userType: r.userType,
-          deliveryStatus: announcement.channels.map(ch => ({
+          deliveryStatus: announcement.channels.map((ch) => ({
             channel: ch.type,
-            status: 'pending'
-          }))
+            status: 'pending',
+          })),
         }))
       );
     }
@@ -163,37 +183,65 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
     // Send via each channel
     for (const channel of announcement.channels) {
       const channelType = channel.type;
-      console.log(`  Sending via ${channelType}...`);
+      logger.info({ channelType }, 'Sending via channel');
 
       channel.status = 'sending';
       channel.stats.totalRecipients = recipients.length;
 
       for (const recipient of recipients) {
-        const deliveryStatus = recipient.deliveryStatus.find(ds => ds.channel === channelType);
+        const deliveryStatus = recipient.deliveryStatus.find((ds) => ds.channel === channelType);
 
         if (!deliveryStatus || deliveryStatus.status === 'failed') {
           try {
             if (channelType === 'email') {
-              const result = await sendAnnouncementEmail(announcement, recipient);
+              // Generate unique tracking token for open/click analytics
+              if (!deliveryStatus.trackingToken) {
+                deliveryStatus.trackingToken = randomBytes(20).toString('hex');
+              }
+              const result = await sendAnnouncementEmail(
+                announcement,
+                recipient,
+                'en',
+                deliveryStatus.trackingToken
+              );
               deliveryStatus.status = result.success ? 'sent' : 'failed';
               deliveryStatus.sentAt = new Date();
-              if (result.success) channel.stats.sentCount++;
-              else channel.stats.failedCount++;
+              if (result.success) {
+                if (result.messageId) deliveryStatus.messageId = result.messageId;
+                channel.stats.sentCount++;
+              } else {
+                channel.stats.failedCount++;
+                channel.stats.bounceCount = (channel.stats.bounceCount || 0) + 1;
+                if (result.error) deliveryStatus.bounceReason = result.error;
+                deliveryStatus.bouncedAt = new Date();
+              }
             } else if (channelType === 'sms') {
-              const result = await sendAnnouncementSMS(recipient.phone, announcement.title, announcement.content);
+              const result = await sendAnnouncementSMS(
+                recipient.phone,
+                announcement.title,
+                announcement.content
+              );
               deliveryStatus.status = result.success ? 'sent' : 'failed';
               deliveryStatus.sentAt = new Date();
-              if (result.success) channel.stats.sentCount++;
-              else channel.stats.failedCount++;
+              if (result.success) {
+                if (result.requestId) deliveryStatus.messageId = result.requestId;
+                channel.stats.sentCount++;
+              } else {
+                channel.stats.failedCount++;
+              }
             } else if (channelType === 'whatsapp') {
               const result = await sendAnnouncementWhatsApp(recipient.phone, 'announcement', {
                 title: announcement.title,
-                content: announcement.content
+                content: announcement.content,
               });
               deliveryStatus.status = result.success ? 'sent' : 'failed';
               deliveryStatus.sentAt = new Date();
-              if (result.success) channel.stats.sentCount++;
-              else channel.stats.failedCount++;
+              if (result.success) {
+                if (result.messageId) deliveryStatus.messageId = result.messageId;
+                channel.stats.sentCount++;
+              } else {
+                channel.stats.failedCount++;
+              }
             } else if (channelType === 'inapp') {
               deliveryStatus.status = 'delivered';
               deliveryStatus.sentAt = new Date();
@@ -203,10 +251,18 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
 
             await recipient.save();
           } catch (error) {
-            console.error(`  Error sending to ${recipient.name}:`, error.message);
+            logger.error(
+              { err: error, recipientName: recipient.name, channelType },
+              'Error sending to recipient'
+            );
             deliveryStatus.status = 'failed';
             deliveryStatus.error = error.message;
             channel.stats.failedCount++;
+            if (channelType === 'email') {
+              channel.stats.bounceCount = (channel.stats.bounceCount || 0) + 1;
+              deliveryStatus.bounceReason = error.message;
+              deliveryStatus.bouncedAt = new Date();
+            }
             await recipient.save();
           }
         }
@@ -218,12 +274,27 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
 
     // Update overall analytics
     announcement.analytics.sentCount = recipients.length;
-    announcement.analytics.deliveredCount = recipients.filter(r =>
-      r.deliveryStatus.some(ds => ds.status === 'delivered' || ds.status === 'sent')
+    announcement.analytics.deliveredCount = recipients.filter((r) =>
+      r.deliveryStatus.some((ds) => ds.status === 'delivered' || ds.status === 'sent')
     ).length;
-    announcement.analytics.failedCount = recipients.filter(r =>
-      r.deliveryStatus.some(ds => ds.status === 'failed')
+    announcement.analytics.failedCount = recipients.filter((r) =>
+      r.deliveryStatus.some((ds) => ds.status === 'failed')
     ).length;
+
+    // Aggregate open/click/bounce counts across all recipients and channels
+    let totalOpenCount = 0;
+    let totalClickCount = 0;
+    let totalBounceCount = 0;
+    for (const r of recipients) {
+      for (const ds of r.deliveryStatus) {
+        totalOpenCount += ds.openCount || 0;
+        totalClickCount += ds.clickCount || 0;
+        if (ds.bouncedAt) totalBounceCount++;
+      }
+    }
+    announcement.analytics.openCount = totalOpenCount;
+    announcement.analytics.clickCount = totalClickCount;
+    announcement.analytics.bounceCount = totalBounceCount;
 
     // Update status
     if (announcement.analytics.failedCount === 0) {
@@ -240,10 +311,39 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
     // Calculate read rate
     await announcement.updateReadRate();
 
-    console.log(`✅ Announcement sent: ${announcement.title}`);
-    console.log(`   Sent: ${announcement.analytics.sentCount}, Failed: ${announcement.analytics.failedCount}`);
+    logger.info(
+      {
+        title: announcement.title,
+        sent: announcement.analytics.sentCount,
+        failed: announcement.analytics.failedCount,
+      },
+      'Announcement sent'
+    );
+
+    // Send push notifications based on recipient types
+    try {
+      const { default: pushService } = await import('./pushNotificationService.js');
+      const recipientTypes = announcement.recipients.map((r) => r.type);
+      const pushTitle = announcement.title;
+      const pushBody = announcement.content.substring(0, 150);
+      const pushData = { type: 'announcement', announcementId: announcement._id.toString() };
+      const schoolId = announcement.schoolId;
+
+      if (recipientTypes.includes('all') || recipientTypes.includes('parents')) {
+        pushService
+          .sendToAllParents(schoolId, pushTitle, pushBody, pushData)
+          .catch((err) => logger.warn({ err }, 'Push sendToAllParents failed'));
+      }
+      if (recipientTypes.includes('all') || recipientTypes.includes('staff')) {
+        pushService
+          .sendToAllStaff(schoolId, pushTitle, pushBody, pushData)
+          .catch((err) => logger.warn({ err }, 'Push sendToAllStaff failed'));
+      }
+    } catch (pushErr) {
+      logger.warn({ err: pushErr }, 'Push notification dispatch failed');
+    }
   } catch (error) {
-    console.error('Error sending announcement:', error);
+    logger.error({ err: error, announcementId }, 'Error sending announcement');
     if (announcement) {
       announcement.status = 'failed';
       await announcement.save();

@@ -1,0 +1,34 @@
+{
+  "errors": {
+    "notFound": "Resource not found",
+    "unauthorized": "Unauthorized",
+    "forbidden": "Access denied",
+    "serverError": "Internal server error",
+    "badRequest": "Bad request",
+    "invalidId": "Invalid ID format",
+    "duplicateEntry": "Duplicate entry",
+    "tokenExpired": "Token expired",
+    "tokenInvalid": "Invalid token",
+    "routeNotFound": "Route not found: {{path}}",
+    "schoolNotFound": "School not found",
+    "classNotFound": "Class not found",
+    "studentNotFound": "Student not found",
+    "staffNotFound": "Staff not found",
+    "serverMisconfiguration": "Server misconfiguration",
+    "noPermission": "You do not have permission to perform this action",
+    "rateLimitExceeded": "Rate limit exceeded for your account. Please slow down your requests.",
+    "smsLimitExceeded": "Daily SMS sending limit reached for your school. Resets in 24 hours.",
+    "tooManyAuthAttempts": "Too many authentication attempts. Please try again later.",
+    "tooManyRequests": "Too Many Requests",
+    "noUpdateData": "No update data provided",
+    "adminFieldsOnly": "Cannot modify admin-only fields",
+    "validationError": "Validation Error"
+  },
+  "success": {
+    "created": "{{entity}} created successfully",
+    "updated": "{{entity}} updated successfully",
+    "deleted": "{{entity}} deleted successfully",
+    "fetched": "{{entity}} fetched successfully",
+    "sent": "{{entity}} sent successfully"
+  }
+}

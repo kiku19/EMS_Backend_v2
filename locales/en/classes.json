@@ -1,0 +1,20 @@
+{
+  "errors": {
+    "notFound": "Class not found",
+    "teacherNotFound": "Teacher not found",
+    "teacherAlreadyAssigned": "Teacher is already assigned as class teacher to another class",
+    "nameSectionExists": "A class with this name and section already exists",
+    "fetchFailed": "Failed to fetch classes",
+    "createFailed": "Failed to create class",
+    "updateFailed": "Failed to update class",
+    "deleteFailed": "Failed to delete class",
+    "hasStudents": "Cannot delete a class that has active students"
+  },
+  "success": {
+    "created": "Class created successfully",
+    "updated": "Class updated successfully",
+    "deleted": "Class deleted successfully",
+    "teacherAssigned": "Class teacher assigned successfully",
+    "teacherRemoved": "Class teacher removed successfully"
+  }
+}

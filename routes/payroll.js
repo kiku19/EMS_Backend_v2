@@ -5,8 +5,19 @@ import PayrollRecord from '../models/PayrollRecord.js';
 import Payslip from '../models/Payslip.js';
 import SalaryAdjustment from '../models/SalaryAdjustment.js';
 import PayrollAuditLog from '../models/PayrollAuditLog.js';
+import TeacherLeave from '../models/TeacherLeave.js';
+import StaffAttendance from '../models/StaffAttendance.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission, requireAdmin } from '../middleware/permissions.js';
+import { sanitizeQueryStr, sanitizeQueryId } from '../middleware/validation.js';
+import { validateZod } from '../validators/zodHelpers.js';
+import {
+  bulkPaySchema,
+  markAsPaidSchema,
+  reversePaymentSchema,
+  runPayrollSchema,
+  validatePayrollSchema,
+} from '../validators/payrollSchema.js';
 import mongoose from 'mongoose';
 
 // Get Staff model from database.js
@@ -15,7 +26,18 @@ const Staff = mongoose.model('Staff');
 // ALL PAYROLL ROUTES PROTECTED - Contains sensitive salary data!
 
 // Helper function to log audit entries
-async function logAudit({ entityType, entityId, action, performedBy, changes, context, ipAddress, userAgent, status, errorMessage }) {
+async function logAudit({
+  entityType,
+  entityId,
+  action,
+  performedBy,
+  changes,
+  context,
+  ipAddress,
+  userAgent,
+  status,
+  errorMessage,
+}) {
   try {
     const log = new PayrollAuditLog({
       entityType,
@@ -27,7 +49,7 @@ async function logAudit({ entityType, entityId, action, performedBy, changes, co
       ipAddress,
       userAgent,
       status,
-      errorMessage
+      errorMessage,
     });
     await log.save();
   } catch (error) {
@@ -50,54 +72,126 @@ function validateNotFutureMonth(month, year) {
   return true;
 }
 
-// Get payroll dashboard KPIs
-router.get('/dashboard/:month/:year', authenticate, checkPermission('payroll', 'view'), async (req, res) => {
-  try {
-    const { month, year } = req.params;
-    const monthNum = parseInt(month);
-    const yearNum = parseInt(year);
+// Helper: Count approved leave days for an employee falling within a specific month
+async function getMonthlyLeaveDays(employeeId, schoolId, month, year) {
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
 
-    // Get current month's payroll run
-    const payrollRun = await PayrollRun.findOne({ month: monthNum, year: yearNum });
+  const leaves = await TeacherLeave.find({
+    schoolId,
+    teacherId: employeeId,
+    status: 'approved',
+    startDate: { $lte: monthEnd },
+    endDate: { $gte: monthStart },
+  });
 
-    // Get all payroll records for the month
-    const records = await PayrollRecord.find({ month: monthNum, year: yearNum });
-
-    // Calculate KPIs
-    const totalPayout = records.reduce((sum, r) => sum + (r.status === 'paid' ? r.netPay : 0), 0);
-    const pendingAmount = records.reduce((sum, r) => sum + (r.status === 'generated' ? r.netPay : 0), 0);
-    const pendingCount = records.filter(r => r.status === 'generated').length;
-    const paidCount = records.filter(r => r.status === 'paid').length;
-    const unpaidCount = records.filter(r => r.status !== 'paid').length;
-    const totalEmployees = records.length;
-
-    // Next payroll date (1st of next month)
-    const nextMonth = monthNum === 12 ? 1 : monthNum + 1;
-    const nextYear = monthNum === 12 ? yearNum + 1 : yearNum;
-    const nextPayrollDate = new Date(nextYear, nextMonth - 1, 1);
-
-    // Projected payout (next month - estimate based on current active employees)
-    const projectedPayout = records.reduce((sum, r) => sum + r.netPay, 0);
-
-    res.json({
-      success: true,
-      data: {
-        totalPayout,
-        projectedPayout,
-        nextPayrollDate,
-        pendingCount,
-        pendingAmount,
-        paidCount,
-        unpaidCount,
-        totalEmployees,
-        payrollRun: payrollRun || null
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching dashboard:', error);
-    res.status(500).json({ success: false, error: error.message });
+  let totalDays = 0;
+  for (const leave of leaves) {
+    const effectiveStart = leave.startDate < monthStart ? monthStart : leave.startDate;
+    const effectiveEnd = leave.endDate > monthEnd ? monthEnd : leave.endDate;
+    const days = Math.ceil((effectiveEnd - effectiveStart) / (1000 * 60 * 60 * 24)) + 1;
+    totalDays += days;
   }
-});
+
+  return totalDays;
+}
+
+// Helper: Get staff attendance summary for a month from StaffAttendance records
+async function getMonthlyAttendanceSummary(employeeId, schoolId, month, year) {
+  const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
+
+  const records = await StaffAttendance.find({
+    schoolId,
+    staffId: employeeId,
+    date: { $regex: `^${monthPrefix}` },
+  });
+
+  const summary = { present: 0, absent: 0, leave: 0, halfday: 0, total: records.length };
+  for (const r of records) {
+    if (summary[r.status] !== undefined) summary[r.status]++;
+  }
+
+  return summary;
+}
+
+// Get payroll dashboard KPIs
+router.get(
+  '/dashboard/:month/:year',
+  authenticate,
+  checkPermission('payroll', 'view'),
+  async (req, res) => {
+    try {
+      const { month, year } = req.params;
+      const monthNum = parseInt(month);
+      const yearNum = parseInt(year);
+
+      const schoolId = req.user.schoolId;
+
+      // Get current month's payroll run
+      const payrollRun = await PayrollRun.findOne({ schoolId, month: monthNum, year: yearNum });
+
+      // Get all payroll records for the month
+      const records = await PayrollRecord.find({ schoolId, month: monthNum, year: yearNum });
+
+      // Calculate KPIs
+      const totalPayout = records.reduce((sum, r) => sum + (r.status === 'paid' ? r.netPay : 0), 0);
+      const pendingAmount = records.reduce(
+        (sum, r) => sum + (r.status === 'generated' ? r.netPay : 0),
+        0
+      );
+      const pendingCount = records.filter((r) => r.status === 'generated').length;
+      const paidCount = records.filter((r) => r.status === 'paid').length;
+      const unpaidCount = records.filter((r) => r.status !== 'paid').length;
+      const totalEmployees = records.length;
+
+      // Next payroll date (1st of next month)
+      const nextMonth = monthNum === 12 ? 1 : monthNum + 1;
+      const nextYear = monthNum === 12 ? yearNum + 1 : yearNum;
+      const nextPayrollDate = new Date(nextYear, nextMonth - 1, 1);
+
+      // Projected payout (next month - estimate based on current active employees)
+      const projectedPayout = records.reduce((sum, r) => sum + r.netPay, 0);
+
+      // Aggregate deductions and allowances by type across all records
+      const deductionBreakdown = {};
+      const allowanceBreakdown = {};
+      records.forEach((r) => {
+        (r.deductions || []).forEach((d) => {
+          const key = d.type || 'Other';
+          deductionBreakdown[key] = (deductionBreakdown[key] || 0) + (d.amount || 0);
+        });
+        (r.allowances || []).forEach((a) => {
+          const key = a.type || 'Other';
+          allowanceBreakdown[key] = (allowanceBreakdown[key] || 0) + (a.amount || 0);
+        });
+      });
+      const totalDeductions = records.reduce((sum, r) => sum + (r.totalDeductions || 0), 0);
+      const totalGrossPay = records.reduce((sum, r) => sum + (r.grossPay || 0), 0);
+
+      res.json({
+        success: true,
+        data: {
+          totalPayout,
+          projectedPayout,
+          nextPayrollDate,
+          pendingCount,
+          pendingAmount,
+          paidCount,
+          unpaidCount,
+          totalEmployees,
+          totalDeductions,
+          totalGrossPay,
+          deductionBreakdown,
+          allowanceBreakdown,
+          payrollRun: payrollRun || null,
+        },
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
 
 // Get payroll records with filters
 router.get('/records', authenticate, checkPermission('payroll', 'view'), async (req, res) => {
@@ -110,11 +204,12 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
       minSalary,
       maxSalary,
       search,
+      employeeId,
       page = 1,
-      limit = 50
+      limit = 50,
     } = req.query;
 
-    const query = {};
+    const query = { schoolId: req.user.schoolId };
 
     if (month) query.month = parseInt(month);
     if (year) query.year = parseInt(year);
@@ -125,6 +220,7 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
       if (minSalary) query.netPay.$gte = parseFloat(minSalary);
       if (maxSalary) query.netPay.$lte = parseFloat(maxSalary);
     }
+    if (employeeId) query.employeeId = employeeId;
     if (search) {
       query.employeeId = new RegExp(search, 'i');
     }
@@ -132,6 +228,7 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const records = await PayrollRecord.find(query)
+      .populate('employeeId', 'name role code designation')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -145,8 +242,8 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
         page: parseInt(page),
         limit: parseInt(limit),
         total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
+        pages: Math.ceil(total / parseInt(limit)),
+      },
     });
   } catch (error) {
     console.error('Error fetching records:', error);
@@ -155,103 +252,112 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
 });
 
 // Pre-run validation - Check before running payroll
-router.post('/validate', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { month, year, employeeIds } = req.body;
+router.post(
+  '/validate',
+  authenticate,
+  requireAdmin,
+  validateZod(validatePayrollSchema),
+  async (req, res) => {
+    try {
+      const { month, year, employeeIds } = req.body;
 
-    // Validate month is not in future
-    if (!validateNotFutureMonth(month, year)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot run payroll for future months'
-      });
-    }
+      // Validate month is not in future
+      if (!validateNotFutureMonth(month, year)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot run payroll for future months',
+        });
+      }
 
-    if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
-      return res.status(400).json({ success: false, error: 'No employee IDs provided' });
-    }
+      if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
+        return res.status(400).json({ success: false, error: 'No employee IDs provided' });
+      }
 
-    // Validate IDs
-    const validIds = employeeIds.filter(id => mongoose.Types.ObjectId.isValid(id));
+      // Validate IDs
+      const validIds = employeeIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
 
-    // Fetch staff data
-    const staffFromDB = await Staff.find({ _id: { $in: validIds } }, 'name salary employmentType _id code status');
+      // Fetch staff data
+      const staffFromDB = await Staff.find(
+        { _id: { $in: validIds } },
+        'name salary employmentType _id code status'
+      );
 
-    const validationResults = {
-      valid: [],
-      invalid: [],
-      warnings: []
-    };
+      const validationResults = {
+        valid: [],
+        invalid: [],
+        warnings: [],
+      };
 
-    for (const employee of staffFromDB) {
-      const issues = [];
+      for (const employee of staffFromDB) {
+        const issues = [];
 
-      // Check salary
-      if (!employee.salary || employee.salary === 0) {
-        issues.push('Salary not configured or is zero');
-        validationResults.invalid.push({
+        // Check salary
+        if (!employee.salary || employee.salary === 0) {
+          issues.push('Salary not configured or is zero');
+          validationResults.invalid.push({
+            employeeId: employee._id,
+            name: employee.name,
+            code: employee.code,
+            reason: issues.join(', '),
+          });
+          continue;
+        }
+
+        // Check status
+        const status = (employee.status || '').toLowerCase().trim();
+        if (status !== 'active' && employee.status) {
+          validationResults.warnings.push({
+            employeeId: employee._id,
+            name: employee.name,
+            code: employee.code,
+            status: employee.status,
+            reason: 'Staff status is not "Active"',
+          });
+        }
+
+        validationResults.valid.push({
           employeeId: employee._id,
           name: employee.name,
           code: employee.code,
-          reason: issues.join(', ')
-        });
-        continue;
-      }
-
-      // Check status
-      const status = (employee.status || '').toLowerCase().trim();
-      if (status !== 'active' && employee.status) {
-        validationResults.warnings.push({
-          employeeId: employee._id,
-          name: employee.name,
-          code: employee.code,
-          status: employee.status,
-          reason: 'Staff status is not "Active"'
+          salary: employee.salary,
+          employmentType: employee.employmentType,
         });
       }
 
-      validationResults.valid.push({
-        employeeId: employee._id,
-        name: employee.name,
-        code: employee.code,
-        salary: employee.salary,
-        employmentType: employee.employmentType
+      // Check for existing records
+      const existingRecords = await PayrollRecord.find({
+        schoolId: req.user.schoolId,
+        employeeId: { $in: validIds },
+        month,
+        year,
       });
-    }
 
-    // Check for existing records
-    const existingRecords = await PayrollRecord.find({
-      employeeId: { $in: validIds },
-      month,
-      year
-    });
-
-    if (existingRecords.length > 0) {
-      const paidRecords = existingRecords.filter(r => r.status === 'paid');
-      if (paidRecords.length > 0) {
-        validationResults.warnings.push({
-          type: 'existing_paid_records',
-          count: paidRecords.length,
-          message: `${paidRecords.length} records already marked as paid. Re-running will update calculations but payment history will be preserved.`
-        });
+      if (existingRecords.length > 0) {
+        const paidRecords = existingRecords.filter((r) => r.status === 'paid');
+        if (paidRecords.length > 0) {
+          validationResults.warnings.push({
+            type: 'existing_paid_records',
+            count: paidRecords.length,
+            message: `${paidRecords.length} records already marked as paid. Re-running will update calculations but payment history will be preserved.`,
+          });
+        }
       }
-    }
 
-    res.json({
-      success: true,
-      data: validationResults
-    });
-  } catch (error) {
-    console.error('Error validating payroll:', error);
-    res.status(500).json({ success: false, error: error.message });
+      res.json({
+        success: true,
+        data: validationResults,
+      });
+    } catch (error) {
+      console.error('Error validating payroll:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // Temporary Fix: Set default salary for all staff
 router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
   try {
     const { defaultSalary = 50000, defaultType = 'full_time' } = req.body;
-    console.log('🔧 Running Fix Salaries Script...');
 
     const allStaff = await Staff.find({});
     let updatedCount = 0;
@@ -274,14 +380,14 @@ router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
 
       if (needsUpdate) {
         await Staff.findByIdAndUpdate(staff._id, updates);
-        results.push(`Updated ${staff.name}: Salary ${updates.salary || staff.salary}, Type ${updates.employmentType || staff.employmentType}`);
+        results.push(
+          `Updated ${staff.name}: Salary ${updates.salary || staff.salary}, Type ${updates.employmentType || staff.employmentType}`
+        );
         updatedCount++;
       } else {
         alreadySetCount++;
       }
     }
-
-    console.log(`✅ Fixed salaries: ${updatedCount} updated, ${alreadySetCount} already ok.`);
 
     // Log audit
     await logAudit({
@@ -292,14 +398,14 @@ router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
       context: { reason: 'Fix salaries script executed', updatedCount, alreadySetCount },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: 'success'
+      status: 'success',
     });
 
     res.json({
       success: true,
       message: `Updated ${updatedCount} staff records`,
       details: results,
-      totalChecked: allStaff.length
+      totalChecked: allStaff.length,
     });
   } catch (error) {
     console.error('Error fixing salaries:', error);
@@ -308,17 +414,15 @@ router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
 });
 
 // Run payroll for a month - Admin only (CRITICAL)
-router.post('/run', authenticate, requireAdmin, async (req, res) => {
+router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), async (req, res) => {
   try {
     const { month, year, employeeIds } = req.body;
-
-    console.log('🚀 Running payroll for:', { month, year, count: employeeIds?.length });
 
     // Validate month is not in future
     if (!validateNotFutureMonth(month, year)) {
       return res.status(400).json({
         success: false,
-        error: 'Cannot run payroll for future months'
+        error: 'Cannot run payroll for future months',
       });
     }
 
@@ -327,13 +431,17 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
     }
 
     // Validate IDs
-    const validIds = employeeIds.filter(id => mongoose.Types.ObjectId.isValid(id));
+    const validIds = employeeIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
     if (validIds.length !== employeeIds.length) {
-      console.warn(`⚠️ Warning: ${employeeIds.length - validIds.length} invalid employee IDs ignored.`);
+      console.warn(
+        `⚠️ Warning: ${employeeIds.length - validIds.length} invalid employee IDs ignored.`
+      );
     }
 
+    const schoolId = req.user.schoolId;
+
     // Check for concurrent run
-    const existingPayrollRun = await PayrollRun.findOne({ month, year });
+    const existingPayrollRun = await PayrollRun.findOne({ schoolId, month, year });
     if (existingPayrollRun && existingPayrollRun.isProcessing) {
       // Check if lock has expired (30 minutes)
       const lockExpiry = existingPayrollRun.processingLockExpiresAt;
@@ -341,36 +449,50 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
         return res.status(409).json({
           success: false,
           error: 'Payroll is currently being processed by another user. Please try again later.',
-          lockedBy: existingPayrollRun.processingLockedBy
+          lockedBy: existingPayrollRun.processingLockedBy,
         });
       }
     }
 
-    // Check if payroll already has paid records
-    if (existingPayrollRun && existingPayrollRun.status === 'completed') {
+    // Check if payroll already has paid records (check ALL statuses, not just 'completed')
+    if (existingPayrollRun) {
       const paidRecords = await PayrollRecord.countDocuments({
+        schoolId,
         month,
         year,
-        status: 'paid'
+        status: 'paid',
       });
 
       if (paidRecords > 0) {
         return res.status(400).json({
           success: false,
           error: `Cannot re-run payroll. ${paidRecords} records already marked as paid. Please reverse payments first if needed.`,
-          paidRecords
+          paidRecords,
+        });
+      }
+
+      // Block re-processing of completed/partial payroll unless explicitly forced
+      if (['completed', 'partial'].includes(existingPayrollRun.status) && !req.body.forceRerun) {
+        return res.status(400).json({
+          success: false,
+          error: `Payroll for this month has already been processed (status: ${existingPayrollRun.status}). Use forceRerun to re-process.`,
+          alreadyProcessed: true,
+          runStatus: existingPayrollRun.status,
         });
       }
     }
 
     // FIXED: Fetch staff data from database with salary field
-    const staffFromDB = await Staff.find({ _id: { $in: validIds } }, 'name salary employmentType _id code');
-    console.log(`📋 Fetched ${staffFromDB.length} staff from DB for payroll processing.`);
+    const staffFromDB = await Staff.find(
+      { _id: { $in: validIds } },
+      'name salary employmentType _id code'
+    );
 
     // Create or update payroll run with processing lock
     let payrollRun = existingPayrollRun;
     if (!payrollRun) {
       payrollRun = new PayrollRun({
+        schoolId,
         month,
         year,
         status: 'processing',
@@ -378,7 +500,7 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
         isProcessing: true,
         processingLockExpiresAt: new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
         processingLockedBy: req.user._id,
-        runBy: req.user._id
+        runBy: req.user._id,
       });
       await payrollRun.save();
     } else {
@@ -401,19 +523,19 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
       context: { month, year, employeeCount: validIds.length },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: 'success'
+      status: 'success',
     });
 
     const results = {
       success: [],
-      failed: []
+      failed: [],
     };
 
     // Process each employee
     for (const empId of validIds) {
       try {
         // FIXED: Use staff data from database
-        const employee = staffFromDB.find(s => String(s._id) === String(empId));
+        const employee = staffFromDB.find((s) => String(s._id) === String(empId));
 
         if (!employee) {
           results.failed.push({ employeeId: empId, reason: 'Employee not found in database' });
@@ -421,11 +543,13 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
           continue;
         }
 
-        console.log(`✅ Processing ${employee.name} (${employee.code || empId}), salary: ${employee.salary}`);
-
         // Check if employee has salary
         if (employee.salary === undefined || employee.salary === null) {
-          results.failed.push({ employeeId: empId, name: employee.name, reason: 'Salary not configured (undefined)' });
+          results.failed.push({
+            employeeId: empId,
+            name: employee.name,
+            reason: 'Salary not configured (undefined)',
+          });
           console.error(`❌ Salary undefined for ${employee.name}`);
           continue;
         }
@@ -441,27 +565,101 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
           employeeId: empId,
           effectiveMonth: month,
           effectiveYear: year,
-          isActive: true
+          isActive: true,
         });
 
         const allowances = adjustments
-          .filter(a => a.type === 'allowance')
-          .map(a => ({
+          .filter((a) => a.type === 'allowance')
+          .map((a) => ({
             type: a.category,
             amount: a.amount,
-            description: a.description
+            description: a.description,
           }));
 
         const deductions = adjustments
-          .filter(a => a.type === 'deduction')
-          .map(a => ({
+          .filter((a) => a.type === 'deduction')
+          .map((a) => ({
             type: a.category,
             amount: a.amount,
-            description: a.description
+            description: a.description,
           }));
 
-        // Calculate totals explicitly
+        // --- Auto-calculate leave & attendance-based adjustments ---
         const baseSalary = employee.salary || 0;
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const dailyRate = Math.round((baseSalary / daysInMonth) * 100) / 100;
+
+        // 1. Leave deductions from approved TeacherLeave records
+        const hasManualLeaveDeduction = deductions.some((d) =>
+          d.type.toLowerCase().includes('leave')
+        );
+        if (!hasManualLeaveDeduction) {
+          const leaveDays = await getMonthlyLeaveDays(empId, schoolId, month, year);
+          if (leaveDays > 0) {
+            const leaveAmount = Math.round(dailyRate * leaveDays * 100) / 100;
+            deductions.push({
+              type: 'Leave Deduction',
+              amount: leaveAmount,
+              description: `${leaveDays} approved leave day(s) @ ${dailyRate.toFixed(2)}/day`,
+            });
+          }
+        }
+
+        // 2. Part-time staff: deduct for absent days based on attendance
+        if (employee.employmentType === 'part_time') {
+          const attendance = await getMonthlyAttendanceSummary(empId, schoolId, month, year);
+          if (attendance.total > 0) {
+            // Deduct for absent days (leave days already handled above)
+            const absentDays = attendance.absent;
+            if (absentDays > 0) {
+              const hasManualAbsentDeduction = deductions.some((d) =>
+                d.type.toLowerCase().includes('absent')
+              );
+              if (!hasManualAbsentDeduction) {
+                const absentAmount = Math.round(dailyRate * absentDays * 100) / 100;
+                deductions.push({
+                  type: 'Absent Deduction',
+                  amount: absentAmount,
+                  description: `Part-time: ${absentDays} absent day(s) @ ${dailyRate.toFixed(2)}/day`,
+                });
+              }
+            }
+
+            // Half-day deductions
+            const halfdayCount = attendance.halfday;
+            if (halfdayCount > 0) {
+              const halfdayAmount = Math.round(dailyRate * 0.5 * halfdayCount * 100) / 100;
+              deductions.push({
+                type: 'Half-day Deduction',
+                amount: halfdayAmount,
+                description: `Part-time: ${halfdayCount} half-day(s) @ ${(dailyRate * 0.5).toFixed(2)}/day`,
+              });
+            }
+
+            // Overtime: extra present days beyond expected working days (add as allowance)
+            // Standard working days = total attendance days marked (school decides which days to mark)
+            // If staff has more present days than expected, treat excess as overtime
+            const overtimeRate = dailyRate * 1.5; // 1.5x daily rate for overtime
+            const expectedWorkingDays = attendance.total - attendance.leave; // exclude approved leave days
+            const actualWorkedDays = attendance.present + attendance.halfday * 0.5;
+            if (actualWorkedDays > expectedWorkingDays && expectedWorkingDays > 0) {
+              const overtimeDays = actualWorkedDays - expectedWorkingDays;
+              const overtimeAmount = Math.round(overtimeRate * overtimeDays * 100) / 100;
+              const hasManualOvertime = allowances.some((a) =>
+                a.type.toLowerCase().includes('overtime')
+              );
+              if (!hasManualOvertime) {
+                allowances.push({
+                  type: 'Overtime',
+                  amount: overtimeAmount,
+                  description: `Part-time: ${overtimeDays} overtime day(s) @ ${overtimeRate.toFixed(2)}/day (1.5x)`,
+                });
+              }
+            }
+          }
+        }
+
+        // Calculate totals explicitly
         const totalAllowances = allowances.reduce((sum, a) => sum + a.amount, 0);
         const totalDeductions = deductions.reduce((sum, d) => sum + d.amount, 0);
         const grossPay = baseSalary + totalAllowances;
@@ -469,9 +667,10 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
 
         // Check if record already exists
         let record = await PayrollRecord.findOne({
+          schoolId,
           employeeId: empId,
           month,
-          year
+          year,
         });
 
         if (record) {
@@ -493,7 +692,7 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
             results.failed.push({
               employeeId: empId,
               name: employee.name,
-              reason: 'Record is locked (already paid). Cannot update.'
+              reason: 'Record is locked (already paid). Cannot update.',
             });
             console.warn(`⚠️ Skipping locked record for ${employee.name}`);
             continue;
@@ -509,15 +708,16 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
               month,
               year,
               employeeId: empId,
-              employeeName: employee.name
+              employeeName: employee.name,
             },
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
-            status: 'success'
+            status: 'success',
           });
         } else {
           // Create new record
           record = new PayrollRecord({
+            schoolId,
             employeeId: empId,
             payrollRunId: payrollRun._id,
             month,
@@ -530,7 +730,7 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
             grossPay,
             netPay,
             employmentType: employee.employmentType || 'full_time',
-            status: 'generated'
+            status: 'generated',
           });
 
           await logAudit({
@@ -542,11 +742,11 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
               month,
               year,
               employeeId: empId,
-              employeeName: employee.name
+              employeeName: employee.name,
             },
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
-            status: 'success'
+            status: 'success',
           });
         }
 
@@ -558,11 +758,12 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
 
         if (!payslip) {
           payslip = new Payslip({
+            schoolId,
             payrollRecordId: record._id,
             employeeId: empId,
             month,
             year,
-            payslipNumber
+            payslipNumber,
           });
           await payslip.save();
         }
@@ -592,19 +793,19 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
     payrollRun.processingLockedBy = null;
 
     if (results.failed.length > 0) {
-      payrollRun.errorLog = results.failed.map(f => `${f.name || f.employeeId}: ${f.reason}`);
+      payrollRun.errorLog = results.failed.map((f) => `${f.name || f.employeeId}: ${f.reason}`);
     } else {
       payrollRun.errorLog = [];
     }
 
     // Calculate total amount
-    const records = await PayrollRecord.find({ month, year });
+    const records = await PayrollRecord.find({ schoolId, month, year });
     payrollRun.totalAmount = records.reduce((sum, r) => sum + r.netPay, 0);
     payrollRun.totalPending = records
-      .filter(r => r.status === 'generated')
+      .filter((r) => r.status === 'generated')
       .reduce((sum, r) => sum + r.netPay, 0);
     payrollRun.totalPaid = records
-      .filter(r => r.status === 'paid')
+      .filter((r) => r.status === 'paid')
       .reduce((sum, r) => sum + r.netPay, 0);
 
     await payrollRun.save();
@@ -618,21 +819,19 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
         month,
         year,
         successCount: results.success.length,
-        failedCount: results.failed.length
+        failedCount: results.failed.length,
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: results.success.length > 0 ? 'success' : 'failure'
+      status: results.success.length > 0 ? 'success' : 'failure',
     });
-
-    console.log(`✅ Payroll run finished. Success: ${results.success.length}, Failed: ${results.failed.length}`);
 
     res.json({
       success: true,
       data: {
         payrollRun,
-        results
-      }
+        results,
+      },
     });
   } catch (error) {
     console.error('Error running payroll:', error);
@@ -640,12 +839,12 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
     // Release processing lock on error
     if (req.body.month && req.body.year) {
       await PayrollRun.findOneAndUpdate(
-        { month: req.body.month, year: req.body.year },
+        { schoolId: req.user?.schoolId, month: req.body.month, year: req.body.year },
         {
           isProcessing: false,
           processingLockExpiresAt: null,
           processingLockedBy: null,
-          status: 'failed'
+          status: 'failed',
         }
       );
     }
@@ -655,212 +854,226 @@ router.post('/run', authenticate, requireAdmin, async (req, res) => {
 });
 
 // Mark salary as paid - Admin only
-router.put('/records/:id/pay', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { paymentMethod, paymentReference, notes } = req.body;
+router.put(
+  '/records/:id/pay',
+  authenticate,
+  requireAdmin,
+  validateZod(markAsPaidSchema),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { paymentMethod, paymentReference, notes } = req.body;
 
-    const record = await PayrollRecord.findById(id);
+      const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
 
-    if (!record) {
-      return res.status(404).json({ success: false, error: 'Record not found' });
+      if (!record) {
+        return res.status(404).json({ success: false, error: 'Record not found' });
+      }
+
+      if (record.status === 'paid' || record.isLocked) {
+        return res.status(400).json({ success: false, error: 'Record is already paid or locked' });
+      }
+
+      const oldRecord = { ...record.toObject() };
+
+      record.status = 'paid';
+      record.paymentDate = new Date();
+      record.paymentMethod = paymentMethod || 'bank_transfer';
+      record.paymentReference = paymentReference;
+      record.notes = notes;
+      record.isLocked = true;
+      record.lockedAt = new Date();
+      record.paidBy = req.user._id;
+
+      await record.save();
+
+      // Log audit
+      await logAudit({
+        entityType: 'PayrollRecord',
+        entityId: record._id,
+        action: 'payment_logged',
+        performedBy: req.user._id,
+        changes: { before: oldRecord, after: record.toObject() },
+        context: {
+          month: record.month,
+          year: record.year,
+          employeeId: record.employeeId,
+          paymentMethod,
+          paymentReference,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+        status: 'success',
+      });
+
+      res.json({ success: true, data: record });
+    } catch (error) {
+      console.error('Error marking as paid:', error);
+      res.status(500).json({ success: false, error: error.message });
     }
-
-    if (record.isLocked) {
-      return res.status(400).json({ success: false, error: 'Record is locked' });
-    }
-
-    const oldRecord = { ...record.toObject() };
-
-    record.status = 'paid';
-    record.paymentDate = new Date();
-    record.paymentMethod = paymentMethod || 'bank_transfer';
-    record.paymentReference = paymentReference;
-    record.notes = notes;
-    record.isLocked = true;
-    record.lockedAt = new Date();
-    record.paidBy = req.user._id;
-
-    await record.save();
-
-    // Log audit
-    await logAudit({
-      entityType: 'PayrollRecord',
-      entityId: record._id,
-      action: 'payment_logged',
-      performedBy: req.user._id,
-      changes: { before: oldRecord, after: record.toObject() },
-      context: {
-        month: record.month,
-        year: record.year,
-        employeeId: record.employeeId,
-        paymentMethod,
-        paymentReference
-      },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      status: 'success'
-    });
-
-    res.json({ success: true, data: record });
-  } catch (error) {
-    console.error('Error marking as paid:', error);
-    res.status(500).json({ success: false, error: error.message });
   }
-});
+);
 
 // Reverse payment - Admin only
-router.put('/records/:id/reverse', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
+router.put(
+  '/records/:id/reverse',
+  authenticate,
+  requireAdmin,
+  validateZod(reversePaymentSchema),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
 
-    if (!reason) {
-      return res.status(400).json({ success: false, error: 'Reason is required for reversal' });
+      const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
+
+      if (!record) {
+        return res.status(404).json({ success: false, error: 'Record not found' });
+      }
+
+      if (!record.isLocked || record.status !== 'paid') {
+        return res.status(400).json({ success: false, error: 'Only paid records can be reversed' });
+      }
+
+      const oldRecord = { ...record.toObject() };
+
+      // Store reversal history
+      record.reversalHistory = record.reversalHistory || [];
+      record.reversalHistory.push({
+        reversedAt: new Date(),
+        reversedBy: req.user._id,
+        reason,
+        previousStatus: record.status,
+        previousPaymentDate: record.paymentDate,
+      });
+
+      // Reset record
+      record.status = 'generated';
+      record.paymentDate = null;
+      record.isLocked = false;
+      record.lockedAt = null;
+      record.paidBy = null;
+
+      await record.save();
+
+      // Log audit
+      await logAudit({
+        entityType: 'PayrollRecord',
+        entityId: record._id,
+        action: 'payment_reversed',
+        performedBy: req.user._id,
+        changes: { before: oldRecord, after: record.toObject() },
+        context: {
+          month: record.month,
+          year: record.year,
+          employeeId: record.employeeId,
+          reason,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+        status: 'success',
+      });
+
+      res.json({ success: true, data: record });
+    } catch (error) {
+      console.error('Error reversing payment:', error);
+      res.status(500).json({ success: false, error: error.message });
     }
-
-    const record = await PayrollRecord.findById(id);
-
-    if (!record) {
-      return res.status(404).json({ success: false, error: 'Record not found' });
-    }
-
-    if (!record.isLocked || record.status !== 'paid') {
-      return res.status(400).json({ success: false, error: 'Only paid records can be reversed' });
-    }
-
-    const oldRecord = { ...record.toObject() };
-
-    // Store reversal history
-    record.reversalHistory = record.reversalHistory || [];
-    record.reversalHistory.push({
-      reversedAt: new Date(),
-      reversedBy: req.user._id,
-      reason,
-      previousStatus: record.status,
-      previousPaymentDate: record.paymentDate
-    });
-
-    // Reset record
-    record.status = 'generated';
-    record.paymentDate = null;
-    record.isLocked = false;
-    record.lockedAt = null;
-    record.paidBy = null;
-
-    await record.save();
-
-    // Log audit
-    await logAudit({
-      entityType: 'PayrollRecord',
-      entityId: record._id,
-      action: 'payment_reversed',
-      performedBy: req.user._id,
-      changes: { before: oldRecord, after: record.toObject() },
-      context: {
-        month: record.month,
-        year: record.year,
-        employeeId: record.employeeId,
-        reason
-      },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      status: 'success'
-    });
-
-    res.json({ success: true, data: record });
-  } catch (error) {
-    console.error('Error reversing payment:', error);
-    res.status(500).json({ success: false, error: error.message });
   }
-});
+);
 
 // Bulk pay salaries - Admin only
-router.post('/records/bulk-pay', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { recordIds, paymentMethod, paymentReference, notes } = req.body;
+router.post(
+  '/records/bulk-pay',
+  authenticate,
+  requireAdmin,
+  validateZod(bulkPaySchema),
+  async (req, res) => {
+    try {
+      const { recordIds, paymentMethod, paymentReference, notes } = req.body;
 
-    const results = {
-      success: [],
-      failed: []
-    };
+      const results = {
+        success: [],
+        failed: [],
+      };
 
-    for (const id of recordIds) {
-      try {
-        const record = await PayrollRecord.findById(id);
+      for (const id of recordIds) {
+        try {
+          const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
 
-        if (!record) {
-          results.failed.push({ id, reason: 'Record not found' });
-          continue;
+          if (!record) {
+            results.failed.push({ id, reason: 'Record not found' });
+            continue;
+          }
+
+          if (record.status === 'paid' || record.isLocked) {
+            results.failed.push({ id, reason: 'Record is already paid or locked' });
+            continue;
+          }
+
+          const oldRecord = { ...record.toObject() };
+
+          record.status = 'paid';
+          record.paymentDate = new Date();
+          record.paymentMethod = paymentMethod || 'bank_transfer';
+          record.paymentReference = paymentReference;
+          record.notes = notes;
+          record.isLocked = true;
+          record.lockedAt = new Date();
+          record.paidBy = req.user._id;
+
+          await record.save();
+          results.success.push(id);
+
+          // Log audit for each record
+          await logAudit({
+            entityType: 'PayrollRecord',
+            entityId: record._id,
+            action: 'payment_logged',
+            performedBy: req.user._id,
+            changes: { before: oldRecord, after: record.toObject() },
+            context: {
+              month: record.month,
+              year: record.year,
+              employeeId: record.employeeId,
+              paymentMethod,
+              paymentReference,
+              bulkOperation: true,
+            },
+            ipAddress: req.ip,
+            userAgent: req.get('user-agent'),
+            status: 'success',
+          });
+        } catch (error) {
+          results.failed.push({ id, reason: error.message });
         }
-
-        if (record.isLocked) {
-          results.failed.push({ id, reason: 'Record is locked' });
-          continue;
-        }
-
-        const oldRecord = { ...record.toObject() };
-
-        record.status = 'paid';
-        record.paymentDate = new Date();
-        record.paymentMethod = paymentMethod || 'bank_transfer';
-        record.paymentReference = paymentReference;
-        record.notes = notes;
-        record.isLocked = true;
-        record.lockedAt = new Date();
-        record.paidBy = req.user._id;
-
-        await record.save();
-        results.success.push(id);
-
-        // Log audit for each record
-        await logAudit({
-          entityType: 'PayrollRecord',
-          entityId: record._id,
-          action: 'payment_logged',
-          performedBy: req.user._id,
-          changes: { before: oldRecord, after: record.toObject() },
-          context: {
-            month: record.month,
-            year: record.year,
-            employeeId: record.employeeId,
-            paymentMethod,
-            paymentReference,
-            bulkOperation: true
-          },
-          ipAddress: req.ip,
-          userAgent: req.get('user-agent'),
-          status: 'success'
-        });
-      } catch (error) {
-        results.failed.push({ id, reason: error.message });
       }
+
+      // Log bulk operation
+      await logAudit({
+        entityType: 'PayrollRun',
+        entityId: null,
+        action: 'bulk_payment_logged',
+        performedBy: req.user._id,
+        context: {
+          successCount: results.success.length,
+          failedCount: results.failed.length,
+          paymentMethod,
+          paymentReference,
+        },
+        affectedRecords: results.success,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+        status: results.failed.length === 0 ? 'success' : 'partial',
+      });
+
+      res.json({ success: true, data: results });
+    } catch (error) {
+      console.error('Error bulk paying:', error);
+      res.status(500).json({ success: false, error: error.message });
     }
-
-    // Log bulk operation
-    await logAudit({
-      entityType: 'PayrollRun',
-      entityId: null,
-      action: 'bulk_payment_logged',
-      performedBy: req.user._id,
-      context: {
-        successCount: results.success.length,
-        failedCount: results.failed.length,
-        paymentMethod,
-        paymentReference
-      },
-      affectedRecords: results.success,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      status: results.failed.length === 0 ? 'success' : 'partial'
-    });
-
-    res.json({ success: true, data: results });
-  } catch (error) {
-    console.error('Error bulk paying:', error);
-    res.status(500).json({ success: false, error: error.message });
   }
-});
+);
 
 // Update payroll record - Admin only
 router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
@@ -868,14 +1081,16 @@ router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
     const { id } = req.params;
     const { baseSalary, allowances, deductions, status, notes } = req.body;
 
-    const record = await PayrollRecord.findById(id);
+    const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
 
     if (!record) {
       return res.status(404).json({ success: false, error: 'Record not found' });
     }
 
     if (record.isLocked) {
-      return res.status(400).json({ success: false, error: 'Record is locked and cannot be edited' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Record is locked and cannot be edited' });
     }
 
     const oldRecord = { ...record.toObject() };
@@ -898,11 +1113,11 @@ router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
       context: {
         month: record.month,
         year: record.year,
-        employeeId: record.employeeId
+        employeeId: record.employeeId,
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: 'success'
+      status: 'success',
     });
 
     res.json({ success: true, data: record });
@@ -913,86 +1128,177 @@ router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
 });
 
 // Export payroll records to CSV
-router.get('/export/:month/:year', authenticate, checkPermission('payroll', 'view'), async (req, res) => {
-  try {
-    const { month, year } = req.params;
-    const monthNum = parseInt(month);
-    const yearNum = parseInt(year);
+router.get(
+  '/export/:month/:year',
+  authenticate,
+  checkPermission('payroll', 'view'),
+  async (req, res) => {
+    try {
+      const { month, year } = req.params;
+      const monthNum = parseInt(month);
+      const yearNum = parseInt(year);
 
-    const records = await PayrollRecord.find({ month: monthNum, year: yearNum })
-      .populate('employeeId', 'name code email')
-      .lean();
-
-    // Fetch staff details for each record
-    const staffIds = records.map(r => r.employeeId);
-    const staffMembers = await Staff.find({ _id: { $in: staffIds } }, 'name code email');
-
-    const staffMap = {};
-    staffMembers.forEach(s => {
-      staffMap[s._id.toString()] = s;
-    });
-
-    // Create CSV content
-    const headers = [
-      'Employee Code',
-      'Employee Name',
-      'Month',
-      'Year',
-      'Base Salary',
-      'Total Allowances',
-      'Total Deductions',
-      'Gross Pay',
-      'Net Pay',
-      'Status',
-      'Payment Date',
-      'Payment Method',
-      'Payment Reference'
-    ];
-
-    let csv = headers.join(',') + '\n';
-
-    records.forEach(record => {
-      const staff = staffMap[record.employeeId.toString()] || {};
-      const row = [
-        staff.code || 'N/A',
-        staff.name || 'N/A',
-        monthNum,
-        yearNum,
-        record.baseSalary || 0,
-        record.totalAllowances || 0,
-        record.totalDeductions || 0,
-        record.grossPay || 0,
-        record.netPay || 0,
-        record.status,
-        record.paymentDate ? new Date(record.paymentDate).toLocaleDateString() : 'N/A',
-        record.paymentMethod || 'N/A',
-        record.paymentReference || 'N/A'
-      ];
-      csv += row.map(r => `"${r}"`).join(',') + '\n';
-    });
-
-    // Log export
-    await logAudit({
-      entityType: 'PayrollRun',
-      entityId: null,
-      action: 'payroll_exported',
-      performedBy: req.user._id,
-      context: {
+      const records = await PayrollRecord.find({
+        schoolId: req.user.schoolId,
         month: monthNum,
         year: yearNum,
-        recordCount: records.length,
-        format: 'CSV'
-      },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      status: 'success'
+      })
+        .populate('employeeId', 'name code email')
+        .lean();
+
+      // Fetch staff details for each record
+      const staffIds = records.map((r) => r.employeeId);
+      const staffMembers = await Staff.find({ _id: { $in: staffIds } }, 'name code email');
+
+      const staffMap = {};
+      staffMembers.forEach((s) => {
+        staffMap[s._id.toString()] = s;
+      });
+
+      // Create CSV content
+      const headers = [
+        'Employee Code',
+        'Employee Name',
+        'Month',
+        'Year',
+        'Base Salary',
+        'Total Allowances',
+        'Total Deductions',
+        'Gross Pay',
+        'Net Pay',
+        'Status',
+        'Payment Date',
+        'Payment Method',
+        'Payment Reference',
+      ];
+
+      let csv = headers.join(',') + '\n';
+
+      records.forEach((record) => {
+        const staff = staffMap[record.employeeId.toString()] || {};
+        const row = [
+          staff.code || 'N/A',
+          staff.name || 'N/A',
+          monthNum,
+          yearNum,
+          record.baseSalary || 0,
+          record.totalAllowances || 0,
+          record.totalDeductions || 0,
+          record.grossPay || 0,
+          record.netPay || 0,
+          record.status,
+          record.paymentDate ? new Date(record.paymentDate).toLocaleDateString() : 'N/A',
+          record.paymentMethod || 'N/A',
+          record.paymentReference || 'N/A',
+        ];
+        csv += row.map((r) => `"${r}"`).join(',') + '\n';
+      });
+
+      // Log export
+      await logAudit({
+        entityType: 'PayrollRun',
+        entityId: null,
+        action: 'payroll_exported',
+        performedBy: req.user._id,
+        context: {
+          month: monthNum,
+          year: yearNum,
+          recordCount: records.length,
+          format: 'CSV',
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+        status: 'success',
+      });
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=payroll_${year}_${month}.csv`);
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting payroll:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// Get own payslips list (staff-facing, paginated)
+router.get('/my-payslips/summary', authenticate, async (req, res) => {
+  try {
+    const employeeId = req.user._id;
+    const currentYear = new Date().getFullYear();
+
+    const records = await PayrollRecord.find({
+      schoolId: req.user.schoolId,
+      employeeId,
+      year: currentYear,
+    }).lean();
+
+    const totalEarnings = records.reduce((sum, r) => sum + (r.netPay || 0), 0);
+
+    res.json({
+      success: true,
+      year: currentYear,
+      totalEarnings,
+      totalPayslips: records.length,
+    });
+  } catch (error) {
+    console.error('Error fetching payslips summary:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const PAYROLL_MONTH_NAMES = [
+  '',
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+router.get('/my-payslips', authenticate, async (req, res) => {
+  try {
+    const employeeId = req.user._id;
+    const skip = parseInt(req.query.skip) || 0;
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+
+    const query = { schoolId: req.user.schoolId, employeeId };
+
+    const records = await PayrollRecord.find(query)
+      .sort({ year: -1, month: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // Join Payslip documents for payslipId and fileUrl
+    const recordIds = records.map((r) => r._id);
+    const payslipDocs = await Payslip.find({
+      schoolId: req.user.schoolId,
+      employeeId,
+      payrollRecordId: { $in: recordIds },
+    }).lean();
+    const payslipMap = new Map(payslipDocs.map((p) => [p.payrollRecordId.toString(), p]));
+
+    const payslips = records.map((r) => {
+      const payslip = payslipMap.get(r._id.toString());
+      return {
+        ...r,
+        monthName: PAYROLL_MONTH_NAMES[r.month] || `Month ${r.month}`,
+        payslipId: payslip?._id || null,
+        fileUrl: payslip?.fileUrl || null,
+      };
     });
 
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename=payroll_${year}_${month}.csv`);
-    res.send(csv);
+    res.json({ success: true, payslips });
   } catch (error) {
-    console.error('Error exporting payroll:', error);
+    console.error('Error fetching my payslips:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1005,7 +1311,7 @@ router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) 
     const payslip = await Payslip.findOne({
       employeeId,
       month: parseInt(month),
-      year: parseInt(year)
+      year: parseInt(year),
     }).populate('payrollRecordId');
 
     if (!payslip) {
@@ -1026,11 +1332,11 @@ router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) 
       context: {
         month: parseInt(month),
         year: parseInt(year),
-        employeeId
+        employeeId,
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: 'success'
+      status: 'success',
     });
 
     res.json({ success: true, data: payslip });
@@ -1043,12 +1349,16 @@ router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) 
 // Get audit logs for payroll
 router.get('/audit-logs', authenticate, requireAdmin, async (req, res) => {
   try {
-    const { month, year, employeeId, action, page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 50 } = req.query;
+    const month = parseInt(req.query.month);
+    const year = parseInt(req.query.year);
+    const employeeId = sanitizeQueryId(req.query.employeeId);
+    const action = sanitizeQueryStr(req.query.action);
 
     const query = {};
     if (month || year) {
-      query['context.month'] = parseInt(month);
-      query['context.year'] = parseInt(year);
+      query['context.month'] = month;
+      query['context.year'] = year;
     }
     if (employeeId) query['context.employeeId'] = employeeId;
     if (action) query.action = action;
@@ -1070,8 +1380,8 @@ router.get('/audit-logs', authenticate, requireAdmin, async (req, res) => {
         page: parseInt(page),
         limit: parseInt(limit),
         total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
+        pages: Math.ceil(total / parseInt(limit)),
+      },
     });
   } catch (error) {
     console.error('Error fetching audit logs:', error);
@@ -1107,11 +1417,11 @@ router.post('/adjustments', authenticate, requireAdmin, async (req, res) => {
         type: adjustment.type,
         amount: adjustment.amount,
         effectiveMonth: adjustment.effectiveMonth,
-        effectiveYear: adjustment.effectiveYear
+        effectiveYear: adjustment.effectiveYear,
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: 'success'
+      status: 'success',
     });
 
     res.json({ success: true, data: adjustment });
@@ -1134,11 +1444,11 @@ router.delete('/adjustments/:id', authenticate, requireAdmin, async (req, res) =
       performedBy: req.user._id,
       context: {
         employeeId: adjustment.employeeId,
-        type: adjustment.type
+        type: adjustment.type,
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
-      status: 'success'
+      status: 'success',
     });
 
     res.json({ success: true });

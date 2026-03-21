@@ -1,0 +1,66 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Pre-deploy Tests
+    uses: ./.github/workflows/ci.yml
+
+  deploy-production:
+    name: Deploy to Production
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Render
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK" ]; then
+            curl -s "$RENDER_DEPLOY_HOOK"
+            echo "Deploy triggered on Render"
+          else
+            echo "RENDER_DEPLOY_HOOK_URL secret not set. Skipping deploy."
+            echo "To enable auto-deploy, add your Render deploy hook URL as a repository secret."
+          fi
+
+      - name: Verify deployment health
+        env:
+          HEALTH_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          if [ -n "$HEALTH_URL" ]; then
+            echo "Waiting 60s for deployment to stabilize..."
+            sleep 60
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check passed (HTTP $STATUS)"
+            else
+              echo "WARNING: Health check returned HTTP $STATUS"
+            fi
+          else
+            echo "PRODUCTION_URL not set. Skipping health check."
+          fi

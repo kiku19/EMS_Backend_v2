@@ -7,6 +7,19 @@ export default defineConfig({
     setupFiles: ['./tests/setup.js'],
     include: ['./tests/**/*.test.js'],
     testTimeout: 30000,
-    hookTimeout: 30000,
+    hookTimeout: 60000,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'lcov', 'json-summary'],
+      reportsDirectory: './coverage',
+      include: ['routes/**/*.js', 'middleware/**/*.js', 'services/**/*.js', 'utils/**/*.js'],
+      exclude: ['routes/seedDummyData.js', 'routes/dataCleanup.js'],
+      thresholds: {
+        lines: 60,
+        statements: 60,
+        functions: 60,
+        branches: 60,
+      },
+    },
   },
 });

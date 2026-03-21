@@ -1,0 +1,17 @@
+{
+  "errors": {
+    "notFound": "Payroll record not found",
+    "fetchFailed": "Failed to fetch payroll records",
+    "createFailed": "Failed to create payroll record",
+    "updateFailed": "Failed to update payroll record",
+    "deleteFailed": "Failed to delete payroll record",
+    "alreadyApproved": "Payroll is already approved",
+    "approveFailed": "Failed to approve payroll"
+  },
+  "success": {
+    "created": "Payroll record created successfully",
+    "updated": "Payroll record updated successfully",
+    "deleted": "Payroll record deleted successfully",
+    "approved": "Payroll approved successfully"
+  }
+}

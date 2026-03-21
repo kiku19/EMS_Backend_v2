@@ -12,7 +12,7 @@ async function loginAsSuperAdmin(app) {
     .set('X-Auth-Mode', 'cookie')
     .send({
       email: 'superid@test.com',
-      password: '12345',
+      password: 'super12345',
     })
     .expect(200);
 
@@ -88,9 +88,7 @@ describe('super admin routes', () => {
     const { app } = createTestApp();
     const agent = await loginAsSuperAdmin(app);
 
-    const response = await agent
-      .get('/api/super-admin/schools')
-      .expect(200);
+    const response = await agent.get('/api/super-admin/schools').expect(200);
 
     expect(response.body).toEqual(
       expect.arrayContaining([

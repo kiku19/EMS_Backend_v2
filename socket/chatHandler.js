@@ -3,6 +3,7 @@ import Conversation from '../models/Conversation.js';
 import UserPresence from '../models/UserPresence.js';
 import { Staff, Student, Parent } from '../database.js';
 import { hasPermission, canMessageUser, CHAT_PERMISSIONS } from '../middleware/chatPermissions.js';
+import { verifyToken, extractTokenFromRequest } from '../middleware/auth.js';
 
 // Store active users: userId -> socketId
 const activeUsers = new Map();
@@ -12,28 +13,50 @@ const typingUsers = new Map();
 
 export function initializeChatHandlers(io) {
   io.on('connection', (socket) => {
-    console.log('🔌 New socket connection:', socket.id);
-    
     // Authentication
     socket.on('authenticate', async (data) => {
-      console.log('🔐 Authentication attempt:', { userId: data?.userId, userType: data?.userType });
-      
       try {
-        const { userId, userType } = data;
-        
-        if (!userId || !userType) {
-          console.error('❌ Invalid authentication data:', data);
-          socket.emit('error', { message: 'Invalid authentication data' });
+        // Accept token from event data (legacy/mobile) or from httpOnly cookie in handshake
+        let token = data?.token;
+        if (!token) {
+          const fakeReq = { headers: { cookie: socket.handshake?.headers?.cookie || '' } };
+          token = extractTokenFromRequest(fakeReq);
+        }
+
+        if (!token) {
+          console.error('❌ Invalid authentication data: missing token');
+          socket.emit('error', { message: 'Authentication token required' });
+          return;
+        }
+
+        // Verify JWT token — identity comes from the signed token, not client data
+        const decoded = verifyToken(token);
+        if (!decoded) {
+          console.error('❌ Invalid or expired JWT token');
+          socket.emit('error', { message: 'Invalid or expired token' });
+          return;
+        }
+
+        const userId = decoded.userId;
+        const userType = decoded.userType || 'staff';
+
+        if (!userId || !['staff', 'student', 'parent'].includes(userType)) {
+          console.error('❌ Invalid token payload: missing userId or invalid userType');
+          socket.emit('error', { message: 'Invalid token payload' });
           return;
         }
 
         // Verify user exists
         const getUserModel = (userType) => {
           switch (userType) {
-            case 'staff': return Staff;
-            case 'student': return Student;
-            case 'parent': return Parent;
-            default: throw new Error(`Invalid user type: ${userType}`);
+            case 'staff':
+              return Staff;
+            case 'student':
+              return Student;
+            case 'parent':
+              return Parent;
+            default:
+              throw new Error(`Invalid user type: ${userType}`);
           }
         };
 
@@ -49,7 +72,8 @@ export function initializeChatHandlers(io) {
         // Store user info in socket
         socket.userId = userId;
         socket.userType = userType;
-        socket.userModel = userType === 'staff' ? 'Staff' : userType === 'parent' ? 'Parent' : 'Student';
+        socket.userModel =
+          userType === 'staff' ? 'Staff' : userType === 'parent' ? 'Parent' : 'Student';
 
         // Add to active users
         activeUsers.set(userId, socket.id);
@@ -57,7 +81,7 @@ export function initializeChatHandlers(io) {
         // Update presence
         await UserPresence.setOnline(userId, socket.userModel, socket.id, {
           platform: 'web',
-          userAgent: socket.handshake.headers['user-agent']
+          userAgent: socket.handshake.headers['user-agent'],
         });
 
         // Join user's personal room
@@ -68,40 +92,38 @@ export function initializeChatHandlers(io) {
           for (const child of user.children) {
             const childStudentId = (child.studentId || child).toString();
             socket.join(`student:${childStudentId}`);
-            console.log(`👨‍👩‍👧 Parent ${userId} joined student room: student:${childStudentId}`);
           }
         }
 
         // Emit authentication success IMMEDIATELY
-        console.log('✅ Authentication successful, emitting authenticated event for:', userId);
         socket.emit('authenticated', {
           userId,
           userType,
-          message: 'Successfully authenticated'
+          message: 'Successfully authenticated',
         });
 
         // Broadcast user online status - FIXED: Only to relevant users (do this AFTER emitting authenticated)
         const userConversations = await Conversation.find({
-          participants: { $elemMatch: { userId: userId } }
+          participants: { $elemMatch: { userId: userId } },
         }).populate('participants.userId', '_id');
-        
+
         const relevantUserIds = new Set();
-        userConversations.forEach(conv => {
-          conv.participants.forEach(p => {
+        userConversations.forEach((conv) => {
+          conv.participants.forEach((p) => {
             if (p.userId && p.userId._id && p.userId._id.toString() !== userId) {
               relevantUserIds.add(p.userId._id.toString());
             }
           });
         });
-        
+
         // Emit to relevant users only
-        Array.from(relevantUserIds).forEach(relevantUserId => {
+        Array.from(relevantUserIds).forEach((relevantUserId) => {
           const userSocketId = activeUsers.get(relevantUserId);
           if (userSocketId) {
             io.to(userSocketId).emit('user_status', {
               userId: userId,
               status: 'online',
-              timestamp: new Date()
+              timestamp: new Date(),
             });
           }
         });
@@ -115,7 +137,7 @@ export function initializeChatHandlers(io) {
     socket.on('join_conversation', async (data) => {
       try {
         const { conversationId } = data;
-        
+
         if (!socket.userId) {
           socket.emit('error', { message: 'Not authenticated' });
           return;
@@ -123,14 +145,14 @@ export function initializeChatHandlers(io) {
 
         // Verify conversation exists and user is participant
         const conversation = await Conversation.findById(conversationId);
-        
+
         if (!conversation) {
           socket.emit('error', { message: 'Conversation not found' });
           return;
         }
 
         const isParticipant = conversation.participants.some(
-          p => p.userId.toString() === socket.userId
+          (p) => p.userId.toString() === socket.userId
         );
 
         if (!isParticipant) {
@@ -140,7 +162,7 @@ export function initializeChatHandlers(io) {
 
         // Join conversation room
         socket.join(`conversation:${conversationId}`);
-        
+
         // Reset unread count
         await conversation.resetUnread(socket.userId);
 
@@ -154,9 +176,21 @@ export function initializeChatHandlers(io) {
     // Send message
     socket.on('send_message', async (data) => {
       try {
-        console.log('📨 Received send_message event:', JSON.stringify(data, null, 2));
-
-        const { conversationId, receiverId, receiverModel, content, type = 'text', fileUrl, fileName, fileSize, replyTo, forwardedFrom, duration, waveform } = data;
+        const {
+          conversationId,
+          receiverId,
+          receiverModel,
+          content,
+          type = 'text',
+          fileUrl,
+          fileName,
+          fileSize,
+          replyTo,
+          forwardedFrom,
+          duration,
+          waveform,
+          clientMessageId,
+        } = data;
 
         if (!socket.userId) {
           console.error('❌ Socket not authenticated');
@@ -164,10 +198,50 @@ export function initializeChatHandlers(io) {
           return;
         }
 
-        console.log('📨 Processing message from:', socket.userId, 'type:', type, 'fileUrl:', fileUrl ? 'present' : 'missing');
+        // Idempotency check: if client sent a clientMessageId, check for existing message
+        if (clientMessageId) {
+          const existingMessage = await Message.findOne({
+            clientMessageId,
+            senderId: socket.userId,
+          }).populate('senderId', 'name photo');
+          if (existingMessage) {
+            const socketMessage = {
+              id: existingMessage._id,
+              clientMessageId: existingMessage.clientMessageId,
+              conversationId: existingMessage.conversationId,
+              senderId: existingMessage.senderId._id,
+              senderName: existingMessage.senderId.name,
+              senderAvatar: existingMessage.senderId.photo,
+              content: existingMessage.content,
+              type: existingMessage.type,
+              fileUrl: existingMessage.fileUrl,
+              fileName: existingMessage.fileName,
+              fileSize: existingMessage.fileSize,
+              duration: existingMessage.duration || 0,
+              waveform: existingMessage.waveform || [],
+              status: existingMessage.status,
+              createdAt: existingMessage.createdAt,
+              replyTo: null,
+              forwardedFrom: existingMessage.forwardedFrom?.messageId
+                ? existingMessage.forwardedFrom
+                : null,
+              pinned: existingMessage.pinned || false,
+              pinnedBy: existingMessage.pinnedBy || [],
+              reactions: existingMessage.reactions || [],
+              isEdited: existingMessage.isEdited || false,
+            };
+            // Re-emit to sender only so they get confirmation without creating duplicates for others
+            socket.emit('new_message', { message: socketMessage });
+            return;
+          }
+        }
 
         // Check if user has permission to send messages
-        const canSend = await hasPermission(socket.userId, socket.userType, CHAT_PERMISSIONS.SEND_MESSAGE);
+        const canSend = await hasPermission(
+          socket.userId,
+          socket.userType,
+          CHAT_PERMISSIONS.SEND_MESSAGE
+        );
         if (!canSend) {
           socket.emit('error', { message: 'You do not have permission to send messages' });
           return;
@@ -215,8 +289,12 @@ export function initializeChatHandlers(io) {
           conversationId: conversation._id,
           senderId: socket.userId,
           senderModel: socket.userModel,
-          receiverId: receiverId || conversation.participants.find(p => p.userId.toString() !== socket.userId).userId,
-          receiverModel: receiverModel || conversation.participants.find(p => p.userId.toString() !== socket.userId).userModel,
+          receiverId:
+            receiverId ||
+            conversation.participants.find((p) => p.userId.toString() !== socket.userId).userId,
+          receiverModel:
+            receiverModel ||
+            conversation.participants.find((p) => p.userId.toString() !== socket.userId).userModel,
           content: messageContent,
           type,
           fileUrl,
@@ -224,7 +302,8 @@ export function initializeChatHandlers(io) {
           fileSize,
           duration: duration || 0,
           waveform: waveform || [],
-          status: 'sent'
+          status: 'sent',
+          ...(clientMessageId && { clientMessageId }),
         };
 
         // Handle replyTo - extract just the ID if it's an object
@@ -241,16 +320,6 @@ export function initializeChatHandlers(io) {
           messageData.forwardedFrom = forwardedFrom;
         }
 
-        // Debug: Log message data for voice/audio messages
-        if (type === 'audio' || type === 'voice') {
-          console.log('🎤 Creating voice/audio message:', {
-            fileUrl: messageData.fileUrl,
-            duration: messageData.duration,
-            waveformLength: messageData.waveform?.length,
-            content: messageData.content
-          });
-        }
-
         const message = await Message.create(messageData);
 
         // Populate sender info and replyTo
@@ -265,7 +334,7 @@ export function initializeChatHandlers(io) {
           senderId: socket.userId,
           senderName: message.senderId.name,
           timestamp: new Date(),
-          type
+          type,
         };
         await conversation.save();
 
@@ -279,6 +348,7 @@ export function initializeChatHandlers(io) {
         // Emit to conversation room (including sender so they get the confirmed message)
         const socketMessage = {
           id: message._id,
+          clientMessageId: message.clientMessageId || null,
           conversationId: conversation._id,
           senderId: message.senderId._id,
           senderName: message.senderId.name,
@@ -292,36 +362,27 @@ export function initializeChatHandlers(io) {
           waveform: message.waveform || [],
           status: message.status,
           createdAt: message.createdAt,
-          replyTo: message.replyTo ? {
-            messageId: message.replyTo._id,
-            content: message.replyTo.content,
-            senderId: message.replyTo.senderId,
-            senderName: message.replyTo.senderId?.name || 'Unknown'
-          } : null,
+          replyTo: message.replyTo
+            ? {
+                messageId: message.replyTo._id,
+                content: message.replyTo.content,
+                senderId: message.replyTo.senderId,
+                senderName: message.replyTo.senderId?.name || 'Unknown',
+              }
+            : null,
           forwardedFrom: message.forwardedFrom?.messageId ? message.forwardedFrom : null,
           pinned: message.pinned || false,
           pinnedBy: message.pinnedBy || [],
           reactions: message.reactions || [],
-          isEdited: message.isEdited || false
+          isEdited: message.isEdited || false,
         };
-
-        // Debug: Log voice/audio message emission
-        if (type === 'audio' || type === 'voice') {
-          console.log('🎤 Emitting voice/audio message:', {
-            id: socketMessage.id,
-            type: socketMessage.type,
-            fileUrl: socketMessage.fileUrl,
-            duration: socketMessage.duration,
-            waveformLength: socketMessage.waveform?.length
-          });
-        }
 
         // Emit to entire conversation room (includes sender)
         io.to(`conversation:${conversation._id}`).emit('new_message', { message: socketMessage });
 
         // Emit to receiver's personal room (for notification)
         const receiverUserId = conversation.participants.find(
-          p => p.userId.toString() !== socket.userId
+          (p) => p.userId.toString() !== socket.userId
         )?.userId;
 
         if (receiverUserId) {
@@ -331,8 +392,8 @@ export function initializeChatHandlers(io) {
               id: message._id,
               senderName: message.senderId.name,
               content: message.content,
-              type: message.type
-            }
+              type: message.type,
+            },
           });
         }
       } catch (error) {
@@ -341,7 +402,7 @@ export function initializeChatHandlers(io) {
         console.error('❌ Error details:', {
           name: error.name,
           message: error.message,
-          code: error.code
+          code: error.code,
         });
         socket.emit('error', { message: 'Failed to send message', error: error.message });
       }
@@ -351,7 +412,7 @@ export function initializeChatHandlers(io) {
     socket.on('typing', async (data) => {
       try {
         const { conversationId, isTyping } = data;
-        
+
         if (!socket.userId) return;
 
         if (isTyping) {
@@ -359,7 +420,7 @@ export function initializeChatHandlers(io) {
             typingUsers.set(conversationId, new Set());
           }
           typingUsers.get(conversationId).add(socket.userId);
-          
+
           // Auto-clear typing after 3 seconds - NEW
           if (socket.typingTimeout) {
             clearTimeout(socket.typingTimeout);
@@ -374,7 +435,7 @@ export function initializeChatHandlers(io) {
             socket.to(`conversation:${conversationId}`).emit('user_typing', {
               conversationId,
               userId: socket.userId,
-              isTyping: false
+              isTyping: false,
             });
           }, 3000);
         } else {
@@ -394,7 +455,7 @@ export function initializeChatHandlers(io) {
         socket.to(`conversation:${conversationId}`).emit('user_typing', {
           conversationId,
           userId: socket.userId,
-          isTyping
+          isTyping,
         });
       } catch (error) {
         console.error('❌ Typing indicator error:', error);
@@ -405,16 +466,16 @@ export function initializeChatHandlers(io) {
     socket.on('mark_read', async (data) => {
       try {
         const { messageId, conversationId } = data;
-        
+
         if (!socket.userId) return;
 
         if (messageId) {
           // Mark single message as read
           const message = await Message.findByIdAndUpdate(
             messageId,
-            { 
+            {
               status: 'read',
-              readAt: new Date()
+              readAt: new Date(),
             },
             { new: true }
           );
@@ -425,7 +486,7 @@ export function initializeChatHandlers(io) {
               messageId: message._id,
               conversationId: message.conversationId,
               readBy: socket.userId,
-              readAt: message.readAt
+              readAt: message.readAt,
             });
           }
         } else if (conversationId) {
@@ -434,11 +495,11 @@ export function initializeChatHandlers(io) {
             {
               conversationId,
               receiverId: socket.userId,
-              status: { $ne: 'read' }
+              status: { $ne: 'read' },
             },
             {
               status: 'read',
-              readAt: new Date()
+              readAt: new Date(),
             }
           );
 
@@ -451,7 +512,7 @@ export function initializeChatHandlers(io) {
           // Notify other participants
           socket.to(`conversation:${conversationId}`).emit('messages_read', {
             conversationId,
-            readBy: socket.userId
+            readBy: socket.userId,
           });
         }
       } catch (error) {
@@ -482,26 +543,26 @@ export function initializeChatHandlers(io) {
 
           // Broadcast user offline status - FIXED: Only to relevant users
           const userConversations = await Conversation.find({
-            'participants.userId': socket.userId
+            'participants.userId': socket.userId,
           }).populate('participants.userId', '_id');
-          
+
           const relevantUserIds = new Set();
-          userConversations.forEach(conv => {
-            conv.participants.forEach(p => {
+          userConversations.forEach((conv) => {
+            conv.participants.forEach((p) => {
               if (p.userId && p.userId._id && p.userId._id.toString() !== socket.userId) {
                 relevantUserIds.add(p.userId._id.toString());
               }
             });
           });
-          
+
           // Emit to relevant users only
-          Array.from(relevantUserIds).forEach(userId => {
+          Array.from(relevantUserIds).forEach((userId) => {
             const userSocketId = activeUsers.get(userId);
             if (userSocketId) {
               io.to(userSocketId).emit('user_status', {
                 userId: socket.userId,
                 status: 'offline',
-                lastSeen: new Date()
+                lastSeen: new Date(),
               });
             }
           });
@@ -525,18 +586,21 @@ export function initializeChatHandlers(io) {
   });
 
   // Periodic cleanup of stale data (every 5 minutes)
-  setInterval(() => {
-    try {
-      // Clean up empty typing user sets
-      typingUsers.forEach((typingSet, conversationId) => {
-        if (typingSet.size === 0) {
-          typingUsers.delete(conversationId);
-        }
-      });
-    } catch (error) {
-      console.error('❌ Cleanup error:', error);
-    }
-  }, 5 * 60 * 1000); // 5 minutes
+  setInterval(
+    () => {
+      try {
+        // Clean up empty typing user sets
+        typingUsers.forEach((typingSet, conversationId) => {
+          if (typingSet.size === 0) {
+            typingUsers.delete(conversationId);
+          }
+        });
+      } catch (error) {
+        console.error('❌ Cleanup error:', error);
+      }
+    },
+    5 * 60 * 1000
+  ); // 5 minutes
 }
 
 export { activeUsers, typingUsers };

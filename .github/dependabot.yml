@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    groups:
+      production-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "vitest*"
+          - "supertest*"
+          - "mongodb-memory-server*"
+        update-types:
+          - minor
+          - patch
+      dev-deps:
+        patterns:
+          - "vitest*"
+          - "supertest*"
+          - "mongodb-memory-server*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - ci

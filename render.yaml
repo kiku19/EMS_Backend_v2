@@ -4,7 +4,7 @@ services:
     runtime: node
     rootDir: backend
     buildCommand: npm install --workspaces=false
-    startCommand: npm start
+    startCommand: npm run migrate:up && npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -128,6 +128,35 @@ services:
         value: production
       - key: MONGODB_URI
         sync: false
+      - key: BACKUP_S3_BUCKET
+        sync: false
+      - key: BACKUP_S3_REGION
+        sync: false
+      - key: BACKUP_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: BACKUP_S3_PREFIX
+        sync: false
+      - key: BACKUP_S3_ENDPOINT
+        sync: false
+      - key: BACKUP_S3_FORCE_PATH_STYLE
+        sync: false
+
+  # Runs every Sunday at 04:00 UTC — downloads the latest backup from S3,
+  # decompresses every collection file, and validates document counts against
+  # the manifest. Exits non-zero if anything is unreadable so Render marks
+  # the cron run as failed and alerts on-call.
+  - type: cron
+    name: school-db-backup-verify
+    runtime: node
+    rootDir: backend
+    schedule: "0 4 * * 0"
+    buildCommand: npm install --workspaces=false
+    startCommand: npm run backup:verify
+    envVars:
+      - key: NODE_ENV
+        value: production
       - key: BACKUP_S3_BUCKET
         sync: false
       - key: BACKUP_S3_REGION

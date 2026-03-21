@@ -2,6 +2,9 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { Timetable, TeacherTimetable, Class, Staff } from '../database.js';
 import mongoose from 'mongoose';
 import cacheService from './cacheService.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('TimetableService');
 
 /**
  * Service for managing timetable synchronization between class and teacher views
@@ -21,7 +24,16 @@ class TimetableService {
    * @returns {Promise<Object>} - Sync result with success status
    */
   async syncTimetables(options) {
-    const { sourceType, sourceId, day, periodIndex, slotData, academicYear = CURRENT_ACADEMIC_YEAR, modifiedBy } = options;
+    const {
+      sourceType,
+      sourceId,
+      day,
+      periodIndex,
+      slotData,
+      academicYear = CURRENT_ACADEMIC_YEAR,
+      modifiedBy,
+      schoolId,
+    } = options;
 
     // Validate inputs
     if (!['class', 'teacher'].includes(sourceType)) {
@@ -38,7 +50,7 @@ class TimetableService {
 
     try {
       let result;
-      
+
       if (sourceType === 'class') {
         result = await this._syncFromClassToTeacher({
           classId: sourceId,
@@ -47,9 +59,10 @@ class TimetableService {
           slotData,
           academicYear,
           modifiedBy,
-          session
+          schoolId,
+          session,
         });
-        
+
         // Invalidate cache for affected class and teacher
         cacheService.invalidateClassCache(sourceId);
         if (slotData.teacherId) {
@@ -66,9 +79,10 @@ class TimetableService {
           slotData,
           academicYear,
           modifiedBy,
-          session
+          schoolId,
+          session,
         });
-        
+
         // Invalidate cache for affected teacher and classes
         cacheService.invalidateTeacherCache(sourceId);
         if (slotData.classId) {
@@ -81,7 +95,7 @@ class TimetableService {
 
       return { success: true, ...result };
     } catch (error) {
-      console.error('Synchronization failed:', error);
+      logger.error({ err: error, sourceType, sourceId }, 'Timetable synchronization failed');
       throw error;
     }
   }
@@ -90,13 +104,23 @@ class TimetableService {
    * Sync from class timetable to teacher timetable
    * @private
    */
-  async _syncFromClassToTeacher({ classId, day, periodIndex, slotData, academicYear, modifiedBy, session }) {
+  async _syncFromClassToTeacher({
+    classId,
+    day,
+    periodIndex,
+    slotData,
+    academicYear,
+    modifiedBy,
+    schoolId,
+    session,
+  }) {
     // Get or create class timetable
     const query = { classId, academicYear };
-    let classTimetable = session 
+    if (schoolId) query.schoolId = schoolId;
+    const classTimetable = session
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
-    
+
     if (!classTimetable) {
       throw new Error(`Class timetable not found for classId: ${classId}`);
     }
@@ -123,12 +147,12 @@ class TimetableService {
       teacherId: slotData.teacherId || null,
       room: slotData.room || '',
       lastModified: new Date(),
-      modifiedBy: modifiedBy || null
+      modifiedBy: modifiedBy || null,
     };
 
     classTimetable.version += 1;
     classTimetable.lastSyncedAt = new Date();
-    
+
     if (session) {
       await classTimetable.save({ session });
     } else {
@@ -143,7 +167,8 @@ class TimetableService {
         day,
         periodIndex,
         academicYear,
-        session
+        schoolId,
+        session,
       });
     }
 
@@ -157,14 +182,15 @@ class TimetableService {
         subject: slotData.subject,
         room: slotData.room,
         academicYear,
-        session
+        schoolId,
+        session,
       });
     }
 
     return {
       classTimetable,
       oldTeacherId,
-      newTeacherId: slotData.teacherId
+      newTeacherId: slotData.teacherId,
     };
   }
 
@@ -172,19 +198,30 @@ class TimetableService {
    * Sync from teacher timetable to class timetable
    * @private
    */
-  async _syncFromTeacherToClass({ teacherId, day, periodIndex, slotData, academicYear, modifiedBy, session }) {
+  async _syncFromTeacherToClass({
+    teacherId,
+    day,
+    periodIndex,
+    slotData,
+    academicYear,
+    modifiedBy,
+    schoolId,
+    session,
+  }) {
     // Get or create teacher timetable
     const query = { teacherId, academicYear };
+    if (schoolId) query.schoolId = schoolId;
     let teacherTimetable = session
       ? await TeacherTimetable.findOne(query).session(session)
       : await TeacherTimetable.findOne(query);
-    
+
     if (!teacherTimetable) {
       // Create new teacher timetable
       teacherTimetable = new TeacherTimetable({
         teacherId,
         academicYear,
-        schedule: {}
+        schoolId: schoolId || null,
+        schedule: {},
       });
     }
 
@@ -197,12 +234,12 @@ class TimetableService {
     }
 
     // Get the old class ID before updating
-    const oldSlot = teacherTimetable.schedule[day].find(slot => slot.periodIndex === periodIndex);
+    const oldSlot = teacherTimetable.schedule[day].find((slot) => slot.periodIndex === periodIndex);
     const oldClassId = oldSlot?.classId;
 
     // Remove old slot if exists
     teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-      slot => slot.periodIndex !== periodIndex
+      (slot) => slot.periodIndex !== periodIndex
     );
 
     // Add new slot if classId is provided
@@ -212,7 +249,7 @@ class TimetableService {
         classId: slotData.classId,
         subject: slotData.subject || '',
         room: slotData.room || '',
-        lastModified: new Date()
+        lastModified: new Date(),
       });
     }
 
@@ -221,7 +258,7 @@ class TimetableService {
 
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
-    
+
     if (session) {
       await teacherTimetable.save({ session });
     } else {
@@ -236,7 +273,8 @@ class TimetableService {
         day,
         periodIndex,
         academicYear,
-        session
+        schoolId,
+        session,
       });
     }
 
@@ -251,14 +289,15 @@ class TimetableService {
         room: slotData.room,
         academicYear,
         modifiedBy,
-        session
+        schoolId,
+        session,
       });
     }
 
     return {
       teacherTimetable,
       oldClassId,
-      newClassId: slotData.classId
+      newClassId: slotData.classId,
     };
   }
 
@@ -267,26 +306,36 @@ class TimetableService {
    * Auto-creates class timetable if it doesn't exist
    * @private
    */
-  async _addToClassTimetable({ classId, teacherId, day, periodIndex, subject, room, academicYear, modifiedBy, session }) {
+  async _addToClassTimetable({
+    classId,
+    teacherId,
+    day,
+    periodIndex,
+    subject,
+    room,
+    academicYear,
+    modifiedBy,
+    schoolId,
+    session,
+  }) {
     const query = { classId, academicYear };
+    if (schoolId) query.schoolId = schoolId;
     let classTimetable = session
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
-    
+
     // Auto-create class timetable if it doesn't exist
     if (!classTimetable) {
-      console.log(`Class timetable not found for classId: ${classId}, creating new one...`);
-      
       // Get default periods from school settings or use defaults
       const defaultPeriods = [
-        { name: "Period 1", startTime: "08:00", endTime: "08:45", isBreak: false },
-        { name: "Period 2", startTime: "08:45", endTime: "09:30", isBreak: false },
-        { name: "Break", startTime: "09:30", endTime: "09:45", isBreak: true },
-        { name: "Period 3", startTime: "09:45", endTime: "10:30", isBreak: false },
-        { name: "Period 4", startTime: "10:30", endTime: "11:15", isBreak: false },
-        { name: "Lunch", startTime: "11:15", endTime: "12:00", isBreak: true },
-        { name: "Period 5", startTime: "12:00", endTime: "12:45", isBreak: false },
-        { name: "Period 6", startTime: "12:45", endTime: "13:30", isBreak: false },
+        { name: 'Period 1', startTime: '08:00', endTime: '08:45', isBreak: false },
+        { name: 'Period 2', startTime: '08:45', endTime: '09:30', isBreak: false },
+        { name: 'Break', startTime: '09:30', endTime: '09:45', isBreak: true },
+        { name: 'Period 3', startTime: '09:45', endTime: '10:30', isBreak: false },
+        { name: 'Period 4', startTime: '10:30', endTime: '11:15', isBreak: false },
+        { name: 'Lunch', startTime: '11:15', endTime: '12:00', isBreak: true },
+        { name: 'Period 5', startTime: '12:00', endTime: '12:45', isBreak: false },
+        { name: 'Period 6', startTime: '12:45', endTime: '13:30', isBreak: false },
       ];
 
       const emptySchedule = {
@@ -295,7 +344,7 @@ class TimetableService {
         Wednesday: [],
         Thursday: [],
         Friday: [],
-        Saturday: []
+        Saturday: [],
       };
 
       classTimetable = new Timetable({
@@ -306,8 +355,8 @@ class TimetableService {
         metadata: {
           createdBy: modifiedBy,
           lastModifiedBy: modifiedBy,
-          version: 1
-        }
+          version: 1,
+        },
       });
 
       if (session) {
@@ -315,8 +364,6 @@ class TimetableService {
       } else {
         await classTimetable.save();
       }
-
-      console.log(`✓ Created class timetable for classId: ${classId}`);
     }
 
     if (!classTimetable.schedule[day]) {
@@ -333,12 +380,12 @@ class TimetableService {
       teacherId: teacherId,
       room: room || '',
       lastModified: new Date(),
-      modifiedBy: modifiedBy || null
+      modifiedBy: modifiedBy || null,
     };
 
     classTimetable.version += 1;
     classTimetable.lastSyncedAt = new Date();
-    
+
     if (session) {
       await classTimetable.save({ session });
     } else {
@@ -350,13 +397,26 @@ class TimetableService {
    * Remove teacher from class timetable
    * @private
    */
-  async _removeFromClassTimetable({ classId, teacherId, day, periodIndex, academicYear, session }) {
+  async _removeFromClassTimetable({
+    classId,
+    teacherId,
+    day,
+    periodIndex,
+    academicYear,
+    schoolId,
+    session,
+  }) {
     const query = { classId, academicYear };
+    if (schoolId) query.schoolId = schoolId;
     const classTimetable = session
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
-    
-    if (!classTimetable || !classTimetable.schedule[day] || !classTimetable.schedule[day][periodIndex]) {
+
+    if (
+      !classTimetable ||
+      !classTimetable.schedule[day] ||
+      !classTimetable.schedule[day][periodIndex]
+    ) {
       return; // Nothing to remove
     }
 
@@ -367,12 +427,12 @@ class TimetableService {
         teacherId: null,
         room: '',
         lastModified: new Date(),
-        modifiedBy: null
+        modifiedBy: null,
       };
 
       classTimetable.version += 1;
       classTimetable.lastSyncedAt = new Date();
-      
+
       if (session) {
         await classTimetable.save({ session });
       } else {
@@ -385,17 +445,28 @@ class TimetableService {
    * Add class to teacher timetable
    * @private
    */
-  async _addToTeacherTimetable({ teacherId, classId, day, periodIndex, subject, room, academicYear, session }) {
+  async _addToTeacherTimetable({
+    teacherId,
+    classId,
+    day,
+    periodIndex,
+    subject,
+    room,
+    academicYear,
+    schoolId,
+    session,
+  }) {
     const query = { teacherId, academicYear };
+    if (schoolId) query.schoolId = schoolId;
     let teacherTimetable = session
       ? await TeacherTimetable.findOne(query).session(session)
       : await TeacherTimetable.findOne(query);
-    
+
     if (!teacherTimetable) {
       teacherTimetable = new TeacherTimetable({
         teacherId,
         academicYear,
-        schedule: {}
+        schedule: {},
       });
     }
 
@@ -405,7 +476,7 @@ class TimetableService {
 
     // Remove existing slot at this period if any
     teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-      slot => slot.periodIndex !== periodIndex
+      (slot) => slot.periodIndex !== periodIndex
     );
 
     // Add new slot
@@ -414,7 +485,7 @@ class TimetableService {
       classId: classId,
       subject: subject || '',
       room: room || '',
-      lastModified: new Date()
+      lastModified: new Date(),
     });
 
     // Sort by periodIndex
@@ -422,7 +493,7 @@ class TimetableService {
 
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
-    
+
     if (session) {
       await teacherTimetable.save({ session });
     } else {
@@ -434,24 +505,34 @@ class TimetableService {
    * Remove class from teacher timetable
    * @private
    */
-  async _removeFromTeacherTimetable({ teacherId, classId, day, periodIndex, academicYear, session }) {
+  async _removeFromTeacherTimetable({
+    teacherId,
+    classId,
+    day,
+    periodIndex,
+    academicYear,
+    schoolId,
+    session,
+  }) {
     const query = { teacherId, academicYear };
+    if (schoolId) query.schoolId = schoolId;
     const teacherTimetable = session
       ? await TeacherTimetable.findOne(query).session(session)
       : await TeacherTimetable.findOne(query);
-    
+
     if (!teacherTimetable || !teacherTimetable.schedule[day]) {
       return; // Nothing to remove
     }
 
     // Remove the slot at this period if it matches the class
     teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-      slot => !(slot.periodIndex === periodIndex && slot.classId?.toString() === classId.toString())
+      (slot) =>
+        !(slot.periodIndex === periodIndex && slot.classId?.toString() === classId.toString())
     );
 
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
-    
+
     if (session) {
       await teacherTimetable.save({ session });
     } else {
@@ -466,51 +547,51 @@ class TimetableService {
     // Proceed without transactions for compatibility
     const session = null;
 
-    try {
-      const query = { classId, academicYear };
-      const classTimetable = await Timetable.findOne(query);
-      
-      if (!classTimetable || !classTimetable.schedule[day] || !classTimetable.schedule[day][periodIndex]) {
-        return { success: true, message: 'Slot already empty' };
-      }
+    const query = { classId, academicYear };
+    const classTimetable = await Timetable.findOne(query);
 
-      const teacherId = classTimetable.schedule[day][periodIndex].teacherId;
-
-      // Clear the slot
-      classTimetable.schedule[day][periodIndex] = {
-        subject: '',
-        teacherId: null,
-        room: '',
-        lastModified: new Date(),
-        modifiedBy: null
-      };
-
-      classTimetable.version += 1;
-      classTimetable.lastSyncedAt = new Date();
-      await classTimetable.save();
-
-      // Invalidate cache for affected class and teacher
-      cacheService.invalidateClassCache(classId);
-      if (teacherId) {
-        cacheService.invalidateTeacherCache(teacherId);
-      }
-
-      // Remove from teacher timetable if teacher was assigned
-      if (teacherId) {
-        await this._removeFromTeacherTimetable({
-          teacherId,
-          classId,
-          day,
-          periodIndex,
-          academicYear,
-          session
-        });
-      }
-
-      return { success: true, teacherId };
-    } catch (error) {
-      throw error;
+    if (
+      !classTimetable ||
+      !classTimetable.schedule[day] ||
+      !classTimetable.schedule[day][periodIndex]
+    ) {
+      return { success: true, message: 'Slot already empty' };
     }
+
+    const teacherId = classTimetable.schedule[day][periodIndex].teacherId;
+
+    // Clear the slot
+    classTimetable.schedule[day][periodIndex] = {
+      subject: '',
+      teacherId: null,
+      room: '',
+      lastModified: new Date(),
+      modifiedBy: null,
+    };
+
+    classTimetable.version += 1;
+    classTimetable.lastSyncedAt = new Date();
+    await classTimetable.save();
+
+    // Invalidate cache for affected class and teacher
+    cacheService.invalidateClassCache(classId);
+    if (teacherId) {
+      cacheService.invalidateTeacherCache(teacherId);
+    }
+
+    // Remove from teacher timetable if teacher was assigned
+    if (teacherId) {
+      await this._removeFromTeacherTimetable({
+        teacherId,
+        classId,
+        day,
+        periodIndex,
+        academicYear,
+        session,
+      });
+    }
+
+    return { success: true, teacherId };
   }
 
   /**
@@ -520,52 +601,48 @@ class TimetableService {
     // Proceed without transactions for compatibility
     const session = null;
 
-    try {
-      const query = { teacherId, academicYear };
-      const teacherTimetable = await TeacherTimetable.findOne(query);
-      
-      if (!teacherTimetable || !teacherTimetable.schedule[day]) {
-        return { success: true, message: 'Slot already empty' };
-      }
+    const query = { teacherId, academicYear };
+    const teacherTimetable = await TeacherTimetable.findOne(query);
 
-      const slot = teacherTimetable.schedule[day].find(s => s.periodIndex === periodIndex);
-      if (!slot) {
-        return { success: true, message: 'Slot already empty' };
-      }
-
-      const classId = slot.classId;
-
-      // Remove the slot
-      teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-        s => s.periodIndex !== periodIndex
-      );
-
-      teacherTimetable.version += 1;
-      teacherTimetable.lastSyncedAt = new Date();
-      await teacherTimetable.save();
-
-      // Invalidate cache for affected teacher and class
-      cacheService.invalidateTeacherCache(teacherId);
-      if (classId) {
-        cacheService.invalidateClassCache(classId);
-      }
-
-      // Remove from class timetable if class was assigned
-      if (classId) {
-        await this._removeFromClassTimetable({
-          classId,
-          teacherId,
-          day,
-          periodIndex,
-          academicYear,
-          session
-        });
-      }
-
-      return { success: true, classId };
-    } catch (error) {
-      throw error;
+    if (!teacherTimetable || !teacherTimetable.schedule[day]) {
+      return { success: true, message: 'Slot already empty' };
     }
+
+    const slot = teacherTimetable.schedule[day].find((s) => s.periodIndex === periodIndex);
+    if (!slot) {
+      return { success: true, message: 'Slot already empty' };
+    }
+
+    const classId = slot.classId;
+
+    // Remove the slot
+    teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
+      (s) => s.periodIndex !== periodIndex
+    );
+
+    teacherTimetable.version += 1;
+    teacherTimetable.lastSyncedAt = new Date();
+    await teacherTimetable.save();
+
+    // Invalidate cache for affected teacher and class
+    cacheService.invalidateTeacherCache(teacherId);
+    if (classId) {
+      cacheService.invalidateClassCache(classId);
+    }
+
+    // Remove from class timetable if class was assigned
+    if (classId) {
+      await this._removeFromClassTimetable({
+        classId,
+        teacherId,
+        day,
+        periodIndex,
+        academicYear,
+        session,
+      });
+    }
+
+    return { success: true, classId };
   }
 
   /**
@@ -574,7 +651,7 @@ class TimetableService {
   async getClassTimetable(classId, academicYear = CURRENT_ACADEMIC_YEAR) {
     // Check cache first
     const cacheKey = cacheService.getClassTimetableKey(classId, academicYear);
-    const cached = cacheService.get(cacheKey);
+    const cached = await cacheService.get(cacheKey);
     if (cached) {
       return cached;
     }
@@ -590,7 +667,9 @@ class TimetableService {
 
     // Cache for 2 minutes
     if (timetable) {
-      cacheService.set(cacheKey, timetable, 2 * 60 * 1000);
+      cacheService
+        .set(cacheKey, timetable, 2 * 60 * 1000)
+        .catch((err) => logger.warn({ err, cacheKey }, 'Cache set failed'));
     }
 
     return timetable;
@@ -602,7 +681,7 @@ class TimetableService {
   async getTeacherTimetable(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
     // Check cache first
     const cacheKey = cacheService.getTeacherTimetableKey(teacherId, academicYear);
-    const cached = cacheService.get(cacheKey);
+    const cached = await cacheService.get(cacheKey);
     if (cached) {
       return cached;
     }
@@ -618,7 +697,9 @@ class TimetableService {
 
     // Cache for 2 minutes
     if (timetable) {
-      cacheService.set(cacheKey, timetable, 2 * 60 * 1000);
+      cacheService
+        .set(cacheKey, timetable, 2 * 60 * 1000)
+        .catch((err) => logger.warn({ err, cacheKey }, 'Cache set failed'));
     }
 
     return timetable;
@@ -628,7 +709,7 @@ class TimetableService {
    * Switch class for a teacher in a specific time slot
    * Validates teacher qualification, removes from old class, adds to new class
    * Implements rollback on failure
-   * 
+   *
    * @param {Object} options - Switch options
    * @param {string} options.teacherId - Teacher ID
    * @param {string} options.oldClassId - Current class ID (to remove from)
@@ -651,12 +732,14 @@ class TimetableService {
       subject,
       room = '',
       academicYear = CURRENT_ACADEMIC_YEAR,
-      modifiedBy = null
+      modifiedBy = null,
     } = options;
 
     // Validate inputs
     if (!teacherId || !newClassId || !day || periodIndex === undefined || !subject) {
-      throw new Error('Missing required parameters: teacherId, newClassId, day, periodIndex, and subject are required');
+      throw new Error(
+        'Missing required parameters: teacherId, newClassId, day, periodIndex, and subject are required'
+      );
     }
 
     // Validate day
@@ -678,13 +761,16 @@ class TimetableService {
     }
 
     // Validate teacher qualification for new class and subject
-    const hasQualification = teacher.teacherAssignments.some(assignment =>
-      assignment.subject === subject &&
-      assignment.classes.some(c => c.toString() === newClassId.toString())
+    const hasQualification = teacher.teacherAssignments.some(
+      (assignment) =>
+        assignment.subject === subject &&
+        assignment.classes.some((c) => c.toString() === newClassId.toString())
     );
 
     if (!hasQualification) {
-      throw new Error(`Teacher ${teacher.name} is not qualified to teach ${subject} in class ${newClass.name} ${newClass.section}`);
+      throw new Error(
+        `Teacher ${teacher.name} is not qualified to teach ${subject} in class ${newClass.name} ${newClass.section}`
+      );
     }
 
     // Store original states for rollback
@@ -697,13 +783,17 @@ class TimetableService {
       if (oldClassId) {
         originalOldClassTimetable = await Timetable.findOne({ classId: oldClassId, academicYear });
         if (originalOldClassTimetable) {
-          originalOldClassTimetable = JSON.parse(JSON.stringify(originalOldClassTimetable.toObject()));
+          originalOldClassTimetable = JSON.parse(
+            JSON.stringify(originalOldClassTimetable.toObject())
+          );
         }
       }
 
       originalNewClassTimetable = await Timetable.findOne({ classId: newClassId, academicYear });
       if (originalNewClassTimetable) {
-        originalNewClassTimetable = JSON.parse(JSON.stringify(originalNewClassTimetable.toObject()));
+        originalNewClassTimetable = JSON.parse(
+          JSON.stringify(originalNewClassTimetable.toObject())
+        );
       }
 
       originalTeacherTimetable = await TeacherTimetable.findOne({ teacherId, academicYear });
@@ -718,7 +808,7 @@ class TimetableService {
           teacherId,
           day,
           periodIndex,
-          academicYear
+          academicYear,
         });
       }
 
@@ -731,7 +821,7 @@ class TimetableService {
         subject,
         room,
         academicYear,
-        modifiedBy
+        modifiedBy,
       });
 
       // Step 3: Update teacher timetable
@@ -746,7 +836,7 @@ class TimetableService {
 
       // Remove old slot entry
       teacherTimetable.schedule[day] = teacherTimetable.schedule[day].filter(
-        slot => slot.periodIndex !== periodIndex
+        (slot) => slot.periodIndex !== periodIndex
       );
 
       // Add new slot entry
@@ -755,7 +845,7 @@ class TimetableService {
         classId: newClassId,
         subject,
         room,
-        lastModified: new Date()
+        lastModified: new Date(),
       });
 
       // Sort by periodIndex
@@ -766,10 +856,13 @@ class TimetableService {
       await teacherTimetable.save();
 
       // Get updated timetables for response
-      const updatedOldClassTimetable = oldClassId 
+      const updatedOldClassTimetable = oldClassId
         ? await Timetable.findOne({ classId: oldClassId, academicYear })
         : null;
-      const updatedNewClassTimetable = await Timetable.findOne({ classId: newClassId, academicYear });
+      const updatedNewClassTimetable = await Timetable.findOne({
+        classId: newClassId,
+        academicYear,
+      });
       const updatedTeacherTimetable = await TeacherTimetable.findOne({ teacherId, academicYear });
 
       return {
@@ -779,11 +872,14 @@ class TimetableService {
         newClassTimetable: updatedNewClassTimetable,
         teacherTimetable: updatedTeacherTimetable,
         oldClassId,
-        newClassId
+        newClassId,
       };
     } catch (error) {
       // Rollback on failure
-      console.error('Class switch failed, rolling back:', error);
+      logger.error(
+        { err: error, teacherId, oldClassId, newClassId },
+        'Class switch failed, rolling back'
+      );
 
       try {
         // Restore old class timetable
@@ -793,7 +889,7 @@ class TimetableService {
             {
               schedule: originalOldClassTimetable.schedule,
               version: originalOldClassTimetable.version,
-              lastSyncedAt: originalOldClassTimetable.lastSyncedAt
+              lastSyncedAt: originalOldClassTimetable.lastSyncedAt,
             }
           );
         }
@@ -805,7 +901,7 @@ class TimetableService {
             {
               schedule: originalNewClassTimetable.schedule,
               version: originalNewClassTimetable.version,
-              lastSyncedAt: originalNewClassTimetable.lastSyncedAt
+              lastSyncedAt: originalNewClassTimetable.lastSyncedAt,
             }
           );
         }
@@ -817,15 +913,16 @@ class TimetableService {
             {
               schedule: originalTeacherTimetable.schedule,
               version: originalTeacherTimetable.version,
-              lastSyncedAt: originalTeacherTimetable.lastSyncedAt
+              lastSyncedAt: originalTeacherTimetable.lastSyncedAt,
             }
           );
         }
-
-        console.log('Rollback completed successfully');
       } catch (rollbackError) {
-        console.error('Rollback failed:', rollbackError);
-        throw new Error(`Class switch failed and rollback also failed: ${error.message}. Rollback error: ${rollbackError.message}`);
+        logger.error({ err: rollbackError }, 'Rollback failed');
+        throw new Error(
+          `Class switch failed and rollback also failed: ${error.message}. Rollback error: ${rollbackError.message}`,
+          { cause: rollbackError }
+        );
       }
 
       throw error;
@@ -834,7 +931,7 @@ class TimetableService {
 
   /**
    * Remove teacher from a specific class time slot
-   * 
+   *
    * @param {Object} options - Remove options
    * @param {string} options.classId - Class ID
    * @param {string} options.teacherId - Teacher ID
@@ -848,7 +945,9 @@ class TimetableService {
 
     // Validate inputs
     if (!classId || !teacherId || !day || periodIndex === undefined) {
-      throw new Error('Missing required parameters: classId, teacherId, day, and periodIndex are required');
+      throw new Error(
+        'Missing required parameters: classId, teacherId, day, and periodIndex are required'
+      );
     }
 
     // Get class timetable
@@ -873,7 +972,7 @@ class TimetableService {
       teacherId: null,
       room: '',
       lastModified: new Date(),
-      modifiedBy: null
+      modifiedBy: null,
     };
 
     classTimetable.version += 1;
@@ -883,13 +982,13 @@ class TimetableService {
     return {
       success: true,
       message: 'Teacher removed from slot successfully',
-      classTimetable
+      classTimetable,
     };
   }
 
   /**
    * Add teacher to a specific class time slot
-   * 
+   *
    * @param {Object} options - Add options
    * @param {string} options.classId - Class ID
    * @param {string} options.teacherId - Teacher ID
@@ -910,16 +1009,18 @@ class TimetableService {
       subject,
       room = '',
       academicYear = CURRENT_ACADEMIC_YEAR,
-      modifiedBy = null
+      modifiedBy = null,
     } = options;
 
     // Validate inputs
     if (!classId || !teacherId || !day || periodIndex === undefined || !subject) {
-      throw new Error('Missing required parameters: classId, teacherId, day, periodIndex, and subject are required');
+      throw new Error(
+        'Missing required parameters: classId, teacherId, day, periodIndex, and subject are required'
+      );
     }
 
     // Get or create class timetable
-    let classTimetable = await Timetable.findOne({ classId, academicYear });
+    const classTimetable = await Timetable.findOne({ classId, academicYear });
     if (!classTimetable) {
       throw new Error(`Class timetable not found for classId: ${classId}`);
     }
@@ -940,7 +1041,7 @@ class TimetableService {
       teacherId,
       room,
       lastModified: new Date(),
-      modifiedBy
+      modifiedBy,
     };
 
     classTimetable.version += 1;
@@ -950,11 +1051,9 @@ class TimetableService {
     return {
       success: true,
       message: 'Teacher added to slot successfully',
-      classTimetable
+      classTimetable,
     };
   }
 }
 
 export default new TimetableService();
-
-

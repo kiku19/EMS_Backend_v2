@@ -1,0 +1,31 @@
+{
+  "errors": {
+    "examNotFound": "Exam not found",
+    "classNotFound": "Class not found",
+    "staffNotFound": "Staff not found",
+    "resultNotFound": "Result not found",
+    "scheduleNotFound": "Exam schedule not found",
+    "endDateInvalid": "endDate must be on or after startDate",
+    "duplicateExam": "A duplicate exam already exists for this class and academic year",
+    "maxMarksLocked": "Cannot change maxMarks after results have been entered. Delete existing results first.",
+    "resultsRequired": "Results array is required",
+    "resultsModified": "Results were modified by another user. Please reload and try again.",
+    "invalidMarks": "Invalid marks for student {{studentId}}: {{marks}}. Marks must be between 0 and {{maxMarks}}.",
+    "studentNotEnrolled": "Student {{studentId}} is not enrolled in this class",
+    "marksExceeded": "Invalid marks for {{studentName}}: {{marks}} exceeds maximum {{maxMarks}}",
+    "fetchFailed": "Failed to fetch exam data",
+    "createFailed": "Failed to create exam",
+    "updateFailed": "Failed to update exam",
+    "deleteFailed": "Failed to delete exam",
+    "resultSaveFailed": "Failed to save results",
+    "recalculateFailed": "Failed to recalculate results"
+  },
+  "success": {
+    "examCreated": "Exam created successfully",
+    "examUpdated": "Exam updated successfully",
+    "examDeleted": "Exam deleted successfully",
+    "resultsSaved": "Results saved successfully",
+    "noResultsToRecalculate": "No results to recalculate",
+    "resultsRecalculated": "Results recalculated successfully"
+  }
+}

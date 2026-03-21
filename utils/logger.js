@@ -120,19 +120,107 @@ function stringifyValue(value) {
   }
 }
 
+/**
+ * OBS-03: Build Pino transport(s).
+ *
+ * Supports shipping logs to an external aggregation platform alongside
+ * (or instead of) the pino-pretty dev output.
+ *
+ * External transports are activated by environment variables:
+ *
+ *   LOKI_URL             → Grafana Loki  (requires: npm i pino-loki)
+ *   DD_API_KEY           → Datadog       (requires: npm i pino-datadog-transport)
+ *   ELASTICSEARCH_URL    → ELK Stack     (requires: npm i pino-elasticsearch)
+ *
+ * When no external target is configured the logger writes JSON to stdout,
+ * which a sidecar agent (Promtail / Filebeat / Datadog Agent) can collect.
+ *
+ * In development, pino-pretty is always added unless LOG_PRETTY=false.
+ */
 function buildTransport() {
-  if (process.env.NODE_ENV === 'production' || process.env.LOG_PRETTY === 'false') {
-    return undefined;
+  const targets = [];
+  const level = resolveLogLevel();
+
+  // Development pretty-printer — always add unless explicitly disabled
+  const isPretty = process.env.NODE_ENV !== 'production' && process.env.LOG_PRETTY !== 'false';
+  if (isPretty) {
+    targets.push({
+      target: 'pino-pretty',
+      level,
+      options: {
+        colorize: true,
+        translateTime: 'SYS:standard',
+        ignore: 'pid,hostname',
+      },
+    });
   }
 
-  return pino.transport({
-    target: 'pino-pretty',
-    options: {
-      colorize: true,
-      translateTime: 'SYS:standard',
-      ignore: 'pid,hostname',
-    },
-  });
+  // ── Grafana Loki ──────────────────────────────────────────────────────────
+  if (process.env.LOKI_URL) {
+    const lokiOptions = {
+      host: process.env.LOKI_URL,
+      labels: {
+        app: 'ems-backend',
+        env: process.env.NODE_ENV || 'development',
+      },
+      replaceTimestamp: false,
+      batching: true,
+      interval: 5,
+    };
+
+    // Support basic auth for Grafana Cloud (LOKI_USERNAME + LOKI_PASSWORD)
+    if (process.env.LOKI_USERNAME && process.env.LOKI_PASSWORD) {
+      lokiOptions.basicAuth = {
+        username: process.env.LOKI_USERNAME,
+        password: process.env.LOKI_PASSWORD,
+      };
+    }
+
+    targets.push({ target: 'pino-loki', level, options: lokiOptions });
+  }
+
+  // ── Datadog ───────────────────────────────────────────────────────────────
+  // Install: npm i pino-datadog-transport
+  if (process.env.DD_API_KEY) {
+    targets.push({
+      target: 'pino-datadog-transport',
+      level,
+      options: {
+        apiKey: process.env.DD_API_KEY,
+        ddsource: 'nodejs',
+        service: 'ems-backend',
+        ddtags: `env:${process.env.NODE_ENV || 'development'}`,
+      },
+    });
+  }
+
+  // ── Elasticsearch / ELK ───────────────────────────────────────────────────
+  // Install: npm i pino-elasticsearch
+  if (process.env.ELASTICSEARCH_URL) {
+    targets.push({
+      target: 'pino-elasticsearch',
+      level,
+      options: {
+        node: process.env.ELASTICSEARCH_URL,
+        index: process.env.ELASTICSEARCH_INDEX || 'ems-logs',
+        auth: process.env.ELASTICSEARCH_API_KEY
+          ? { apiKey: process.env.ELASTICSEARCH_API_KEY }
+          : undefined,
+      },
+    });
+  }
+
+  if (targets.length === 0) {
+    return undefined; // JSON to stdout — collected by log agent (Promtail/Filebeat/DD Agent)
+  }
+
+  if (targets.length === 1) {
+    // Single transport — avoid multi-transport overhead
+    const { target, options } = targets[0];
+    return pino.transport({ target, options });
+  }
+
+  return pino.transport({ targets });
 }
 
 function wrapLogMethod(instance, level) {

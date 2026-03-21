@@ -10,6 +10,21 @@ export function normalizeAcademicYear(value) {
   return value.trim();
 }
 
+/**
+ * Validates that a string is a well-formed academic year in YYYY-YY format
+ * where the YY suffix is exactly the last two digits of (YYYY + 1).
+ * Examples: "2024-25" ✓, "2024-26" ✗, "2024-5" ✗
+ */
+export function isValidAcademicYear(value) {
+  if (typeof value !== 'string') return false;
+  const match = value.trim().match(/^(\d{4})-(\d{2})$/);
+  if (!match) return false;
+  const startYear = parseInt(match[1], 10);
+  const endSuffix = parseInt(match[2], 10);
+  const expectedSuffix = (startYear + 1) % 100;
+  return endSuffix === expectedSuffix && startYear >= 2000 && startYear <= 2099;
+}
+
 export function parseAcademicYear(academicYear = CURRENT_ACADEMIC_YEAR) {
   const [startYearRaw, endYearRaw] = String(academicYear).split('-');
   const startYear = Number.parseInt(startYearRaw, 10);
@@ -24,9 +39,11 @@ export function parseAcademicYear(academicYear = CURRENT_ACADEMIC_YEAR) {
     };
   }
 
+  const century = Math.floor(startYear / 100) * 100;
+  const rawEndYear = century + endYearSuffix;
   return {
     startYear,
-    endYear: Math.floor(startYear / 100) * 100 + endYearSuffix,
+    endYear: rawEndYear <= startYear ? rawEndYear + 100 : rawEndYear,
   };
 }
 
@@ -103,9 +120,11 @@ export async function ensureSchoolSettings(schoolId = null) {
 export async function getConfiguredAcademicYear(schoolId = null) {
   try {
     const settings = await ensureSchoolSettings(schoolId);
-    return normalizeAcademicYear(settings?.academicYear)
-      || normalizeAcademicYear(settings?.currentSession)
-      || CURRENT_ACADEMIC_YEAR;
+    return (
+      normalizeAcademicYear(settings?.academicYear) ||
+      normalizeAcademicYear(settings?.currentSession) ||
+      CURRENT_ACADEMIC_YEAR
+    );
   } catch (error) {
     console.warn('Falling back to default academic year:', error.message);
     return CURRENT_ACADEMIC_YEAR;
@@ -114,10 +133,12 @@ export async function getConfiguredAcademicYear(schoolId = null) {
 
 export async function resolveAcademicYear(academicYear, schoolId = null) {
   const normalized = normalizeAcademicYear(academicYear);
-  return normalized || getConfiguredAcademicYear(schoolId);
+  if (normalized && isValidAcademicYear(normalized)) return normalized;
+  return getConfiguredAcademicYear(schoolId);
 }
 
 export function resolveAcademicYearSync(academicYear) {
   const normalized = normalizeAcademicYear(academicYear);
-  return normalized || CURRENT_ACADEMIC_YEAR;
+  if (normalized && isValidAcademicYear(normalized)) return normalized;
+  return CURRENT_ACADEMIC_YEAR;
 }

@@ -6,7 +6,7 @@
 /**
  * Creates a debounced function that delays invoking func until after wait milliseconds
  * have elapsed since the last time the debounced function was invoked
- * 
+ *
  * @param {Function} func - The function to debounce
  * @param {number} wait - The number of milliseconds to delay
  * @param {Object} options - Options object
@@ -138,7 +138,7 @@ export function debounce(func, wait = 300, options = {}) {
 
 /**
  * Creates a throttled function that only invokes func at most once per every wait milliseconds
- * 
+ *
  * @param {Function} func - The function to throttle
  * @param {number} wait - The number of milliseconds to throttle invocations to
  * @param {Object} options - Options object
@@ -151,20 +151,20 @@ export function throttle(func, wait = 300, options = {}) {
   return debounce(func, wait, {
     leading,
     trailing,
-    maxWait: wait
+    maxWait: wait,
   });
 }
 
 /**
  * Async debounce - debounces async functions and returns a promise
- * 
+ *
  * @param {Function} func - The async function to debounce
  * @param {number} wait - The number of milliseconds to delay
  * @returns {Function} The debounced async function
  */
 export function debounceAsync(func, wait = 300) {
   let timeout;
-  let pendingPromise = null;
+  const pendingPromise = null;
 
   return function debounced(...args) {
     return new Promise((resolve, reject) => {

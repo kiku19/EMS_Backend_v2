@@ -1,44 +1,74 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
-import { CURRENT_ACADEMIC_YEAR } from './utils/constants.js';
 import { createLogger } from './utils/logger.js';
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
+const MONGODB_URI =
+  process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
 const logger = createLogger('Database');
+
+// DR-02: Replica set failover connection options.
+// These settings ensure MongoDB Atlas (or self-hosted RS) failover is handled
+// automatically. In Atlas the typical election completes in 10-30 s, giving:
+//   RTO ≤ 30 s  (automatic — driver retries after primary re-election)
+//   RPO  = 0    (w:"majority" + j:true means committed writes survive failover)
+const FAILOVER_CONNECTION_OPTIONS = {
+  // Replica set resilience
+  retryWrites: true, // Automatically retry writes on transient network errors
+  retryReads: true, // Automatically retry reads on transient network errors
+  w: 'majority', // Wait for majority of RS members to acknowledge write (RPO = 0)
+  j: true, // Journal writes before acknowledging (survive crashes)
+  readPreference: 'primaryPreferred', // Fall back to secondary reads if primary unreachable
+
+  // Failure detection — detect primary outage within ~10 s
+  heartbeatFrequencyMS: 10000, // Check RS member health every 10 s
+  serverSelectionTimeoutMS: 30000, // Wait up to 30 s for a primary to be elected
+  connectTimeoutMS: 10000, // Hard connection timeout per socket
+
+  // Connection pool
+  maxPoolSize: 10,
+  minPoolSize: 2,
+  socketTimeoutMS: 45000,
+
+  // OBS-05: Enable MongoDB APM command events for slow query monitoring
+  monitorCommands: true,
+};
 
 export async function connectDB() {
   try {
     mongoose.set('strictQuery', false);
-    
-    // Add connection event listeners
+
     mongoose.connection.on('connected', () => {
       logger.info('MongoDB connected successfully');
     });
-    
+
     mongoose.connection.on('error', (err) => {
       logger.error({ err }, 'MongoDB connection error');
     });
-    
+
     mongoose.connection.on('disconnected', () => {
-      logger.warn('MongoDB disconnected');
+      logger.warn('MongoDB disconnected — driver will retry automatically');
     });
-    
+
+    // DR-02: Log replica set topology changes so failovers are visible in logs
+    mongoose.connection.on('fullsetup', () => {
+      logger.info('MongoDB replica set: primary + all secondaries connected');
+    });
+
+    mongoose.connection.on('all', () => {
+      logger.info('MongoDB replica set: all members connected');
+    });
+
     // Graceful shutdown
     process.on('SIGINT', async () => {
       await mongoose.connection.close();
       logger.info('MongoDB connection closed through app termination');
       process.exit(0);
     });
-    
-    await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      maxPoolSize: 10,
-      minPoolSize: 2,
-      socketTimeoutMS: 45000,
-    });
-    
+
+    await mongoose.connect(MONGODB_URI, FAILOVER_CONNECTION_OPTIONS);
+
     logger.info({ mongoUri: MONGODB_URI.replace(/\/\/.*@/, '//***@') }, 'Connected to MongoDB');
   } catch (error) {
     logger.error(
@@ -48,8 +78,7 @@ export async function connectDB() {
       },
       'MongoDB connection failed'
     );
-    
-    // Don't exit immediately in development, allow retry
+
     if (process.env.NODE_ENV === 'production') {
       process.exit(1);
     } else {
@@ -58,1211 +87,249 @@ export async function connectDB() {
   }
 }
 
-// Staff Schema - with login credentials
-const staffSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null, index: true },
-  code: { type: String, unique: true, required: true },
-  name: { type: String, required: true },
-  role: { type: [String], required: true }, // Array of roles: Teacher, Admin, etc. (supports multiple roles)
-  department: String,
-  status: { type: String, default: 'active' },
-  phone: String,
-  email: String,
-  joinDate: String,
-  address: String,
-  nationality: { type: String, default: 'Indian' },
-  shift: { type: String, default: 'Morning' },
-  designation: String,
-  
-  // Personal Details
-  dob: String,
-  gender: String,
-  fatherName: String,
-  bloodGroup: String,
-  maritalStatus: String,
-  employmentType: String,
-  emergencyContact: String,
-  emergencyPhone: String,
-  emergencyContacts: [{
-    name: String,
-    relationship: String,
-    phone: String
-  }],
-  whatsappNumber: String,
-  isWhatsapp: { type: Boolean, default: false },
-  
-  // Documents
-  picture: String, // URL to profile picture
-  photo: String, // Legacy alias used by chat and older views
-  idDocuments: [{
-    type: String, // Document type (Aadhar Card, PAN Card, etc.)
-    url: String, // Document URL
-    name: String // Original file name
-  }], // Array of ID document objects with metadata
-  
-  // Qualifications
-  professionalQualifications: [{
-    name: String,
-    year: String,
-    documents: [String] // URLs to certificates
-  }],
-  totalExperience: String,
-  previousOrganization: String,
-  roleInOrganization: String,
-  qualificationDocs: [String], // URLs to qualification documents
-  customDocuments: [String], // URLs to custom documents
-  qualification: String,
-  experience: { type: Number, default: 0 },
-  
-  // Staff Info
-  staffNumber: String,
-  staffType: [String], // Array of staff types to match role field
-  assignedClasses: [String],
-  isClassTeacher: Boolean,
-  classTeacherOf: String,
-  
-  // Bank & Salary
-  accountNumber: String,
-  ifscCode: String,
-  bankName: String,
-  branchName: String,
-  panNumber: String,
-  salary: { type: Number, default: 0 }, // Base salary for payroll
-  salaryTemplate: String,
-  salaryBreakdown: [{
-    component: String,
-    amount: Number
-  }],
-  
-  // Login credentials
-  username: { type: String, unique: true, sparse: true },
-  password: { type: String, required: true }, // Hashed with bcrypt
-  
-  // Hierarchy
-  reporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  
-  // Timetable Management - Teacher Assignments
-  teacherAssignments: [{
-    subject: { type: String, required: true },
-    classes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
-    createdAt: { type: Date, default: Date.now }
-  }]
-}, { timestamps: true });
-
-// Hash password before saving
-import bcrypt from 'bcrypt';
-
-staffSchema.pre('save', async function(next) {
-  const canonicalPhoto = this.picture || this.photo;
-  if (canonicalPhoto) {
-    this.picture = canonicalPhoto;
-    this.photo = canonicalPhoto;
+// DR-02: Returns replica set member status for health/ops endpoints.
+// Returns null when connected to a standalone (non-RS) MongoDB instance.
+export async function getReplicaSetStatus() {
+  if (mongoose.connection.readyState !== 1) {
+    return null;
   }
 
-  // Only hash the password if it has been modified (or is new)
-  if (!this.isModified('password')) return next();
-  
   try {
-    // Generate salt and hash password
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
+    const result = await mongoose.connection.db.admin().command({ replSetGetStatus: 1 });
+    const members = (result.members || []).map((m) => ({
+      name: m.name,
+      state: m.stateStr, // PRIMARY, SECONDARY, ARBITER, etc.
+      health: m.health === 1 ? 'healthy' : 'unhealthy',
+      uptime: m.uptime,
+      lagSeconds: m.optimeDate
+        ? Math.round((Date.now() - new Date(m.optimeDate).getTime()) / 1000)
+        : null,
+    }));
+
+    return {
+      setName: result.set,
+      myState: result.myState,
+      members,
+      primary: members.find((m) => m.state === 'PRIMARY')?.name ?? null,
+      secondaryCount: members.filter((m) => m.state === 'SECONDARY').length,
+    };
+  } catch (err) {
+    // Not a replica set (standalone) or insufficient permissions — not an error
+    if (
+      err.codeName === 'NotYetInitialized' ||
+      err.message?.includes('not running with --replSet')
+    ) {
+      return { setName: null, standalone: true };
+    }
+    logger.warn({ err }, 'Could not fetch replica set status');
+    return null;
   }
-});
-
-// Method to compare password for login
-staffSchema.methods.comparePassword = async function(candidatePassword) {
-  try {
-    return await bcrypt.compare(candidatePassword, this.password);
-  } catch (error) {
-    throw error;
-  }
-};
-
-// Indexes for Staff model
-staffSchema.index({ schoolId: 1, status: 1 });
-staffSchema.index({ 'teacherAssignments.subject': 1 });
-staffSchema.index({ 'teacherAssignments.classes': 1 });
-
-// Class Schema - with class teacher reference
-const classSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  name: { type: String, required: true }, // e.g., "Class 10"
-  section: { type: String, required: true }, // e.g., "A"
-  classTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  subjects: [String],
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-
-  // Strength management
-  strengthLimit: {
-    current: { type: Number, default: 40 },
-    default: { type: Number, default: 40 },
-    adjustments: [{
-      newLimit: Number,
-      reason: String,
-      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      date: { type: Date, default: Date.now }
-    }]
-  },
-
-  // Academic and attendance tracking
-  averageAttendance: { type: Number, default: 0, min: 0, max: 100 },
-  averageAcademicPerformance: { type: Number, default: 0, min: 0, max: 100 },
-  rating: { type: Number, default: 3, min: 1, max: 5 },
-
-  // Chapter progress references
-  chapterProgress: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ChapterProgress' }],
-
-  // Room assignment
-  room: String,
-  block: String,
-  
-  // Timetable Management - Class Settings
-  classTag: { type: String }, // Free-text tag for class identification
-  assignedSubjects: [{ type: String }] // Subjects assigned to this class
-}, { timestamps: true });
-
-// Add compound unique index to prevent duplicate class name+section combinations
-classSchema.index({ schoolId: 1, name: 1, section: 1, academicYear: 1 }, { unique: true });
-
-// Student Schema - linked to class with comprehensive fields
-const studentSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  name: { type: String, required: true },
-  admissionId: { type: String, unique: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  rollNo: Number,
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-
-  // Personal Information
-  gender: String,
-  dateOfBirth: {
-    type: String,
-    validate: {
-      validator: function(v) {
-        if (!v) return true; // Optional
-        const dob = new Date(v);
-        const now = new Date();
-        const minDate = new Date(now.getFullYear() - 100, now.getMonth(), now.getDate());
-        return dob <= now && dob >= minDate;
-      },
-      message: 'Date of birth must be within the last 100 years and not in the future'
-    }
-  },
-  bloodGroup: String,
-  nationality: String,
-  religion: String,
-  category: String,
-  motherTongue: String,
-  aadhaarNumber: {
-    type: String,
-    validate: {
-      validator: function(v) {
-        if (!v) return true; // Optional
-        return /^\d{12}$/.test(v);
-      },
-      message: 'Aadhaar number must be exactly 12 digits'
-    }
-  },
-
-  // Contact Information
-  phone: String,
-  email: {
-    type: String,
-    validate: {
-      validator: function(v) {
-        if (!v) return true; // Optional
-        return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(v);
-      },
-      message: 'Please enter a valid email address'
-    }
-  },
-  isWhatsapp: { type: Boolean, default: true },
-  whatsappNumber: String,
-  address: String,
-  city: String,
-  state: String,
-  zipCode: {
-    type: String,
-    validate: {
-      validator: function(v) {
-        if (!v) return true; // Optional
-        return /^\d{6}$/.test(v);
-      },
-      message: 'ZIP code must be exactly 6 digits'
-    }
-  },
-
-  // Parent/Guardian Information
-  parentName: String,
-  parentPhone: String,
-  parentEmail: String,
-  parentRelationship: String,
-  parentOccupation: String,
-  alternatePhone: String,
-
-  // Additional Parents (stored as array)
-  parents: {
-    type: [{
-      name: { type: String, required: true },
-      relationship: String,
-      phone: String,
-      email: String,
-      occupation: String,
-      isWhatsapp: { type: Boolean, default: true }
-    }],
-    validate: {
-      validator: function(v) {
-        return v && v.length > 0;
-      },
-      message: 'At least one parent/guardian is required'
-    }
-  },
-
-  // Siblings (only siblings in the same school)
-  siblings: [{
-    name: { type: String, required: true },
-    inSameSchool: { type: Boolean, default: true },
-    classId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Class',
-      validate: {
-        validator: async function(v) {
-          // If inSameSchool is true, classId is required
-          const sibling = this;
-          const siblingIdx = sibling.siblings.findIndex(s => s.classId && s.classId.toString() === v?.toString());
-          if (siblingIdx === -1) return true; // Not this sibling
-
-          const thisSibling = sibling.siblings[siblingIdx];
-          if (thisSibling.inSameSchool && !v) {
-            return false;
-          }
-          return true;
-        },
-        message: 'Class is required when sibling is in the same school'
-      }
-    }
-  }],
-
-  // Academic Information
-  previousSchool: String,
-  tcNumber: String,
-
-  // Health & Safety
-  medicalConditions: String,
-  emergencyContactName: String,
-  emergencyContactPhone: String,
-
-  // Requirements
-  transportRequired: { type: Boolean, default: false },
-  hostelRequired: { type: Boolean, default: false },
-
-  // Status
-  feeStatus: { type: String, default: 'pending' },
-  status: { type: String, default: 'active' },
-
-  // Pinning
-  isPinned: { type: Boolean, default: false },
-  pinnedAt: { type: Date },
-
-  // Fee Details
-  feeDetails: {
-    totalFee: { type: Number, default: 0 },
-    paidAmount: { type: Number, default: 0 },
-    balanceAmount: { type: Number, default: 0 },
-    discountApplied: { type: Number, default: 0 },
-    lastPaymentDate: String
-  },
-
-  // Documents (stored as references or URLs)
-  documents: [{
-    id: { type: String, required: true },
-    name: String,
-    type: String,
-    category: String, // birthCertificate, tc, aadhaar, etc.
-    front: { url: String, uploadDate: Date },
-    back: { url: String, uploadDate: Date },
-    // Legacy support for old single-file documents
-    url: String,
-    uploadDate: Date
-  }],
-
-  photo: String,
-
-  // Soft delete fields
-  isDeleted: {
-    type: Boolean,
-    default: false,
-    index: true // Critical for query performance
-  },
-  deletedAt: {
-    type: Date,
-    default: null
-  },
-  deletedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Staff',
-    default: null
-  }
-}, { timestamps: true });
-
-// Indexes for performance
-// Note: admissionId already has unique: true in schema definition which creates an index
-studentSchema.index({ classId: 1, status: 1 });
-studentSchema.index({ rollNo: 1, classId: 1, academicYear: 1 }, { unique: true, partialFilterExpression: { rollNo: { $type: "string" } } });
-studentSchema.index({ isPinned: 1, pinnedAt: -1 });
-studentSchema.index({ status: 1 });
-studentSchema.index({ feeStatus: 1 });
-// Add compound index for efficient trash queries
-studentSchema.index({ isDeleted: 1, deletedAt: -1 });
-studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
-
-// Attendance Schema
-const attendanceSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  date: { type: String, required: true },
-  status: { type: String, required: true }, // present, absent, late
-  markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-}, { timestamps: true });
-
-attendanceSchema.index({ schoolId: 1, studentId: 1, date: 1 }, { unique: true });
-attendanceSchema.index({ classId: 1, date: 1 });
-attendanceSchema.index({ 'records.studentId': 1, date: 1 });
-
-// Exam Schema
-const examSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  name: { type: String, required: true },
-  type: { type: String }, // unit_test, quiz, midterm, final (frontend field)
-  examType: { type: String }, // Legacy field - unit-test, midterm, final, annual
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-  subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }, // Single subject mode
-  subjectName: { type: String }, // Single subject name
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  startDate: { type: Date },
-  endDate: { type: Date },
-  totalMarks: { type: Number, default: 100 },
-  maxMarks: { type: Number, default: 100 }, // Alias for frontend
-  passingMarks: { type: Number, default: 35 },
-  weightage: { type: Number, default: 10 },
-  gradingType: { type: String, default: 'numerical' }, // numerical, grades, cgpa
-  instructions: { type: String },
-  subjects: [{
-    subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
-    subjectName: String,
-    date: Date,
-    startTime: String,
-    endTime: String,
-    maxMarks: { type: Number, default: 100 },
-    passingMarks: { type: Number, default: 33 }
-  }],
-  status: { type: String, default: 'scheduled' }, // scheduled, ongoing, completed, results_published
-  isPublished: { type: Boolean, default: false },
-  publishedAt: { type: Date },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-}, { timestamps: true });
-
-examSchema.index({ schoolId: 1, classId: 1, academicYear: 1 });
-
-// Result Schema
-const resultSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  examId: { type: mongoose.Schema.Types.ObjectId, ref: 'Exam', required: true },
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-  academicYear: { type: String },
-  // Simple single-subject fields
-  marksObtained: { type: Number, default: 0 },
-  maxMarks: { type: Number, default: 100 },
-  remarks: { type: String },
-  enteredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  enteredAt: { type: Date },
-  // Multi-subject support (legacy/advanced)
-  marks: [{
-    subjectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject' },
-    subjectName: String,
-    marksObtained: Number,
-    maxMarks: Number,
-    passingMarks: Number,
-    grade: String,
-    remarks: String
-  }],
-  totalMarksObtained: { type: Number, default: 0 },
-  totalMaxMarks: { type: Number, default: 0 },
-  percentage: { type: Number, default: 0 },
-  grade: String,
-  rank: Number,
-  status: { type: String, default: 'passed' }, // passed, failed, promoted
-  isPublished: { type: Boolean, default: false }
-}, { timestamps: true });
-
-// Compound indexes for efficient queries
-resultSchema.index({ schoolId: 1, examId: 1, studentId: 1 }, { unique: true });
-resultSchema.index({ studentId: 1, academicYear: 1 });
-resultSchema.index({ examId: 1, classId: 1 });
-
-// Timetable Schema
-const timetableSchema = new mongoose.Schema({
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  periods: [{
-    name: String,
-    startTime: String,
-    endTime: String,
-    isBreak: { type: Boolean, default: false }
-  }],
-  schedule: {
-    Monday: [{
-      subject: String,
-      teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String,
-      // Timetable Management - Metadata
-      lastModified: { type: Date, default: Date.now },
-      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-    }],
-    Tuesday: [{
-      subject: String,
-      teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String,
-      lastModified: { type: Date, default: Date.now },
-      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-    }],
-    Wednesday: [{
-      subject: String,
-      teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String,
-      lastModified: { type: Date, default: Date.now },
-      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-    }],
-    Thursday: [{
-      subject: String,
-      teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String,
-      lastModified: { type: Date, default: Date.now },
-      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-    }],
-    Friday: [{
-      subject: String,
-      teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String,
-      lastModified: { type: Date, default: Date.now },
-      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-    }],
-    Saturday: [{
-      subject: String,
-      teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-      room: String,
-      lastModified: { type: Date, default: Date.now },
-      modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }
-    }]
-  },
-  // Timetable Management - Version Control
-  version: { type: Number, default: 1 },
-  lastSyncedAt: { type: Date, default: Date.now }
-}, { timestamps: true });
-
-timetableSchema.index({ classId: 1, academicYear: 1 }, { unique: true });
-// Indexes for teacher queries in schedule
-timetableSchema.index({ 'schedule.Monday.teacherId': 1 });
-timetableSchema.index({ 'schedule.Tuesday.teacherId': 1 });
-timetableSchema.index({ 'schedule.Wednesday.teacherId': 1 });
-timetableSchema.index({ 'schedule.Thursday.teacherId': 1 });
-timetableSchema.index({ 'schedule.Friday.teacherId': 1 });
-timetableSchema.index({ 'schedule.Saturday.teacherId': 1 });
-
-// Teacher Timetable Schema - for managing teacher schedules
-const teacherTimetableSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  schedule: {
-    Monday: [{
-      periodIndex: Number,
-      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-      subject: String,
-      room: String,
-      lastModified: { type: Date, default: Date.now }
-    }],
-    Tuesday: [{
-      periodIndex: Number,
-      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-      subject: String,
-      room: String,
-      lastModified: { type: Date, default: Date.now }
-    }],
-    Wednesday: [{
-      periodIndex: Number,
-      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-      subject: String,
-      room: String,
-      lastModified: { type: Date, default: Date.now }
-    }],
-    Thursday: [{
-      periodIndex: Number,
-      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-      subject: String,
-      room: String,
-      lastModified: { type: Date, default: Date.now }
-    }],
-    Friday: [{
-      periodIndex: Number,
-      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-      subject: String,
-      room: String,
-      lastModified: { type: Date, default: Date.now }
-    }],
-    Saturday: [{
-      periodIndex: Number,
-      classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
-      subject: String,
-      room: String,
-      lastModified: { type: Date, default: Date.now }
-    }]
-  },
-  totalPeriodsPerWeek: { type: Number, default: 0 },
-  version: { type: Number, default: 1 },
-  lastSyncedAt: { type: Date, default: Date.now }
-}, { timestamps: true });
-
-teacherTimetableSchema.index({ schoolId: 1, teacherId: 1, academicYear: 1 }, { unique: true });
-
-// Conflict Log Schema - for tracking scheduling conflicts
-const conflictLogSchema = new mongoose.Schema({
-  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
-  conflictType: { 
-    type: String, 
-    enum: ['double_booking', 'unqualified', 'invalid_assignment'], 
-    required: true 
-  },
-  day: { type: String, required: true },
-  periodIndex: { type: Number, required: true },
-  classes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
-  subject: String,
-  detectedAt: { type: Date, default: Date.now },
-  resolvedAt: Date,
-  resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  resolution: String,
-  status: { 
-    type: String, 
-    enum: ['active', 'resolved', 'ignored'], 
-    default: 'active' 
-  }
-}, { timestamps: true });
-
-// Indexes for conflict log
-conflictLogSchema.index({ teacherId: 1, status: 1 });
-conflictLogSchema.index({ detectedAt: -1 });
-
-// Counter Schema for auto-increment
-const counterSchema = new mongoose.Schema({
-  _id: String,
-  seq: { type: Number, default: 0 }
-});
-
-// Admission Form Configuration Schema
-const admissionFormConfigSchema = new mongoose.Schema({
-  fieldName: { type: String, required: true },
-  fieldType: { type: String, enum: ['student', 'staff'], default: 'student' },
-  isVisible: { type: Boolean, default: true },
-  isMandatory: { type: Boolean, default: false },
-  autoGenerate: { type: Boolean, default: false },
-  defaultValue: String,
-  fieldOrder: { type: Number, default: 0 },
-}, { timestamps: true });
-
-// Admission ID Configuration Schema
-const admissionIdConfigSchema = new mongoose.Schema({
-  prefix: { type: String, default: 'ADM' },
-  yearFormat: { type: String, enum: ['YYYY', 'YY', 'none'], default: 'YYYY' },
-  separator: { type: String, enum: ['-', '/', '_', ''], default: '-' },
-  numberPadding: { type: Number, default: 4 },
-  startingNumber: { type: Number, default: 1 },
-  currentNumber: { type: Number, default: 0 },
-  resetFrequency: { type: String, enum: ['yearly', 'monthly', 'never'], default: 'yearly' },
-  lastResetDate: Date,
-}, { timestamps: true });
-
-// Roll Number Configuration Schema
-const rollNumberConfigSchema = new mongoose.Schema({
-  format: { type: String, enum: ['sequential', 'class-based'], default: 'sequential' },
-  startingNumber: { type: Number, default: 1 },
-  resetPerClass: { type: Boolean, default: true },
-}, { timestamps: true });
-
-// Document Configuration Schema
-const documentConfigSchema = new mongoose.Schema({
-  documentName: { type: String, required: true },
-  isRequired: { type: Boolean, default: false },
-  uploadType: { type: String, enum: ['single', 'multiple', 'front-back'], default: 'single' },
-  allowedFormats: [{ type: String }],
-  maxFileSize: { type: Number, default: 5242880 }, // 5MB in bytes
-  displayOrder: { type: Number, default: 0 },
-  description: String,
-}, { timestamps: true });
-
-// Intake Form Schema
-const intakeFormSchema = new mongoose.Schema({
-  formName: { type: String, required: true },
-  formType: { type: String, default: 'staff' }, // 'staff', 'student', 'parent'
-  fields: { type: mongoose.Schema.Types.Mixed, default: [] }, // Store as flexible array of objects
-  status: { type: String, default: 'active' }, // 'active', 'inactive', 'archived'
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-}, { timestamps: true, strict: false });
-
-// Form Assignment Schema
-const formAssignmentSchema = new mongoose.Schema({
-  formId: { type: mongoose.Schema.Types.ObjectId, ref: 'IntakeForm', required: true },
-  assignedToEmail: String,
-  assignedToPhone: String,
-  assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  status: { type: String, default: 'pending' }, // 'pending', 'in_progress', 'submitted', 'approved', 'rejected'
-  accessToken: { type: String, unique: true, required: true },
-  expiresAt: Date,
-  assignedAt: { type: Date, default: Date.now },
-}, { timestamps: true });
-
-// Form Submission Schema
-const formSubmissionSchema = new mongoose.Schema({
-  assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FormAssignment', required: true },
-  formId: { type: mongoose.Schema.Types.ObjectId, ref: 'IntakeForm', required: true },
-  submissionData: mongoose.Schema.Types.Mixed, // All form field responses
-  submittedByEmail: String,
-  submittedByPhone: String,
-  submittedAt: { type: Date, default: Date.now },
-
-  // Review workflow fields
-  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  reviewedAt: Date,
-  reviewStatus: {
-    type: String,
-    default: 'pending',
-    enum: ['pending', 'approved', 'rejected', 'needs_revision'] // Added 'needs_revision' for edit requests
-  },
-  reviewNotes: String,
-
-  // Entity linking (populated after approval)
-  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // For staff form submissions
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' }, // For student form submissions
-
-  // Edit request workflow fields
-  editRequestNotes: String, // Admin notes when requesting edits
-  editRequestedAt: Date, // When edit was requested
-  editRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Who requested the edit
-  resubmissionCount: { type: Number, default: 0 }, // Track how many times re-submitted
-}, { timestamps: true });
-
-// Indexes for performance
-formSubmissionSchema.index({ assignmentId: 1 });
-formSubmissionSchema.index({ formId: 1 });
-formSubmissionSchema.index({ submittedByEmail: 1 });
-formSubmissionSchema.index({ reviewStatus: 1 });
-formSubmissionSchema.index({ studentId: 1 });
-formSubmissionSchema.index({ staffId: 1 });
-formSubmissionSchema.index({ submittedAt: -1 }); // For sorting by submission date
-
-// Visitor Schema - REMOVED: Now using enhanced model from ./models/Visitor.js
-// The duplicate schema definition has been removed to avoid confusion
-// Use: import Visitor from './models/Visitor.js';
-
-// Admission Schema
-const admissionSchema = new mongoose.Schema({
-  studentName: { type: String, required: true },
-  dateOfBirth: String,
-  parentName: String,
-  phoneNumber: String,
-  email: String,
-  classApplyingFor: String,
-  assessmentRequired: { type: Boolean, default: false },
-  assignedTeacher: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  testDate: String,
-  testTime: String,
-  testResult: String, // 'cleared', 'failed', 'pending'
-  dateOfInquiry: { type: String, default: () => new Date().toISOString().split('T')[0] },
-  source: String, // 'walk-in', 'call', 'website', 'reference'
-  status: { type: String, default: 'inquiry-logged' }, // inquiry-logged, form-sent, form-submitted, documents-verified, test-scheduled, test-cleared/failed/no-show, admission-approved/rejected, fee-paid, student-admitted
-  admissionDecision: String, // 'approved', 'rejected', 'pending'
-  decisionRemarks: String,
-  decisionBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-}, { timestamps: true });
-
-// Gate Pass Schema - REMOVED: Now using enhanced model from ./models/GatePass.js
-// The duplicate schema definition has been removed to avoid confusion
-// Use: import GatePass from './models/GatePass.js';
-
-// Appointment Schema
-const appointmentSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  visitorName: { type: String, required: true },
-  phoneNumber: String,
-  purpose: String,
-  // FIX: Change from String to Date type for proper datetime handling
-  fromDateTime: { type: Date, required: true },
-  toDateTime: { type: Date, required: true },
-  meetingWith: String,
-  notes: String,
-  status: { type: String, default: 'scheduled' }, // 'scheduled', 'completed', 'cancelled'
-}, { timestamps: true });
-
-appointmentSchema.index({ schoolId: 1, fromDateTime: 1 });
-
-// Feedback Schema
-const feedbackSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  phoneNumber: String,
-  date: { type: String, default: () => new Date().toISOString().split('T')[0] },
-  // FIX: Add enum validation for category field
-  category: {
-    type: String,
-    enum: ['STAFF', 'FACILITIES', 'MANAGEMENT', 'ACADEMIC', 'ADMINISTRATIVE', 'FACILITY', 'SUGGESTION', 'COMPLAINT', 'OTHER'],
-    required: true
-  },
-  assignedStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  notifyStaff: { type: Boolean, default: false },
-  status: { type: String, default: 'open', enum: ['open', 'in_progress', 'resolved', 'closed'] }, // 'open', 'resolved'
-  notes: String,
-}, { timestamps: true });
-
-// Call Log Schema
-const callLogSchema = new mongoose.Schema({
-  callerName: String,
-  phoneNumber: String,
-  dateTime: { type: String, required: true },
-  purpose: String,
-  intent: String,
-  keyNotes: String,
-  summary: String,
-  title: String,
-  transcription: String,
-  recordingUrl: String,
-  loggedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-}, { timestamps: true });
-
-// School Settings Schema - school-wide configuration
-const schoolSettingsSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null, index: true },
-  name: { type: String, default: 'School Name', trim: true },
-  schoolName: { type: String, default: 'School Name', trim: true },
-  address: { type: String, default: '' },
-  phone: { type: String, default: '' },
-  email: { type: String, default: '' },
-  website: { type: String, default: '' },
-  logo: { type: String, default: '' },
-  udiseNo: { type: String, default: '' },
-  affiliationNo: { type: String, default: '' },
-  boardOfEducation: { type: String, default: '' },
-  principalSignature: { type: String, default: '' },
-  correspondentSignature: { type: String, default: '' },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  currentSession: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  academicYearStart: { type: String, default: '' },
-  academicYearEnd: { type: String, default: '' },
-  schoolStartTime: { type: String, default: '08:00' },
-  schoolEndTime: { type: String, default: '15:00' },
-  periodDuration: { type: Number, default: 45 },
-  periodsPerDay: { type: Number, default: 8 },
-  workingDays: [{
-    type: String,
-    enum: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-  }],
-  holidays: [{
-    name: { type: String, required: true },
-    date: { type: String, required: true },
-    type: { type: String, default: 'General' },
-    description: { type: String, default: '' }
-  }],
-  leaveTypes: [{
-    name: { type: String, required: true },
-    quota: { type: Number, default: 0 },
-    applicableTo: { type: String, default: 'both' },
-    requiresApproval: { type: Boolean, default: true },
-    approver: { type: String, default: 'reporter' },
-    paid: { type: Boolean, default: true },
-    color: { type: String, default: '' }
-  }],
-
-  // Fee Collection Configuration
-  feeCollection: {
-    collectionMode: { type: String, enum: ['term', 'monthly', 'quarterly', 'yearly', 'custom'], default: 'term' },
-    numberOfTerms: { type: Number, default: 2 },
-    terms: [{
-      name: String,
-      startDate: String,
-      endDate: String,
-      dueDate: String
-    }],
-    customDurations: [{
-      name: String,
-      months: [Number]
-    }]
-  },
-
-  lateFee: {
-    enabled: { type: Boolean, default: false },
-    amount: { type: Number, default: 0 },
-    gracePeriodDays: { type: Number, default: 7 },
-    maxLateFee: { type: Number, default: 1000 }
-  },
-
-  discount: {
-    enabled: { type: Boolean, default: true },
-    requireApproval: { type: Boolean, default: true },
-    maxDiscountPercentage: { type: Number, default: 10 },
-    allowedDiscounts: [{
-      name: String,
-      percentage: Number,
-      requiresApproval: Boolean
-    }]
-  },
-
-  receipt: {
-    prefix: { type: String, default: 'RCP' },
-    startingNumber: { type: Number, default: 1001 },
-    currentNumber: { type: Number, default: 1001 }
-  },
-
-  paymentModes: [{
-    name: String,
-    enabled: Boolean
-  }],
-
-  // Payroll Configuration
-  payroll: {
-    disburseDate: { type: Number, default: 1, min: 1, max: 31 }
-  },
-
-  // Subjects Configuration
-  subjects: [{
-    name: { type: String, required: true },
-    code: { type: String },
-    description: { type: String }
-  }]
-}, { timestamps: true });
-
-// Fee Template Schema - reusable fee structures
-const feeTemplateSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  name: { type: String, required: true },
-  description: String,
-  section: { type: String, required: true },
-  applicableFor: [{
-    classGrade: String,
-    applicable: Boolean
-  }],
-  
-  feeHeads: [{
-    name: { type: String, required: true },
-    category: { type: String, enum: ['Academic', 'Transport', 'Extra-curricular', 'Hostel', 'Other'], default: 'Academic' },
-    amount: { type: Number, required: true },
-    frequency: { type: String, enum: ['monthly', 'quarterly', 'term', 'yearly', 'one-time'], default: 'yearly' },
-    mandatory: { type: Boolean, default: true },
-    applicableTerms: [Number],
-    dueDay: { type: Number, default: 10 },
-    refundable: { type: Boolean, default: false }
-  }],
-  
-  totalAnnualFee: { type: Number, required: true },
-  discounts: [{
-    name: String,
-    percentage: Number,
-    conditions: String
-  }],
-  isActive: { type: Boolean, default: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR }
-}, { timestamps: true });
-
-// Fee Structure Schema - defines fee amounts for classes
-const feeStructureSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeTemplate' },
-  
-  feeHeads: [{
-    name: String,
-    category: String,
-    amount: Number,
-    frequency: String,
-    mandatory: { type: Boolean, default: true },
-    applicableTerms: [Number],
-    dueDay: Number,
-    refundable: Boolean
-  }],
-  
-  collectionSchedule: {
-    mode: { type: String, enum: ['term', 'monthly', 'quarterly', 'yearly', 'custom'], default: 'term' },
-    installments: [{
-      name: String,
-      dueDate: String,
-      amount: Number,
-      status: { type: String, enum: ['pending', 'partial', 'paid', 'overdue'], default: 'pending' }
-    }]
-  },
-  
-  totalAnnualFee: Number,
-  isCustomized: { type: Boolean, default: false },
-  appliedDate: Date,
-  appliedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }]
-}, { timestamps: true });
-
-feeStructureSchema.index({ schoolId: 1, classId: 1, academicYear: 1 }, { unique: true });
-
-// Fee Payment Schema - records individual payments
-const feePaymentSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  receiptNumber: { type: String, required: true },
-
-  // Payment Details
-  paymentDate: { type: String, required: true },
-  amount: { type: Number, required: true },
-  paymentMode: { type: String, required: true }, // 'cash', 'cheque', 'online', 'card'
-
-  // Fee Heads Breakdown
-  feeHeads: [{
-    name: String,
-    amount: Number,
-    month: String, // For monthly fees
-    period: String, // For quarterly/annual fees
-  }],
-
-  // Transaction Details
-  transactionId: String, // For online/card payments
-  chequeNumber: String, // For cheque payments
-  bankName: String,
-
-  // Late Fee
-  lateFee: { type: Number, default: 0 },
-  discount: { type: Number, default: 0 },
-
-  // Status
-  status: { type: String, default: 'completed' }, // 'completed', 'pending', 'failed'
-
-  // Collected By
-  collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-
-  // Notes
-  remarks: String,
-}, { timestamps: true });
-
-feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
-feePaymentSchema.index({ studentId: 1, academicYear: 1 });
-feePaymentSchema.index({ classId: 1, academicYear: 1 });
-feePaymentSchema.index({ schoolId: 1, receiptNumber: 1 }, { unique: true });
-feePaymentSchema.index({ schoolId: 1, paymentDate: -1 });
-
-// Fee Refund Schema
-const feeRefundSchema = new mongoose.Schema({
-  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
-  refundNumber: { type: String, unique: true, required: true },
-
-  // Refund Details
-  refundDate: { type: String, required: true },
-  amount: { type: Number, required: true },
-  reason: { type: String, required: true },
-
-  // Original Payment Reference
-  originalPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeePayment' },
-
-  // Refund Method
-  refundMode: { type: String, required: true }, // 'cash', 'cheque', 'bank_transfer'
-  transactionId: String,
-  chequeNumber: String,
-  bankName: String,
-  accountNumber: String,
-
-  // Approval Workflow
-  requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  requestedAt: { type: Date, default: Date.now },
-  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  approvedAt: Date,
-  processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
-  processedAt: Date,
-
-  // Status
-  status: { type: String, default: 'pending' }, // 'pending', 'approved', 'processed', 'rejected'
-
-  // Notes
-  remarks: String,
-  rejectionReason: String,
-}, { timestamps: true });
-
-feeRefundSchema.index({ studentId: 1, refundDate: 1 });
-
-// Substitution Schema - for teacher substitutions
-const substitutionSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
-  date: { type: String, required: true }, // YYYY-MM-DD format
-  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-  period: { type: String, required: true }, // Period number (1-8)
-  absentTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' }, // Teacher who is absent
-  substituteTeacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true }, // Substitute teacher
-  reason: String, // Reason for substitution (leave, sick, etc.)
-  type: { type: String, enum: ['auto', 'manual'], default: 'manual' }, // Auto-assigned or manual
-  status: { type: String, enum: ['pending', 'confirmed', 'completed'], default: 'confirmed' },
-  notes: String,
-}, { timestamps: true });
-
-substitutionSchema.index({ schoolId: 1, date: 1, classId: 1, period: 1 });
-
-// Chat Models - Import from separate files
+}
+
+// ─── Domain Models ───────────────────────────────────────────────────────────
+// Each schema lives in its own file under models/. Imported and re-exported
+// here so all existing imports from './database.js' keep working unchanged.
+
+import StaffModel from './models/Staff.js';
+import ClassModel from './models/Class.js';
+import StudentModel from './models/Student.js';
+import AttendanceModel from './models/Attendance.js';
+import ExamScheduleModel from './models/ExamSchedule.js';
+import ExamModel from './models/Exam.js';
+import ResultModel from './models/Result.js';
+import TimetableModel from './models/Timetable.js';
+import TeacherTimetableModel from './models/TeacherTimetable.js';
+import ConflictLogModel from './models/ConflictLog.js';
+import CounterModel from './models/Counter.js';
+import AdmissionFormConfigModel from './models/AdmissionFormConfig.js';
+import AdmissionIdConfigModel from './models/AdmissionIdConfig.js';
+import RollNumberConfigModel from './models/RollNumberConfig.js';
+import DocumentConfigModel from './models/DocumentConfig.js';
+import IntakeFormModel from './models/IntakeForm.js';
+import FormAssignmentModel from './models/FormAssignment.js';
+import FormSubmissionModel from './models/FormSubmission.js';
+import AdmissionModel from './models/Admission.js';
+import AppointmentModel from './models/Appointment.js';
+import FeedbackModel from './models/Feedback.js';
+import CallLogModel from './models/CallLog.js';
+import SchoolSettingsModel from './models/SchoolSettings.js';
+import FeeTemplateModel from './models/FeeTemplate.js';
+import FeeStructureModel from './models/FeeStructure.js';
+import FeePaymentModel from './models/FeePayment.js';
+import FeeRefundModel from './models/FeeRefund.js';
+import SubstitutionModel from './models/Substitution.js';
+
+// Chat / messaging models
 import Message from './models/Message.js';
 import Conversation from './models/Conversation.js';
 import UserPresence from './models/UserPresence.js';
 import Notification from './models/Notification.js';
 
-// Fee Management Models - Import from separate files
+// Fee management models
 import FeeHead from './models/FeeHead.js';
 import StudentFeeStructure from './models/StudentFeeStructure.js';
 import FeeConsession from './models/FeeConsession.js';
 import LateFeeRule from './models/LateFeeRule.js';
+import FeeRule from './models/FeeRule.js';
+import PaymentMethodConfig from './models/PaymentMethodConfig.js';
+import FeeCollectionPeriod from './models/FeeCollectionPeriod.js';
 
-// Class Module Models - Import from separate files
+// Class module models
 import ActivityLog from './models/ActivityLog.js';
 import ClassRating from './models/ClassRating.js';
 import ChapterProgress from './models/ChapterProgress.js';
 import ClassAnnouncement from './models/ClassAnnouncement.js';
 
-// Student Remarks Model
+// Other models
 import Remark from './models/Remark.js';
-import FeeRule from './models/FeeRule.js';
-import PaymentMethodConfig from './models/PaymentMethodConfig.js';
-import FeeCollectionPeriod from './models/FeeCollectionPeriod.js';
-
-// Staff ID Configuration Model
 import StaffIdConfig from './models/StaffIdConfig.js';
-
-// Staff Attendance Model
 import StaffAttendance from './models/StaffAttendance.js';
 import UserPermission from './models/UserPermission.js';
 import PermissionRequest from './models/PermissionRequest.js';
-
-// Front Office Models (Enhanced)
 import Visitor from './models/Visitor.js';
 import GatePass from './models/GatePass.js';
-
-// Import announcements and reminders models
+import AssetModel from './models/Asset.js';
+import VendorModel from './models/Vendor.js';
+import MaintenanceLogModel from './models/MaintenanceLog.js';
+import ProcurementRequestModel from './models/ProcurementRequest.js';
 import Announcement from './models/Announcement.js';
 import AnnouncementRecipient from './models/AnnouncementRecipient.js';
 import Reminder from './models/Reminder.js';
-
-// Import Parent model
 import Parent from './models/Parent.js';
 import School from './models/School.js';
 import SchoolSubscription from './models/SchoolSubscription.js';
 import SchoolInvoice from './models/SchoolInvoice.js';
+import UserDayActivity from './models/UserDayActivity.js';
+import SchoolMetricSnapshot from './models/SchoolMetricSnapshot.js';
 
-export const Staff = mongoose.model('Staff', staffSchema);
-export const Class = mongoose.model('Class', classSchema);
-export const Student = mongoose.model('Student', studentSchema);
-export const Attendance = mongoose.model('Attendance', attendanceSchema);
-export const Exam = mongoose.model('Exam', examSchema);
-export const Result = mongoose.model('Result', resultSchema);
-export const Timetable = mongoose.model('Timetable', timetableSchema);
-export const TeacherTimetable = mongoose.model('TeacherTimetable', teacherTimetableSchema);
-export const ConflictLog = mongoose.model('ConflictLog', conflictLogSchema);
-export const Counter = mongoose.model('Counter', counterSchema);
-export const IntakeForm = mongoose.model('IntakeForm', intakeFormSchema);
-export const FormAssignment = mongoose.model('FormAssignment', formAssignmentSchema);
-export const FormSubmission = mongoose.model('FormSubmission', formSubmissionSchema);
-// Visitor and GatePass are imported from enhanced models
-export const Admission = mongoose.model('Admission', admissionSchema);
-export const Appointment = mongoose.model('Appointment', appointmentSchema);
-export const Feedback = mongoose.model('Feedback', feedbackSchema);
-export const CallLog = mongoose.model('CallLog', callLogSchema);
-export const SchoolSettings = mongoose.model('SchoolSettings', schoolSettingsSchema);
-export const FeeTemplate = mongoose.model('FeeTemplate', feeTemplateSchema);
-export const FeeStructure = mongoose.model('FeeStructure', feeStructureSchema);
-export const FeePayment = mongoose.model('FeePayment', feePaymentSchema);
-export const FeeRefund = mongoose.model('FeeRefund', feeRefundSchema);
-export const Substitution = mongoose.model('Substitution', substitutionSchema);
-export const AdmissionFormConfig = mongoose.model('AdmissionFormConfig', admissionFormConfigSchema);
-export const AdmissionIdConfig = mongoose.model('AdmissionIdConfig', admissionIdConfigSchema);
-export const RollNumberConfig = mongoose.model('RollNumberConfig', rollNumberConfigSchema);
-export const DocumentConfig = mongoose.model('DocumentConfig', documentConfigSchema);
+// Transport models
+import VehicleModel from './models/Vehicle.js';
+import TransportRouteModel from './models/TransportRoute.js';
 
-// Export Parent model
-export { Parent, School, SchoolSubscription, SchoolInvoice };
+// ─── Named exports (preserve backward compatibility) ────────────────────────
+export const Staff = StaffModel;
+export const Class = ClassModel;
+export const Student = StudentModel;
+export const Attendance = AttendanceModel;
+export const ExamSchedule = ExamScheduleModel;
+export const Exam = ExamModel;
+export const Result = ResultModel;
+export const Timetable = TimetableModel;
+export const TeacherTimetable = TeacherTimetableModel;
+export const ConflictLog = ConflictLogModel;
+export const Counter = CounterModel;
+export const AdmissionFormConfig = AdmissionFormConfigModel;
+export const AdmissionIdConfig = AdmissionIdConfigModel;
+export const RollNumberConfig = RollNumberConfigModel;
+export const DocumentConfig = DocumentConfigModel;
+export const IntakeForm = IntakeFormModel;
+export const FormAssignment = FormAssignmentModel;
+export const FormSubmission = FormSubmissionModel;
+export const Admission = AdmissionModel;
+export const Appointment = AppointmentModel;
+export const Feedback = FeedbackModel;
+export const CallLog = CallLogModel;
+export const SchoolSettings = SchoolSettingsModel;
+export const FeeTemplate = FeeTemplateModel;
+export const FeeStructure = FeeStructureModel;
+export const FeePayment = FeePaymentModel;
+export const FeeRefund = FeeRefundModel;
+export const Substitution = SubstitutionModel;
+export const Vehicle = VehicleModel;
+export const TransportRoute = TransportRouteModel;
 
-// Export chat models
-export { Message, Conversation, UserPresence, Notification };
+export {
+  Parent,
+  School,
+  SchoolSubscription,
+  SchoolInvoice,
+  UserDayActivity,
+  SchoolMetricSnapshot,
+  Message,
+  Conversation,
+  UserPresence,
+  Notification,
+  Visitor,
+  GatePass,
+  FeeHead,
+  StudentFeeStructure,
+  FeeConsession,
+  LateFeeRule,
+  FeeRule,
+  PaymentMethodConfig,
+  FeeCollectionPeriod,
+  Remark,
+  StaffIdConfig,
+  StaffAttendance,
+  UserPermission,
+  PermissionRequest,
+  Announcement,
+  AnnouncementRecipient,
+  Reminder,
+  ActivityLog,
+  ClassRating,
+  ChapterProgress,
+  ClassAnnouncement,
+};
 
-// Export front office models (Enhanced)
-export { Visitor, GatePass };
+export const Asset = AssetModel;
+export const Vendor = VendorModel;
+export const MaintenanceLog = MaintenanceLogModel;
+export const ProcurementRequest = ProcurementRequestModel;
 
-// Export fee management models
-export { FeeHead, StudentFeeStructure, FeeConsession, LateFeeRule, FeeRule, PaymentMethodConfig, FeeCollectionPeriod };
+// ─── Helper functions ────────────────────────────────────────────────────────
 
-// Export remarks model
-export { Remark };
-
-// Export staff ID config model
-export { StaffIdConfig };
-
-// Export staff attendance model
-export { StaffAttendance };
-
-// Export permission models
-export { UserPermission, PermissionRequest };
-
-// Export announcements and reminders models
-export { Announcement, AnnouncementRecipient, Reminder };
-
-// Export class module models
-export { ActivityLog, ClassRating, ChapterProgress, ClassAnnouncement };
-
-// Helper to get next staff code
-export async function getNextStaffCode() {
-  console.log('📋 Fetching staff ID config from database...');
-  let config = await StaffIdConfig.findOne();
-
-  // Create default config if doesn't exist
-  if (!config) {
-    console.log('⚠️ No staff ID config found, creating default...');
-    config = new StaffIdConfig({
-      prefix: 'EMP',
-      separator: '',
-      includeYear: false,
-      startingNumber: 1,
-      digits: 3,
-      currentNumber: 0
-    });
-    await config.save();
-    console.log('✅ Default staff ID config created:', config.toObject());
-  } else {
-    console.log('✅ Staff ID config found:', config.toObject());
+export async function getNextStaffCode(schoolId) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate staff code');
   }
 
-  // Increment current number
-  config.currentNumber += 1;
-  await config.save();
-  console.log('💾 Config saved with currentNumber:', config.currentNumber);
+  const config = await StaffIdConfig.findOneAndUpdate(
+    { schoolId },
+    {
+      $inc: { currentNumber: 1 },
+      $setOnInsert: {
+        schoolId,
+        prefix: 'EMP',
+        separator: '',
+        includeYear: false,
+        startingNumber: 1,
+        digits: 3,
+      },
+    },
+    { new: true, upsert: true }
+  );
 
-  // Build staff ID
   const { prefix, separator, includeYear, digits, currentNumber } = config;
   const paddedNumber = String(currentNumber).padStart(digits, '0');
   const year = new Date().getFullYear();
-  
+
   let staffId = prefix;
   if (separator) staffId += separator;
   if (includeYear) staffId += year + (separator || '');
   staffId += paddedNumber;
 
-  console.log('🎯 Final staff ID:', staffId);
   return staffId;
 }
 
-// Helper to get next receipt number
-export async function getNextReceiptNumber() {
-  const counter = await Counter.findByIdAndUpdate(
-    'receiptNumber',
+export async function getNextRollNumber(classId) {
+  const lastStudent = await StudentModel.findOne({
+    classId,
+    isDeleted: { $ne: true },
+    rollNo: { $exists: true, $ne: null },
+  })
+    .sort({ rollNo: -1 })
+    .select('rollNo')
+    .lean();
+  return (lastStudent?.rollNo || 0) + 1;
+}
+
+export async function getNextReceiptNumber(schoolId) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate receipt number');
+  }
+  const counter = await CounterModel.findByIdAndUpdate(
+    `receiptNumber_${schoolId}`,
     { $inc: { seq: 1 } },
     { new: true, upsert: true }
   );
@@ -1270,10 +337,12 @@ export async function getNextReceiptNumber() {
   return `RCP-${year}-${String(counter.seq).padStart(6, '0')}`;
 }
 
-// Helper to get next refund number
-export async function getNextRefundNumber() {
-  const counter = await Counter.findByIdAndUpdate(
-    'refundNumber',
+export async function getNextRefundNumber(schoolId) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate refund number');
+  }
+  const counter = await CounterModel.findByIdAndUpdate(
+    `refundNumber_${schoolId}`,
     { $inc: { seq: 1 } },
     { new: true, upsert: true }
   );
@@ -1281,88 +350,76 @@ export async function getNextRefundNumber() {
   return `RFD-${year}-${String(counter.seq).padStart(6, '0')}`;
 }
 
-// Helper to get next admission ID based on configuration
-export async function getNextAdmissionId() {
-  console.log('📋 Fetching admission ID config from database...');
-  let config = await AdmissionIdConfig.findOne();
-
-  // Create default config if doesn't exist
-  if (!config) {
-    console.log('⚠️ No config found, creating default...');
-    config = new AdmissionIdConfig({
-      prefix: 'ADM',
-      yearFormat: 'YYYY',
-      separator: '-',
-      numberPadding: 4,
-      startingNumber: 1,
-      currentNumber: 0,
-      resetFrequency: 'yearly'
-    });
-    await config.save();
-    console.log('✅ Default config created:', config.toObject());
-  } else {
-    console.log('✅ Config found:', config.toObject());
+export async function getNextAdmissionId(schoolId) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate admission ID');
   }
 
-  // Check if reset is needed
   const now = new Date();
-  const shouldReset = config.resetFrequency !== 'never' && (
-    !config.lastResetDate ||
-    (config.resetFrequency === 'yearly' && now.getFullYear() > new Date(config.lastResetDate).getFullYear()) ||
-    (config.resetFrequency === 'monthly' && (now.getFullYear() > new Date(config.lastResetDate).getFullYear() || now.getMonth() > new Date(config.lastResetDate).getMonth()))
+
+  await AdmissionIdConfigModel.updateOne(
+    { schoolId },
+    {
+      $setOnInsert: {
+        schoolId,
+        prefix: 'ADM',
+        yearFormat: 'YYYY',
+        separator: '-',
+        numberPadding: 4,
+        startingNumber: 1,
+        currentNumber: 0,
+        resetFrequency: 'yearly',
+        lastResetDate: now,
+      },
+    },
+    { upsert: true }
   );
 
+  const current = await AdmissionIdConfigModel.findOne({ schoolId });
+
+  const shouldReset =
+    current.resetFrequency !== 'never' &&
+    (!current.lastResetDate ||
+      (current.resetFrequency === 'yearly' &&
+        now.getFullYear() > new Date(current.lastResetDate).getFullYear()) ||
+      (current.resetFrequency === 'monthly' &&
+        (now.getFullYear() > new Date(current.lastResetDate).getFullYear() ||
+          now.getMonth() > new Date(current.lastResetDate).getMonth())));
+
+  let config;
   if (shouldReset) {
-    console.log('🔄 Resetting counter...');
-    config.currentNumber = config.startingNumber;
-    config.lastResetDate = now;
+    const resetResult = await AdmissionIdConfigModel.findOneAndUpdate(
+      { schoolId, lastResetDate: current.lastResetDate },
+      { $set: { currentNumber: current.startingNumber + 1, lastResetDate: now } },
+      { new: true }
+    );
+    if (resetResult) {
+      config = resetResult;
+    } else {
+      config = await AdmissionIdConfigModel.findOneAndUpdate(
+        { schoolId },
+        { $inc: { currentNumber: 1 } },
+        { new: true }
+      );
+    }
   } else {
-    config.currentNumber += 1;
+    config = await AdmissionIdConfigModel.findOneAndUpdate(
+      { schoolId },
+      { $inc: { currentNumber: 1 } },
+      { new: true }
+    );
   }
 
-  await config.save();
-  console.log('💾 Config saved with currentNumber:', config.currentNumber);
-
-  // Build admission ID
   let admissionId = config.prefix;
-
   if (config.yearFormat !== 'none') {
     if (config.separator) admissionId += config.separator;
-    admissionId += config.yearFormat === 'YYYY' ? now.getFullYear() : String(now.getFullYear()).slice(-2);
+    admissionId +=
+      config.yearFormat === 'YYYY' ? now.getFullYear() : String(now.getFullYear()).slice(-2);
   }
-
   if (config.separator) admissionId += config.separator;
   admissionId += String(config.currentNumber).padStart(config.numberPadding, '0');
 
-  console.log('🎯 Final admission ID:', admissionId);
   return admissionId;
 }
 
-// Helper to get next roll number for a class
-export async function getNextRollNumber(classId) {
-  console.log('📋 Fetching roll number config and class students...');
-  let config = await RollNumberConfig.findOne();
-
-  // Create default config if doesn't exist
-  if (!config) {
-    console.log('⚠️ No roll number config found, creating default...');
-    config = new RollNumberConfig({
-      format: 'sequential',
-      startingNumber: 1,
-      resetPerClass: true
-    });
-    await config.save();
-    console.log('✅ Default roll number config created');
-  }
-
-  // Get count of students in the class
-  const studentCount = await Student.countDocuments({ classId });
-  const nextRollNo = config.startingNumber + studentCount;
-
-  console.log('🎯 Next roll number:', nextRollNo);
-  return nextRollNo;
-}
-
 export default mongoose;
-
-
