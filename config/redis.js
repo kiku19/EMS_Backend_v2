@@ -66,12 +66,7 @@ function createRedisClient() {
   const redisUrl = process.env.REDIS_URL;
 
   if (!redisUrl) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        'REDIS_URL is required in production. In-memory cache is not safe for multi-instance deployments.'
-      );
-    }
-    logger.warn('REDIS_URL not set — Redis disabled. Using in-memory cache fallback (dev only).');
+    logger.warn('REDIS_URL not set — Redis disabled. Using in-memory cache fallback.');
     return null;
   }
 
