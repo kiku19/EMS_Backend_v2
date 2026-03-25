@@ -13,7 +13,18 @@ router.use(authenticate);
 // POST /api/reminders - Create reminder
 router.post('/', async (req, res) => {
   try {
-    const { title, type, triggers, message, templateId, recipients, channels, startDate, endDate, frequency } = req.body;
+    const {
+      title,
+      type,
+      triggers,
+      message,
+      templateId,
+      recipients,
+      channels,
+      startDate,
+      endDate,
+      frequency,
+    } = req.body;
     const user = req.user;
 
     const reminder = new Reminder({
@@ -29,7 +40,7 @@ router.post('/', async (req, res) => {
       frequency,
       isActive: true,
       createdBy: user.id,
-      nextExecutionAt: new Date(startDate)
+      nextExecutionAt: new Date(startDate),
     });
 
     await reminder.save();
@@ -37,19 +48,24 @@ router.post('/', async (req, res) => {
     // Schedule the reminder — if scheduling fails, mark the reminder as inactive and surface the error
     try {
       await scheduleJob('check reminder triggers', new Date(startDate), {
-        reminderId: reminder._id
+        reminderId: reminder._id,
       });
     } catch (scheduleError) {
-      logger.error({ err: scheduleError, reminderId: reminder._id }, 'Failed to schedule reminder job');
+      logger.error(
+        { err: scheduleError, reminderId: reminder._id },
+        'Failed to schedule reminder job'
+      );
       // Roll back: delete the saved reminder since it will never execute
       await Reminder.findByIdAndDelete(reminder._id);
-      return res.status(500).json({ error: 'Failed to schedule reminder. Please try again.' });
+      return res
+        .status(500)
+        .json({ error: req.t('common:routes.failedToScheduleReminderPleaseTryAgain') });
     }
 
     res.status(201).json(reminder);
   } catch (error) {
     logger.error({ err: error }, 'Error creating reminder');
-    res.status(500).json({ error: 'Failed to create reminder' });
+    res.status(500).json({ error: req.t('common:routes.failedToCreateReminder') });
   }
 });
 
@@ -76,11 +92,11 @@ router.get('/', async (req, res) => {
       reminders,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
-      total
+      total,
     });
   } catch (error) {
     console.error('Error fetching reminders:', error);
-    res.status(500).json({ error: 'Failed to fetch reminders' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchReminders') });
   }
 });
 
@@ -93,7 +109,7 @@ router.get('/:id', async (req, res) => {
       .lean();
 
     if (!reminder) {
-      return res.status(404).json({ error: 'Reminder not found' });
+      return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
     }
 
     // Get execution logs
@@ -105,7 +121,7 @@ router.get('/:id', async (req, res) => {
     res.json({ ...reminder, logs });
   } catch (error) {
     console.error('Error fetching reminder:', error);
-    res.status(500).json({ error: 'Failed to fetch reminder' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchReminder') });
   }
 });
 
@@ -115,10 +131,11 @@ router.put('/:id', async (req, res) => {
     const reminder = await Reminder.findById(req.params.id);
 
     if (!reminder) {
-      return res.status(404).json({ error: 'Reminder not found' });
+      return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
     }
 
-    const { title, type, triggers, message, recipients, channels, startDate, endDate, frequency } = req.body;
+    const { title, type, triggers, message, recipients, channels, startDate, endDate, frequency } =
+      req.body;
 
     if (title) reminder.title = title;
     if (type) reminder.type = type;
@@ -135,7 +152,7 @@ router.put('/:id', async (req, res) => {
     res.json(reminder);
   } catch (error) {
     console.error('Error updating reminder:', error);
-    res.status(500).json({ error: 'Failed to update reminder' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdateReminder') });
   }
 });
 
@@ -145,7 +162,7 @@ router.delete('/:id', async (req, res) => {
     const reminder = await Reminder.findById(req.params.id);
 
     if (!reminder) {
-      return res.status(404).json({ error: 'Reminder not found' });
+      return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
     }
 
     // Cancel scheduled jobs
@@ -157,10 +174,10 @@ router.delete('/:id', async (req, res) => {
     // Delete reminder
     await Reminder.findByIdAndDelete(reminder._id);
 
-    res.json({ message: 'Reminder deleted successfully' });
+    res.json({ message: req.t('common:routes.reminderDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting reminder:', error);
-    res.status(500).json({ error: 'Failed to delete reminder' });
+    res.status(500).json({ error: req.t('common:routes.failedToDeleteReminder') });
   }
 });
 
@@ -170,7 +187,7 @@ router.post('/:id/toggle', async (req, res) => {
     const reminder = await Reminder.findById(req.params.id);
 
     if (!reminder) {
-      return res.status(404).json({ error: 'Reminder not found' });
+      return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
     }
 
     // If active state is provided in request body, use it; otherwise toggle
@@ -184,7 +201,7 @@ router.post('/:id/toggle', async (req, res) => {
     } else {
       // Reschedule
       await scheduleJob('check reminder triggers', reminder.startDate, {
-        reminderId: reminder._id
+        reminderId: reminder._id,
       });
       reminder.nextExecutionAt = reminder.startDate;
     }
@@ -194,7 +211,7 @@ router.post('/:id/toggle', async (req, res) => {
     res.json(reminder);
   } catch (error) {
     console.error('Error toggling reminder:', error);
-    res.status(500).json({ error: 'Failed to toggle reminder' });
+    res.status(500).json({ error: req.t('common:routes.failedToToggleReminder') });
   }
 });
 
@@ -204,7 +221,7 @@ router.post('/:id/duplicate', async (req, res) => {
     const reminder = await Reminder.findById(req.params.id);
 
     if (!reminder) {
-      return res.status(404).json({ error: 'Reminder not found' });
+      return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
     }
 
     // Create a duplicate
@@ -221,7 +238,7 @@ router.post('/:id/duplicate', async (req, res) => {
       frequency: reminder.frequency,
       isActive: false, // Start as inactive
       createdBy: req.user.id,
-      nextExecutionAt: null
+      nextExecutionAt: null,
     });
 
     await duplicate.save();
@@ -229,7 +246,7 @@ router.post('/:id/duplicate', async (req, res) => {
     res.status(201).json(duplicate);
   } catch (error) {
     console.error('Error duplicating reminder:', error);
-    res.status(500).json({ error: 'Failed to duplicate reminder' });
+    res.status(500).json({ error: req.t('common:routes.failedToDuplicateReminder') });
   }
 });
 
@@ -249,14 +266,15 @@ router.get('/templates/all', async (req, res) => {
     res.json(templates);
   } catch (error) {
     console.error('Error fetching templates:', error);
-    res.status(500).json({ error: 'Failed to fetch templates' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchTemplates') });
   }
 });
 
 // POST /api/reminders/templates - Create template
 router.post('/templates', async (req, res) => {
   try {
-    const { name, type, message, variables, defaultChannels, isDefault, category, description } = req.body;
+    const { name, type, message, variables, defaultChannels, isDefault, category, description } =
+      req.body;
     const user = req.user;
 
     const template = new ReminderTemplate({
@@ -268,7 +286,7 @@ router.post('/templates', async (req, res) => {
       isDefault: isDefault || false,
       createdBy: user.id,
       category,
-      description
+      description,
     });
 
     await template.save();
@@ -276,7 +294,7 @@ router.post('/templates', async (req, res) => {
     res.status(201).json(template);
   } catch (error) {
     console.error('Error creating template:', error);
-    res.status(500).json({ error: 'Failed to create template' });
+    res.status(500).json({ error: req.t('common:routes.failedToCreateTemplate') });
   }
 });
 
@@ -286,10 +304,11 @@ router.put('/templates/:id', async (req, res) => {
     const template = await ReminderTemplate.findById(req.params.id);
 
     if (!template) {
-      return res.status(404).json({ error: 'Template not found' });
+      return res.status(404).json({ error: req.t('common:routes.templateNotFound') });
     }
 
-    const { name, type, message, variables, defaultChannels, isDefault, category, description } = req.body;
+    const { name, type, message, variables, defaultChannels, isDefault, category, description } =
+      req.body;
 
     if (name) template.name = name;
     if (type) template.type = type;
@@ -305,7 +324,7 @@ router.put('/templates/:id', async (req, res) => {
     res.json(template);
   } catch (error) {
     console.error('Error updating template:', error);
-    res.status(500).json({ error: 'Failed to update template' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdateTemplate') });
   }
 });
 
@@ -313,10 +332,89 @@ router.put('/templates/:id', async (req, res) => {
 router.delete('/templates/:id', async (req, res) => {
   try {
     await ReminderTemplate.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Template deleted successfully' });
+    res.json({ message: req.t('common:routes.templateDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting template:', error);
-    res.status(500).json({ error: 'Failed to delete template' });
+    res.status(500).json({ error: req.t('common:routes.failedToDeleteTemplate') });
+  }
+});
+
+// ── EMAIL-03: SMS Delivery Rate Monitoring ─────────────────────────────────────
+
+/**
+ * GET /api/reminders/sms-delivery-stats
+ *
+ * Returns SMS delivery rate aggregated from ReminderLog.channels where channel = 'sms'.
+ * Filters by optional ?from=YYYY-MM-DD&to=YYYY-MM-DD&reminderId=...
+ *
+ * Response:
+ *   { total, sent, delivered, failed, deliveryRate, failureRate, byReminder: [...] }
+ */
+router.get('/sms-delivery-stats', async (req, res) => {
+  try {
+    const { from, to, reminderId } = req.query;
+    const schoolId = req.user?.schoolId;
+
+    const matchStage = {};
+    if (schoolId) {
+      // ReminderLog links to Reminder which links to schoolId — filter via reminder lookup
+      const reminderFilter = { schoolId };
+      if (reminderId) reminderFilter._id = reminderId;
+      const reminderIds = await Reminder.find(reminderFilter).distinct('_id');
+      matchStage.reminderId = { $in: reminderIds };
+    }
+
+    if (from || to) {
+      matchStage.createdAt = {};
+      if (from) matchStage.createdAt.$gte = new Date(from);
+      if (to) matchStage.createdAt.$lte = new Date(`${to}T23:59:59.999Z`);
+    }
+
+    const logs = await ReminderLog.find(matchStage).lean();
+
+    // Extract only SMS channel entries
+    let total = 0;
+    let sent = 0;
+    let delivered = 0;
+    let failed = 0;
+    const byReminder = {};
+
+    for (const log of logs) {
+      for (const ch of log.channels || []) {
+        if (ch.channel !== 'sms') continue;
+        total++;
+        const rid = log.reminderId?.toString();
+        if (!byReminder[rid]) byReminder[rid] = { total: 0, sent: 0, delivered: 0, failed: 0 };
+        byReminder[rid].total++;
+
+        if (ch.status === 'delivered' || ch.status === 'read') {
+          delivered++;
+          byReminder[rid].delivered++;
+        } else if (ch.status === 'failed') {
+          failed++;
+          byReminder[rid].failed++;
+        } else {
+          sent++;
+          byReminder[rid].sent++;
+        }
+      }
+    }
+
+    const deliveryRate = total > 0 ? Math.round((delivered / total) * 10000) / 100 : 0;
+    const failureRate = total > 0 ? Math.round((failed / total) * 10000) / 100 : 0;
+
+    res.json({
+      total,
+      sent,
+      delivered,
+      failed,
+      deliveryRate, // percentage of messages confirmed delivered
+      failureRate, // percentage of messages that failed
+      byReminder: Object.entries(byReminder).map(([id, stats]) => ({ reminderId: id, ...stats })),
+    });
+  } catch (error) {
+    logger.error('SMS delivery stats error', { error });
+    res.status(500).json({ error: 'Failed to fetch SMS delivery stats' });
   }
 });
 

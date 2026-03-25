@@ -444,11 +444,11 @@ router.post('/', async (req, res) => {
 
     // Validate required fields
     if (!title || !content) {
-      return res.status(400).json({ error: 'Title and content are required' });
+      return res.status(400).json({ error: req.t('common:routes.titleAndContentAreRequired') });
     }
 
     if (!recipients || recipients.length === 0) {
-      return res.status(400).json({ error: 'Recipients are required' });
+      return res.status(400).json({ error: req.t('common:routes.recipientsAreRequired') });
     }
 
     // Create announcement
@@ -480,7 +480,7 @@ router.post('/', async (req, res) => {
     res.status(201).json(announcement);
   } catch (error) {
     console.error('Error creating announcement:', error);
-    res.status(500).json({ error: 'Failed to create announcement' });
+    res.status(500).json({ error: req.t('common:routes.failedToCreateAnnouncement') });
   }
 });
 
@@ -520,7 +520,7 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching announcements:', error);
-    res.status(500).json({ error: 'Failed to fetch announcements' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchAnnouncements') });
   }
 });
 
@@ -574,7 +574,7 @@ router.get('/stats', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching announcement stats:', error);
-    res.status(500).json({ error: 'Failed to fetch announcement stats' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchAnnouncementStats') });
   }
 });
 
@@ -583,7 +583,9 @@ router.post('/preview-email', async (req, res) => {
   try {
     const parsed = previewEmailSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.flatten() });
     }
     const { title, content, attachments, lang } = parsed.data;
     const { html, subject } = buildAnnouncementEmailHtml(
@@ -594,7 +596,7 @@ router.post('/preview-email', async (req, res) => {
     res.json({ html, subject });
   } catch (error) {
     console.error('Error generating email preview:', error);
-    res.status(500).json({ error: 'Failed to generate email preview' });
+    res.status(500).json({ error: req.t('common:routes.failedToGenerateEmailPreview') });
   }
 });
 
@@ -603,7 +605,9 @@ router.post('/test-send', async (req, res) => {
   try {
     const parsed = testSendSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.flatten() });
     }
     const { title, content, attachments, lang, testEmail } = parsed.data;
     const { html, subject } = buildAnnouncementEmailHtml(
@@ -615,7 +619,7 @@ router.post('/test-send', async (req, res) => {
     res.json({ message: `Test email sent to ${testEmail}` });
   } catch (error) {
     console.error('Error sending test email:', error);
-    res.status(500).json({ error: 'Failed to send test email' });
+    res.status(500).json({ error: req.t('common:routes.failedToSendTestEmail') });
   }
 });
 
@@ -629,7 +633,7 @@ router.get('/:id', async (req, res) => {
       .lean();
 
     if (!announcement) {
-      return res.status(404).json({ error: 'Announcement not found' });
+      return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
     // Get recipients
@@ -640,7 +644,7 @@ router.get('/:id', async (req, res) => {
     res.json({ ...announcement, recipients });
   } catch (error) {
     console.error('Error fetching announcement:', error);
-    res.status(500).json({ error: 'Failed to fetch announcement' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchAnnouncement') });
   }
 });
 
@@ -652,12 +656,12 @@ router.put('/:id', async (req, res) => {
     );
 
     if (!announcement) {
-      return res.status(404).json({ error: 'Announcement not found' });
+      return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
     // Can only edit draft or scheduled announcements
     if (announcement.status === 'sent' || announcement.status === 'sending') {
-      return res.status(400).json({ error: 'Cannot edit sent announcement' });
+      return res.status(400).json({ error: req.t('common:routes.cannotEditSentAnnouncement') });
     }
 
     const { title, content, recipients, channels, attachments, scheduledFor } = req.body;
@@ -694,7 +698,7 @@ router.put('/:id', async (req, res) => {
     res.json(announcement);
   } catch (error) {
     console.error('Error updating announcement:', error);
-    res.status(500).json({ error: 'Failed to update announcement' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdateAnnouncement') });
   }
 });
 
@@ -706,7 +710,7 @@ router.delete('/:id', async (req, res) => {
     );
 
     if (!announcement) {
-      return res.status(404).json({ error: 'Announcement not found' });
+      return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
     // Cancel scheduled job if exists
@@ -720,10 +724,10 @@ router.delete('/:id', async (req, res) => {
     // Delete announcement
     await Announcement.findByIdAndDelete(announcement._id);
 
-    res.json({ message: 'Announcement deleted successfully' });
+    res.json({ message: req.t('common:routes.announcementDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting announcement:', error);
-    res.status(500).json({ error: 'Failed to delete announcement' });
+    res.status(500).json({ error: req.t('common:routes.failedToDeleteAnnouncement') });
   }
 });
 
@@ -735,11 +739,11 @@ router.post('/:id/send', smsRateLimiter, async (req, res) => {
     );
 
     if (!announcement) {
-      return res.status(404).json({ error: 'Announcement not found' });
+      return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
     if (announcement.status === 'sent') {
-      return res.status(400).json({ error: 'Announcement already sent' });
+      return res.status(400).json({ error: req.t('common:routes.announcementAlreadySent') });
     }
 
     // Import the send function
@@ -760,10 +764,10 @@ router.post('/:id/send', smsRateLimiter, async (req, res) => {
       targetType: announcement.recipients?.[0]?.type,
     });
 
-    res.json({ message: 'Announcement sent successfully' });
+    res.json({ message: req.t('common:routes.announcementSentSuccessfully') });
   } catch (error) {
     console.error('Error sending announcement:', error);
-    res.status(500).json({ error: 'Failed to send announcement' });
+    res.status(500).json({ error: req.t('common:routes.failedToSendAnnouncement') });
   }
 });
 
@@ -777,7 +781,7 @@ router.get('/:id/analytics', async (req, res) => {
       .lean();
 
     if (!announcement) {
-      return res.status(404).json({ error: 'Announcement not found' });
+      return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
     // Get recipient stats
@@ -867,7 +871,7 @@ router.get('/:id/analytics', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching analytics:', error);
-    res.status(500).json({ error: 'Failed to fetch analytics' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchAnalytics') });
   }
 });
 
@@ -881,7 +885,7 @@ router.post('/:id/resend', smsRateLimiter, async (req, res) => {
     );
 
     if (!announcement) {
-      return res.status(404).json({ error: 'Announcement not found' });
+      return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
     // Get failed recipients
@@ -908,10 +912,10 @@ router.post('/:id/resend', smsRateLimiter, async (req, res) => {
       await sendScheduledAnnouncement(announcement._id, failedIds);
     }
 
-    res.json({ message: 'Announcement resent successfully' });
+    res.json({ message: req.t('common:routes.announcementResentSuccessfully') });
   } catch (error) {
     console.error('Error resending announcement:', error);
-    res.status(500).json({ error: 'Failed to resend announcement' });
+    res.status(500).json({ error: req.t('common:routes.failedToResendAnnouncement') });
   }
 });
 

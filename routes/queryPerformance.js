@@ -18,7 +18,7 @@ const logger = createLogger('QueryPerformance');
 function checkOpsSecret(req, res) {
   const secret = process.env.OPS_DEPLOYMENT_SECRET;
   if (secret && req.headers['x-ops-secret'] !== secret) {
-    res.status(401).json({ error: 'Unauthorized' });
+    res.status(401).json({ error: req.t('common:errors.unauthorized') });
     return false;
   }
   return true;

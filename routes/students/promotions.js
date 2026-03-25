@@ -13,6 +13,7 @@ import { checkClassCapacity } from '../../utils/classCapacity.js';
 import { scopeBySchool, initializeFeeStructure } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── YEAR-END BULK PROMOTION ──────────────────────────────────────
 // Static path must be registered before /:id/promote
@@ -48,7 +49,7 @@ router.post(
           scopeBySchool(schoolId, { _id: fromClassId, isDeleted: { $ne: true } })
         );
         if (!fromClass) {
-          details.push({ fromClassId, error: 'Source class not found' });
+          details.push({ fromClassId, error: req.t('common:routes.sourceClassNotFound') });
           continue;
         }
 
@@ -58,7 +59,7 @@ router.post(
             scopeBySchool(schoolId, { _id: toClassId, isDeleted: { $ne: true } })
           );
           if (!toClass) {
-            details.push({ fromClassId, error: 'Target class not found' });
+            details.push({ fromClassId, error: req.t('common:routes.targetClassNotFound') });
             continue;
           }
         }
@@ -170,7 +171,7 @@ router.post(
       res.json({ success: true, summary, details });
     } catch (error) {
       console.error('Error in year-end promotion:', error);
-      res.status(500).json({ error: 'Year-end promotion failed' });
+      res.status(500).json({ error: req.t('common:routes.yearEndPromotionFailed') });
     }
   }
 );
@@ -196,9 +197,11 @@ router.post(
       const student = await Student.findOne(
         scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
       ).populate('classId', 'name section academicYear');
-      if (!student) return res.status(404).json({ error: 'Student not found' });
+      if (!student) return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       if (student.status !== 'active')
-        return res.status(400).json({ error: 'Only active students can be promoted' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.onlyActiveStudentsCanBePromoted') });
 
       const fromClass = student.classId;
 
@@ -225,23 +228,25 @@ router.post(
         scopeBySchool(schoolId, { _id: targetClassId, isDeleted: { $ne: true } })
       );
       if (!targetClass)
-        return res.status(400).json({ error: 'Target class not found in your school' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.targetClassNotFoundInYourSchool') });
 
       // Check target class capacity
       const capacityResult = await checkClassCapacity(targetClassId, schoolId);
       if (capacityResult?.isFull) {
-        return res
-          .status(400)
-          .json({
-            error: `Target class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}). Cannot promote student.`,
-          });
+        return res.status(400).json({
+          error: `Target class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}). Cannot promote student.`,
+        });
       }
 
       // Fee check
       if (!skipFeeCheck && student.feeStatus === 'pending') {
         return res
           .status(400)
-          .json({ error: 'Student has pending fees. Use skipFeeCheck:true to override.' });
+          .json({
+            error: req.t('common:routes.studentHasPendingFeesUseSkipfeecheckTrueToOverride'),
+          });
       }
 
       // Attendance check
@@ -252,11 +257,9 @@ router.post(
         ).length;
         const attendancePercent = attendance.length > 0 ? (present / attendance.length) * 100 : 0;
         if (attendancePercent < 60) {
-          return res
-            .status(400)
-            .json({
-              error: `Attendance too low (${attendancePercent.toFixed(1)}%). Use skipAttendanceCheck:true to override.`,
-            });
+          return res.status(400).json({
+            error: `Attendance too low (${attendancePercent.toFixed(1)}%). Use skipAttendanceCheck:true to override.`,
+          });
         }
       }
 
@@ -305,7 +308,7 @@ router.post(
       });
     } catch (error) {
       console.error('Error promoting student:', error);
-      res.status(500).json({ error: 'Failed to promote student' });
+      res.status(500).json({ error: req.t('common:routes.failedToPromoteStudent') });
     }
   }
 );

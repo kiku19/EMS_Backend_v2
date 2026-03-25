@@ -24,6 +24,7 @@ import {
 } from '../middleware/inventoryValidation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const id = extractSchoolId(schoolId);
@@ -136,7 +137,7 @@ router.get('/assets/:id', authenticate, async (req, res) => {
       scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     ).populate('vendorId', 'name phone email');
 
-    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
     res.json(asset);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -159,7 +160,11 @@ router.post('/assets', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -176,13 +181,17 @@ router.put('/assets/:id', authenticate, async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
     res.json(asset);
   } catch (error) {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -199,13 +208,17 @@ router.put('/assets/:id/assign', authenticate, async (req, res) => {
       { new: true }
     );
 
-    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
     res.json(asset);
   } catch (error) {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -218,12 +231,12 @@ router.get('/assets/:id/depreciation', authenticate, async (req, res) => {
       scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     );
 
-    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
     if (!asset.purchasePrice || !asset.purchaseDate) {
       return res.json({
         asset: asset._id,
         depreciation: null,
-        message: 'Purchase price and date are required for depreciation calculation',
+        message: req.t('common:routes.purchasePriceAndDateAreRequiredForDepreciationCalculation'),
       });
     }
 
@@ -258,7 +271,7 @@ router.delete('/assets/:id', authenticate, async (req, res) => {
       { new: true }
     );
 
-    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -295,12 +308,16 @@ router.post('/categories', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     if (error.code === 11000) {
       return res
         .status(400)
-        .json({ success: false, error: 'Category with this name already exists' });
+        .json({ success: false, error: req.t('common:routes.categoryWithThisNameAlreadyExists') });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -317,13 +334,17 @@ router.put('/categories/:id', authenticate, async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    if (!category) return res.status(404).json({ error: 'Category not found' });
+    if (!category) return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
     res.json(category);
   } catch (error) {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -338,7 +359,7 @@ router.delete('/categories/:id', authenticate, async (req, res) => {
       { new: true }
     );
 
-    if (!category) return res.status(404).json({ error: 'Category not found' });
+    if (!category) return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -381,7 +402,11 @@ router.post('/vendors', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -398,13 +423,17 @@ router.put('/vendors/:id', authenticate, async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
+    if (!vendor) return res.status(404).json({ error: req.t('common:routes.vendorNotFound') });
     res.json(vendor);
   } catch (error) {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -419,7 +448,7 @@ router.delete('/vendors/:id', authenticate, async (req, res) => {
       { new: true }
     );
 
-    if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
+    if (!vendor) return res.status(404).json({ error: req.t('common:routes.vendorNotFound') });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -472,7 +501,11 @@ router.post('/maintenance', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -489,7 +522,7 @@ router.put('/maintenance/:id', authenticate, async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    if (!log) return res.status(404).json({ error: 'Maintenance log not found' });
+    if (!log) return res.status(404).json({ error: req.t('common:routes.maintenanceLogNotFound') });
 
     // If completed, restore asset to ACTIVE
     if (data.status === 'COMPLETED') {
@@ -504,7 +537,11 @@ router.put('/maintenance/:id', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -549,7 +586,11 @@ router.post('/procurement', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -573,13 +614,18 @@ router.put('/procurement/:id', authenticate, async (req, res) => {
       .populate('requestedBy', 'name')
       .populate('approvedBy', 'name');
 
-    if (!request) return res.status(404).json({ error: 'Procurement request not found' });
+    if (!request)
+      return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
     res.json(request);
   } catch (error) {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -594,7 +640,8 @@ router.delete('/procurement/:id', authenticate, async (req, res) => {
       { new: true }
     );
 
-    if (!request) return res.status(404).json({ error: 'Procurement request not found' });
+    if (!request)
+      return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -637,7 +684,11 @@ router.post('/audits', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -654,7 +705,7 @@ router.put('/audits/:id', authenticate, async (req, res) => {
       { new: true, runValidators: true }
     ).populate('auditItems.assetId', 'name assetTag category');
 
-    if (!audit) return res.status(404).json({ error: 'Audit not found' });
+    if (!audit) return res.status(404).json({ error: req.t('common:routes.auditNotFound') });
 
     // If completed audit, update asset conditions and quantities from audit items
     if (data.status === 'COMPLETED' && data.auditItems?.length) {
@@ -677,7 +728,11 @@ router.put('/audits/:id', authenticate, async (req, res) => {
     if (error.name === 'ZodError') {
       return res
         .status(400)
-        .json({ success: false, error: 'Validation failed', details: error.errors });
+        .json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
     }
     res.status(400).json({ success: false, error: error.message });
   }
@@ -692,7 +747,7 @@ router.delete('/audits/:id', authenticate, async (req, res) => {
       { new: true }
     );
 
-    if (!audit) return res.status(404).json({ error: 'Audit not found' });
+    if (!audit) return res.status(404).json({ error: req.t('common:routes.auditNotFound') });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

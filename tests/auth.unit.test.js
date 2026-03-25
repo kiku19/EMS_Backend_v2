@@ -168,7 +168,7 @@ describe('authenticate middleware', () => {
     await authenticate(req, res, next);
 
     expect(res._status).toBe(401);
-    expect(res._json.error).toBe('auth:errors.authFailed');
+    expect(res._json.error).toBe('auth:errors.tokenInvalid');
     expect(next).not.toHaveBeenCalled();
   });
 

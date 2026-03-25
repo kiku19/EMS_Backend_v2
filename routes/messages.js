@@ -13,6 +13,7 @@ import { authenticate } from '../middleware/auth.js';
 import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('Messages');
 
 // Get unread count for a user — derived from session
@@ -609,7 +610,7 @@ router.get('/presence/:userId', authenticate, async (req, res) => {
       }).lean();
 
       if (!sharedConversation) {
-        return res.status(403).json({ error: 'Forbidden' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
     }
 

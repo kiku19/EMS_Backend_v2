@@ -26,6 +26,27 @@ import {
 
 const router = express.Router();
 
+// POST /billing/razorpay-webhook - Razorpay payment gateway webhook (no auth)
+router.post('/razorpay-webhook', async (req, res) => {
+  try {
+    const signature = req.headers['x-razorpay-signature'];
+    if (!signature) {
+      return res.status(400).json({ error: 'Missing webhook signature' });
+    }
+    const rawBody = req.rawBody;
+    if (!rawBody) {
+      return res.status(400).json({ error: 'Raw body unavailable' });
+    }
+    const result = await handleRazorpayBillingWebhook(rawBody, signature);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || 'Webhook processing failed',
+    });
+  }
+});
+router.use(authenticate);
+
 router.get('/summary', authenticate, checkPermission('settings', 'view'), async (req, res) => {
   try {
     const summary = await getBillingSummary(req.user.schoolId);
@@ -212,25 +233,5 @@ router.post(
     }
   }
 );
-
-// POST /billing/razorpay-webhook - Razorpay payment gateway webhook (no auth)
-router.post('/razorpay-webhook', async (req, res) => {
-  try {
-    const signature = req.headers['x-razorpay-signature'];
-    if (!signature) {
-      return res.status(400).json({ error: 'Missing webhook signature' });
-    }
-    const rawBody = req.rawBody;
-    if (!rawBody) {
-      return res.status(400).json({ error: 'Raw body unavailable' });
-    }
-    const result = await handleRazorpayBillingWebhook(rawBody, signature);
-    res.json(result);
-  } catch (error) {
-    res.status(error.status || 500).json({
-      error: error.message || 'Webhook processing failed',
-    });
-  }
-});
 
 export default router;

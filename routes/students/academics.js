@@ -8,6 +8,7 @@ import { EVENTS, emitEvent } from '../../utils/socketEvents.js';
 import { scopeBySchool, createRemarkSchema } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.get('/:id/results', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
@@ -15,7 +16,7 @@ router.get('/:id/results', authenticate, checkPermission('students', 'view'), as
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     const query = {
@@ -47,7 +48,7 @@ router.get('/:id/remarks', authenticate, checkPermission('students', 'view'), as
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     const query = { schoolId: req.user?.schoolId, studentId: req.params.id };
@@ -76,7 +77,7 @@ router.post(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       const remark = new Remark({

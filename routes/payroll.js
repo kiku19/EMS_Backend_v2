@@ -1,5 +1,6 @@
 import express from 'express';
 const router = express.Router();
+router.use(authenticate);
 import PayrollRun from '../models/PayrollRun.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import Payslip from '../models/Payslip.js';
@@ -265,12 +266,14 @@ router.post(
       if (!validateNotFutureMonth(month, year)) {
         return res.status(400).json({
           success: false,
-          error: 'Cannot run payroll for future months',
+          error: req.t('common:routes.cannotRunPayrollForFutureMonths'),
         });
       }
 
       if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
-        return res.status(400).json({ success: false, error: 'No employee IDs provided' });
+        return res
+          .status(400)
+          .json({ success: false, error: req.t('common:routes.noEmployeeIdsProvided') });
       }
 
       // Validate IDs
@@ -422,12 +425,14 @@ router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), a
     if (!validateNotFutureMonth(month, year)) {
       return res.status(400).json({
         success: false,
-        error: 'Cannot run payroll for future months',
+        error: req.t('common:routes.cannotRunPayrollForFutureMonths'),
       });
     }
 
     if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
-      return res.status(400).json({ success: false, error: 'No employee IDs provided' });
+      return res
+        .status(400)
+        .json({ success: false, error: req.t('common:routes.noEmployeeIdsProvided') });
     }
 
     // Validate IDs
@@ -448,7 +453,9 @@ router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), a
       if (lockExpiry && lockExpiry > new Date()) {
         return res.status(409).json({
           success: false,
-          error: 'Payroll is currently being processed by another user. Please try again later.',
+          error: req.t(
+            'common:routes.payrollIsCurrentlyBeingProcessedByAnotherUserPleaseTryAgainLater'
+          ),
           lockedBy: existingPayrollRun.processingLockedBy,
         });
       }
@@ -867,11 +874,15 @@ router.put(
       const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
 
       if (!record) {
-        return res.status(404).json({ success: false, error: 'Record not found' });
+        return res
+          .status(404)
+          .json({ success: false, error: req.t('common:routes.recordNotFound') });
       }
 
       if (record.status === 'paid' || record.isLocked) {
-        return res.status(400).json({ success: false, error: 'Record is already paid or locked' });
+        return res
+          .status(400)
+          .json({ success: false, error: req.t('common:routes.recordIsAlreadyPaidOrLocked') });
       }
 
       const oldRecord = { ...record.toObject() };
@@ -928,11 +939,15 @@ router.put(
       const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
 
       if (!record) {
-        return res.status(404).json({ success: false, error: 'Record not found' });
+        return res
+          .status(404)
+          .json({ success: false, error: req.t('common:routes.recordNotFound') });
       }
 
       if (!record.isLocked || record.status !== 'paid') {
-        return res.status(400).json({ success: false, error: 'Only paid records can be reversed' });
+        return res
+          .status(400)
+          .json({ success: false, error: req.t('common:routes.onlyPaidRecordsCanBeReversed') });
       }
 
       const oldRecord = { ...record.toObject() };
@@ -1084,13 +1099,13 @@ router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
     const record = await PayrollRecord.findOne({ _id: id, schoolId: req.user.schoolId });
 
     if (!record) {
-      return res.status(404).json({ success: false, error: 'Record not found' });
+      return res.status(404).json({ success: false, error: req.t('common:routes.recordNotFound') });
     }
 
     if (record.isLocked) {
       return res
         .status(400)
-        .json({ success: false, error: 'Record is locked and cannot be edited' });
+        .json({ success: false, error: req.t('common:routes.recordIsLockedAndCannotBeEdited') });
     }
 
     const oldRecord = { ...record.toObject() };
@@ -1315,7 +1330,9 @@ router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) 
     }).populate('payrollRecordId');
 
     if (!payslip) {
-      return res.status(404).json({ success: false, error: 'Payslip not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: req.t('common:routes.payslipNotFound') });
     }
 
     // Update download count

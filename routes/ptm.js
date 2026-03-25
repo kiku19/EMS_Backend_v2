@@ -5,6 +5,7 @@ import { extractSchoolId } from '../utils/schoolContext.js';
 import PTMSession from '../models/PTMSession.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -163,7 +164,7 @@ router.post('/', authenticate, async (req, res) => {
 
     const schoolId = extractSchoolId(req.user?.schoolId);
     if (!schoolId)
-      return res.status(401).json({ success: false, message: 'School context missing' });
+      return res.status(401).json({ success: false, message: req.t('common:errors.unauthorized') });
 
     const data = parsed.data;
 

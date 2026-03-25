@@ -17,6 +17,7 @@ import {
 } from '../services/featureFlagsService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Helper to extract actor info from req.user
 function getActor(req) {

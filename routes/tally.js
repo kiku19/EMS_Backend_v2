@@ -12,7 +12,7 @@ router.use(authenticate);
 router.get('/config', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    if (!schoolId) return res.status(403).json({ error: 'School context required' });
+    if (!schoolId) return res.status(403).json({ error: req.t('common:errors.unauthorized') });
 
     let config = await TallyConfig.findOne({ schoolId }).lean();
     if (!config) {
@@ -47,7 +47,7 @@ router.get('/config', async (req, res) => {
 router.put('/config', validateZod(tallyConfigUpdateSchema), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    if (!schoolId) return res.status(403).json({ error: 'School context required' });
+    if (!schoolId) return res.status(403).json({ error: req.t('common:errors.unauthorized') });
 
     const update = req.body;
 
@@ -67,7 +67,7 @@ router.put('/config', validateZod(tallyConfigUpdateSchema), async (req, res) => 
 router.get('/export', validateZod(tallyExportQuerySchema, 'query'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    if (!schoolId) return res.status(403).json({ error: 'School context required' });
+    if (!schoolId) return res.status(403).json({ error: req.t('common:errors.unauthorized') });
 
     const { dateFrom, dateTo, academicYear, format } = req.query;
 
@@ -92,7 +92,7 @@ router.get('/export', validateZod(tallyExportQuerySchema, 'query'), async (req, 
 router.get('/chart-of-accounts', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    if (!schoolId) return res.status(403).json({ error: 'School context required' });
+    if (!schoolId) return res.status(403).json({ error: req.t('common:errors.unauthorized') });
 
     const result = await generateChartOfAccounts(schoolId);
 
@@ -108,7 +108,7 @@ router.get('/chart-of-accounts', async (req, res) => {
 router.post('/sync', validateZod(tallyExportQuerySchema, 'body'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    if (!schoolId) return res.status(403).json({ error: 'School context required' });
+    if (!schoolId) return res.status(403).json({ error: req.t('common:errors.unauthorized') });
 
     const { dateFrom, dateTo, academicYear } = req.body;
 
@@ -171,7 +171,7 @@ router.post('/sync', validateZod(tallyExportQuerySchema, 'body'), async (req, re
 router.get('/sync-history', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    if (!schoolId) return res.status(403).json({ error: 'School context required' });
+    if (!schoolId) return res.status(403).json({ error: req.t('common:errors.unauthorized') });
 
     const config = await TallyConfig.findOne({ schoolId }).select('syncHistory autoExport').lean();
 

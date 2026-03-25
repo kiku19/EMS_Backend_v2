@@ -8,13 +8,14 @@ import { createLogger } from '../utils/logger.js';
 import agenda from '../config/agenda.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('Jobs');
 
 // GET /jobs/stats — summary counts by status
 router.get('/stats', authenticate, checkPermission('settings', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const [importStats] = await ImportJob.aggregate([
       { $match: { schoolId: new mongoose.Types.ObjectId(schoolId) } },
@@ -76,7 +77,7 @@ router.get('/stats', authenticate, checkPermission('settings', 'view'), async (r
 router.get('/', authenticate, checkPermission('settings', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const { status, type, limit = 20, page = 1 } = req.query;
     const filter = { schoolId };
@@ -152,7 +153,7 @@ router.get(
   async (req, res) => {
     try {
       const schoolId = extractSchoolId(req.user?.schoolId);
-      if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+      if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
       if (!mongoose.Types.ObjectId.isValid(req.params.jobId)) {
         return res.status(400).json({ error: 'Invalid jobId' });
       }
@@ -178,7 +179,7 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = extractSchoolId(req.user?.schoolId);
-      if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+      if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
       if (!mongoose.Types.ObjectId.isValid(req.params.jobId)) {
         return res.status(400).json({ error: 'Invalid jobId' });
       }

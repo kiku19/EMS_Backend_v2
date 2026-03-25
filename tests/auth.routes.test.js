@@ -6,6 +6,7 @@ import { School, SchoolSettings, SchoolSubscription, Staff, UserPermission } fro
 import { createClassRecord, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { generateSignupInvite } from '../utils/signupInvites.js';
 import { generateToken, verifyToken } from '../middleware/auth.js';
+import { piiMatch } from '../utils/encryption.js';
 
 describe('auth routes', () => {
   it('rejects signup without an invite token', async () => {
@@ -17,11 +18,11 @@ describe('auth routes', () => {
         name: 'Priya Sharma',
         email: 'priya@example.com',
         schoolName: 'Sunrise Public School',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(400);
 
-    expect(response.body.error).toBe('Validation failed');
+    expect(response.body.error).toBe('Validation Error');
     expect(response.body.details).toEqual(
       expect.arrayContaining([expect.objectContaining({ field: 'inviteToken' })])
     );
@@ -65,7 +66,7 @@ describe('auth routes', () => {
         name: 'Priya Sharma',
         email: 'priya@example.com',
         schoolName: 'Sunrise Public School',
-        password: 'password123',
+        password: 'Password123',
         inviteToken,
       })
       .expect(201);
@@ -89,7 +90,7 @@ describe('auth routes', () => {
     });
 
     const school = await School.findOne({ code: 'SUNRISE-PUBLIC-SCHOOL' });
-    const staff = await Staff.findOne({ email: 'priya@example.com' });
+    const staff = await Staff.findOne(piiMatch('email', 'priya@example.com'));
     const permissions = await UserPermission.findOne({ userId: staff?._id });
     const settings = await SchoolSettings.findOne({ schoolId: school?._id });
     const subscription = await SchoolSubscription.findOne({ schoolId: school?._id });
@@ -102,7 +103,7 @@ describe('auth routes', () => {
     expect(staff).toBeTruthy();
     expect(staff?.schoolId?.toString()).toBe(school?._id.toString());
     expect(staff?.role).toEqual(['Admin']);
-    expect(await staff?.comparePassword('password123')).toBe(true);
+    expect(await staff?.comparePassword('Password123')).toBe(true);
     expect(permissions).toMatchObject({
       schoolId: school?._id,
       userId: staff?._id,
@@ -132,7 +133,7 @@ describe('auth routes', () => {
         name: 'Priya Sharma',
         email: 'priya@example.com',
         schoolName: 'Sunrise Public School',
-        password: 'password123',
+        password: 'Password123',
         inviteToken: 'invalid-token',
       })
       .expect(403);
@@ -146,7 +147,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Existing Admin',
       email: 'existing@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Admin'],
       permissionRole: 'admin',
     });
@@ -163,7 +164,7 @@ describe('auth routes', () => {
         name: 'New Admin',
         email: 'existing@example.com',
         schoolName: 'Another School',
-        password: 'password123',
+        password: 'Password123',
         inviteToken,
       })
       .expect(409);
@@ -182,7 +183,7 @@ describe('auth routes', () => {
     const teacher = await createStaffUser({
       name: 'Alice Teacher',
       email: 'alice.teacher@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: school._id,
@@ -202,7 +203,7 @@ describe('auth routes', () => {
       .set('X-Auth-Mode', 'cookie')
       .send({
         email: 'alice.teacher@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(200);
 
@@ -248,7 +249,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Bob Admin',
       email: 'bob.admin@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Admin'],
       permissionRole: 'admin',
     });
@@ -311,7 +312,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Alex North',
       email: 'alex@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: northSchool._id,
@@ -320,7 +321,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Alex South',
       email: 'alex@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: southSchool._id,
@@ -332,7 +333,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'alex@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(409);
 
@@ -344,7 +345,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'alex@example.com',
-        password: 'password123',
+        password: 'Password123',
         schoolCode: 'SOUTH',
       })
       .expect(200);
@@ -397,7 +398,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'nobody@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(401);
 
@@ -411,11 +412,11 @@ describe('auth routes', () => {
     const response = await request(app)
       .post('/api/auth/login')
       .send({
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(400);
 
-    expect(response.body.error).toBe('Validation failed');
+    expect(response.body.error).toBe('Validation Error');
   });
 
   it('rejects login when the password field is missing', async () => {
@@ -428,7 +429,7 @@ describe('auth routes', () => {
       })
       .expect(400);
 
-    expect(response.body.error).toBe('Validation failed');
+    expect(response.body.error).toBe('Validation Error');
     expect(response.body.details).toEqual(
       expect.arrayContaining([expect.objectContaining({ field: 'password' })])
     );
@@ -440,7 +441,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Suspended User',
       email: 'suspended@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       status: 'inactive',
@@ -455,7 +456,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'suspended@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(401);
 
@@ -468,7 +469,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Dana Teacher',
       email: 'dana.teacher@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: school._id,
@@ -480,7 +481,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'dana.teacher@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(200);
 
@@ -496,7 +497,7 @@ describe('auth routes', () => {
     const staff = await createStaffUser({
       name: 'Eve Staff',
       email: 'eve.staff@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: school._id,
@@ -547,7 +548,7 @@ describe('auth routes', () => {
     const staff = await createStaffUser({
       name: 'Frank Staff',
       email: 'frank.staff@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: school._id,
@@ -584,7 +585,7 @@ describe('auth routes', () => {
     const staff = await createStaffUser({
       name: 'Grace Staff',
       email: 'grace.staff@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: school._id,
@@ -597,7 +598,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'grace.staff@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(200);
 
@@ -622,7 +623,7 @@ describe('auth routes', () => {
     const staff = await createStaffUser({
       name: 'Henry Staff',
       email: 'henry.staff@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: school._id,
@@ -634,7 +635,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'henry.staff@example.com',
-        password: 'password123',
+        password: 'Password123',
       })
       .expect(200);
 
@@ -657,7 +658,7 @@ describe('auth routes', () => {
     const staffB = await createStaffUser({
       name: 'Staff Beta',
       email: 'staff.beta@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: schoolB._id,
@@ -667,7 +668,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Admin Alpha',
       email: 'admin.alpha@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Admin'],
       permissionRole: 'admin',
       schoolId: schoolA._id,
@@ -679,7 +680,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'admin.alpha@example.com',
-        password: 'password123',
+        password: 'Password123',
         schoolCode: 'SCHOOL-ALPHA',
       })
       .expect(200);
@@ -705,7 +706,7 @@ describe('auth routes', () => {
     await createStaffUser({
       name: 'Maple Teacher',
       email: 'maple.teacher@example.com',
-      password: 'password123',
+      password: 'Password123',
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
       schoolId: schoolA._id,
@@ -717,7 +718,7 @@ describe('auth routes', () => {
       .post('/api/auth/login')
       .send({
         email: 'maple.teacher@example.com',
-        password: 'password123',
+        password: 'Password123',
         schoolCode: 'MAPLE-SCH',
       })
       .expect(200);

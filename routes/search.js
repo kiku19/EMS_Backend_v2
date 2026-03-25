@@ -59,6 +59,7 @@ import { validateZod } from '../validators/zodHelpers.js';
 import { searchQuerySchema } from '../validators/searchSchema.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const ATLAS_SEARCH_ENABLED = process.env.ENABLE_ATLAS_SEARCH === 'true';
 
@@ -402,7 +403,7 @@ router.get('/', authenticate, validateZod(searchQuerySchema, 'query'), async (re
       ...results,
     });
   } catch (err) {
-    res.status(500).json({ error: 'Search failed', message: err.message });
+    res.status(500).json({ error: req.t('common:routes.searchFailed'), message: err.message });
   }
 });
 
@@ -429,7 +430,9 @@ router.get('/analytics', authenticate, async (req, res) => {
 
     res.json({ days, topQueries });
   } catch (err) {
-    res.status(500).json({ error: 'Analytics fetch failed', message: err.message });
+    res
+      .status(500)
+      .json({ error: req.t('common:routes.analyticsFetchFailed'), message: err.message });
   }
 });
 

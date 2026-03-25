@@ -6,6 +6,7 @@ import { resolveAcademicYear } from '../../utils/academicYear.js';
 import { scopeBySchool, sendReminderSchema } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.get(
   '/class/:classId/fee-status',
@@ -46,7 +47,7 @@ router.get(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!scopedStudent) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       const year = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
@@ -101,7 +102,9 @@ router.post(
   async (req, res) => {
     const parsed = sendReminderSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
     }
     const { type, message } = parsed.data;
 
@@ -111,12 +114,14 @@ router.post(
       ).populate('classId', 'name section');
 
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       const parents = await Parent.find({ 'children.studentId': req.params.id }).select('_id');
       if (parents.length === 0) {
-        return res.status(400).json({ error: 'No linked parent account found for this student' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.noLinkedParentAccountFoundForThisStudent') });
       }
 
       const title =

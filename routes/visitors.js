@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Middleware to attach Staff model to req.app.locals if not already there
 router.use((req, res, next) => {
@@ -90,7 +91,7 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch visitors',
+      message: req.t('common:routes.failedToFetchVisitors'),
     });
   }
 });
@@ -112,7 +113,7 @@ router.get('/active', authenticate, checkPermission('front-office', 'view'), asy
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch active visitors',
+      message: req.t('common:routes.failedToFetchActiveVisitors'),
     });
   }
 });
@@ -134,7 +135,7 @@ router.get('/today', authenticate, checkPermission('front-office', 'view'), asyn
     res.status(500).json({
       success: false,
       error: error.message,
-      message: "Failed to fetch today's visitors",
+      message: req.t('common:routes.failedToFetchTodaySVisitors'),
     });
   }
 });
@@ -150,7 +151,7 @@ router.get('/search', authenticate, checkPermission('front-office', 'view'), asy
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
         success: false,
-        error: 'Search query must be at least 2 characters',
+        error: req.t('common:routes.searchQueryMustBeAtLeast2Characters'),
       });
     }
 
@@ -165,7 +166,7 @@ router.get('/search', authenticate, checkPermission('front-office', 'view'), asy
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to search visitors',
+      message: req.t('common:routes.failedToSearchVisitors'),
     });
   }
 });
@@ -185,7 +186,7 @@ router.get(
       if (!q || q.trim().length < 2) {
         return res.status(400).json({
           success: false,
-          error: 'Search query must be at least 2 characters',
+          error: req.t('common:routes.searchQueryMustBeAtLeast2Characters'),
         });
       }
 
@@ -227,7 +228,7 @@ router.get(
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to search parents',
+        message: req.t('common:routes.failedToSearchParents'),
       });
     }
   }
@@ -250,7 +251,7 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
     if (!visitor) {
       return res.status(404).json({
         success: false,
-        error: 'Visitor not found',
+        error: req.t('common:routes.visitorNotFound'),
       });
     }
 
@@ -263,7 +264,7 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch visitor',
+      message: req.t('common:routes.failedToFetchVisitor'),
     });
   }
 });
@@ -297,8 +298,8 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
     if (!name || !phone || !purpose) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields',
-        message: 'Name, phone, and purpose are required',
+        error: req.t('common:routes.missingRequiredFields'),
+        message: req.t('common:routes.namePhoneAndPurposeAreRequired'),
       });
     }
 
@@ -307,7 +308,7 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
     if (!phoneRegex.test(phone)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid phone number format',
+        error: req.t('common:routes.invalidPhoneNumberFormat'),
       });
     }
 
@@ -376,14 +377,14 @@ router.post('/', authenticate, checkPermission('front-office', 'create'), async 
     res.status(201).json({
       success: true,
       data: visitor,
-      message: 'Visitor checked in successfully',
+      message: req.t('common:routes.visitorCheckedInSuccessfully'),
     });
   } catch (error) {
     console.error('❌ Create visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to check in visitor',
+      message: req.t('common:routes.failedToCheckInVisitor'),
     });
   }
 });
@@ -399,7 +400,7 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
     if (!visitor) {
       return res.status(404).json({
         success: false,
-        error: 'Visitor not found',
+        error: req.t('common:routes.visitorNotFound'),
       });
     }
 
@@ -407,7 +408,7 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
     if (visitor.status === 'CHECKED_OUT') {
       return res.status(400).json({
         success: false,
-        error: 'Cannot update checked-out visitor',
+        error: req.t('common:routes.cannotUpdateCheckedOutVisitor'),
       });
     }
 
@@ -435,14 +436,14 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
     res.json({
       success: true,
       data: visitor,
-      message: 'Visitor updated successfully',
+      message: req.t('common:routes.visitorUpdatedSuccessfully'),
     });
   } catch (error) {
     console.error('❌ Update visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to update visitor',
+      message: req.t('common:routes.failedToUpdateVisitor'),
     });
   }
 });
@@ -462,7 +463,7 @@ router.post(
       if (!visitor) {
         return res.status(404).json({
           success: false,
-          error: 'Visitor not found',
+          error: req.t('common:routes.visitorNotFound'),
         });
       }
 
@@ -470,7 +471,7 @@ router.post(
       if (visitor.status === 'CHECKED_OUT') {
         return res.status(400).json({
           success: false,
-          error: 'Visitor already checked out',
+          error: req.t('common:routes.visitorAlreadyCheckedOut'),
         });
       }
 
@@ -488,14 +489,14 @@ router.post(
       res.json({
         success: true,
         data: visitor,
-        message: 'Visitor checked out successfully',
+        message: req.t('common:routes.visitorCheckedOutSuccessfully'),
       });
     } catch (error) {
       console.error('❌ Check-out visitor error:', error);
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to check out visitor',
+        message: req.t('common:routes.failedToCheckOutVisitor'),
       });
     }
   }
@@ -512,7 +513,7 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
     if (!visitor) {
       return res.status(404).json({
         success: false,
-        error: 'Visitor not found',
+        error: req.t('common:routes.visitorNotFound'),
       });
     }
 
@@ -520,14 +521,14 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
 
     res.json({
       success: true,
-      message: 'Visitor deleted successfully',
+      message: req.t('common:routes.visitorDeletedSuccessfully'),
     });
   } catch (error) {
     console.error('❌ Delete visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to delete visitor',
+      message: req.t('common:routes.failedToDeleteVisitor'),
     });
   }
 });
@@ -551,7 +552,7 @@ router.get(
       if (!visitor) {
         return res.status(404).json({
           success: false,
-          error: 'Visitor not found',
+          error: req.t('common:routes.visitorNotFound'),
         });
       }
 
@@ -569,14 +570,14 @@ router.get(
             studentName: visitor.studentName,
           },
         },
-        message: 'Badge data retrieved. PDF generation to be implemented.',
+        message: req.t('common:routes.badgeDataRetrievedPdfGenerationToBeImplemented'),
       });
     } catch (error) {
       console.error('❌ Generate badge error:', error);
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to generate badge',
+        message: req.t('common:routes.failedToGenerateBadge'),
       });
     }
   }

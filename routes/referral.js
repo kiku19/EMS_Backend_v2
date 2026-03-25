@@ -10,6 +10,7 @@ import {
 } from '../services/referralService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // GET /referral/code — get (or create) this school's referral code
 router.get('/code', authenticate, checkPermission('settings', 'view'), async (req, res) => {

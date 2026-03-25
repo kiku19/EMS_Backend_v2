@@ -36,6 +36,7 @@ import {
   createStudentRecord,
 } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
+import { piiMatch } from '../utils/encryption.js';
 
 describe('E2E-12: Student deletion → cascade cleanup → data consistency', () => {
   it('permanently deletes student and all associated records across all collections', async () => {
@@ -173,6 +174,7 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
 
     // Conversation + Message
     const conversation = await Conversation.create({
+      schoolId: school._id,
       participants: [
         { userId: sid, userModel: 'Student', name: 'Cascade Student' },
         { userId: admin._id, userModel: 'Staff', name: admin.name },
@@ -180,6 +182,7 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
       type: 'direct',
     });
     await Message.create({
+      schoolId: school._id,
       conversationId: conversation._id,
       senderId: sid,
       senderModel: 'Student',
@@ -350,7 +353,7 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
     expect(ptm?.slots).toHaveLength(0);
 
     // --- Verify orphaned parent account is deleted ---
-    expect(await Parent.findOne({ phone: '9900000001' }).lean()).toBeNull();
+    expect(await Parent.findOne(piiMatch('phone', '9900000001')).lean()).toBeNull();
   });
 
   it('retains parent account when parent still has other children after deletion', async () => {
@@ -390,7 +393,7 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
       })
       .expect(201);
 
-    const parentBefore = await Parent.findOne({ phone: '9900000002' }).lean();
+    const parentBefore = await Parent.findOne(piiMatch('phone', '9900000002')).lean();
     expect(parentBefore?.children).toHaveLength(2);
 
     // Delete only Child One
@@ -402,7 +405,7 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
     expect(deleteRes.body.deletedRecords.parentAccountsDeleted).toBe(0);
 
     // Parent retained with Child Two still linked
-    const parentAfter = await Parent.findOne({ phone: '9900000002' }).lean();
+    const parentAfter = await Parent.findOne(piiMatch('phone', '9900000002')).lean();
     expect(parentAfter).not.toBeNull();
     expect(parentAfter?.children).toHaveLength(1);
     expect(parentAfter?.children[0].studentId.toString()).toBe(res2.body.id);

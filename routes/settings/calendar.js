@@ -5,6 +5,7 @@ import { getDefaultSchoolSettings } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const getSettingsQuery = (req) => buildSchoolScopedQuery(req.user?.schoolId);
 const findSchoolSettings = (req) => SchoolSettings.findOne(getSettingsQuery(req));

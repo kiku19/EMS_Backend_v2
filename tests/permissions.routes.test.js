@@ -509,7 +509,7 @@ describe('permissions routes', () => {
 
     expect(response.body).toMatchObject({
       status: 'approved',
-      reviewerName: 'Approve Admin',
+      reviewerName: 'Admin',
       reviewNotes: 'Approved for this term',
     });
 
@@ -561,7 +561,7 @@ describe('permissions routes', () => {
 
     expect(response.body).toMatchObject({
       status: 'rejected',
-      reviewerName: 'Reject Admin',
+      reviewerName: 'Admin',
       reviewNotes: 'Not authorized for settings',
     });
   });

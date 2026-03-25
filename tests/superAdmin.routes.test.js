@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { School, SchoolSettings, Staff, UserPermission } from '../database.js';
 import { createSchoolRecord } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
+import { piiMatch } from '../utils/encryption.js';
 
 async function loginAsSuperAdmin(app) {
   const agent = request.agent(app);
@@ -56,7 +57,10 @@ describe('super admin routes', () => {
     expect(response.body.temporaryPassword).toEqual(expect.any(String));
 
     const school = await School.findOne({ code: 'RIVERDALE-HIGH' });
-    const admin = await Staff.findOne({ schoolId: school?._id, email: 'rita@riverdale.edu' });
+    const admin = await Staff.findOne({
+      schoolId: school?._id,
+      ...piiMatch('email', 'rita@riverdale.edu'),
+    });
     const permissions = await UserPermission.findOne({ schoolId: school?._id, userId: admin?._id });
     const settings = await SchoolSettings.findOne({ schoolId: school?._id });
 
@@ -135,7 +139,10 @@ describe('super admin routes', () => {
     expect(response.body.temporaryPassword).toEqual(expect.any(String));
 
     const settings = await SchoolSettings.findOne({ schoolId: school._id });
-    const admin = await Staff.findOne({ schoolId: school._id, email: 'principal@blueridge.edu' });
+    const admin = await Staff.findOne({
+      schoolId: school._id,
+      ...piiMatch('email', 'principal@blueridge.edu'),
+    });
 
     expect(settings).toBeTruthy();
     expect(admin).toBeTruthy();

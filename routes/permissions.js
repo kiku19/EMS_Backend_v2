@@ -32,6 +32,7 @@ function logPermissionAuditEvent({ schoolId, actorId, action, entityId, newValue
 }
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ router.get('/user/:userId', authenticate, async (req, res) => {
     if (!userPermission) {
       const user = await Staff.findById(userId);
       if (!user) {
-        return res.status(404).json({ error: 'User not found' });
+        return res.status(404).json({ error: req.t('common:routes.userNotFound') });
       }
 
       const role = determineRole(user.role);
@@ -102,7 +103,7 @@ router.get('/user/:userId', authenticate, async (req, res) => {
     res.json(userPermission);
   } catch (error) {
     console.error('Error fetching user permissions:', error);
-    res.status(500).json({ error: 'Failed to fetch permissions' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchPermissions') });
   }
 });
 
@@ -111,12 +112,12 @@ router.put('/user/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
     const { permissions, role, customPermissions } = req.body;
-    const adminId = req.user._id;
+    const adminId = req.user.id;
 
     // Verify admin
     const adminPermission = await UserPermission.findOne({ userId: adminId });
     if (!adminPermission || adminPermission.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+      return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
     const updated = await UserPermission.findOneAndUpdate(
@@ -143,7 +144,7 @@ router.put('/user/:userId', authenticate, async (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error('Error updating permissions:', error);
-    res.status(500).json({ error: 'Failed to update permissions' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdatePermissions') });
   }
 });
 
@@ -153,7 +154,7 @@ router.post('/request', authenticate, async (req, res) => {
     const { userId, userName, userEmail, module, permissions, reason } = req.body;
 
     if (!userId || !userName || !module || !permissions || !reason) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ error: req.t('common:routes.missingRequiredFields') });
     }
 
     // Check if there's already a pending request for this user and module
@@ -165,7 +166,7 @@ router.post('/request', authenticate, async (req, res) => {
 
     if (existingRequest) {
       return res.status(400).json({
-        error: 'A pending request already exists for this module',
+        error: req.t('common:routes.aPendingRequestAlreadyExistsForThisModule'),
         existingRequest,
       });
     }
@@ -194,7 +195,7 @@ router.post('/request', authenticate, async (req, res) => {
     res.status(201).json(request);
   } catch (error) {
     console.error('Error creating permission request:', error);
-    res.status(500).json({ error: 'Failed to create permission request' });
+    res.status(500).json({ error: req.t('common:routes.failedToCreatePermissionRequest') });
   }
 });
 
@@ -205,9 +206,9 @@ router.get('/requests', authenticate, async (req, res) => {
     const userId = sanitizeQueryId(req.query.userId);
 
     // Verify admin
-    const adminPermission = await UserPermission.findOne({ userId: req.user._id });
+    const adminPermission = await UserPermission.findOne({ userId: req.user.id });
     if (!adminPermission || adminPermission.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+      return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
     const query = {};
@@ -219,7 +220,7 @@ router.get('/requests', authenticate, async (req, res) => {
     res.json(requests);
   } catch (error) {
     console.error('Error fetching permission requests:', error);
-    res.status(500).json({ error: 'Failed to fetch permission requests' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchPermissionRequests') });
   }
 });
 
@@ -227,16 +228,16 @@ router.get('/requests', authenticate, async (req, res) => {
 router.get('/requests/count/pending', authenticate, async (req, res) => {
   try {
     // Verify admin
-    const adminPermission = await UserPermission.findOne({ userId: req.user._id });
+    const adminPermission = await UserPermission.findOne({ userId: req.user.id });
     if (!adminPermission || adminPermission.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+      return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
     const count = await PermissionRequest.countDocuments({ status: 'pending' });
     res.json({ count });
   } catch (error) {
     console.error('Error counting pending requests:', error);
-    res.status(500).json({ error: 'Failed to count pending requests' });
+    res.status(500).json({ error: req.t('common:routes.failedToCountPendingRequests') });
   }
 });
 
@@ -245,26 +246,26 @@ router.put('/requests/:requestId', authenticate, async (req, res) => {
   try {
     const { requestId } = req.params;
     const { status, reviewNotes } = req.body;
-    const adminId = req.user._id;
+    const adminId = req.user.id;
     const adminName = req.user.name || 'Admin';
 
     if (!['approved', 'rejected'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
+      return res.status(400).json({ error: req.t('common:routes.invalidStatus') });
     }
 
     // Verify admin
     const adminPermission = await UserPermission.findOne({ userId: adminId });
     if (!adminPermission || adminPermission.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+      return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
     const request = await PermissionRequest.findById(requestId);
     if (!request) {
-      return res.status(404).json({ error: 'Request not found' });
+      return res.status(404).json({ error: req.t('common:routes.requestNotFound') });
     }
 
     if (request.status !== 'pending') {
-      return res.status(400).json({ error: 'Request has already been reviewed' });
+      return res.status(400).json({ error: req.t('common:routes.requestHasAlreadyBeenReviewed') });
     }
 
     // Update request status
@@ -351,7 +352,7 @@ router.put('/requests/:requestId', authenticate, async (req, res) => {
     res.json(request);
   } catch (error) {
     console.error('Error reviewing permission request:', error);
-    res.status(500).json({ error: 'Failed to review permission request' });
+    res.status(500).json({ error: req.t('common:routes.failedToReviewPermissionRequest') });
   }
 });
 
@@ -369,7 +370,7 @@ router.get('/user/:userId/requests', authenticate, async (req, res) => {
     res.json(requests);
   } catch (error) {
     console.error('Error fetching user requests:', error);
-    res.status(500).json({ error: 'Failed to fetch user requests' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchUserRequests') });
   }
 });
 
@@ -383,7 +384,7 @@ router.get('/custom-roles', authenticate, async (req, res) => {
     res.json(roles);
   } catch (error) {
     console.error('Error fetching custom roles:', error);
-    res.status(500).json({ error: 'Failed to fetch custom roles' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchCustomRoles') });
   }
 });
 
@@ -393,7 +394,9 @@ router.post('/custom-roles', authenticate, async (req, res) => {
     const schoolId = req.user.schoolId;
     const parsed = customRoleCreateSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
     }
 
     const { name, description, permissions, locked } = parsed.data;
@@ -403,7 +406,7 @@ router.post('/custom-roles', authenticate, async (req, res) => {
       name: { $regex: new RegExp(`^${name}$`, 'i') },
     });
     if (existing) {
-      return res.status(400).json({ error: 'A role with this name already exists' });
+      return res.status(400).json({ error: req.t('common:routes.aRoleWithThisNameAlreadyExists') });
     }
 
     const role = await CustomRole.create({
@@ -412,13 +415,13 @@ router.post('/custom-roles', authenticate, async (req, res) => {
       description,
       permissions,
       locked,
-      createdBy: req.user._id,
+      createdBy: req.user.id,
     });
 
     res.status(201).json(role);
   } catch (error) {
     console.error('Error creating custom role:', error);
-    res.status(500).json({ error: 'Failed to create custom role' });
+    res.status(500).json({ error: req.t('common:routes.failedToCreateCustomRole') });
   }
 });
 
@@ -430,16 +433,18 @@ router.put('/custom-roles/:id', authenticate, async (req, res) => {
 
     const parsed = customRoleUpdateSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
     }
 
     const role = await CustomRole.findOne({ _id: id, schoolId });
     if (!role) {
-      return res.status(404).json({ error: 'Role not found' });
+      return res.status(404).json({ error: req.t('common:routes.roleNotFound') });
     }
 
     if (role.isSystem) {
-      return res.status(403).json({ error: 'System roles cannot be modified' });
+      return res.status(403).json({ error: req.t('common:routes.systemRolesCannotBeModified') });
     }
 
     const { name, description, permissions, locked } = parsed.data;
@@ -451,7 +456,9 @@ router.put('/custom-roles/:id', authenticate, async (req, res) => {
         _id: { $ne: id },
       });
       if (existing) {
-        return res.status(400).json({ error: 'A role with this name already exists' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.aRoleWithThisNameAlreadyExists') });
       }
     }
 
@@ -464,7 +471,7 @@ router.put('/custom-roles/:id', authenticate, async (req, res) => {
     res.json(role);
   } catch (error) {
     console.error('Error updating custom role:', error);
-    res.status(500).json({ error: 'Failed to update custom role' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdateCustomRole') });
   }
 });
 
@@ -476,18 +483,18 @@ router.delete('/custom-roles/:id', authenticate, async (req, res) => {
 
     const role = await CustomRole.findOne({ _id: id, schoolId });
     if (!role) {
-      return res.status(404).json({ error: 'Role not found' });
+      return res.status(404).json({ error: req.t('common:routes.roleNotFound') });
     }
 
     if (role.isSystem) {
-      return res.status(403).json({ error: 'System roles cannot be deleted' });
+      return res.status(403).json({ error: req.t('common:routes.systemRolesCannotBeDeleted') });
     }
 
     await role.deleteOne();
-    res.json({ message: 'Role deleted successfully' });
+    res.json({ message: req.t('common:routes.roleDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting custom role:', error);
-    res.status(500).json({ error: 'Failed to delete custom role' });
+    res.status(500).json({ error: req.t('common:routes.failedToDeleteCustomRole') });
   }
 });
 

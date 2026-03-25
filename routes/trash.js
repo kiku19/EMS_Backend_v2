@@ -7,6 +7,7 @@ import TrashItem from '../models/TrashItem.js';
 import { permanentlyDeleteStudentData } from '../services/studentDataErasureService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 /**
  * GET /api/trash
@@ -64,7 +65,7 @@ router.get('/', authenticate, checkPermission('settings', 'view'), async (req, r
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch trash items',
+      message: req.t('common:routes.failedToFetchTrashItems'),
     });
   }
 });
@@ -119,7 +120,7 @@ router.get('/stats', authenticate, checkPermission('settings', 'view'), async (r
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to fetch trash statistics',
+      message: req.t('common:routes.failedToFetchTrashStatistics'),
     });
   }
 });
@@ -143,8 +144,8 @@ router.post(
         console.warn(`⚠️ Trash item not found: ${trashItemId}`);
         return res.status(404).json({
           success: false,
-          error: 'Trash item not found',
-          message: 'The item to restore does not exist',
+          error: req.t('common:routes.trashItemNotFound'),
+          message: req.t('common:routes.theItemToRestoreDoesNotExist'),
         });
       }
 
@@ -181,7 +182,7 @@ router.post(
           if (!Model) {
             return res.status(400).json({
               success: false,
-              error: 'Model not found',
+              error: req.t('common:routes.modelNotFound'),
               message: `Cannot restore: model "${modelName}" not found`,
             });
           }
@@ -197,7 +198,7 @@ router.post(
           console.warn(`⚠️ Unknown item type: ${trashItem.itemType}`);
           return res.status(400).json({
             success: false,
-            error: 'Unknown item type',
+            error: req.t('common:routes.unknownItemType'),
             message: `Cannot restore item of type: ${trashItem.itemType}`,
           });
       }
@@ -214,7 +215,7 @@ router.post(
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to restore item',
+        message: req.t('common:routes.failedToRestoreItem'),
       });
     }
   }
@@ -239,8 +240,8 @@ router.delete(
         console.warn(`⚠️ Trash item not found: ${trashItemId}`);
         return res.status(404).json({
           success: false,
-          error: 'Trash item not found',
-          message: 'The item to delete does not exist',
+          error: req.t('common:routes.trashItemNotFound'),
+          message: req.t('common:routes.theItemToDeleteDoesNotExist'),
         });
       }
 
@@ -269,7 +270,7 @@ router.delete(
           console.warn(`⚠️ Unknown item type: ${trashItem.itemType}`);
           return res.status(400).json({
             success: false,
-            error: 'Unknown item type',
+            error: req.t('common:routes.unknownItemType'),
             message: `Cannot permanently delete item of type: ${trashItem.itemType}`,
           });
       }
@@ -286,7 +287,7 @@ router.delete(
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to permanently delete item',
+        message: req.t('common:routes.failedToPermanentlyDeleteItem'),
       });
     }
   }
@@ -308,8 +309,8 @@ router.post(
       if (!trashItemIds || !Array.isArray(trashItemIds) || trashItemIds.length === 0) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid input',
-          message: 'trashItemIds must be a non-empty array',
+          error: req.t('common:routes.invalidInput'),
+          message: req.t('common:routes.trashItemIdsMustBeANonEmptyArray'),
         });
       }
 
@@ -395,7 +396,7 @@ router.post(
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to bulk restore items',
+        message: req.t('common:routes.failedToBulkRestoreItems'),
       });
     }
   }
@@ -417,8 +418,8 @@ router.delete(
       if (!trashItemIds || !Array.isArray(trashItemIds) || trashItemIds.length === 0) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid input',
-          message: 'trashItemIds must be a non-empty array',
+          error: req.t('common:routes.invalidInput'),
+          message: req.t('common:routes.trashItemIdsMustBeANonEmptyArray'),
         });
       }
 
@@ -489,7 +490,7 @@ router.delete(
       res.status(500).json({
         success: false,
         error: error.message,
-        message: 'Failed to bulk delete items',
+        message: req.t('common:routes.failedToBulkDeleteItems'),
       });
     }
   }

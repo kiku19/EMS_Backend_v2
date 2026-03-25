@@ -78,6 +78,7 @@ import UserPresence from '../models/UserPresence.js';
 import Visitor from '../models/Visitor.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const VALID_CATEGORIES = [
   'students',

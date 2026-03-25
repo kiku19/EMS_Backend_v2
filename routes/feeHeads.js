@@ -212,6 +212,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { zodSchemas, validateZod } from '../middleware/validation/validation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Get all fee heads
 router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) => {
@@ -231,7 +232,7 @@ router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, re
   try {
     const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
     if (!feeHead) {
-      return res.status(404).json({ error: 'Fee head not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
     }
     res.json(feeHead);
   } catch (error) {
@@ -339,7 +340,7 @@ router.put(
       );
 
       if (!feeHead) {
-        return res.status(404).json({ error: 'Fee head not found' });
+        return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
       }
 
       // Re-apply to students if autoApply is enabled
@@ -376,7 +377,7 @@ router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (re
     });
 
     if (!feeHead) {
-      return res.status(404).json({ error: 'Fee head not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
     }
 
     // Save affected structure IDs BEFORE the $pull operation
@@ -397,7 +398,7 @@ router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (re
       await recalculateStudentFeeStructure(structureId, req.user.schoolId);
     }
 
-    res.json({ success: true, message: 'Fee head deleted successfully' });
+    res.json({ success: true, message: req.t('common:routes.feeHeadDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting fee head:', error);
     res.status(500).json({ error: error.message });
@@ -410,7 +411,7 @@ router.post('/:id/apply', authenticate, checkPermission('fees', 'edit'), async (
     const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
 
     if (!feeHead) {
-      return res.status(404).json({ error: 'Fee head not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
     }
 
     const result = await applyFeeHeadToStudents(feeHead, req.user.schoolId);

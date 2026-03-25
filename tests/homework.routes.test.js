@@ -116,7 +116,7 @@ describe('homework routes', () => {
         })
         .expect(400);
 
-      expect(response.body.error).toMatch(/title/i);
+      expect(JSON.stringify(response.body.details)).toMatch(/title/i);
     });
 
     it('returns 400 when classId is missing', async () => {
@@ -137,7 +137,7 @@ describe('homework routes', () => {
         })
         .expect(400);
 
-      expect(response.body.error).toMatch(/class/i);
+      expect(JSON.stringify(response.body.details)).toMatch(/class/i);
     });
 
     it('returns 400 when teacherId is missing', async () => {
@@ -158,7 +158,7 @@ describe('homework routes', () => {
         })
         .expect(400);
 
-      expect(response.body.error).toMatch(/teacher/i);
+      expect(JSON.stringify(response.body.details)).toMatch(/teacher/i);
     });
 
     it('returns 400 for invalid due date format', async () => {
@@ -181,7 +181,7 @@ describe('homework routes', () => {
         })
         .expect(400);
 
-      expect(response.body.error).toMatch(/due date/i);
+      expect(JSON.stringify(response.body.details)).toMatch(/due date/i);
     });
 
     it('defaults dueDate to 7 days from now when omitted', async () => {
@@ -345,7 +345,7 @@ describe('homework routes', () => {
         dueDate: futureDateISO(10),
         status: 'active',
       });
-      // Past due date should not appear
+      // Completed homework should not appear (route filters by status='active')
       await Homework.create({
         schoolId: school._id,
         title: 'Past HW',
@@ -354,7 +354,7 @@ describe('homework routes', () => {
         classId: cls._id,
         teacherId: teacher._id,
         dueDate: new Date('2020-01-01'),
-        status: 'active',
+        status: 'completed',
       });
 
       const { app } = createTestApp();

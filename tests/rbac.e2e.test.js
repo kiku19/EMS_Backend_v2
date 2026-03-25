@@ -35,7 +35,7 @@ describe('RBAC E2E - teacher cannot access admin-only endpoints', () => {
     const res = await request(app)
       .put(`/api/staff/${admin._id}/credentials`)
       .set(authHeadersFor(teacher, 'teacher'))
-      .send({ password: 'newpassword123' })
+      .send({ password: 'NewPassword123' })
       .expect(403);
 
     expect(res.body.error).toBe('Admin access required');
@@ -47,7 +47,7 @@ describe('RBAC E2E - teacher cannot access admin-only endpoints', () => {
     const res = await request(app)
       .put(`/api/staff/${teacher._id}/credentials`)
       .set(authHeadersFor(admin, 'admin'))
-      .send({ password: 'newpassword123' })
+      .send({ password: 'NewPassword123' })
       .expect(200);
 
     expect(res.body).toMatchObject({ success: true });
@@ -215,7 +215,7 @@ describe('RBAC E2E - teacher cannot access admin-only endpoints', () => {
 
     await request(app)
       .put(`/api/staff/${admin._id}/credentials`)
-      .send({ password: 'newpassword123' })
+      .send({ password: 'NewPassword123' })
       .expect(401);
   });
 

@@ -13,6 +13,7 @@ import {
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -62,7 +63,7 @@ router.get(
       )
         .populate('classId', 'name section')
         .lean();
-      if (!student) return res.status(404).json({ error: 'Student not found' });
+      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
       const reportCards = await CBSEReportCard.find(query).lean();
 

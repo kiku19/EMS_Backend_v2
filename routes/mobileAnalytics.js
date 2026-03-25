@@ -17,6 +17,7 @@ import { recordRequest } from '../services/businessMetricsService.js';
 import UserDayActivity from '../models/UserDayActivity.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 

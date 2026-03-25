@@ -4,6 +4,7 @@ import { authenticate } from '../../middleware/auth.js';
 import SmsTemplate from '../../models/SmsTemplate.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const smsTemplateZodSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(100),

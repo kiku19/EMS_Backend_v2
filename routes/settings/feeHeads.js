@@ -5,6 +5,7 @@ import FeeHead from '../../models/FeeHead.js';
 import StudentFeeStructure from '../../models/StudentFeeStructure.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Get all fee heads
 router.get('/fee-heads', authenticate, async (req, res) => {

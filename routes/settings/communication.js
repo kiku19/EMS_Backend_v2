@@ -6,6 +6,7 @@ import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 import { SchoolSettings } from '../../database.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const communicationSettingsSchema = z.object({
   sms: z.object({

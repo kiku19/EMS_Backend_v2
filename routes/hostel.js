@@ -8,6 +8,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 

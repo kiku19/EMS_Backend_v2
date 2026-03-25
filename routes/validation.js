@@ -6,6 +6,7 @@ import validationService from '../services/validationService.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.get('/class/:classId/empty-slots', authenticate, async (req, res) => {
   try {

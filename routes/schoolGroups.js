@@ -70,7 +70,7 @@ router.get('/:id', validateZod(mongoIdParamSchema, 'params'), async (req, res) =
     const { id } = req.params;
 
     if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: req.t('common:errors.forbidden') });
     }
 
     const group = await SchoolGroup.findById(id).lean();
@@ -101,7 +101,7 @@ router.put(
       const { id } = req.params;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       const group = await SchoolGroup.findByIdAndUpdate(id, { $set: req.body }, { new: true });
@@ -122,7 +122,7 @@ router.get('/:id/branches', validateZod(mongoIdParamSchema, 'params'), async (re
     const { id } = req.params;
 
     if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: req.t('common:errors.forbidden') });
     }
 
     const branches = await School.find({ groupId: id })
@@ -157,7 +157,7 @@ router.post(
       }
 
       if (!school) {
-        return res.status(404).json({ error: 'School not found' });
+        return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
       }
 
       if (school.groupId && String(school.groupId) !== id) {
@@ -209,7 +209,7 @@ router.post(
       const { studentId, fromSchoolId, toSchoolId, reason } = req.body;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       // Verify both schools belong to the group
@@ -254,7 +254,7 @@ router.get('/:id/analytics', validateZod(mongoIdParamSchema, 'params'), async (r
     const { id } = req.params;
 
     if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: req.t('common:errors.forbidden') });
     }
 
     const branches = await School.find({ groupId: id }).select('_id name code status').lean();
@@ -331,7 +331,7 @@ router.post(
       const { staffId, targetSchoolId } = req.body;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       // Verify both source school (staff's primary) and target school belong to the group
@@ -341,7 +341,7 @@ router.post(
       ]);
 
       if (!staff) {
-        return res.status(404).json({ error: 'Staff not found' });
+        return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
       }
 
       if (!targetSchool) {
@@ -381,7 +381,7 @@ router.delete(
       const { targetSchoolId } = req.body;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       if (!targetSchoolId) {
@@ -390,7 +390,7 @@ router.delete(
 
       const staff = await Staff.findById(staffId).select('additionalSchoolIds');
       if (!staff) {
-        return res.status(404).json({ error: 'Staff not found' });
+        return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
       }
 
       staff.additionalSchoolIds = staff.additionalSchoolIds.filter(
@@ -416,7 +416,7 @@ router.post(
       const { id } = req.params;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       const group = await SchoolGroup.findById(id).select('sharedFeeTemplates').lean();
@@ -448,7 +448,7 @@ router.get('/:id/fee-templates', validateZod(mongoIdParamSchema, 'params'), asyn
     const { id } = req.params;
 
     if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: req.t('common:errors.forbidden') });
     }
 
     const templates = await FeeTemplate.find({ groupId: id, isGroupTemplate: true })
@@ -469,7 +469,7 @@ router.get('/:id/white-label', validateZod(mongoIdParamSchema, 'params'), async 
     const { id } = req.params;
 
     if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: 'Access denied' });
+      return res.status(403).json({ error: req.t('common:errors.forbidden') });
     }
 
     const group = await SchoolGroup.findById(id).select('whiteLabelSettings name').lean();
@@ -493,7 +493,7 @@ router.put(
       const { id } = req.params;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       const group = await SchoolGroup.findById(id);
@@ -539,7 +539,7 @@ router.post(
       const { id } = req.params;
 
       if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ error: req.t('common:errors.forbidden') });
       }
 
       const group = await SchoolGroup.findById(id);

@@ -6,7 +6,7 @@
  * complexity of i18next-fs-backend while keeping translations in separate files.
  *
  * Supported languages : en (default), hi
- * Namespaces          : common, auth, validation
+ * Namespaces          : common, auth, validation, academics, attendance, classes, fees, payroll, staff, students
  *
  * Usage in route handlers (request-scoped):
  *   req.t('common:errors.notFound')
@@ -29,6 +29,13 @@ const resources = {
     common: require('../locales/en/common.json'),
     auth: require('../locales/en/auth.json'),
     validation: require('../locales/en/validation.json'),
+    academics: require('../locales/en/academics.json'),
+    attendance: require('../locales/en/attendance.json'),
+    classes: require('../locales/en/classes.json'),
+    fees: require('../locales/en/fees.json'),
+    payroll: require('../locales/en/payroll.json'),
+    staff: require('../locales/en/staff.json'),
+    students: require('../locales/en/students.json'),
   },
   hi: {
     common: require('../locales/hi/common.json'),
@@ -45,7 +52,18 @@ i18next.init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'hi'],
   defaultNS: 'common',
-  ns: ['common', 'auth', 'validation'],
+  ns: [
+    'common',
+    'auth',
+    'validation',
+    'academics',
+    'attendance',
+    'classes',
+    'fees',
+    'payroll',
+    'staff',
+    'students',
+  ],
 
   resources,
 

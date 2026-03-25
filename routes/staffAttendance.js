@@ -9,6 +9,7 @@ import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js'
 import { sanitizeString, sanitizeQueryStr } from '../middleware/validation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Rate limit for mobile attendance actions: max 20 requests per 15 min per IP
 const mobileAttendanceLimiter = rateLimit({
@@ -433,7 +434,7 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
     if (!staff) {
       return res.status(404).json({
         success: false,
-        error: 'Staff not found',
+        error: req.t('common:errors.staffNotFound'),
       });
     }
 

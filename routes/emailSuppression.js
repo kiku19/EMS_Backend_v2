@@ -7,6 +7,7 @@ import { suppressEmail } from '../config/email.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 

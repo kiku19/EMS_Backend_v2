@@ -17,6 +17,7 @@ import feeSettingsRoutes from './routes/feeSettings.js';
 import feesRoutes from './routes/fees.js';
 import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
+import expensesRoutes from './routes/expenses.js';
 import announcementRoutes from './routes/announcements.js';
 import emailCampaignsRoutes from './routes/emailCampaigns.js';
 import trackingRoutes from './routes/tracking.js';
@@ -67,6 +68,7 @@ import attendanceRoutes from './routes/attendance.js';
 import academicsRoutes from './routes/academics.js';
 import academicPerformanceRoutes from './routes/academicPerformance.js';
 import cbseReportCardRoutes from './routes/cbseReportCard.js';
+import icseReportCardRoutes from './routes/icseReportCard.js';
 import cceRoutes from './routes/cce.js';
 import examScheduleRoutes from './routes/examSchedule.js';
 import classesRoutes from './routes/classes.js';
@@ -336,13 +338,11 @@ app.get('/api/health', healthHandler);
 // External monitors (UptimeRobot/Pingdom) should hit this every 60 s.
 // Deliberately lightweight: no DB/Redis check so it never blocks on deps.
 app.get('/healthz', (_req, res) => {
-  res
-    .status(200)
-    .json({
-      status: 'ok',
-      uptime: Math.round(process.uptime()),
-      timestamp: new Date().toISOString(),
-    });
+  res.status(200).json({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // OBS-06: Readiness probe — answers "is the service ready to handle traffic?"
@@ -503,6 +503,7 @@ v1Router.use('/staff', staffRoutes);
 v1Router.use('/attendance', attendanceRoutes);
 v1Router.use('/academic-performance', academicPerformanceRoutes);
 v1Router.use('/cbse-report-card', cbseReportCardRoutes);
+v1Router.use('/icse-report-card', icseReportCardRoutes);
 v1Router.use('/', cceRoutes);
 v1Router.use('/hall-tickets', hallTicketsRoutes);
 v1Router.use('/', academicsRoutes);
@@ -512,6 +513,7 @@ v1Router.use('/homework', homeworkRoutes);
 // ─── Staff & HR ──────────────────────────────────────────────────────────────
 v1Router.use('/staff-attendance', staffAttendanceRoutes);
 v1Router.use('/payroll', payrollRoutes);
+v1Router.use('/expenses', expensesRoutes);
 v1Router.use('/payslips', payslipsRoutes);
 v1Router.use('/teacher-assignments', teacherAssignmentsRoutes);
 v1Router.use('/teacher-timetable', teacherTimetableRoutes);

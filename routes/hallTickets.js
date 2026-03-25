@@ -7,6 +7,7 @@ import { hallTicketQuerySchema } from '../validators/index.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -446,7 +447,8 @@ router.get('/schedule/:scheduleId/student/:studentId/download', authenticate, as
 
     if (!schedule)
       return res.status(404).json({ success: false, message: 'Exam schedule not found' });
-    if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+    if (!student)
+      return res.status(404).json({ success: false, message: req.t('students:errors.notFound') });
 
     const studentClassId = student.classId?._id?.toString() || student.classId?.toString();
     const classEntries = schedule.entries.filter((entry) => {

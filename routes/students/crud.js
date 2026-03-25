@@ -1,5 +1,12 @@
 import express from 'express';
-import { Student, StudentFeeStructure, ActivityLog, getNextAdmissionId } from '../../database.js';
+import {
+  Student,
+  StudentFeeStructure,
+  Attendance,
+  Result,
+  ActivityLog,
+  getNextAdmissionId,
+} from '../../database.js';
 import { permanentlyDeleteStudentData } from '../../services/studentDataErasureService.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
@@ -16,6 +23,7 @@ import {
 } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.get('/', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
@@ -123,21 +131,69 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
       resolvedAcademicYear === 'all'
         ? await getConfiguredAcademicYear(schoolId)
         : resolvedAcademicYear;
-    const feeStructures = await StudentFeeStructure.find({
-      ...(schoolId ? { schoolId } : {}),
-      studentId: { $in: studentIds },
-      academicYear: feeYear,
-    });
+
+    // Batch fetch attendance, fee structures, and latest results in parallel
+    const [feeStructures, attendanceAgg, latestResults] = await Promise.all([
+      StudentFeeStructure.find({
+        ...(schoolId ? { schoolId } : {}),
+        studentId: { $in: studentIds },
+        academicYear: feeYear,
+      }),
+      Attendance.aggregate([
+        {
+          $match: {
+            studentId: { $in: studentIds },
+            ...(schoolId ? { schoolId } : {}),
+            ...(feeYear && feeYear !== 'all' ? { academicYear: feeYear } : {}),
+          },
+        },
+        {
+          $group: {
+            _id: '$studentId',
+            total: { $sum: 1 },
+            present: {
+              $sum: { $cond: [{ $in: ['$status', ['present', 'late']] }, 1, 0] },
+            },
+          },
+        },
+      ]),
+      Result.aggregate([
+        {
+          $match: {
+            studentId: { $in: studentIds },
+            isPublished: true,
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: '$studentId',
+            percentage: { $first: '$percentage' },
+          },
+        },
+      ]),
+    ]);
 
     const feeStatusMap = {};
     feeStructures.forEach((feeStructure) => {
       feeStatusMap[feeStructure.studentId.toString()] = feeStructure.overallStatus || 'pending';
     });
 
+    const attendanceMap = {};
+    attendanceAgg.forEach(({ _id, total, present }) => {
+      attendanceMap[_id.toString()] = total > 0 ? Math.round((present / total) * 100) : null;
+    });
+
+    const resultMap = {};
+    latestResults.forEach(({ _id, percentage }) => {
+      resultMap[_id.toString()] = percentage != null ? Math.round(percentage) : null;
+    });
+
     const formatted = students.map((student) => {
       const classInfo = formatStudentClass(student);
       const currentFeeStatus = feeStatusMap[student._id.toString()] || student.feeStatus;
 
+      const sid = student._id.toString();
       return {
         id: student._id,
         name: student.name,
@@ -147,6 +203,8 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
         classId: student.classId?._id?.toString() || student.classId?.toString(),
         class: classInfo,
         className: student.classId ? `${student.classId.name} ${student.classId.section}` : null,
+        attendancePercentage: attendanceMap[sid] ?? null,
+        latestResultPercentage: resultMap[sid] ?? null,
         gender: student.gender,
         dateOfBirth: student.dateOfBirth,
         bloodGroup: student.bloodGroup,
@@ -222,7 +280,7 @@ router.get('/:id', authenticate, checkPermission('students', 'view'), async (req
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     ).populate('classId', 'name section');
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     const classInfo = student.classId
@@ -249,7 +307,7 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     const { deletedRecords } = await permanentlyDeleteStudentData(req.params.id);
@@ -278,7 +336,7 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
 
     res.json({
       success: true,
-      message: 'Student and linked personal data permanently deleted',
+      message: req.t('common:routes.studentAndLinkedPersonalDataPermanentlyDeleted'),
       deletedStudentId: student._id,
       deletedRecords,
     });
@@ -297,7 +355,7 @@ router.put('/:id/pin', authenticate, checkPermission('students', 'edit'), async 
     ).populate('classId', 'name section');
 
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     res.json({
@@ -320,7 +378,7 @@ router.put('/:id/unpin', authenticate, checkPermission('students', 'edit'), asyn
     ).populate('classId', 'name section');
 
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     res.json({

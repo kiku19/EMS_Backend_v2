@@ -35,7 +35,7 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
       .send({ email: 'step1@example.com', password: 'Secure1pass', inviteToken })
       .expect(400);
 
-    expect(res.body.error).toBe('Validation failed');
+    expect(res.body.error).toBe('Validation Error');
     const fieldNames = res.body.details.map((d) => d.field);
     expect(fieldNames).toContain('name');
     expect(fieldNames).toContain('schoolName');
@@ -59,7 +59,7 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
       })
       .expect(400);
 
-    expect(res.body.error).toBe('Validation failed');
+    expect(res.body.error).toBe('Validation Error');
     const pwDetail = res.body.details.find((d) => d.field === 'password');
     expect(pwDetail).toBeTruthy();
   });

@@ -29,6 +29,82 @@ import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.
 const logger = createLogger('TwoFactor');
 const router = express.Router();
 
+/**
+ * POST /auth/2fa/verify
+ * Called after successful password login when 2FA is required.
+ * Body: { twoFactorToken, code?, backupCode?, rememberDevice? }
+ * Returns full auth token on success.
+ */
+router.post('/verify', validateZod(zodSchemas.twoFactorVerifyLogin), async (req, res) => {
+  try {
+    const { twoFactorToken, code, backupCode, rememberDevice } = req.body;
+
+    const payload = verifyTwoFactorToken(twoFactorToken);
+    if (!payload) {
+      return res.status(401).json({ error: 'Invalid or expired 2FA session. Please login again.' });
+    }
+
+    const staff = await Staff.findById(payload.staffId).select(
+      '+twoFactorSecret +twoFactorBackupCodes'
+    );
+    if (!staff || !staff.twoFactorEnabled) {
+      return res.status(401).json({ error: 'Invalid 2FA session' });
+    }
+
+    let verified = false;
+
+    if (code) {
+      const secret = decryptSecret(staff.twoFactorSecret);
+      verified = await authenticator.verify({ token: code, secret });
+    }
+
+    if (!verified && backupCode) {
+      const idx = await matchBackupCode(backupCode.toUpperCase(), staff.twoFactorBackupCodes);
+      if (idx >= 0) {
+        // Consume the used backup code
+        const updatedCodes = [...staff.twoFactorBackupCodes];
+        updatedCodes.splice(idx, 1);
+        await Staff.findByIdAndUpdate(staff._id, { twoFactorBackupCodes: updatedCodes });
+        verified = true;
+      }
+    }
+
+    if (!verified) {
+      return res.status(401).json({ error: 'Invalid verification code' });
+    }
+
+    const authPayload = await buildStaffAuthPayload(staff);
+    const token = generateToken(staff._id.toString(), staff.role, {
+      schoolId: authPayload.schoolId,
+      userType: 'staff',
+    });
+    const refreshToken = generateStaffRefreshToken(
+      staff._id.toString(),
+      authPayload.schoolId,
+      staff.tokenVersion || 1
+    );
+
+    if (rememberDevice) {
+      await addTrustedDevice(res, staff, req.headers['user-agent']);
+    }
+
+    setAuthCookie(res, token);
+    setRefreshCookie(res, refreshToken);
+
+    const TOKEN_EXPIRES_IN_MS = 8 * 60 * 60 * 1000;
+    res.json({
+      ...authPayload,
+      token,
+      refreshToken,
+      tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
+    });
+  } catch (err) {
+    logger.error({ err }, '2FA verify error');
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+router.use(authenticate);
+
 const TWO_FACTOR_TOKEN_EXPIRY = '10m';
 const DEVICE_COOKIE_NAME = 'ems_2fa_device';
 const DEVICE_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -161,7 +237,7 @@ async function addTrustedDevice(res, staff, userAgent) {
 router.get('/setup', authenticate, async (req, res) => {
   try {
     const staff = await Staff.findById(req.user.id);
-    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
 
     const secret = authenticator.generateSecret();
     const encryptedSecret = encryptSecret(secret);
@@ -202,7 +278,7 @@ router.post(
     try {
       const { code } = req.body;
       const staff = await Staff.findById(req.user.id).select('+twoFactorSecret');
-      if (!staff) return res.status(404).json({ error: 'Staff not found' });
+      if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
       if (!staff.twoFactorSecret) {
         return res.status(400).json({ error: 'Run 2FA setup first before confirming' });
       }
@@ -248,7 +324,7 @@ router.post(
     try {
       const { password } = req.body;
       const staff = await Staff.findById(req.user.id);
-      if (!staff) return res.status(404).json({ error: 'Staff not found' });
+      if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
 
       const passwordValid = await staff.comparePassword(password);
       if (!passwordValid) {
@@ -273,88 +349,13 @@ router.post(
 );
 
 /**
- * POST /auth/2fa/verify
- * Called after successful password login when 2FA is required.
- * Body: { twoFactorToken, code?, backupCode?, rememberDevice? }
- * Returns full auth token on success.
- */
-router.post('/verify', validateZod(zodSchemas.twoFactorVerifyLogin), async (req, res) => {
-  try {
-    const { twoFactorToken, code, backupCode, rememberDevice } = req.body;
-
-    const payload = verifyTwoFactorToken(twoFactorToken);
-    if (!payload) {
-      return res.status(401).json({ error: 'Invalid or expired 2FA session. Please login again.' });
-    }
-
-    const staff = await Staff.findById(payload.staffId).select(
-      '+twoFactorSecret +twoFactorBackupCodes'
-    );
-    if (!staff || !staff.twoFactorEnabled) {
-      return res.status(401).json({ error: 'Invalid 2FA session' });
-    }
-
-    let verified = false;
-
-    if (code) {
-      const secret = decryptSecret(staff.twoFactorSecret);
-      verified = await authenticator.verify({ token: code, secret });
-    }
-
-    if (!verified && backupCode) {
-      const idx = await matchBackupCode(backupCode.toUpperCase(), staff.twoFactorBackupCodes);
-      if (idx >= 0) {
-        // Consume the used backup code
-        const updatedCodes = [...staff.twoFactorBackupCodes];
-        updatedCodes.splice(idx, 1);
-        await Staff.findByIdAndUpdate(staff._id, { twoFactorBackupCodes: updatedCodes });
-        verified = true;
-      }
-    }
-
-    if (!verified) {
-      return res.status(401).json({ error: 'Invalid verification code' });
-    }
-
-    const authPayload = await buildStaffAuthPayload(staff);
-    const token = generateToken(staff._id.toString(), staff.role, {
-      schoolId: authPayload.schoolId,
-      userType: 'staff',
-    });
-    const refreshToken = generateStaffRefreshToken(
-      staff._id.toString(),
-      authPayload.schoolId,
-      staff.tokenVersion || 1
-    );
-
-    if (rememberDevice) {
-      await addTrustedDevice(res, staff, req.headers['user-agent']);
-    }
-
-    setAuthCookie(res, token);
-    setRefreshCookie(res, refreshToken);
-
-    const TOKEN_EXPIRES_IN_MS = 8 * 60 * 60 * 1000;
-    res.json({
-      ...authPayload,
-      token,
-      refreshToken,
-      tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
-    });
-  } catch (err) {
-    logger.error({ err }, '2FA verify error');
-    res.status(500).json({ error: 'Verification failed. Please try again.' });
-  }
-});
-
-/**
  * GET /auth/2fa/status
  * Returns the 2FA enrollment status for the current user.
  */
 router.get('/status', authenticate, async (req, res) => {
   try {
     const staff = await Staff.findById(req.user.id).select('twoFactorEnabled twoFactorEnrolledAt');
-    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
 
     res.json({
       success: true,
@@ -374,7 +375,7 @@ router.get('/status', authenticate, async (req, res) => {
 router.post('/regenerate-backup-codes', authenticate, async (req, res) => {
   try {
     const staff = await Staff.findById(req.user.id).select('+twoFactorBackupCodes');
-    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
     if (!staff.twoFactorEnabled) {
       return res.status(400).json({ error: '2FA is not enabled' });
     }

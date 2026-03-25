@@ -9,227 +9,6 @@ import PDFDocument from 'pdfkit';
 
 const router = express.Router();
 
-// Authenticate via short-lived download token (query param) OR standard Bearer header.
-// The download token is purpose-scoped and resource-scoped — never exposes the full auth JWT.
-function downloadTokenAuth(req, res, next) {
-  const queryToken = req.query.token;
-  if (queryToken && !extractTokenFromRequest(req)) {
-    try {
-      const jwtSecret = process.env.JWT_SECRET;
-      const payload = jwt.verify(queryToken, jwtSecret);
-      if (payload.purpose !== 'payslip-download') {
-        return res.status(403).json({ success: false, message: 'Invalid download token' });
-      }
-      if (payload.payslipId !== req.params.id) {
-        return res
-          .status(403)
-          .json({ success: false, message: 'Token does not match requested resource' });
-      }
-      req.user = { id: payload.userId, userId: payload.userId, schoolId: payload.schoolId };
-      return next();
-    } catch {
-      return res.status(401).json({ success: false, message: 'Download token expired or invalid' });
-    }
-  }
-  // Fall through to standard Bearer auth
-  return authenticate(req, res, next);
-}
-
-function scopeBySchool(schoolId, query = {}) {
-  const normalizedSchoolId = extractSchoolId(schoolId);
-  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
-  return { ...query, schoolId: normalizedSchoolId };
-}
-
-// Helper to convert month number to name
-const MONTH_NAMES = [
-  '',
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
-];
-
-/**
- * @route   GET /api/payslips/staff/:employeeId
- * @desc    Get all payroll records for a staff member
- * @access  Private
- */
-router.get('/staff/:employeeId', authenticate, async (req, res) => {
-  try {
-    const { employeeId } = req.params;
-    const { year, month, limit = 24, skip = 0 } = req.query;
-    const schoolId = req.user?.schoolId;
-
-    // Verify the employee belongs to the requesting user's school
-    const staffMember = await Staff.findOne(scopeBySchool(schoolId, { code: employeeId }));
-    if (!staffMember) {
-      return res.status(404).json({ success: false, message: 'Employee not found in your school' });
-    }
-
-    const query = scopeBySchool(schoolId, { employeeId });
-
-    if (year) {
-      query.year = parseInt(year);
-    }
-    if (month) {
-      query.month = parseInt(month);
-    }
-
-    const payrollRecords = await PayrollRecord.find(query)
-      .sort({ year: -1, month: -1 })
-      .limit(parseInt(limit))
-      .skip(parseInt(skip));
-
-    const total = await PayrollRecord.countDocuments(query);
-
-    // Get associated payslips for file info
-    const payslips = await Payslip.find(scopeBySchool(schoolId, { employeeId }));
-    const payslipMap = new Map();
-    payslips.forEach((p) => {
-      const key = `${p.year}-${p.month}`;
-      payslipMap.set(key, p);
-    });
-
-    // Combine data
-    const combinedData = payrollRecords.map((record) => {
-      const key = `${record.year}-${record.month}`;
-      const payslip = payslipMap.get(key);
-      return {
-        _id: record._id,
-        month: MONTH_NAMES[record.month] || `Month ${record.month}`,
-        monthNumber: record.month,
-        year: record.year,
-        basicSalary: record.baseSalary,
-        allowances: record.totalAllowances || 0,
-        deductions: record.totalDeductions || 0,
-        netSalary: record.netPay,
-        paymentStatus: record.status,
-        payslipGenerated: !!payslip,
-        payslipId: payslip?._id,
-        payslipFileUrl: payslip?.fileUrl,
-        generatedAt: record.createdAt,
-      };
-    });
-
-    res.json({
-      success: true,
-      payslips: combinedData,
-      total,
-      hasMore: skip + limit < total,
-    });
-  } catch (error) {
-    console.error('Error fetching payslips:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route   GET /api/payslips/:id
- * @desc    Get single payroll/payslip by ID
- * @access  Private
- */
-router.get('/:id', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user?.schoolId;
-    const record = await PayrollRecord.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
-
-    if (!record) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payroll record not found',
-      });
-    }
-
-    // Get associated payslip
-    const payslip = await Payslip.findOne(
-      scopeBySchool(schoolId, {
-        employeeId: record.employeeId,
-        year: record.year,
-        month: record.month,
-      })
-    );
-
-    // Get staff details
-    const staff = await Staff.findOne(scopeBySchool(schoolId, { _id: record.employeeId }));
-
-    res.json({
-      success: true,
-      payslip: {
-        _id: record._id,
-        month: MONTH_NAMES[record.month] || `Month ${record.month}`,
-        monthNumber: record.month,
-        year: record.year,
-        basicSalary: record.baseSalary,
-        allowances: record.totalAllowances || 0,
-        deductions: record.totalDeductions || 0,
-        grossPay: record.grossPay,
-        netSalary: record.netPay,
-        paymentStatus: record.status,
-        staff: staff
-          ? {
-              name: staff.name,
-              code: staff.code,
-              email: staff.email,
-            }
-          : null,
-        payslip: payslip
-          ? {
-              fileUrl: payslip.fileUrl,
-              generatedAt: payslip.generatedAt,
-            }
-          : null,
-      },
-    });
-  } catch (error) {
-    console.error('Error fetching payslip:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    });
-  }
-});
-
-/**
- * @route   POST /api/payslips/:id/download-token
- * @desc    Generate a short-lived, purpose-scoped token for payslip download
- * @access  Private
- */
-router.post('/:id/download-token', authenticate, async (req, res) => {
-  try {
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      return res.status(500).json({ success: false, message: 'Server misconfiguration' });
-    }
-    const downloadToken = jwt.sign(
-      {
-        purpose: 'payslip-download',
-        payslipId: req.params.id,
-        userId: req.user.id || req.user.userId,
-        schoolId: req.user.schoolId,
-      },
-      jwtSecret,
-      { expiresIn: '5m' }
-    );
-    res.json({ success: true, downloadToken });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to generate download token' });
-  }
-});
-
 /**
  * @route   GET /api/payslips/:id/download
  * @desc    Download payslip as PDF
@@ -243,7 +22,7 @@ router.get('/:id/download', downloadTokenAuth, async (req, res) => {
     if (!record) {
       return res.status(404).json({
         success: false,
-        message: 'Payroll record not found',
+        message: req.t('common:routes.payrollRecordNotFound'),
       });
     }
 
@@ -308,9 +87,244 @@ router.get('/:id/download', downloadTokenAuth, async (req, res) => {
     console.error('Error downloading payslip:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error',
+      message: req.t('common:routes.serverError'),
       error: error.message,
     });
+  }
+});
+router.use(authenticate);
+
+// Authenticate via short-lived download token (query param) OR standard Bearer header.
+// The download token is purpose-scoped and resource-scoped — never exposes the full auth JWT.
+function downloadTokenAuth(req, res, next) {
+  const queryToken = req.query.token;
+  if (queryToken && !extractTokenFromRequest(req)) {
+    try {
+      const jwtSecret = process.env.JWT_SECRET;
+      const payload = jwt.verify(queryToken, jwtSecret);
+      if (payload.purpose !== 'payslip-download') {
+        return res
+          .status(403)
+          .json({ success: false, message: req.t('common:routes.invalidDownloadToken') });
+      }
+      if (payload.payslipId !== req.params.id) {
+        return res
+          .status(403)
+          .json({
+            success: false,
+            message: req.t('common:routes.tokenDoesNotMatchRequestedResource'),
+          });
+      }
+      req.user = { id: payload.userId, userId: payload.userId, schoolId: payload.schoolId };
+      return next();
+    } catch {
+      return res
+        .status(401)
+        .json({ success: false, message: req.t('common:routes.downloadTokenExpiredOrInvalid') });
+    }
+  }
+  // Fall through to standard Bearer auth
+  return authenticate(req, res, next);
+}
+
+function scopeBySchool(schoolId, query = {}) {
+  const normalizedSchoolId = extractSchoolId(schoolId);
+  if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
+  return { ...query, schoolId: normalizedSchoolId };
+}
+
+// Helper to convert month number to name
+const MONTH_NAMES = [
+  '',
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+/**
+ * @route   GET /api/payslips/staff/:employeeId
+ * @desc    Get all payroll records for a staff member
+ * @access  Private
+ */
+router.get('/staff/:employeeId', authenticate, async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { year, month, limit = 24, skip = 0 } = req.query;
+    const schoolId = req.user?.schoolId;
+
+    // Verify the employee belongs to the requesting user's school
+    const staffMember = await Staff.findOne(scopeBySchool(schoolId, { code: employeeId }));
+    if (!staffMember) {
+      return res
+        .status(404)
+        .json({ success: false, message: req.t('common:routes.employeeNotFoundInYourSchool') });
+    }
+
+    const query = scopeBySchool(schoolId, { employeeId });
+
+    if (year) {
+      query.year = parseInt(year);
+    }
+    if (month) {
+      query.month = parseInt(month);
+    }
+
+    const payrollRecords = await PayrollRecord.find(query)
+      .sort({ year: -1, month: -1 })
+      .limit(parseInt(limit))
+      .skip(parseInt(skip));
+
+    const total = await PayrollRecord.countDocuments(query);
+
+    // Get associated payslips for file info
+    const payslips = await Payslip.find(scopeBySchool(schoolId, { employeeId }));
+    const payslipMap = new Map();
+    payslips.forEach((p) => {
+      const key = `${p.year}-${p.month}`;
+      payslipMap.set(key, p);
+    });
+
+    // Combine data
+    const combinedData = payrollRecords.map((record) => {
+      const key = `${record.year}-${record.month}`;
+      const payslip = payslipMap.get(key);
+      return {
+        _id: record._id,
+        month: MONTH_NAMES[record.month] || `Month ${record.month}`,
+        monthNumber: record.month,
+        year: record.year,
+        basicSalary: record.baseSalary,
+        allowances: record.totalAllowances || 0,
+        deductions: record.totalDeductions || 0,
+        netSalary: record.netPay,
+        paymentStatus: record.status,
+        payslipGenerated: !!payslip,
+        payslipId: payslip?._id,
+        payslipFileUrl: payslip?.fileUrl,
+        generatedAt: record.createdAt,
+      };
+    });
+
+    res.json({
+      success: true,
+      payslips: combinedData,
+      total,
+      hasMore: skip + limit < total,
+    });
+  } catch (error) {
+    console.error('Error fetching payslips:', error);
+    res.status(500).json({
+      success: false,
+      message: req.t('common:routes.serverError'),
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   GET /api/payslips/:id
+ * @desc    Get single payroll/payslip by ID
+ * @access  Private
+ */
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const record = await PayrollRecord.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+    if (!record) {
+      return res.status(404).json({
+        success: false,
+        message: req.t('common:routes.payrollRecordNotFound'),
+      });
+    }
+
+    // Get associated payslip
+    const payslip = await Payslip.findOne(
+      scopeBySchool(schoolId, {
+        employeeId: record.employeeId,
+        year: record.year,
+        month: record.month,
+      })
+    );
+
+    // Get staff details
+    const staff = await Staff.findOne(scopeBySchool(schoolId, { _id: record.employeeId }));
+
+    res.json({
+      success: true,
+      payslip: {
+        _id: record._id,
+        month: MONTH_NAMES[record.month] || `Month ${record.month}`,
+        monthNumber: record.month,
+        year: record.year,
+        basicSalary: record.baseSalary,
+        allowances: record.totalAllowances || 0,
+        deductions: record.totalDeductions || 0,
+        grossPay: record.grossPay,
+        netSalary: record.netPay,
+        paymentStatus: record.status,
+        staff: staff
+          ? {
+              name: staff.name,
+              code: staff.code,
+              email: staff.email,
+            }
+          : null,
+        payslip: payslip
+          ? {
+              fileUrl: payslip.fileUrl,
+              generatedAt: payslip.generatedAt,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching payslip:', error);
+    res.status(500).json({
+      success: false,
+      message: req.t('common:routes.serverError'),
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   POST /api/payslips/:id/download-token
+ * @desc    Generate a short-lived, purpose-scoped token for payslip download
+ * @access  Private
+ */
+router.post('/:id/download-token', authenticate, async (req, res) => {
+  try {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      return res
+        .status(500)
+        .json({ success: false, message: req.t('common:routes.serverMisconfiguration') });
+    }
+    const downloadToken = jwt.sign(
+      {
+        purpose: 'payslip-download',
+        payslipId: req.params.id,
+        userId: req.user.id || req.user.userId,
+        schoolId: req.user.schoolId,
+      },
+      jwtSecret,
+      { expiresIn: '5m' }
+    );
+    res.json({ success: true, downloadToken });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ success: false, message: req.t('common:routes.failedToGenerateDownloadToken') });
   }
 });
 
@@ -352,7 +366,7 @@ router.get('/staff/:employeeId/summary', authenticate, async (req, res) => {
     console.error('Error fetching payslip summary:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error',
+      message: req.t('common:routes.serverError'),
       error: error.message,
     });
   }

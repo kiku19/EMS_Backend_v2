@@ -60,7 +60,7 @@ router.get('/', (req, res) => {
   // Optional secret protection
   const secret = process.env.OPS_METRICS_SECRET;
   if (secret && req.headers['x-ops-secret'] !== secret) {
-    return res.status(401).type('text/plain').send('Unauthorized');
+    return res.status(401).type('text/plain').send(req.t('common:errors.unauthorized'));
   }
 
   try {

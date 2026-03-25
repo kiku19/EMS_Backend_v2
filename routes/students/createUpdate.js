@@ -4,6 +4,7 @@ import { createOrUpdateParentAccount } from '../../utils/parentAccountHelper.js'
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { validateZod, createStudentSchema, updateStudentSchema } from '../../validators/index.js';
+import { isCoppaApplicable } from '../../utils/coppaUtils.js';
 import { incrementUsageMetric } from '../../services/billingService.js';
 import { planLimitGate } from '../../middleware/auth/planLimitGate.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
@@ -20,6 +21,7 @@ import {
 } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.post(
   '/',
@@ -37,7 +39,7 @@ router.post(
       );
       if (existingAdmission) {
         return res.status(409).json({
-          error: 'Admission ID already exists',
+          error: req.t('common:routes.admissionIdAlreadyExists'),
           field: 'admissionId',
           value: req.body.admissionId,
         });
@@ -46,7 +48,7 @@ router.post(
       const classExists = await Class.findById(req.body.classId);
       if (!classExists) {
         return res.status(400).json({
-          error: 'Class does not exist',
+          error: req.t('common:routes.classDoesNotExist'),
           field: 'classId',
           value: req.body.classId,
         });
@@ -74,7 +76,7 @@ router.post(
 
         if (existingRollNo) {
           return res.status(409).json({
-            error: 'Roll number already exists in this class for the academic year',
+            error: req.t('common:routes.rollNumberAlreadyExistsInThisClassForTheAcademicYear'),
             field: 'rollNo',
             value: req.body.rollNo,
           });
@@ -126,6 +128,8 @@ router.post(
         status: req.body.status || 'active',
         photo: req.body.photo,
         documents: req.body.documents || [],
+        // LEGAL-03: COPPA — flag students under 13 for compliance tracking
+        coppaApplicable: isCoppaApplicable(req.body.dateOfBirth),
       };
 
       cleanObject(studentData);
@@ -280,7 +284,7 @@ router.put(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!originalStudent) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       // Validate target class exists in the same school when classId changes
@@ -291,15 +295,15 @@ router.put(
           scopeBySchool(req.user?.schoolId, { _id: updateData.classId })
         );
         if (!targetClass) {
-          return res.status(400).json({ error: 'Target class not found in your school' });
+          return res
+            .status(400)
+            .json({ error: req.t('common:routes.targetClassNotFoundInYourSchool') });
         }
         const capacityResult = await checkClassCapacity(updateData.classId, req.user?.schoolId);
         if (capacityResult?.isFull) {
-          return res
-            .status(400)
-            .json({
-              error: `Target class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}).`,
-            });
+          return res.status(400).json({
+            error: `Target class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}).`,
+          });
         }
       }
 
@@ -326,7 +330,7 @@ router.put(
 
           if (duplicateRollNo) {
             return res.status(409).json({
-              error: 'Roll number already exists in this class for the academic year',
+              error: req.t('common:routes.rollNumberAlreadyExistsInThisClassForTheAcademicYear'),
               field: 'rollNo',
               value: checkRollNo,
             });
@@ -340,7 +344,7 @@ router.put(
         { new: true }
       ).populate('classId', 'name section');
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       dispatchWebhookEvent(req.user?.schoolId, 'student.updated', {

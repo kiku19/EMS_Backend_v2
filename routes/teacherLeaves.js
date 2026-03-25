@@ -6,6 +6,7 @@ import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { applyLeaveSchema, updateLeaveStatusSchema } from '../validators/leaveSchema.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Fix 5.6: Helper to scope all queries by schoolId for multi-tenancy isolation
 function scopeBySchool(schoolId, query = {}) {

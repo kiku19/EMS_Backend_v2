@@ -6,6 +6,7 @@ import { extractSchoolId } from '../utils/schoolContext.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -280,7 +281,7 @@ router.get(
       const student = await Student.findOne(
         scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
       ).lean();
-      if (!student) return res.status(404).json({ error: 'Student not found' });
+      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
       const results = await Result.find(
         scopeBySchool(schoolId, {
@@ -366,7 +367,7 @@ router.get(
       const student = await Student.findOne(
         scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
       ).lean();
-      if (!student) return res.status(404).json({ error: 'Student not found' });
+      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
       const results = await Result.find(
         scopeBySchool(schoolId, {
@@ -417,7 +418,7 @@ router.get(
       )
         .populate('classId', 'name section')
         .lean();
-      if (!student) return res.status(404).json({ error: 'Student not found' });
+      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
       // All published results for the student
       const results = await Result.find(

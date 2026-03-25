@@ -6,6 +6,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -36,7 +37,9 @@ router.get('/class/:classId', authenticate, checkPermission('fees', 'view'), asy
     ).populate('templateId', 'name section totalAnnualFee');
 
     if (!feeStructure) {
-      return res.status(404).json({ error: 'No fee structure found for this class' });
+      return res
+        .status(404)
+        .json({ error: req.t('common:routes.noFeeStructureFoundForThisClass') });
     }
 
     res.json(feeStructure);
@@ -54,7 +57,7 @@ router.post('/', authenticate, checkPermission('fees', 'create'), async (req, re
     const schoolId = await resolveRequestSchoolId(req);
 
     if (!classId) {
-      return res.status(400).json({ error: 'classId is required' });
+      return res.status(400).json({ error: req.t('common:routes.classIdIsRequired') });
     }
 
     const updateData = {
@@ -95,11 +98,11 @@ router.post(
         scopeBySchool(req.user?.schoolId, { classId, academicYear: resolvedAcademicYear })
       );
       if (!classStructure) {
-        return res
-          .status(404)
-          .json({
-            error: 'Fee structure not found for this class. Please save a fee structure first.',
-          });
+        return res.status(404).json({
+          error: req.t(
+            'common:routes.feeStructureNotFoundForThisClassPleaseSaveAFeeStructureFirst'
+          ),
+        });
       }
 
       const students = await Student.find(

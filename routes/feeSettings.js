@@ -9,6 +9,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { sanitizeQueryStr } from '../middleware/validation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ============ FEE CONCESSIONS ============
 
@@ -39,7 +40,7 @@ router.get('/concessions/:id', authenticate, checkPermission('fees', 'view'), as
     }).populate('applicableFeeHeads', 'name amount');
 
     if (!concession) {
-      return res.status(404).json({ error: 'Concession not found' });
+      return res.status(404).json({ error: req.t('common:routes.concessionNotFound') });
     }
 
     res.json(concession);
@@ -78,7 +79,7 @@ router.put('/concessions/:id', authenticate, checkPermission('fees', 'edit'), as
     ).populate('applicableFeeHeads', 'name amount');
 
     if (!concession) {
-      return res.status(404).json({ error: 'Concession not found' });
+      return res.status(404).json({ error: req.t('common:routes.concessionNotFound') });
     }
 
     res.json(concession);
@@ -101,10 +102,10 @@ router.delete(
       });
 
       if (!concession) {
-        return res.status(404).json({ error: 'Concession not found' });
+        return res.status(404).json({ error: req.t('common:routes.concessionNotFound') });
       }
 
-      res.json({ message: 'Concession deleted successfully' });
+      res.json({ message: req.t('common:routes.concessionDeletedSuccessfully') });
     } catch (error) {
       console.error('Error deleting concession:', error);
       res.status(500).json({ error: error.message });
@@ -145,7 +146,7 @@ router.get(
       }).populate('applicableFeeHeads', 'name amount');
 
       if (!rule) {
-        return res.status(404).json({ error: 'Late fee rule not found' });
+        return res.status(404).json({ error: req.t('common:routes.lateFeeRuleNotFound') });
       }
 
       res.json(rule);
@@ -203,7 +204,7 @@ router.put(
       ).populate('applicableFeeHeads', 'name amount');
 
       if (!rule) {
-        return res.status(404).json({ error: 'Late fee rule not found' });
+        return res.status(404).json({ error: req.t('common:routes.lateFeeRuleNotFound') });
       }
 
       res.json(rule);
@@ -227,10 +228,10 @@ router.delete(
       });
 
       if (!rule) {
-        return res.status(404).json({ error: 'Late fee rule not found' });
+        return res.status(404).json({ error: req.t('common:routes.lateFeeRuleNotFound') });
       }
 
-      res.json({ message: 'Late fee rule deleted successfully' });
+      res.json({ message: req.t('common:routes.lateFeeRuleDeletedSuccessfully') });
     } catch (error) {
       console.error('Error deleting late fee rule:', error);
       res.status(500).json({ error: error.message });
@@ -262,7 +263,7 @@ router.get('/rules/:id', authenticate, checkPermission('fees', 'view'), async (r
     const rule = await FeeRule.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
 
     if (!rule) {
-      return res.status(404).json({ error: 'Fee rule not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeRuleNotFound') });
     }
 
     res.json(rule);
@@ -310,7 +311,7 @@ router.put('/rules/:id', authenticate, checkPermission('fees', 'edit'), async (r
     );
 
     if (!rule) {
-      return res.status(404).json({ error: 'Fee rule not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeRuleNotFound') });
     }
 
     res.json(rule);
@@ -329,10 +330,10 @@ router.delete('/rules/:id', authenticate, checkPermission('fees', 'delete'), asy
     });
 
     if (!rule) {
-      return res.status(404).json({ error: 'Fee rule not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeRuleNotFound') });
     }
 
-    res.json({ message: 'Fee rule deleted successfully' });
+    res.json({ message: req.t('common:routes.feeRuleDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting fee rule:', error);
     res.status(500).json({ error: error.message });
@@ -370,7 +371,7 @@ router.get(
       });
 
       if (!config) {
-        return res.status(404).json({ error: 'Payment method config not found' });
+        return res.status(404).json({ error: req.t('common:routes.paymentMethodConfigNotFound') });
       }
 
       res.json(config);
@@ -423,7 +424,7 @@ router.put(
       );
 
       if (!config) {
-        return res.status(404).json({ error: 'Payment method config not found' });
+        return res.status(404).json({ error: req.t('common:routes.paymentMethodConfigNotFound') });
       }
 
       res.json(config);
@@ -447,10 +448,10 @@ router.delete(
       });
 
       if (!config) {
-        return res.status(404).json({ error: 'Payment method config not found' });
+        return res.status(404).json({ error: req.t('common:routes.paymentMethodConfigNotFound') });
       }
 
-      res.json({ message: 'Payment method config deleted successfully' });
+      res.json({ message: req.t('common:routes.paymentMethodConfigDeletedSuccessfully') });
     } catch (error) {
       console.error('Error deleting payment method config:', error);
       res.status(500).json({ error: error.message });
@@ -494,7 +495,9 @@ router.get(
       });
 
       if (!config) {
-        return res.status(404).json({ error: 'Collection period config not found' });
+        return res
+          .status(404)
+          .json({ error: req.t('common:routes.collectionPeriodConfigNotFound') });
       }
 
       res.json(config);
@@ -552,7 +555,9 @@ router.put(
       );
 
       if (!config) {
-        return res.status(404).json({ error: 'Collection period config not found' });
+        return res
+          .status(404)
+          .json({ error: req.t('common:routes.collectionPeriodConfigNotFound') });
       }
 
       res.json(config);
@@ -576,10 +581,12 @@ router.delete(
       });
 
       if (!config) {
-        return res.status(404).json({ error: 'Collection period config not found' });
+        return res
+          .status(404)
+          .json({ error: req.t('common:routes.collectionPeriodConfigNotFound') });
       }
 
-      res.json({ message: 'Collection period config deleted successfully' });
+      res.json({ message: req.t('common:routes.collectionPeriodConfigDeletedSuccessfully') });
     } catch (error) {
       console.error('Error deleting collection period config:', error);
       res.status(500).json({ error: error.message });

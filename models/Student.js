@@ -221,6 +221,25 @@ const studentSchema = new mongoose.Schema(
 
     photo: String,
 
+    // COPPA compliance flag
+    coppaApplicable: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Transfer Certificate record
+    transferCertificate: {
+      tcNumber: { type: String },
+      issuedAt: { type: Date },
+      issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+      reasonForLeaving: { type: String, default: '' },
+      lastClassAttended: { type: String, default: '' },
+      daysPresent: { type: Number },
+      workingDays: { type: Number },
+      generalConduct: { type: String, default: 'Good' },
+      remarks: { type: String, default: '' },
+    },
+
     // Soft delete fields
     isDeleted: {
       type: Boolean,

@@ -304,6 +304,7 @@ import { TeacherTimetable } from '../database.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -746,7 +747,7 @@ router.post(
         scopeBySchool(req.user?.schoolId, { _id: classId, isDeleted: { $ne: true } })
       );
       if (!classData) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       // Check if timetable already exists
@@ -1034,7 +1035,7 @@ router.put(
         scopeBySchool(req.user?.schoolId, { _id: classId, isDeleted: { $ne: true } })
       );
       if (!classData) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       // Find existing timetable

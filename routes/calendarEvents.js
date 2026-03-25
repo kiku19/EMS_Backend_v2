@@ -6,6 +6,7 @@ import { extractSchoolId } from '../utils/schoolContext.js';
 import { validateZod, zodSchemas } from '../middleware/validation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);

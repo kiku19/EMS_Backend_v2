@@ -5,6 +5,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { scopeBySchool } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Fix 3.6: Rewritten to query TeacherTimetable (not Timetable) and look up period times
 router.get('/:id/timetable/today', authenticate, async (req, res) => {
@@ -92,7 +93,7 @@ router.get('/:id/timetable/today', authenticate, async (req, res) => {
     res.json(schedule);
   } catch (error) {
     console.error('Error fetching today timetable:', error);
-    res.status(500).json({ error: 'Failed to fetch timetable' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchTimetable') });
   }
 });
 
@@ -188,7 +189,7 @@ router.get('/:id/timetable/week', authenticate, async (req, res) => {
     res.json(weekSchedule);
   } catch (error) {
     console.error('Error fetching weekly timetable:', error);
-    res.status(500).json({ error: 'Failed to fetch timetable' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchTimetable') });
   }
 });
 

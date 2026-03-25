@@ -5,12 +5,13 @@ import { scopeBySchool } from './helpers.js';
 import { validateStaffProfileUpdate } from '../../middleware/validation/staffValidation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username && !password) {
-      return res.status(400).json({ error: 'Username or password required' });
+      return res.status(400).json({ error: req.t('common:routes.usernameOrPasswordRequired') });
     }
 
     const updateData = {};
@@ -24,26 +25,30 @@ router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) 
         })
       );
       if (existingUser) {
-        return res.status(400).json({ error: 'Username already taken' });
+        return res.status(400).json({ error: req.t('common:routes.usernameAlreadyTaken') });
       }
       updateData.username = username;
     }
     if (password) {
       if (password.length < 8) {
-        return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.passwordMustBeAtLeast8CharactersLong') });
       }
       if (!/[A-Z]/.test(password)) {
         return res
           .status(400)
-          .json({ error: 'Password must contain at least one uppercase letter' });
+          .json({ error: req.t('common:routes.passwordMustContainAtLeastOneUppercaseLetter') });
       }
       if (!/[a-z]/.test(password)) {
         return res
           .status(400)
-          .json({ error: 'Password must contain at least one lowercase letter' });
+          .json({ error: req.t('common:routes.passwordMustContainAtLeastOneLowercaseLetter') });
       }
       if (!/[0-9]/.test(password)) {
-        return res.status(400).json({ error: 'Password must contain at least one number' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.passwordMustContainAtLeastOneNumber') });
       }
       const bcrypt = await import('bcrypt');
       const salt = await bcrypt.genSalt(10);
@@ -56,57 +61,69 @@ router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) 
       { new: true }
     );
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     res.json({ success: true, username: staff.username });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update credentials' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdateCredentials') });
   }
 });
 
 router.put('/:id/change-password', authenticate, async (req, res) => {
   try {
     if (req.params.id.toString() !== req.user.id.toString()) {
-      return res.status(403).json({ error: 'You can only change your own password' });
+      return res
+        .status(403)
+        .json({ error: req.t('common:routes.youCanOnlyChangeYourOwnPassword') });
     }
 
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Current password and new password are required' });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.currentPasswordAndNewPasswordAreRequired') });
     }
     if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.passwordMustBeAtLeast8CharactersLong') });
     }
     if (!/[A-Z]/.test(newPassword)) {
-      return res.status(400).json({ error: 'Password must contain at least one uppercase letter' });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.passwordMustContainAtLeastOneUppercaseLetter') });
     }
     if (!/[a-z]/.test(newPassword)) {
-      return res.status(400).json({ error: 'Password must contain at least one lowercase letter' });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.passwordMustContainAtLeastOneLowercaseLetter') });
     }
     if (!/[0-9]/.test(newPassword)) {
-      return res.status(400).json({ error: 'Password must contain at least one number' });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.passwordMustContainAtLeastOneNumber') });
     }
 
     const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     const bcrypt = await import('bcrypt');
     const isMatch = await bcrypt.compare(currentPassword, staff.password);
     if (!isMatch) {
-      return res.status(400).json({ error: 'Current password is incorrect' });
+      return res.status(400).json({ error: req.t('common:routes.currentPasswordIsIncorrect') });
     }
 
     staff.password = newPassword;
     staff.markModified('password');
     await staff.save();
 
-    res.json({ success: true, message: 'Password changed successfully' });
+    res.json({ success: true, message: req.t('common:routes.passwordChangedSuccessfully') });
   } catch (error) {
     console.error('Password change error:', error);
-    res.status(500).json({ error: 'Failed to change password' });
+    res.status(500).json({ error: req.t('common:routes.failedToChangePassword') });
   }
 });
 
@@ -114,7 +131,7 @@ router.put('/:id/change-password', authenticate, async (req, res) => {
 router.put('/:id/profile', authenticate, validateStaffProfileUpdate, async (req, res) => {
   try {
     if (req.params.id !== req.user.id) {
-      return res.status(403).json({ error: 'You can only update your own profile' });
+      return res.status(403).json({ error: req.t('common:routes.youCanOnlyUpdateYourOwnProfile') });
     }
 
     // Only allow self-editable fields (not name, designation, department, salary, role)
@@ -149,12 +166,12 @@ router.put('/:id/profile', authenticate, validateStaffProfileUpdate, async (req,
       { new: true }
     );
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     res.json(staff);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update profile' });
+    res.status(500).json({ error: req.t('common:routes.failedToUpdateProfile') });
   }
 });
 

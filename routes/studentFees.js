@@ -288,6 +288,7 @@ import {
 } from '../validators/index.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -316,7 +317,7 @@ router.get(
         scopeBySchool(schoolId, { _id: req.params.studentId })
       ).populate('classId');
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('students:errors.notFound') });
       }
 
       let feeStructure = await StudentFeeStructure.findOne(
@@ -487,15 +488,13 @@ router.post(
       ).populate('classId');
 
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('students:errors.notFound') });
       }
 
       if (!student.classId) {
-        return res
-          .status(400)
-          .json({
-            error: 'Student is not assigned to a class. Assign a class before initializing fees.',
-          });
+        return res.status(400).json({
+          error: 'Student is not assigned to a class. Assign a class before initializing fees.',
+        });
       }
 
       const year = await resolveAcademicYear(req.body.academicYear, req.user?.schoolId);
@@ -781,7 +780,7 @@ router.post(
 
       const student = await Student.findOne(scopeBySchool(schoolId, { _id: req.params.studentId }));
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('students:errors.notFound') });
       }
 
       const feeStructure = await StudentFeeStructure.findOne(

@@ -209,7 +209,7 @@ export const createStudentSchema = z
     hostelRequired: z.boolean().nullish(),
 
     // Status
-    feeStatus: z.enum(['paid', 'pending', 'partial', 'overdue']).default('pending'),
+    feeStatus: z.enum(['paid', 'pending', 'partial']).default('pending'),
     status: z.enum(['active', 'inactive', 'graduated', 'transferred', 'alumni']).default('active'),
 
     // Documents & Photo

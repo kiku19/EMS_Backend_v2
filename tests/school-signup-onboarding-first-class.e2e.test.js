@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { School, SchoolSettings, Staff } from '../database.js';
 import { createTestApp } from './helpers/testApp.js';
 import { generateSignupInvite } from '../utils/signupInvites.js';
+import { piiMatch } from '../utils/encryption.js';
 
 /**
  * E2E-01: School signup → onboarding → first class created
@@ -55,7 +56,7 @@ describe('E2E-01: school signup → onboarding → first class created', () => {
 
     // Verify school and admin were persisted with correct schoolId
     const school = await School.findById(schoolId);
-    const admin = await Staff.findOne({ email: 'riya.principal@greenvalley.com' });
+    const admin = await Staff.findOne(piiMatch('email', 'riya.principal@greenvalley.com'));
     const settings = await SchoolSettings.findOne({ schoolId: school._id });
 
     expect(school).toBeTruthy();

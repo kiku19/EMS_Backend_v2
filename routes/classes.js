@@ -189,6 +189,7 @@ import { sendNotification } from './notifications.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -373,7 +374,7 @@ router.put(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
       if (!classDoc) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const validation = await ensureTeacherAvailable(
@@ -451,7 +452,7 @@ router.get('/:id/settings', authenticate, async (req, res) => {
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     );
     if (!classDoc) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     res.json({
@@ -483,7 +484,7 @@ router.put(
       );
 
       if (!classDoc) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       res.json({
@@ -514,7 +515,7 @@ router.put(
       );
 
       if (!classDoc) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       res.json({
@@ -533,14 +534,14 @@ router.get('/:id/students', authenticate, async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id);
     if (!resolved) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const scopedClass = await Class.findOne(
       scopeBySchool(req.user?.schoolId, { _id: resolved.classId, isDeleted: { $ne: true } })
     );
     if (!scopedClass) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const skip = parseInt(req.query.skip) || 0;
@@ -583,7 +584,7 @@ router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), as
   try {
     const result = await checkClassCapacity(req.params.id, req.user?.schoolId);
     if (!result) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     res.json({
@@ -605,14 +606,14 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id);
     if (!resolved) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const classDoc = await Class.findOne(
       scopeBySchool(req.user?.schoolId, { _id: resolved.classId, isDeleted: { $ne: true } })
     ).populate('classTeacherId', 'name');
     if (!classDoc) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const studentCount = await countActiveStudents(classDoc._id, req.user?.schoolId);
@@ -652,7 +653,7 @@ router.put(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
       if (!scopedCheck) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const oldTeacherId = scopedCheck.classTeacherId;
@@ -664,7 +665,7 @@ router.put(
       );
 
       if (!classDoc) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       // Sync Staff records when classTeacherId changes via general update
@@ -700,7 +701,7 @@ router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async 
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     );
     if (!scopedCheck) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const studentCount = await countActiveStudents(req.params.id, req.user?.schoolId);
@@ -753,7 +754,7 @@ router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async 
       { new: true }
     );
     if (!classDoc) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     res.json({ success: true });

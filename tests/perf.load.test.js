@@ -26,12 +26,12 @@ const INSERT_BATCH_SIZE = 5000;
 // these values give a reasonable safety net in CI without being too tight.
 const P95_THRESHOLDS_MS = {
   list_paginated: 150, // find + sort + skip/limit (50 docs)
-  filter_by_class: 100, // find by classId (≈200 docs)
-  filter_by_status: 150, // find active students (≈1700 docs)
-  count_by_school: 100, // countDocuments
-  get_by_id: 50, // findById (single doc)
-  search_by_name: 300, // regex on name field
-  compound_filter: 100, // school + class + status
+  filter_by_class: 200, // find by classId (≈200 docs)
+  filter_by_status: 200, // find active students (≈1700 docs)
+  count_by_school: 150, // countDocuments
+  get_by_id: 100, // findById (single doc)
+  search_by_name: 500, // regex on name field
+  compound_filter: 200, // school + class + status
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

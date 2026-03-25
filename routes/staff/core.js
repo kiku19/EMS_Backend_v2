@@ -28,6 +28,7 @@ import {
 } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Fix: Add isDeleted filter and schoolId to Class query
 // Fix 3.15: Add pagination support with backward compatibility
@@ -109,7 +110,7 @@ router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res)
       staffList.map((staff) => formatStaffResponse(staff, classMap.get(staff._id.toString())))
     );
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch staff list' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchStaffList') });
   }
 });
 
@@ -120,7 +121,7 @@ router.get('/:id', authenticate, checkPermission('staff', 'view'), async (req, r
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     ).populate('reporterId', 'name');
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     const assignedClass = await Class.findOne(
@@ -128,7 +129,7 @@ router.get('/:id', authenticate, checkPermission('staff', 'view'), async (req, r
     );
     res.json(formatStaffResponse(staff, assignedClass));
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch staff details' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchStaffDetails') });
   }
 });
 
@@ -199,11 +200,9 @@ router.post(
           })
         );
         if (existingByEmail) {
-          return res
-            .status(400)
-            .json({
-              error: `Email already used by ${existingByEmail.name} (${existingByEmail.code})`,
-            });
+          return res.status(400).json({
+            error: `Email already used by ${existingByEmail.name} (${existingByEmail.code})`,
+          });
         }
       }
 
@@ -213,11 +212,9 @@ router.post(
           scopeBySchool(schoolId, { ...piiMatch('phone', phone), isDeleted: { $ne: true } })
         );
         if (existingByPhone) {
-          return res
-            .status(400)
-            .json({
-              error: `Phone number already used by ${existingByPhone.name} (${existingByPhone.code})`,
-            });
+          return res.status(400).json({
+            error: `Phone number already used by ${existingByPhone.name} (${existingByPhone.code})`,
+          });
         }
       }
 
@@ -402,11 +399,9 @@ router.put(
           })
         );
         if (existingByPhone) {
-          return res
-            .status(400)
-            .json({
-              error: `Phone number already used by ${existingByPhone.name} (${existingByPhone.code})`,
-            });
+          return res.status(400).json({
+            error: `Phone number already used by ${existingByPhone.name} (${existingByPhone.code})`,
+          });
         }
       }
 
@@ -485,7 +480,7 @@ router.put(
         { new: true }
       ).populate('reporterId', 'name');
       if (!staff) {
-        return res.status(404).json({ error: 'Staff not found' });
+        return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
       }
 
       if (role) {
@@ -530,7 +525,7 @@ router.put(
 
       res.json(formatStaffResponse(staff, assignedClass));
     } catch (error) {
-      res.status(500).json({ error: 'Failed to update staff member' });
+      res.status(500).json({ error: req.t('common:routes.failedToUpdateStaffMember') });
     }
   }
 );
@@ -552,7 +547,7 @@ router.delete('/:id', authenticate, checkPermission('staff', 'delete'), async (r
     );
 
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     // Fix 6.2: Clean up class teacher AFTER verifying school ownership
@@ -590,7 +585,7 @@ router.delete('/:id', authenticate, checkPermission('staff', 'delete'), async (r
 
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to delete staff member' });
+    res.status(500).json({ error: req.t('common:routes.failedToDeleteStaffMember') });
   }
 });
 

@@ -275,7 +275,7 @@ function parseDeviceInfo(userAgent = '') {
 }
 
 // Create a session record on login — fire-and-forget
-function createSessionRecord(staff, req, sessionId) {
+async function createSessionRecord(staff, req, sessionId) {
   const ip =
     req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
     req.connection?.remoteAddress ||
@@ -284,7 +284,7 @@ function createSessionRecord(staff, req, sessionId) {
   const deviceInfo = parseDeviceInfo(userAgent);
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days (refresh token lifetime)
 
-  Session.create({
+  await Session.create({
     sessionId,
     userId: staff._id,
     schoolId: staff.schoolId,
@@ -294,7 +294,7 @@ function createSessionRecord(staff, req, sessionId) {
     lastActivityAt: new Date(),
     expiresAt,
     isRevoked: false,
-  }).catch(() => {});
+  });
 }
 
 const router = express.Router();
@@ -305,7 +305,8 @@ const getJwtRefreshSecret = () => getRequiredSecret('JWT_REFRESH_SECRET');
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
-  message: 'Too many signup attempts from this IP, please try again later.',
+  handler: (req, res) =>
+    res.status(429).json({ error: req.t('auth:errors.tooManySignupAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV === 'test',
@@ -314,7 +315,8 @@ const signupLimiter = rateLimit({
 const staffRefreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: 'Too many token refresh attempts, please try again later.',
+  handler: (req, res) =>
+    res.status(429).json({ error: req.t('auth:errors.tooManyRefreshAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV === 'test',
@@ -323,32 +325,32 @@ const staffRefreshLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
-  message: 'Too many login attempts, please try again later.',
+  handler: (req, res) => res.status(429).json({ error: req.t('auth:errors.tooManyLoginAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
   skip: () => process.env.NODE_ENV === 'test',
 });
 
-async function authenticateStaff({ phone, email, password, schoolId, schoolCode }) {
+async function authenticateStaff(req, { phone, email, password, schoolId, schoolCode }) {
   if (!password) {
-    return { error: 'Password is required', status: 400 };
+    return { error: req.t('auth:errors.passwordRequired'), status: 400 };
   }
 
-  const query = { status: 'active' };
+  let query = { status: 'active' };
   if (phone) {
-    query.phone = phone.trim();
+    query = { ...query, ...piiMatch('phone', phone.trim()) };
   } else if (email) {
-    query.email = email.toLowerCase().trim();
+    query = { ...query, ...piiMatch('email', email.toLowerCase().trim()) };
   } else {
-    return { error: 'Phone or email is required', status: 400 };
+    return { error: req.t('auth:errors.phoneOrEmailRequired'), status: 400 };
   }
 
   const resolvedSchool =
     schoolId || schoolCode ? await resolveSchool({ schoolId, schoolCode }) : null;
 
   if ((schoolId || schoolCode) && !resolvedSchool) {
-    return { error: 'School not found', status: 404 };
+    return { error: req.t('auth:errors.schoolNotFound'), status: 404 };
   }
 
   if (resolvedSchool) {
@@ -358,13 +360,12 @@ async function authenticateStaff({ phone, email, password, schoolId, schoolCode 
   const matchingStaff = await Staff.find(query).limit(2);
   logger.debug({ matchCount: matchingStaff.length }, 'Login staff lookup');
   if (matchingStaff.length === 0) {
-    return { error: 'Invalid credentials', status: 401 };
+    return { error: req.t('auth:errors.invalidCredentials'), status: 401 };
   }
 
   if (matchingStaff.length > 1) {
     return {
-      error:
-        'Multiple accounts matched the provided credentials. Please provide a school identifier.',
+      error: req.t('auth:errors.multipleAccounts'),
       status: 409,
     };
   }
@@ -376,7 +377,7 @@ async function authenticateStaff({ phone, email, password, schoolId, schoolCode 
   const isPasswordValid = await staff.comparePassword(password);
   logger.debug({ staffId: staff._id.toString() }, 'Password check completed');
   if (!isPasswordValid) {
-    return { error: 'Invalid credentials', status: 401, foundStaff: staff };
+    return { error: req.t('auth:errors.invalidCredentials'), status: 401, foundStaff: staff };
   }
 
   return { staff };
@@ -393,13 +394,13 @@ router.post('/signup/invite-details', authLimiter, async (req, res) => {
   const inviteToken = String(req.body.token || '').trim();
 
   if (!inviteToken) {
-    return res.status(400).json({ error: 'Invite token is required' });
+    return res.status(400).json({ error: req.t('auth:errors.inviteTokenRequired') });
   }
 
   const invite = verifySignupInvite(inviteToken);
 
   if (!invite) {
-    return res.status(403).json({ error: 'Invite link is invalid or expired' });
+    return res.status(403).json({ error: req.t('auth:errors.inviteExpired') });
   }
 
   return res.json({
@@ -414,13 +415,13 @@ router.get('/signup/invite-details', authLimiter, async (req, res) => {
   const inviteToken = String(req.query.token || '').trim();
 
   if (!inviteToken) {
-    return res.status(400).json({ error: 'Invite token is required' });
+    return res.status(400).json({ error: req.t('auth:errors.inviteTokenRequired') });
   }
 
   const invite = verifySignupInvite(inviteToken);
 
   if (!invite) {
-    return res.status(403).json({ error: 'Invite link is invalid or expired' });
+    return res.status(403).json({ error: req.t('auth:errors.inviteExpired') });
   }
 
   return res.json({
@@ -445,13 +446,13 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
       invite = verifySignupInvite(inviteToken);
       if (!invite) {
         return res.status(403).json({
-          error: 'Signup is available by invitation only. Use the invite link sent to your school.',
+          error: req.t('auth:errors.inviteOnly'),
         });
       }
 
       if (invite.email !== normalizedEmail || invite.schoolName !== normalizedSchoolName) {
         return res.status(400).json({
-          error: 'Invite details do not match the signup form',
+          error: req.t('auth:errors.inviteMismatch'),
         });
       }
 
@@ -465,7 +466,7 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
     });
     if (existingStaff) {
       return res.status(409).json({
-        error: 'An account with this email already exists',
+        error: req.t('auth:errors.emailAlreadyExists'),
       });
     }
 
@@ -536,7 +537,7 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
 
     res.status(201).json({
       success: true,
-      message: invite ? 'Invite accepted successfully' : 'School account created successfully',
+      message: invite ? req.t('auth:success.inviteAccepted') : req.t('auth:success.schoolCreated'),
       school: serializeSchool(school),
       user: {
         id: staff._id.toString(),
@@ -549,23 +550,23 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
     });
   } catch (error) {
     if (error?.code === 11000) {
-      return res.status(409).json({ error: 'Unable to create account with the provided details' });
+      return res.status(409).json({ error: req.t('auth:errors.accountCreateConflict') });
     }
 
     logger.error({ err: error }, 'Signup error');
-    res.status(500).json({ error: 'Signup failed. Please try again.' });
+    res.status(500).json({ error: req.t('auth:errors.signupFailed') });
   }
 });
 
 // Shared handler for email verification (used by both GET and POST)
-async function handleVerifyEmail(token, res) {
+async function handleVerifyEmail(token, req, res) {
   if (!token) {
-    return res.status(400).json({ error: 'Verification token is required' });
+    return res.status(400).json({ error: req.t('auth:errors.verificationTokenRequired') });
   }
 
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) {
-    return res.status(500).json({ error: 'Server misconfiguration' });
+    return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
   }
 
   let payload;
@@ -573,25 +574,27 @@ async function handleVerifyEmail(token, res) {
     payload = jwt.verify(token, jwtSecret);
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
-      return res
-        .status(410)
-        .json({ error: 'Verification link has expired. Please contact support.' });
+      return res.status(410).json({ error: req.t('auth:errors.verificationExpired') });
     }
-    return res.status(400).json({ error: 'Invalid verification token' });
+    return res.status(400).json({ error: req.t('auth:errors.verificationTokenInvalid') });
   }
 
   if (payload.purpose !== 'email-verification' || !payload.schoolId) {
-    return res.status(400).json({ error: 'Invalid verification token' });
+    return res.status(400).json({ error: req.t('auth:errors.verificationTokenInvalid') });
   }
 
   try {
     const school = await School.findById(payload.schoolId);
     if (!school) {
-      return res.status(404).json({ error: 'School not found' });
+      return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
     }
 
     if (school.metadata?.emailVerified) {
-      return res.json({ success: true, message: 'Email already verified', alreadyVerified: true });
+      return res.json({
+        success: true,
+        message: req.t('auth:success.emailAlreadyVerified'),
+        alreadyVerified: true,
+      });
     }
 
     school.metadata = {
@@ -602,30 +605,31 @@ async function handleVerifyEmail(token, res) {
     school.markModified('metadata');
     await school.save();
 
-    return res.json({ success: true, message: 'Email verified successfully' });
+    return res.json({ success: true, message: req.t('auth:success.emailVerified') });
   } catch (err) {
     logger.error({ err }, 'Email verification error');
-    return res.status(500).json({ error: 'Verification failed. Please try again.' });
+    return res.status(500).json({ error: req.t('auth:errors.verificationFailed') });
   }
 }
 
 // POST preferred — token in body avoids exposure in URL/browser history/Referer
 router.post('/verify-email', async (req, res) => {
   const token = String(req.body.token || '').trim();
-  return handleVerifyEmail(token, res);
+  return handleVerifyEmail(token, req, res);
 });
 
 // GET kept for backward-compat email links; Referrer-Policy mitigates leakage
 router.get('/verify-email', async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   const token = String(req.query.token || '').trim();
-  return handleVerifyEmail(token, res);
+  return handleVerifyEmail(token, req, res);
 });
 
 const resendVerificationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 3,
-  message: 'Too many resend requests, please try again later.',
+  handler: (req, res) =>
+    res.status(429).json({ error: req.t('auth:errors.tooManyResendAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV === 'test',
@@ -637,20 +641,20 @@ router.post('/resend-verification', resendVerificationLimiter, authenticate, asy
     const school = await School.findById(schoolId);
 
     if (!school) {
-      return res.status(404).json({ error: 'School not found' });
+      return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
     }
 
     if (school.metadata?.emailVerified) {
       return res.json({
         success: true,
-        message: 'Email is already verified',
+        message: req.t('auth:success.emailAlreadyVerified'),
         alreadyVerified: true,
       });
     }
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
-      return res.status(500).json({ error: 'Server misconfiguration' });
+      return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
     }
 
     const email = school.contactEmail || school.billingEmail;
@@ -702,7 +706,7 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
       });
     }
 
-    const { staff, error, status, foundStaff } = await authenticateStaff(req.body);
+    const { staff, error, status, foundStaff } = await authenticateStaff(req, req.body);
 
     if (!staff) {
       // Log failed login if we identified the user (wrong password scenario)
@@ -749,7 +753,7 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
       staff.tokenVersion || 1
     );
 
-    createSessionRecord(staff, req, sessionId);
+    await createSessionRecord(staff, req, sessionId);
     logAuthEvent('login', staff, req);
 
     setAuthCookie(res, token);
@@ -763,7 +767,7 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
     });
   } catch (error) {
     logger.error({ err: error }, 'Login error');
-    res.status(500).json({ error: 'Login failed. Please try again.' });
+    res.status(500).json({ error: req.t('auth:errors.loginFailed') });
   }
 });
 
@@ -839,7 +843,7 @@ router.post('/logout', async (req, res) => {
     // Ignore — still clear cookie and return success
   }
   clearAuthCookie(res);
-  res.json({ success: true, message: 'Logged out successfully' });
+  res.json({ success: true, message: req.t('auth:success.logout') });
 });
 
 // POST /api/auth/refresh
@@ -850,13 +854,13 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
     const refreshToken = extractRefreshTokenFromRequest(req) || req.body?.refreshToken;
 
     if (!refreshToken) {
-      return res.status(400).json({ error: 'Refresh token is required' });
+      return res.status(400).json({ error: req.t('auth:errors.refreshTokenRequired') });
     }
 
     const decoded = jwt.verify(refreshToken, getJwtRefreshSecret());
 
     if (decoded.userType !== 'staff') {
-      return res.status(401).json({ error: 'Invalid refresh token' });
+      return res.status(401).json({ error: req.t('auth:errors.invalidRefreshToken') });
     }
 
     const staff = await Staff.findOne({ _id: decoded.userId, status: 'active' });
@@ -867,7 +871,7 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
 
     // Validate tokenVersion — if mismatch, the token was revoked (e.g. user logged out)
     if (decoded.tokenVersion !== undefined && decoded.tokenVersion !== (staff.tokenVersion || 1)) {
-      return res.status(401).json({ error: 'Refresh token has been revoked. Please login again.' });
+      return res.status(401).json({ error: req.t('auth:errors.refreshTokenRevoked') });
     }
 
     const payload = await buildStaffAuthPayload(staff);
@@ -896,9 +900,9 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
     });
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ error: 'Refresh token expired. Please login again.' });
+      return res.status(401).json({ error: req.t('auth:errors.refreshTokenExpired') });
     }
-    return res.status(401).json({ error: 'Invalid refresh token' });
+    return res.status(401).json({ error: req.t('auth:errors.invalidRefreshToken') });
   }
 });
 
@@ -1021,7 +1025,7 @@ router.post(
       const jwtSecret = process.env.JWT_SECRET;
       if (!jwtSecret) {
         logger.error('JWT_SECRET not configured — cannot generate reset token');
-        return res.status(500).json({ error: 'Server misconfiguration' });
+        return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
       }
 
       const resetToken = jwt.sign(
@@ -1057,7 +1061,7 @@ router.post(
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
-      return res.status(500).json({ error: 'Server misconfiguration' });
+      return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
     }
 
     let payload;

@@ -150,6 +150,7 @@ async function notifyParentsOfAbsent(absentStudentIds, date) {
 }
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -198,7 +199,7 @@ router.get(
       const resolved = await resolveClassId(classId);
 
       if (!resolved) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const attendance = await Attendance.find(
@@ -232,7 +233,7 @@ async function markBulkAttendance(req, res) {
 
   const resolved = await resolveClassId(classId);
   if (!resolved) {
-    return res.status(404).json({ error: 'Class not found' });
+    return res.status(404).json({ error: req.t('common:errors.classNotFound') });
   }
 
   const schoolId = await resolveRequestSchoolId(req);
@@ -370,7 +371,7 @@ router.get(
 
       const resolved = await resolveClassId(classId);
       if (!resolved) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const attendance = await Attendance.find(
@@ -463,7 +464,7 @@ router.get('/:classId/:date', authenticate, async (req, res) => {
     const resolved = await resolveClassId(classId);
 
     if (!resolved) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const schoolId = await resolveRequestSchoolId(req);

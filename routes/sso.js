@@ -35,6 +35,11 @@ const deflateRawAsync = promisify(deflateRaw);
 
 const logger = createLogger('SSO');
 const router = express.Router();
+// Note: no router.use(authenticate) here — this file intentionally uses three auth mechanisms:
+// 1. Public routes — /check, /saml/metadata, /:provider/initiate, /:provider/callback, /saml/callback
+// 2. authenticate — /config (GET/PUT) for school admins
+// 3. authenticateScim — /scim/v2/Users/* for SCIM provisioning (different token format)
+// Adding router-level authenticate would break public SSO flows and SCIM requests.
 
 const SSO_PROVIDERS = ['google', 'microsoft', 'saml'];
 
@@ -225,7 +230,7 @@ router.get('/check', async (req, res) => {
 router.get('/config', authenticate, async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId).select('ssoConfig name code');
-    if (!school) return res.status(404).json({ error: 'School not found' });
+    if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
 
     const cfg = school.ssoConfig || {};
     return res.json({
@@ -287,7 +292,7 @@ router.put('/config', authenticate, validateZod(zodSchemas.updateSsoConfig), asy
     } = req.body;
 
     const school = await School.findById(req.user.schoolId);
-    if (!school) return res.status(404).json({ error: 'School not found' });
+    if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
 
     const cfg = school.ssoConfig || {};
 
@@ -385,6 +390,48 @@ router.put('/config', authenticate, validateZod(zodSchemas.updateSsoConfig), asy
 });
 
 /**
+ * GET /auth/sso/scim/token
+ * Returns the plaintext SCIM bearer token for the school (admin-only).
+ * Only reveals the token if it exists; returns `null` otherwise.
+ */
+router.get('/scim/token', authenticate, async (req, res) => {
+  try {
+    const school = await School.findById(req.user.schoolId).select('ssoConfig');
+    if (!school) return res.status(404).json({ error: 'School not found' });
+    const token = school.ssoConfig?.scim?.token || null;
+    return res.json({ success: true, token });
+  } catch (err) {
+    logger.error({ err }, 'Failed to retrieve SCIM token');
+    return res.status(500).json({ error: 'Failed to retrieve SCIM token' });
+  }
+});
+
+/**
+ * POST /auth/sso/scim/regenerate-token
+ * Generates a new cryptographically random SCIM bearer token, saves it, and returns it.
+ * The token is only shown once — admins must copy it immediately.
+ */
+router.post('/scim/regenerate-token', authenticate, async (req, res) => {
+  try {
+    const school = await School.findById(req.user.schoolId);
+    if (!school) return res.status(404).json({ error: 'School not found' });
+
+    const newToken = randomBytes(32).toString('hex');
+    if (!school.ssoConfig) school.ssoConfig = {};
+    if (!school.ssoConfig.scim) school.ssoConfig.scim = {};
+    school.ssoConfig.scim.token = newToken;
+    school.markModified('ssoConfig');
+    await school.save();
+
+    logger.info({ schoolId: school._id }, 'SCIM token regenerated');
+    return res.json({ success: true, token: newToken });
+  } catch (err) {
+    logger.error({ err }, 'Failed to regenerate SCIM token');
+    return res.status(500).json({ error: 'Failed to regenerate SCIM token' });
+  }
+});
+
+/**
  * GET /auth/sso/saml/metadata?schoolCode=SCHOOL_CODE
  * Returns the SP (Service Provider) SAML metadata XML.
  * IdP admins use this to register EMS as a trusted SP.
@@ -395,7 +442,7 @@ router.get('/saml/metadata', async (req, res) => {
     .toUpperCase();
   try {
     const school = await School.findOne({ code: schoolCode, status: 'active' });
-    if (!school) return res.status(404).json({ error: 'School not found' });
+    if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
 
     const samlCfg = school.ssoConfig?.saml;
     if (!samlCfg?.enabled)
@@ -443,7 +490,7 @@ router.get('/:provider/initiate', async (req, res) => {
 
   try {
     const school = await School.findOne({ code: schoolCode, status: 'active' });
-    if (!school) return res.status(404).json({ error: 'School not found' });
+    if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
 
     const providerCfg = school.ssoConfig?.[provider];
 
@@ -852,47 +899,39 @@ async function authenticateScim(req, res, next) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token)
-    return res
-      .status(401)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '401',
-        detail: 'Missing Bearer token',
-      });
+    return res.status(401).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '401',
+      detail: 'Missing Bearer token',
+    });
 
   // schoolCode passed as query param or header for tenant routing
   const schoolCode = String(req.query.schoolCode || req.headers['x-school-code'] || '')
     .trim()
     .toUpperCase();
   if (!schoolCode)
-    return res
-      .status(400)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '400',
-        detail: 'Missing x-school-code header or schoolCode query parameter',
-      });
+    return res.status(400).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '400',
+      detail: 'Missing x-school-code header or schoolCode query parameter',
+    });
 
   const school = await School.findOne({ code: schoolCode, status: 'active' }).select(
     'ssoConfig _id'
   );
   if (!school)
-    return res
-      .status(404)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '404',
-        detail: 'School not found',
-      });
+    return res.status(404).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '404',
+      detail: req.t('common:errors.schoolNotFound'),
+    });
 
   if (!school.ssoConfig?.scim?.enabled || !school.ssoConfig?.scim?.token) {
-    return res
-      .status(403)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '403',
-        detail: 'SCIM is not enabled for this school',
-      });
+    return res.status(403).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '403',
+      detail: 'SCIM is not enabled for this school',
+    });
   }
 
   // Constant-time comparison to prevent timing attacks
@@ -900,13 +939,11 @@ async function authenticateScim(req, res, next) {
   const expectedHash = createHash('sha256').update(expected).digest('hex');
   const actualHash = createHash('sha256').update(token).digest('hex');
   if (expectedHash !== actualHash) {
-    return res
-      .status(401)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '401',
-        detail: 'Invalid token',
-      });
+    return res.status(401).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '401',
+      detail: 'Invalid token',
+    });
   }
 
   req.scimSchool = school;
@@ -961,13 +998,11 @@ router.get('/scim/v2/Users', authenticateScim, async (req, res) => {
     });
   } catch (err) {
     logger.error({ err }, 'SCIM list users failed');
-    return res
-      .status(500)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '500',
-        detail: 'Internal error',
-      });
+    return res.status(500).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '500',
+      detail: 'Internal error',
+    });
   }
 });
 
@@ -980,23 +1015,19 @@ router.get('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
       isDeleted: { $ne: true },
     });
     if (!staff)
-      return res
-        .status(404)
-        .json({
-          schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-          status: '404',
-          detail: 'User not found',
-        });
+      return res.status(404).json({
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '404',
+        detail: 'User not found',
+      });
     return res.json(staffToScimUser(staff));
   } catch (err) {
     logger.error({ err }, 'SCIM get user failed');
-    return res
-      .status(500)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '500',
-        detail: 'Internal error',
-      });
+    return res.status(500).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '500',
+      detail: 'Internal error',
+    });
   }
 });
 
@@ -1008,13 +1039,11 @@ router.post('/scim/v2/Users', authenticateScim, async (req, res) => {
     const phone = phoneNumbers?.[0]?.value || null;
 
     if (!email && !phone) {
-      return res
-        .status(400)
-        .json({
-          schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-          status: '400',
-          detail: 'userName or emails[0].value is required',
-        });
+      return res.status(400).json({
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '400',
+        detail: 'userName or emails[0].value is required',
+      });
     }
 
     // Check if already exists
@@ -1024,13 +1053,11 @@ router.post('/scim/v2/Users', authenticateScim, async (req, res) => {
       isDeleted: { $ne: true },
     });
     if (existing) {
-      return res
-        .status(409)
-        .json({
-          schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-          status: '409',
-          detail: 'User already exists',
-        });
+      return res.status(409).json({
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '409',
+        detail: 'User already exists',
+      });
     }
 
     const count = await Staff.countDocuments({ schoolId: req.scimSchool._id });
@@ -1052,13 +1079,11 @@ router.post('/scim/v2/Users', authenticateScim, async (req, res) => {
     return res.status(201).json(staffToScimUser(staff));
   } catch (err) {
     logger.error({ err }, 'SCIM create user failed');
-    return res
-      .status(500)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '500',
-        detail: 'Internal error',
-      });
+    return res.status(500).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '500',
+      detail: 'Internal error',
+    });
   }
 });
 
@@ -1071,13 +1096,11 @@ router.put('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
       isDeleted: { $ne: true },
     });
     if (!staff)
-      return res
-        .status(404)
-        .json({
-          schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-          status: '404',
-          detail: 'User not found',
-        });
+      return res.status(404).json({
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '404',
+        detail: 'User not found',
+      });
 
     const { name, emails, phoneNumbers, active } = req.body;
     if (name?.formatted) staff.name = name.formatted;
@@ -1089,13 +1112,11 @@ router.put('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
     return res.json(staffToScimUser(staff));
   } catch (err) {
     logger.error({ err }, 'SCIM replace user failed');
-    return res
-      .status(500)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '500',
-        detail: 'Internal error',
-      });
+    return res.status(500).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '500',
+      detail: 'Internal error',
+    });
   }
 });
 
@@ -1108,13 +1129,11 @@ router.patch('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
       isDeleted: { $ne: true },
     });
     if (!staff)
-      return res
-        .status(404)
-        .json({
-          schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-          status: '404',
-          detail: 'User not found',
-        });
+      return res.status(404).json({
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '404',
+        detail: 'User not found',
+      });
 
     const ops = req.body.Operations || [];
     for (const op of ops) {
@@ -1133,13 +1152,11 @@ router.patch('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
     return res.json(staffToScimUser(staff));
   } catch (err) {
     logger.error({ err }, 'SCIM patch user failed');
-    return res
-      .status(500)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '500',
-        detail: 'Internal error',
-      });
+    return res.status(500).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '500',
+      detail: 'Internal error',
+    });
   }
 });
 
@@ -1152,13 +1169,11 @@ router.delete('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
       isDeleted: { $ne: true },
     });
     if (!staff)
-      return res
-        .status(404)
-        .json({
-          schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-          status: '404',
-          detail: 'User not found',
-        });
+      return res.status(404).json({
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '404',
+        detail: 'User not found',
+      });
 
     staff.isDeleted = true;
     staff.deletedAt = new Date();
@@ -1168,13 +1183,11 @@ router.delete('/scim/v2/Users/:id', authenticateScim, async (req, res) => {
     return res.status(204).send();
   } catch (err) {
     logger.error({ err }, 'SCIM delete user failed');
-    return res
-      .status(500)
-      .json({
-        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
-        status: '500',
-        detail: 'Internal error',
-      });
+    return res.status(500).json({
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+      status: '500',
+      detail: 'Internal error',
+    });
   }
 });
 

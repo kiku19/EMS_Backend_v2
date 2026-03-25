@@ -17,6 +17,7 @@ import {
 } from '../services/couponService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // POST /coupons/validate - validate a coupon code (any authenticated user)
 router.post('/validate', authenticate, validateZod(validateCouponSchema), async (req, res) => {

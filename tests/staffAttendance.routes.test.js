@@ -181,7 +181,7 @@ describe('staff attendance routes', () => {
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
 
-      for (const date of ['2026-02-28', '2026-03-01', '2026-03-15', '2026-04-01']) {
+      for (const date of ['2025-01-28', '2025-02-01', '2025-02-15', '2025-03-01']) {
         await request(app)
           .post('/api/staff-attendance')
           .set(authHeaders)
@@ -191,7 +191,7 @@ describe('staff attendance routes', () => {
 
       const response = await request(app)
         .get('/api/staff-attendance')
-        .query({ startDate: '2026-03-01', endDate: '2026-03-31' })
+        .query({ startDate: '2025-02-01', endDate: '2025-02-28' })
         .set(authHeaders)
         .expect(200);
 
@@ -318,7 +318,7 @@ describe('staff attendance routes', () => {
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
 
-      for (const date of ['2026-02-15', '2026-03-10', '2026-03-20', '2026-04-05']) {
+      for (const date of ['2025-01-15', '2025-02-10', '2025-02-20', '2025-03-05']) {
         await request(app)
           .post('/api/staff-attendance')
           .set(authHeaders)
@@ -328,7 +328,7 @@ describe('staff attendance routes', () => {
 
       const response = await request(app)
         .get(`/api/staff-attendance/staff/${admin._id.toString()}`)
-        .query({ startDate: '2026-03-01', endDate: '2026-03-31' })
+        .query({ startDate: '2025-02-01', endDate: '2025-02-28' })
         .set(authHeaders)
         .expect(200);
 

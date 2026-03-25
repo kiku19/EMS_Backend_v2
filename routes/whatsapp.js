@@ -6,6 +6,11 @@ import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { processDeliveryEvent } from '../utils/deliveryStatus.js';
 
 const router = express.Router();
+// Note: no router.use(authenticate) here — this file intentionally mixes three auth mechanisms:
+// 1. POST /webhook — public (MSG91 delivery callback, no auth)
+// 2. PUT /opt-in, /opt-out — authenticateParent (parent portal auth)
+// 3. GET /opt-in-stats — authenticate (staff auth)
+// Each route carries its own middleware. Adding router-level authenticate would break parent routes.
 
 /**
  * POST /api/v1/whatsapp/webhook

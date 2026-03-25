@@ -9,6 +9,7 @@ import conflictDetectionService from '../services/conflictDetectionService.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -296,7 +297,7 @@ router.put(
         if (!classDoc) {
           return res.status(404).json({
             success: false,
-            message: 'Class not found',
+            message: req.t('common:errors.classNotFound'),
           });
         }
 

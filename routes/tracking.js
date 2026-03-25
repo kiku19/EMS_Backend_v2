@@ -131,7 +131,7 @@ router.post('/sms-webhook', async (req, res) => {
   if (secret) {
     const provided = req.headers['x-webhook-secret'] || req.query.secret;
     if (provided !== secret) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: req.t('common:errors.unauthorized') });
     }
   }
 

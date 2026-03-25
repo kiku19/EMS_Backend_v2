@@ -7,13 +7,21 @@ import {
   createOrUpdateParentAccount,
 } from '../utils/parentAccountHelper.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import { authenticate, requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// All parent management routes require authentication
+router.use(authenticate);
+
 const getParentQuery = (req, query = {}) => buildSchoolScopedQuery(req.user?.schoolId, query);
 const parentPasswordResetLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
-  message: 'Too many parent password reset attempts, please try again later.',
+  message: (req) =>
+    req.t
+      ? req.t('common:routes.tooManyParentPasswordResetAttemptsPleaseTryAgainLater')
+      : 'Too many password reset attempts. Please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -91,12 +99,10 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('List parents error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to fetch parents' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToFetchParents') },
+    });
   }
 });
 
@@ -110,7 +116,10 @@ router.get('/:id', async (req, res) => {
     if (!parent) {
       return res
         .status(404)
-        .json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
+        .json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
+        });
     }
 
     const childrenDetails = await Promise.all(
@@ -147,7 +156,10 @@ router.get('/:id', async (req, res) => {
     console.error('Get parent error:', error);
     res
       .status(500)
-      .json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to fetch parent' } });
+      .json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToFetchParent') },
+      });
   }
 });
 
@@ -158,16 +170,17 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
     if (!parent) {
       return res
         .status(404)
-        .json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
+        .json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
+        });
     }
 
     if (parent.children.length === 0) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: { code: 'NO_CHILDREN', message: 'Parent has no linked children' },
-        });
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_CHILDREN', message: req.t('common:routes.parentHasNoLinkedChildren') },
+      });
     }
 
     // Use first child's DOB + admissionId to generate password
@@ -177,25 +190,21 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
       .lean();
 
     if (!student) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: { code: 'STUDENT_NOT_FOUND', message: 'Linked student not found' },
-        });
+      return res.status(400).json({
+        success: false,
+        error: { code: 'STUDENT_NOT_FOUND', message: req.t('common:routes.linkedStudentNotFound') },
+      });
     }
 
     const plainPassword = generateParentPassword(student.dateOfBirth, student.admissionId);
     if (!plainPassword) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: {
-            code: 'CANNOT_GENERATE',
-            message: 'Cannot generate password - student missing DOB or admission ID',
-          },
-        });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'CANNOT_GENERATE',
+          message: req.t('common:routes.cannotGeneratePasswordStudentMissingDobOrAdmissionId'),
+        },
+      });
     }
 
     parent.password = plainPassword;
@@ -203,17 +212,15 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
 
     res.json({
       success: true,
-      message: 'Password reset successfully',
+      message: req.t('common:routes.passwordResetSuccessfully'),
       data: { generatedPassword: plainPassword },
     });
   } catch (error) {
     console.error('Reset parent password error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to reset password' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToResetPassword') },
+    });
   }
 });
 
@@ -222,15 +229,13 @@ router.put('/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
     if (!['active', 'inactive', 'suspended'].includes(status)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: {
-            code: 'INVALID_STATUS',
-            message: 'Status must be active, inactive, or suspended',
-          },
-        });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: req.t('common:routes.statusMustBeActiveInactiveOrSuspended'),
+        },
+      });
     }
 
     const parent = await Parent.findOneAndUpdate(
@@ -242,23 +247,24 @@ router.put('/:id/status', async (req, res) => {
     if (!parent) {
       return res
         .status(404)
-        .json({ success: false, error: { code: 'NOT_FOUND', message: 'Parent not found' } });
+        .json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
+        });
     }
 
     res.json({ success: true, message: `Parent account ${status}`, data: parent });
   } catch (error) {
     console.error('Update parent status error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to update status' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToUpdateStatus') },
+    });
   }
 });
 
 // POST /api/parents/bulk-create - Create parent accounts for all students that don't have one
-router.post('/bulk-create', async (req, res) => {
+router.post('/bulk-create', requireAdmin, async (req, res) => {
   try {
     const students = await Student.find(
       getParentQuery(req, {
@@ -305,12 +311,13 @@ router.post('/bulk-create', async (req, res) => {
     });
   } catch (error) {
     console.error('Bulk create parents error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to bulk create parent accounts' },
-      });
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: req.t('common:routes.failedToBulkCreateParentAccounts'),
+      },
+    });
   }
 });
 

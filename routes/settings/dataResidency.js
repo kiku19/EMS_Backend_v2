@@ -4,6 +4,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { ensureSchoolSettings } from '../../utils/academicYear.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const DATA_RESIDENCY_REGIONS = {
   IN: {

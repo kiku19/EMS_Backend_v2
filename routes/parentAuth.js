@@ -401,7 +401,7 @@ router.post('/login', parentLoginLimiter, async (req, res) => {
         success: false,
         error: {
           code: 'SCHOOL_NOT_FOUND',
-          message: 'School not found',
+          message: req.t('common:errors.schoolNotFound'),
         },
       });
     }
@@ -580,7 +580,7 @@ router.post('/verify-otp', parentOtpVerificationLimiter, async (req, res) => {
         success: false,
         error: {
           code: 'SCHOOL_NOT_FOUND',
-          message: 'School not found',
+          message: req.t('common:errors.schoolNotFound'),
         },
       });
     }

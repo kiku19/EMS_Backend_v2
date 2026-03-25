@@ -25,6 +25,41 @@ import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js'
 import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+
+/** Configure via environment variables:
+ *   STAFF_APP_MIN_VERSION       e.g. "1.0.0"
+ *   STAFF_APP_LATEST_VERSION    e.g. "1.2.0"
+ *   STAFF_APP_FORCE_UPDATE      "true" | "false"
+ *   STAFF_APP_STORE_URL_IOS     App Store URL
+ *   STAFF_APP_STORE_URL_ANDROID Play Store URL
+ *   STAFF_APP_UPDATE_MESSAGE    Custom message shown in the update prompt
+ */
+router.get('/app-version', async (req, res) => {
+  try {
+    const minimumVersion = process.env.STAFF_APP_MIN_VERSION || '1.0.0';
+    const latestVersion = process.env.STAFF_APP_LATEST_VERSION || '1.0.0';
+    const forceUpdate = process.env.STAFF_APP_FORCE_UPDATE === 'true';
+    const storeUrlIos = process.env.STAFF_APP_STORE_URL_IOS || null;
+    const storeUrlAndroid = process.env.STAFF_APP_STORE_URL_ANDROID || null;
+    const updateMessage =
+      process.env.STAFF_APP_UPDATE_MESSAGE ||
+      'A new version of the app is required. Please update to continue.';
+
+    return res.json({
+      success: true,
+      minimumVersion,
+      latestVersion,
+      forceUpdate,
+      storeUrlIos,
+      storeUrlAndroid,
+      updateMessage,
+    });
+  } catch (error) {
+    logger.error({ err: error }, 'Error fetching app version config');
+    res.status(500).json({ error: 'Failed to fetch app version' });
+  }
+});
+router.use(authenticate);
 const logger = createLogger('Mobile');
 
 /**
@@ -706,7 +741,7 @@ router.get(
         .lean();
 
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('students:errors.notFound') });
       }
 
       // Get attendance stats (last 30 days)
@@ -786,7 +821,7 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
 
     if (!staff) {
       return res.status(404).json({
-        error: 'Staff not found',
+        error: req.t('common:errors.staffNotFound'),
         message: `No staff member found with ID: ${staffId}`,
       });
     }
@@ -845,7 +880,7 @@ router.put(
 
         if (!permissions || permissions.role !== 'admin') {
           return res.status(403).json({
-            error: 'Access denied',
+            error: req.t('common:errors.forbidden'),
             message: 'You can only edit your own profile',
           });
         }
@@ -855,7 +890,7 @@ router.put(
       const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId }));
 
       if (!staff) {
-        return res.status(404).json({ error: 'Staff not found' });
+        return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
       }
 
       // Detect which fields changed for audit log and socket event
@@ -969,7 +1004,7 @@ router.post('/staff/:staffId/photo', authenticate, async (req, res) => {
 
       if (!permissions || permissions.role !== 'admin') {
         return res.status(403).json({
-          error: 'Access denied',
+          error: req.t('common:errors.forbidden'),
           message: 'You can only upload your own photo',
         });
       }
@@ -979,7 +1014,7 @@ router.post('/staff/:staffId/photo', authenticate, async (req, res) => {
     const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: staffId }));
 
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
     }
 
     // Check if photo file is present
@@ -1091,43 +1126,5 @@ router.post('/staff/:staffId/photo', authenticate, async (req, res) => {
 });
 
 // ============ APP VERSION CHECK ============
-
-/**
- * GET /api/v1/mobile/app-version
- * Public endpoint — no auth required.
- * Returns minimum required version, latest version, and store URLs for the staff app.
- * Configure via environment variables:
- *   STAFF_APP_MIN_VERSION       e.g. "1.0.0"
- *   STAFF_APP_LATEST_VERSION    e.g. "1.2.0"
- *   STAFF_APP_FORCE_UPDATE      "true" | "false"
- *   STAFF_APP_STORE_URL_IOS     App Store URL
- *   STAFF_APP_STORE_URL_ANDROID Play Store URL
- *   STAFF_APP_UPDATE_MESSAGE    Custom message shown in the update prompt
- */
-router.get('/app-version', async (req, res) => {
-  try {
-    const minimumVersion = process.env.STAFF_APP_MIN_VERSION || '1.0.0';
-    const latestVersion = process.env.STAFF_APP_LATEST_VERSION || '1.0.0';
-    const forceUpdate = process.env.STAFF_APP_FORCE_UPDATE === 'true';
-    const storeUrlIos = process.env.STAFF_APP_STORE_URL_IOS || null;
-    const storeUrlAndroid = process.env.STAFF_APP_STORE_URL_ANDROID || null;
-    const updateMessage =
-      process.env.STAFF_APP_UPDATE_MESSAGE ||
-      'A new version of the app is required. Please update to continue.';
-
-    return res.json({
-      success: true,
-      minimumVersion,
-      latestVersion,
-      forceUpdate,
-      storeUrlIos,
-      storeUrlAndroid,
-      updateMessage,
-    });
-  } catch (error) {
-    logger.error({ err: error }, 'Error fetching app version config');
-    res.status(500).json({ error: 'Failed to fetch app version' });
-  }
-});
 
 export default router;

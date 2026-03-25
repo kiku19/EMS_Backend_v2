@@ -16,6 +16,7 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedId = extractSchoolId(schoolId);
@@ -35,7 +36,7 @@ router.get('/preview', authenticate, checkPermission('students', 'view'), async 
     const cls = await Class.findOne(
       scopeBySchool(schoolId, { _id: classId, isDeleted: { $ne: true } })
     );
-    if (!cls) return res.status(404).json({ error: 'Class not found' });
+    if (!cls) return res.status(404).json({ error: req.t('common:errors.classNotFound') });
 
     const students = await Student.find(
       scopeBySchool(schoolId, { classId, status: 'active', isDeleted: { $ne: true } })
@@ -140,7 +141,7 @@ router.post(
             scopeBySchool(schoolId, { _id: d.studentId, isDeleted: { $ne: true } })
           );
           if (!student) {
-            errors.push({ studentId: d.studentId, error: 'Student not found' });
+            errors.push({ studentId: d.studentId, error: req.t('students:errors.notFound') });
             summary.errors++;
             continue;
           }

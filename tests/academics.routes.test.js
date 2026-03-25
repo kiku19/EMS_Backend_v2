@@ -28,7 +28,7 @@ describe('academics routes', () => {
           classId: classRecord._id.toString(),
           maxMarks: 100,
           passingMarks: 35,
-          startDate: '2026-03-15',
+          startDate: '2026-05-15',
           academicYear: '2025-26',
         })
         .expect(201);
@@ -52,7 +52,7 @@ describe('academics routes', () => {
         .send({
           name: 'Unauth Exam',
           classId: classRecord._id.toString(),
-          startDate: '2026-03-15',
+          startDate: '2026-05-15',
         })
         .expect(401);
     });
@@ -77,7 +77,7 @@ describe('academics routes', () => {
           classId: classRecord._id.toString(),
           maxMarks: 50,
           passingMarks: 20,
-          startDate: '2026-03-10',
+          startDate: '2026-05-10',
           academicYear: '2025-26',
         })
         .expect(201);
@@ -90,7 +90,7 @@ describe('academics routes', () => {
           classId: classRecord._id.toString(),
           maxMarks: 50,
           passingMarks: 20,
-          startDate: '2026-03-12',
+          startDate: '2026-05-12',
           academicYear: '2025-26',
         })
         .expect(201);
@@ -122,7 +122,7 @@ describe('academics routes', () => {
           classId: classRecord._id.toString(),
           maxMarks: 25,
           passingMarks: 10,
-          startDate: '2026-03-20',
+          startDate: '2026-05-20',
           academicYear: '2025-26',
         })
         .expect(201);

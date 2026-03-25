@@ -37,6 +37,7 @@ import {
 } from '../validators/bulkOpsSchema.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('BulkOps');
 
 // ─── HELPERS ─────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ router.post(
   checkPermission('students', 'create'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchCreateStudentsSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -172,7 +173,7 @@ router.post(
   checkPermission('students', 'update'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchUpdateStudentsSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -199,7 +200,12 @@ router.post(
             .lean();
 
           if (!updated) {
-            results.push({ index: i, id: ids[i], status: 'failed', error: 'Student not found' });
+            results.push({
+              index: i,
+              id: ids[i],
+              status: 'failed',
+              error: req.t('students:errors.notFound'),
+            });
           } else {
             results.push({ index: i, id: ids[i], status: 'success' });
           }
@@ -223,7 +229,12 @@ router.post(
             .lean();
 
           if (!updated) {
-            results.push({ index: i, id, status: 'failed', error: 'Student not found' });
+            results.push({
+              index: i,
+              id,
+              status: 'failed',
+              error: req.t('students:errors.notFound'),
+            });
           } else {
             results.push({ index: i, id, status: 'success' });
           }
@@ -245,7 +256,7 @@ router.post(
   checkPermission('students', 'delete'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchDeleteSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -287,7 +298,7 @@ router.post(
   checkPermission('staff', 'update'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchUpdateStaffSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -315,7 +326,12 @@ router.post(
           results.push(
             updated
               ? { index: i, id: ids[i], status: 'success' }
-              : { index: i, id: ids[i], status: 'failed', error: 'Staff not found' }
+              : {
+                  index: i,
+                  id: ids[i],
+                  status: 'failed',
+                  error: req.t('common:errors.staffNotFound'),
+                }
           );
         } catch (err) {
           logger.error({ err, id: ids[i] }, 'Batch staff update error');
@@ -338,7 +354,7 @@ router.post(
           results.push(
             updated
               ? { index: i, id, status: 'success' }
-              : { index: i, id, status: 'failed', error: 'Staff not found' }
+              : { index: i, id, status: 'failed', error: req.t('common:errors.staffNotFound') }
           );
         } catch (err) {
           logger.error({ err, id }, 'Batch staff update error');
@@ -358,7 +374,7 @@ router.post(
   checkPermission('staff', 'delete'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchDeleteSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -401,7 +417,7 @@ router.post(
   checkPermission('attendance', 'create'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchAttendanceSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -417,7 +433,7 @@ router.post(
     const classDoc = await Class.findOne({ _id: classId, schoolId, isDeleted: { $ne: true } })
       .select('_id')
       .lean();
-    if (!classDoc) return res.status(404).json({ error: 'Class not found' });
+    if (!classDoc) return res.status(404).json({ error: req.t('common:errors.classNotFound') });
 
     const results = [];
 
@@ -480,7 +496,7 @@ router.post(
   checkPermission('academics', 'create'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const parsed = batchResultsSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -501,7 +517,12 @@ router.post(
         .lean();
 
       if (!student) {
-        results.push({ index: i, studentId, status: 'failed', error: 'Student not found' });
+        results.push({
+          index: i,
+          studentId,
+          status: 'failed',
+          error: req.t('students:errors.notFound'),
+        });
         continue;
       }
 

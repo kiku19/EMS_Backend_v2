@@ -42,7 +42,7 @@ export async function createStaffUser({
   name = 'Admin User',
   email,
   phone,
-  password = 'password123',
+  password = 'Password123',
   staffRole = ['Admin'],
   permissionRole = 'admin',
   status = 'active',

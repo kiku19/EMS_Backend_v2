@@ -6,6 +6,7 @@ import { checkPermission } from '../../middleware/permissions.js';
 import { scopeBySchool } from './helpers.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.post(
   '/:id/documents',
@@ -19,7 +20,7 @@ router.post(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!scopedStudent) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       const newDocument = {
@@ -53,7 +54,7 @@ router.post(
       );
 
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       res.json({ success: true, documents: student.documents || [] });
@@ -74,7 +75,7 @@ router.delete(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!scopedStudent) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       const student = await Student.findByIdAndUpdate(
@@ -84,7 +85,7 @@ router.delete(
       );
 
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       res.json({ success: true, documents: student.documents || [] });
@@ -101,7 +102,7 @@ router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), asyn
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
     if (!scopedStudent) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     const student = await Student.findByIdAndUpdate(
@@ -111,7 +112,7 @@ router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), asyn
     );
 
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
     res.json({ success: true, photo: student.photo });
@@ -131,7 +132,7 @@ router.post(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
       const fixedDocuments = (student.documents || [])
@@ -151,7 +152,7 @@ router.post(
 
       res.json({
         success: true,
-        message: 'Documents field fixed',
+        message: req.t('common:routes.documentsFieldFixed'),
         documents: updatedStudent?.documents || [],
       });
     } catch (error) {

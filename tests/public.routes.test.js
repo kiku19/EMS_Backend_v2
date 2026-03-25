@@ -2,6 +2,7 @@ import request from 'supertest';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FormAssignment, FormSubmission, IntakeForm } from '../database.js';
 import { createTestApp } from './helpers/testApp.js';
+import { createSchoolRecord } from './helpers/factories.js';
 
 const BASE = '/api/public';
 
@@ -10,7 +11,9 @@ async function createFormAndAssignment({
   token = 'validtoken123',
   expiresInMs = 60 * 60 * 1000,
 } = {}) {
+  const school = await createSchoolRecord({ name: 'Public Test School' });
   const form = await IntakeForm.create({
+    schoolId: school._id,
     formName: 'Test Form',
     formType: 'student',
     status: 'active',

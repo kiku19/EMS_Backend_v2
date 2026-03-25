@@ -155,7 +155,7 @@ router.patch(
       const school = await School.findById(req.params.id);
 
       if (!school) {
-        return res.status(404).json({ error: 'School not found' });
+        return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
       }
 
       if (req.body.schoolName) {
@@ -207,7 +207,7 @@ router.post(
       const school = await School.findById(req.params.id);
 
       if (!school) {
-        return res.status(404).json({ error: 'School not found' });
+        return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
       }
 
       const result = await provisionSchoolResources({

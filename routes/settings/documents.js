@@ -6,6 +6,7 @@ import { ensureSchoolSettings } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ============================================================
 // PAYROLL REMINDER ENDPOINT

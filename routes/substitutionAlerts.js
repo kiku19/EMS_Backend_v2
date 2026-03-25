@@ -6,6 +6,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import substitutionService from '../services/substitutionService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 /**
  * GET /api/substitution-alerts

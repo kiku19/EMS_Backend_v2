@@ -11,6 +11,7 @@ import {
 } from '../services/aiService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const chatLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

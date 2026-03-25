@@ -470,6 +470,12 @@ describe('E2E-34: Admission Tracker', () => {
       .send({ status: 'admission-approved' })
       .expect(200);
 
+    await request(app)
+      .put(`/api/front-desk/admissions/${id}`)
+      .set(headers)
+      .send({ status: 'fee-paid' })
+      .expect(200);
+
     // Convert to student — currently returns 500 because the route does not populate
     // the `parents` array required by the Student schema (it sets parentName/parentPhone
     // as top-level fields but Student.parents[] validator requires at least one entry).
@@ -482,11 +488,11 @@ describe('E2E-34: Admission Tracker', () => {
     expect(convertRes.body.success).toBe(false);
     expect(convertRes.body.error).toMatch(/parents/i);
 
-    // Verify admission NOT yet rejected — only conversion failed, status unchanged
+    // Verify admission NOT yet admitted — only conversion failed, status unchanged
     const admission = await request(app).get('/api/front-desk/admissions').set(headers).expect(200);
 
     const current = admission.body.find((a) => a._id === id);
-    expect(current.status).toBe('admission-approved');
+    expect(current.status).toBe('fee-paid');
   });
 
   // 12) Filter admissions by stage and class applied

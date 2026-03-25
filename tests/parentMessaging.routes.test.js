@@ -47,6 +47,7 @@ async function setupTwoParents() {
 async function createDirectConversation(parent1, parent2) {
   const conv = await Conversation.create({
     type: 'direct',
+    schoolId: parent1.schoolId,
     participants: [
       { userId: parent1._id, userModel: 'Parent', unreadCount: 0 },
       { userId: parent2._id, userModel: 'Parent', unreadCount: 0 },
@@ -157,6 +158,7 @@ describe('parentMessaging routes', () => {
       const conv = await createDirectConversation(parent1, parent2);
 
       await Message.create({
+        schoolId: parent1.schoolId,
         conversationId: conv._id,
         senderId: parent1._id,
         senderModel: 'Parent',
@@ -252,6 +254,7 @@ describe('parentMessaging routes', () => {
       const conv = await createDirectConversation(parent1, parent2);
 
       await Message.create({
+        schoolId: parent1.schoolId,
         conversationId: conv._id,
         senderId: parent2._id,
         senderModel: 'Parent',

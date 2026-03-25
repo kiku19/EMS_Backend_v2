@@ -11,6 +11,7 @@ import {
 } from '../validators/systemConfigSchema.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 router.get(
   '/staff-id-config',
@@ -20,7 +21,7 @@ router.get(
     try {
       const schoolId = req.user.schoolId;
       if (!schoolId) {
-        return res.status(403).json({ error: 'School context required' });
+        return res.status(403).json({ error: req.t('common:errors.unauthorized') });
       }
 
       let staffIdConfig = await StaffIdConfig.findOne(buildSchoolScopedQuery(schoolId));
@@ -54,7 +55,7 @@ router.put(
     try {
       const schoolId = req.user.schoolId;
       if (!schoolId) {
-        return res.status(403).json({ error: 'School context required' });
+        return res.status(403).json({ error: req.t('common:errors.unauthorized') });
       }
 
       const { prefix, separator, includeYear, startingNumber, digits } = req.body;
@@ -94,7 +95,7 @@ router.get(
     try {
       const schoolId = req.user.schoolId;
       if (!schoolId) {
-        return res.status(403).json({ error: 'School context required' });
+        return res.status(403).json({ error: req.t('common:errors.unauthorized') });
       }
 
       const settings = await ensureSchoolSettings(schoolId);
@@ -115,7 +116,7 @@ router.put(
     try {
       const schoolId = req.user.schoolId;
       if (!schoolId) {
-        return res.status(403).json({ error: 'School context required' });
+        return res.status(403).json({ error: req.t('common:errors.unauthorized') });
       }
 
       // Explicitly exclude schoolId from body to prevent tenant-scoping bypass

@@ -8,6 +8,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -150,7 +151,7 @@ router.get('/books/:id', authenticate, checkPermission('library', 'view'), async
   try {
     const schoolId = req.user.schoolId;
     const book = await Book.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
-    if (!book) return res.status(404).json({ error: 'Book not found' });
+    if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
     res.json({ book });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -190,7 +191,9 @@ router.post('/books', authenticate, checkPermission('library', 'create'), async 
     res.status(201).json({ book });
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
     }
     res.status(500).json({ error: error.message });
   }
@@ -205,7 +208,7 @@ router.put('/books/:id', authenticate, checkPermission('library', 'edit'), async
     const schoolId = req.user.schoolId;
 
     const book = await Book.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
-    if (!book) return res.status(404).json({ error: 'Book not found' });
+    if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
     // Adjust available copies if total changes
     if (data.totalCopies !== undefined && data.totalCopies !== book.totalCopies) {
@@ -253,7 +256,9 @@ router.put('/books/:id', authenticate, checkPermission('library', 'edit'), async
     res.json({ book });
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
     }
     res.status(500).json({ error: error.message });
   }
@@ -271,7 +276,7 @@ router.delete(
     try {
       const schoolId = req.user.schoolId;
       const book = await Book.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
-      if (!book) return res.status(404).json({ error: 'Book not found' });
+      if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
       // Check no active issues
       const activeIssues = await BookIssue.countDocuments(
@@ -283,12 +288,12 @@ router.delete(
       if (activeIssues > 0) {
         return res
           .status(400)
-          .json({ error: 'Cannot delete book with active issues or reservations' });
+          .json({ error: req.t('common:routes.cannotDeleteBookWithActiveIssuesOrReservations') });
       }
 
       book.isActive = false;
       await book.save();
-      res.json({ message: 'Book deleted' });
+      res.json({ message: req.t('common:routes.bookDeleted') });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -362,8 +367,9 @@ router.post('/issues', authenticate, checkPermission('library', 'create'), async
     const book = await Book.findOne(
       buildSchoolScopedQuery(schoolId, { _id: bookId, isActive: true })
     );
-    if (!book) return res.status(404).json({ error: 'Book not found' });
-    if (book.availableCopies < 1) return res.status(400).json({ error: 'No copies available' });
+    if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
+    if (book.availableCopies < 1)
+      return res.status(400).json({ error: req.t('common:routes.noCopiesAvailable') });
 
     // Check student doesn't already have this book issued
     const existing = await BookIssue.findOne(
@@ -373,7 +379,10 @@ router.post('/issues', authenticate, checkPermission('library', 'create'), async
         status: { $in: ['issued', 'overdue'] },
       })
     );
-    if (existing) return res.status(400).json({ error: 'Student already has this book issued' });
+    if (existing)
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.studentAlreadyHasThisBookIssued') });
 
     // Auto-assign first available copy
     const availableCopy = await BookCopy.findOne(
@@ -413,7 +422,9 @@ router.post('/issues', authenticate, checkPermission('library', 'create'), async
     res.status(201).json({ issue: populated });
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res.status(400).json({ error: 'Validation failed', details: error.errors });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
     }
     res.status(500).json({ error: error.message });
   }
@@ -438,7 +449,8 @@ router.put(
           status: { $in: ['issued', 'overdue'] },
         })
       );
-      if (!issue) return res.status(404).json({ error: 'Active issue not found' });
+      if (!issue)
+        return res.status(404).json({ error: req.t('common:routes.activeIssueNotFound') });
 
       const returnDate = new Date();
       const dueDate = new Date(issue.dueDate);
@@ -474,7 +486,9 @@ router.put(
       res.json({ issue, fineAmount });
     } catch (error) {
       if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Validation failed', details: error.errors });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
       }
       res.status(500).json({ error: error.message });
     }
@@ -497,14 +511,16 @@ router.post(
       const book = await Book.findOne(
         buildSchoolScopedQuery(schoolId, { _id: bookId, isActive: true })
       );
-      if (!book) return res.status(404).json({ error: 'Book not found' });
+      if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
       // Check no existing reservation
       const existing = await BookIssue.findOne(
         buildSchoolScopedQuery(schoolId, { bookId, studentId, status: 'reserved' })
       );
       if (existing)
-        return res.status(400).json({ error: 'Student already has a reservation for this book' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.studentAlreadyHasAReservationForThisBook') });
 
       const reservation = new BookIssue({
         schoolId,
@@ -527,7 +543,9 @@ router.post(
       res.status(201).json({ reservation });
     } catch (error) {
       if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Validation failed', details: error.errors });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
       }
       res.status(500).json({ error: error.message });
     }
@@ -548,13 +566,14 @@ router.put(
       const issue = await BookIssue.findOne(
         buildSchoolScopedQuery(schoolId, { _id: req.params.id, status: 'reserved' })
       );
-      if (!issue) return res.status(404).json({ error: 'Reservation not found' });
+      if (!issue)
+        return res.status(404).json({ error: req.t('common:routes.reservationNotFound') });
 
       issue.status = 'cancelled';
       await Book.findByIdAndUpdate(issue.bookId, { $inc: { reservedCopies: -1 } });
       await issue.save();
 
-      res.json({ message: 'Reservation cancelled' });
+      res.json({ message: req.t('common:routes.reservationCancelled') });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -846,7 +865,7 @@ router.post(
       const book = await Book.findOne(
         buildSchoolScopedQuery(schoolId, { _id: req.params.id, isActive: true })
       );
-      if (!book) return res.status(404).json({ error: 'Book not found' });
+      if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
       // Auto-generate copy number if not provided
       let copyNumber = data.copyNumber;
@@ -860,7 +879,9 @@ router.post(
         buildSchoolScopedQuery(schoolId, { bookId: req.params.id, copyNumber })
       );
       if (existing)
-        return res.status(400).json({ error: 'Copy number already exists for this book' });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.copyNumberAlreadyExistsForThisBook') });
 
       const copy = new BookCopy({
         schoolId,
@@ -879,7 +900,9 @@ router.post(
       res.status(201).json({ copy });
     } catch (error) {
       if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Validation failed', details: error.errors });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
       }
       res.status(500).json({ error: error.message });
     }
@@ -902,14 +925,16 @@ router.put(
       const copy = await BookCopy.findOne(
         buildSchoolScopedQuery(schoolId, { _id: req.params.copyId, isActive: true })
       );
-      if (!copy) return res.status(404).json({ error: 'Copy not found' });
+      if (!copy) return res.status(404).json({ error: req.t('common:routes.copyNotFound') });
 
       Object.assign(copy, data);
       await copy.save();
       res.json({ copy });
     } catch (error) {
       if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Validation failed', details: error.errors });
+        return res
+          .status(400)
+          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
       }
       res.status(500).json({ error: error.message });
     }
@@ -930,12 +955,12 @@ router.delete(
       const copy = await BookCopy.findOne(
         buildSchoolScopedQuery(schoolId, { _id: req.params.copyId, isActive: true })
       );
-      if (!copy) return res.status(404).json({ error: 'Copy not found' });
+      if (!copy) return res.status(404).json({ error: req.t('common:routes.copyNotFound') });
 
       if (copy.status === 'issued') {
         return res
           .status(400)
-          .json({ error: 'Cannot decommission a copy that is currently issued' });
+          .json({ error: req.t('common:routes.cannotDecommissionACopyThatIsCurrentlyIssued') });
       }
 
       // Keep book stock in sync
@@ -948,7 +973,7 @@ router.delete(
       copy.isActive = false;
       await copy.save();
 
-      res.json({ message: 'Copy decommissioned' });
+      res.json({ message: req.t('common:routes.copyDecommissioned') });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

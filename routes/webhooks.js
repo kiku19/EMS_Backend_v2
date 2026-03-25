@@ -300,6 +300,7 @@ import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { sendTestWebhook } from '../services/webhookService.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const webhookCreateSchema = z.object({
   name: z.string().trim().min(1).max(100),

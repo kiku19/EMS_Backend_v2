@@ -4,6 +4,7 @@ import AuditTrail from '../models/AuditTrail.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 

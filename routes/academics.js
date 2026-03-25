@@ -200,6 +200,7 @@ import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -288,7 +289,7 @@ router.get(
     try {
       const resolved = await resolveClassId(req.params.classId);
       if (!resolved) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const exams = await Exam.find(
@@ -309,7 +310,7 @@ router.get(
     try {
       const staff = await Staff.findById(req.params.staffId);
       if (!staff) {
-        return res.status(404).json({ error: 'Staff not found' });
+        return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
       }
 
       const skip = parseInt(req.query.skip) || 0;

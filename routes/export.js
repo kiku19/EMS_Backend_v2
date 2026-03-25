@@ -42,6 +42,16 @@ import SchoolSettings from '../models/SchoolSettings.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 
 const router = express.Router();
+
+// Timezone-safe date formatter: converts "YYYY-MM-DD" or full ISO string to "DD/MM/YYYY"
+// Using string manipulation avoids new Date() UTC-shift that can display wrong day
+const formatDateSafe = (dateStr) => {
+  if (!dateStr) return '';
+  const d = String(dateStr).split('T')[0]; // strip time component if present
+  const parts = d.split('-');
+  if (parts.length !== 3) return dateStr;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+};
 router.use(authenticate);
 
 function toOid(id) {
@@ -878,7 +888,7 @@ router.get(
           srNo: idx + 1,
           admissionId: s.admissionId || '',
           name: s.name || '',
-          dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString('en-IN') : '',
+          dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
           gender: s.gender || '',
           category: s.category || 'General',
           aadhaar: s.aadhaarNumber || '',
@@ -942,7 +952,7 @@ router.get(
         srNo: idx + 1,
         admissionId: s.admissionId || '',
         name: s.name || '',
-        dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString('en-IN') : '',
+        dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
         gender: (s.gender || '').charAt(0).toUpperCase() || '',
         category: s.category || 'General',
         aadhaar: s.aadhaarNumber || '',
@@ -1005,7 +1015,7 @@ router.get(
         srNo: idx + 1,
         admissionId: s.admissionId || '',
         name: s.name || '',
-        dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString('en-IN') : '',
+        dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
         gender: s.gender || '',
         category: s.category || 'General',
         aadhaar: s.aadhaarNumber || '',

@@ -6,6 +6,7 @@ import FeeHead from '../models/FeeHead.js';
 import BackupRecord from '../models/BackupRecord.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 const createBackupSchema = z.object({
   label: z.string().max(100).trim().optional().default(''),
@@ -13,7 +14,7 @@ const createBackupSchema = z.object({
 
 const restoreBackupSchema = z.object({
   confirmText: z.string().refine((v) => v === 'RESTORE', {
-    message: "Type 'RESTORE' to confirm the restore operation",
+    message: 'Type RESTORE to confirm the restore operation',
   }),
 });
 
@@ -21,7 +22,9 @@ const restoreBackupSchema = z.object({
 router.post('/create', authenticate, async (req, res) => {
   const parsed = createBackupSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    return res
+      .status(400)
+      .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
   }
 
   const { label } = parsed.data;
@@ -75,7 +78,7 @@ router.post('/create', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating backup:', error);
-    res.status(500).json({ error: 'Failed to create backup' });
+    res.status(500).json({ error: req.t('common:routes.failedToCreateBackup') });
   }
 });
 
@@ -93,7 +96,7 @@ router.get('/list', authenticate, async (req, res) => {
     res.json({ success: true, backups });
   } catch (error) {
     console.error('Error listing backups:', error);
-    res.status(500).json({ error: 'Failed to list backups' });
+    res.status(500).json({ error: req.t('common:routes.failedToListBackups') });
   }
 });
 
@@ -102,7 +105,7 @@ router.get('/:id/download', authenticate, async (req, res) => {
   const schoolId = req.user.schoolId;
   try {
     const backup = await BackupRecord.findOne({ _id: req.params.id, schoolId }).lean();
-    if (!backup) return res.status(404).json({ error: 'Backup not found' });
+    if (!backup) return res.status(404).json({ error: req.t('common:routes.backupNotFound') });
 
     const dateStr = new Date(backup.createdAt).toISOString().split('T')[0];
     const slug = (backup.label || 'school').replace(/[^a-z0-9]/gi, '_').toLowerCase();
@@ -113,7 +116,7 @@ router.get('/:id/download', authenticate, async (req, res) => {
     res.send(JSON.stringify(backup.data, null, 2));
   } catch (error) {
     console.error('Error downloading backup:', error);
-    res.status(500).json({ error: 'Failed to download backup' });
+    res.status(500).json({ error: req.t('common:routes.failedToDownloadBackup') });
   }
 });
 
@@ -121,13 +124,15 @@ router.get('/:id/download', authenticate, async (req, res) => {
 router.post('/:id/restore', authenticate, async (req, res) => {
   const parsed = restoreBackupSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    return res
+      .status(400)
+      .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
   }
 
   const schoolId = req.user.schoolId;
   try {
     const backup = await BackupRecord.findOne({ _id: req.params.id, schoolId }).lean();
-    if (!backup) return res.status(404).json({ error: 'Backup not found' });
+    if (!backup) return res.status(404).json({ error: req.t('common:routes.backupNotFound') });
 
     const { collections } = backup.data;
     const restored = {};
@@ -172,7 +177,7 @@ router.post('/:id/restore', authenticate, async (req, res) => {
     res.json({ success: true, restored });
   } catch (error) {
     console.error('Error restoring backup:', error);
-    res.status(500).json({ error: 'Failed to restore backup' });
+    res.status(500).json({ error: req.t('common:routes.failedToRestoreBackup') });
   }
 });
 
@@ -193,7 +198,7 @@ router.get('/schedule', authenticate, async (req, res) => {
     res.json({ success: true, schedule: settings?.backupSchedule || {} });
   } catch (error) {
     console.error('Error fetching backup schedule:', error);
-    res.status(500).json({ error: 'Failed to fetch backup schedule' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchBackupSchedule') });
   }
 });
 
@@ -201,7 +206,9 @@ router.get('/schedule', authenticate, async (req, res) => {
 router.put('/schedule', authenticate, async (req, res) => {
   const parsed = backupScheduleSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    return res
+      .status(400)
+      .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
   }
 
   const schoolId = req.user.schoolId;
@@ -214,7 +221,7 @@ router.put('/schedule', authenticate, async (req, res) => {
     res.json({ success: true, schedule: settings.backupSchedule });
   } catch (error) {
     console.error('Error saving backup schedule:', error);
-    res.status(500).json({ error: 'Failed to save backup schedule' });
+    res.status(500).json({ error: req.t('common:routes.failedToSaveBackupSchedule') });
   }
 });
 
@@ -223,11 +230,11 @@ router.delete('/:id', authenticate, async (req, res) => {
   const schoolId = req.user.schoolId;
   try {
     const backup = await BackupRecord.findOneAndDelete({ _id: req.params.id, schoolId });
-    if (!backup) return res.status(404).json({ error: 'Backup not found' });
+    if (!backup) return res.status(404).json({ error: req.t('common:routes.backupNotFound') });
     res.json({ success: true });
   } catch (error) {
     console.error('Error deleting backup:', error);
-    res.status(500).json({ error: 'Failed to delete backup' });
+    res.status(500).json({ error: req.t('common:routes.failedToDeleteBackup') });
   }
 });
 

@@ -15,11 +15,12 @@ function scopeBySchool(schoolId, query = {}) {
 
 async function resolveRequestSchoolId(req) {
   const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
-  if (!schoolId) throw new Error('School context required');
+  if (!schoolId) throw new Error(req.t('common:errors.unauthorized'));
   return schoolId;
 }
 
 const router = express.Router();
+router.use(authenticate);
 
 // Middleware to attach Staff model to req.app.locals if not already there
 router.use((req, res, next) => {

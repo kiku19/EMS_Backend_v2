@@ -9,6 +9,7 @@ import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js'
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -413,12 +414,10 @@ router.post(
     } catch (error) {
       console.error('Error confirming exam schedule:', error);
       if (error.code === 11000) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'An exam with this name already exists for one of the selected classes. Please use a different schedule name.',
-          });
+        return res.status(409).json({
+          error:
+            'An exam with this name already exists for one of the selected classes. Please use a different schedule name.',
+        });
       }
       res.status(500).json({ error: 'An internal error occurred. Please try again.' });
     }

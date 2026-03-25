@@ -33,6 +33,7 @@ import agenda from '../config/agenda.js';
 import { piiMatch } from '../utils/encryption.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('BulkImport');
 
 // In-memory storage — files are NOT saved to disk
@@ -219,7 +220,7 @@ async function finalizeImportJob(job, results) {
 router.get('/history', authenticate, async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const { type, limit = 20, page = 1 } = req.query;
     const filter = { schoolId };
@@ -352,7 +353,7 @@ router.post(
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const dryRun = req.query.dryRun === 'true';
     const results = { imported: 0, skipped: 0, failed: [], rows: [] };
@@ -573,7 +574,7 @@ router.post(
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const dryRun = req.query.dryRun === 'true';
     const results = { imported: 0, skipped: 0, failed: [], rows: [] };
@@ -727,7 +728,7 @@ router.post(
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const dryRun = req.query.dryRun === 'true';
     const results = { imported: 0, skipped: 0, failed: [], rows: [] };
@@ -905,7 +906,7 @@ router.post(
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const dryRun = req.query.dryRun === 'true';
     const results = { imported: 0, skipped: 0, failed: [], rows: [] };
@@ -1038,7 +1039,7 @@ router.post(
     }
 
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const dryRun = req.query.dryRun === 'true';
     const examId = req.params.examId;
@@ -1178,7 +1179,7 @@ router.post(
   checkPermission('students', 'delete'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
     const { ids, type } = req.body;
 
@@ -1221,7 +1222,7 @@ router.post(
 // POST /bulk-import/bulk-notify — send SMS or push notification to multiple students/parents
 router.post('/bulk-notify', authenticate, checkPermission('students', 'read'), async (req, res) => {
   const schoolId = extractSchoolId(req.user?.schoolId);
-  if (!schoolId) return res.status(400).json({ error: 'School context missing' });
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
   const { studentIds, classIds, message, channel } = req.body;
 

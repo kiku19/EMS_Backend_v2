@@ -21,7 +21,9 @@ router.post('/initiate', async (req, res) => {
     const user = req.user;
 
     if (!to || !callType) {
-      return res.status(400).json({ error: 'Recipient and call type are required' });
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.recipientAndCallTypeAreRequired') });
     }
 
     // Create call record
@@ -61,7 +63,7 @@ router.post('/initiate', async (req, res) => {
     res.json(call);
   } catch (error) {
     console.error('Error initiating call:', error);
-    res.status(500).json({ error: 'Failed to initiate call' });
+    res.status(500).json({ error: req.t('common:routes.failedToInitiateCall') });
   }
 });
 
@@ -73,7 +75,7 @@ router.post('/:id/accept', async (req, res) => {
     );
 
     if (!call) {
-      return res.status(404).json({ error: 'Call not found' });
+      return res.status(404).json({ error: req.t('common:routes.callNotFound') });
     }
 
     const user = req.user;
@@ -98,7 +100,7 @@ router.post('/:id/accept', async (req, res) => {
     res.json(call);
   } catch (error) {
     console.error('Error accepting call:', error);
-    res.status(500).json({ error: 'Failed to accept call' });
+    res.status(500).json({ error: req.t('common:routes.failedToAcceptCall') });
   }
 });
 
@@ -110,7 +112,7 @@ router.post('/:id/reject', async (req, res) => {
     );
 
     if (!call) {
-      return res.status(404).json({ error: 'Call not found' });
+      return res.status(404).json({ error: req.t('common:routes.callNotFound') });
     }
 
     const user = req.user;
@@ -131,7 +133,7 @@ router.post('/:id/reject', async (req, res) => {
     res.json(call);
   } catch (error) {
     console.error('Error rejecting call:', error);
-    res.status(500).json({ error: 'Failed to reject call' });
+    res.status(500).json({ error: req.t('common:routes.failedToRejectCall') });
   }
 });
 
@@ -143,7 +145,7 @@ router.post('/:id/end', async (req, res) => {
     );
 
     if (!call) {
-      return res.status(404).json({ error: 'Call not found' });
+      return res.status(404).json({ error: req.t('common:routes.callNotFound') });
     }
 
     const user = req.user;
@@ -176,7 +178,7 @@ router.post('/:id/end', async (req, res) => {
     res.json(call);
   } catch (error) {
     console.error('Error ending call:', error);
-    res.status(500).json({ error: 'Failed to end call' });
+    res.status(500).json({ error: req.t('common:routes.failedToEndCall') });
   }
 });
 
@@ -197,7 +199,7 @@ router.get('/history/me', async (req, res) => {
     res.json(calls);
   } catch (error) {
     console.error('Error fetching call history:', error);
-    res.status(500).json({ error: 'Failed to fetch call history' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchCallHistory') });
   }
 });
 
@@ -218,7 +220,7 @@ router.get('/missed/me', async (req, res) => {
     res.json(missedCalls);
   } catch (error) {
     console.error('Error fetching missed calls:', error);
-    res.status(500).json({ error: 'Failed to fetch missed calls' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchMissedCalls') });
   }
 });
 

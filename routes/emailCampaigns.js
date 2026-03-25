@@ -357,6 +357,52 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// GET /email-campaigns/:id/preview-html — EMAIL-05: Return rendered HTML body for preview
+router.get('/:id/preview-html', async (req, res) => {
+  try {
+    const campaign = await EmailCampaign.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    ).lean();
+    if (!campaign) {
+      return res.status(404).json({ error: 'Email campaign not found' });
+    }
+
+    // Wrap the stored htmlBody in a minimal preview envelope so the browser
+    // renders it correctly when injected into an iframe via srcdoc.
+    const htmlBody = campaign.htmlBody || campaign.body || '';
+    const preview = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Email Preview — ${campaign.subject || 'Campaign'}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 24px; }
+    .preview-wrapper { max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+    .preview-header { background: #4f46e5; color: #fff; padding: 16px 24px; font-size: 13px; }
+    .preview-body { padding: 24px; }
+  </style>
+</head>
+<body>
+  <div class="preview-wrapper">
+    <div class="preview-header">
+      <strong>Subject:</strong> ${campaign.subject || '(no subject)'}<br/>
+      <strong>From:</strong> ${campaign.senderName || 'School'} &lt;${campaign.senderEmail || 'no-reply@school.com'}&gt;
+    </div>
+    <div class="preview-body">${htmlBody}</div>
+  </div>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.send(preview);
+  } catch (error) {
+    console.error('Error generating email preview:', error);
+    res.status(500).json({ error: 'Failed to generate email preview' });
+  }
+});
+
 // POST /email-campaigns/:id/preview-recipients — Preview recipients without sending
 router.post('/:id/preview-recipients', async (req, res) => {
   try {
@@ -512,5 +558,41 @@ async function sendCampaignEmails(campaignId, recipients, subject, htmlBody, tex
   campaign.completedAt = new Date();
   await campaign.save();
 }
+
+// POST /email-campaigns/:id/test — Send a test email to a single address
+router.post('/:id/test', async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    const campaign = await EmailCampaign.findOne(
+      scopeBySchool(schoolId, { _id: req.params.id })
+    ).lean();
+
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const testEmail = req.body?.email;
+    if (!testEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(testEmail)) {
+      return res.status(400).json({ error: 'A valid test email address is required' });
+    }
+
+    const personalHtml = campaign.htmlBody
+      .replace(/\{\{parentName\}\}/g, 'Test Parent')
+      .replace(/\{\{studentName\}\}/g, 'Test Student');
+
+    await sendEmail({
+      to: testEmail,
+      subject: `[TEST] ${campaign.subject}`,
+      html: personalHtml,
+      text: campaign.textBody || undefined,
+      schoolId,
+    });
+
+    res.json({ success: true, message: `Test email sent to ${testEmail}` });
+  } catch (err) {
+    console.error('[EmailCampaigns] Test send error:', err);
+    res.status(500).json({ error: err.message || 'Failed to send test email' });
+  }
+});
 
 export default router;

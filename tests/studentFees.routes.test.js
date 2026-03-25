@@ -894,8 +894,8 @@ describe('GET /api/student-fees/defaulters', () => {
 
     const res = await request(app).get('/api/student-fees/defaulters').set(authHeaders).expect(200);
 
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body).toHaveLength(0);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data).toHaveLength(0);
   });
 
   it('returns students with pending or partial status and positive balance', async () => {
@@ -971,11 +971,11 @@ describe('GET /api/student-fees/defaulters', () => {
 
     const res = await request(app).get('/api/student-fees/defaulters').set(authHeaders).expect(200);
 
-    expect(res.body).toHaveLength(2);
+    expect(res.body.data).toHaveLength(2);
 
     // Sorted by totalBalance descending: studentA (5000) first, then studentB (3000)
-    expect(res.body[0].totalBalance).toBe(5000);
-    expect(res.body[1].totalBalance).toBe(3000);
+    expect(res.body.data[0].totalBalance).toBe(5000);
+    expect(res.body.data[1].totalBalance).toBe(3000);
   });
 
   it('multi-tenancy: defaulters are scoped by school', async () => {
@@ -1034,8 +1034,8 @@ describe('GET /api/student-fees/defaulters', () => {
     const res = await request(app).get('/api/student-fees/defaulters').set(authHeaders).expect(200);
 
     // School A accountant should only see School A's defaulter
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].totalBalance).toBe(5000);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].totalBalance).toBe(5000);
   });
 });
 

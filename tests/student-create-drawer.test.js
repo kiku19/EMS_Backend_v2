@@ -25,6 +25,7 @@ import {
   authHeadersFor,
 } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
+import { piiMatch } from '../utils/encryption.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -557,7 +558,7 @@ describe('Student Create Drawer — Parent Account Sync', () => {
       )
       .expect(201);
 
-    const parent = await Parent.findOne({ phone: uniquePhone }).lean();
+    const parent = await Parent.findOne(piiMatch('phone', uniquePhone)).lean();
     expect(parent).toBeTruthy();
     expect(parent.name).toBe('Auto Parent');
     expect(parent.children).toEqual(
@@ -608,7 +609,7 @@ describe('Student Create Drawer — Parent Account Sync', () => {
       .expect(201);
 
     // Only one parent account should exist
-    const parents = await Parent.find({ phone: sharedPhone }).lean();
+    const parents = await Parent.find(piiMatch('phone', sharedPhone)).lean();
     expect(parents).toHaveLength(1);
     // It should have 2 children linked
     expect(parents[0].children.length).toBeGreaterThanOrEqual(2);

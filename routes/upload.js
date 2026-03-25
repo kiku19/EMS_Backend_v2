@@ -8,6 +8,7 @@ import { incrementUsageMetric } from '../services/billingService.js';
 import { planLimitGate } from '../middleware/auth/planLimitGate.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('Upload');
 
 // Strict MIME type whitelist — only allow known safe document/image/audio/video types
@@ -56,7 +57,10 @@ const upload = multer({
 const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 50,
-  message: 'Too many file uploads, please try again later.',
+  message: (req) =>
+    req.t
+      ? req.t('common:routes.tooManyFileUploadsPleaseTryAgainLater')
+      : 'Too many file uploads. Please try again later.',
 });
 
 router.post(
@@ -68,7 +72,7 @@ router.post(
   async (req, res) => {
     try {
       if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
+        return res.status(400).json({ error: req.t('common:routes.noFileUploaded') });
       }
 
       // Determine Cloudinary resource type from MIME
@@ -89,7 +93,9 @@ router.post(
       );
 
       if (!isCloudinaryConfigured) {
-        return res.status(503).json({ error: 'File storage is not configured. Contact support.' });
+        return res
+          .status(503)
+          .json({ error: req.t('common:routes.fileStorageIsNotConfiguredContactSupport') });
       }
 
       const b64 = Buffer.from(req.file.buffer).toString('base64');
@@ -147,7 +153,7 @@ router.post(
         return res.status(400).json({ error: error.message });
       }
       logger.error({ err: error }, 'Upload error');
-      res.status(500).json({ error: 'Upload failed' });
+      res.status(500).json({ error: req.t('common:routes.uploadFailed') });
     }
   }
 );

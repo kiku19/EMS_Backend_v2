@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 /**
  * GET /api/class-settings/:id
@@ -13,33 +14,36 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
   try {
     const { id } = req.params;
 
-    const classData = await Class.findById(id).select('classTag assignedSubjects subjects name section');
-    
+    const classData = await Class.findById(id).select(
+      'classTag assignedSubjects subjects name section'
+    );
+
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: 'Class not found'
+        message: req.t('common:errors.classNotFound'),
       });
     }
 
     // Use subjects field if assignedSubjects is empty (backward compatibility)
-    const finalSubjects = classData.assignedSubjects && classData.assignedSubjects.length > 0 
-      ? classData.assignedSubjects 
-      : (classData.subjects || []);
+    const finalSubjects =
+      classData.assignedSubjects && classData.assignedSubjects.length > 0
+        ? classData.assignedSubjects
+        : classData.subjects || [];
 
     res.json({
       success: true,
       classTag: classData.classTag || '',
       assignedSubjects: finalSubjects,
       subjects: finalSubjects,
-      className: `${classData.name} ${classData.section}`
+      className: `${classData.name} ${classData.section}`,
     });
   } catch (error) {
     console.error('Error fetching class settings:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch class settings',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -57,7 +61,7 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
     if (classTag && typeof classTag !== 'string') {
       return res.status(400).json({
         success: false,
-        message: 'Class tag must be a string'
+        message: 'Class tag must be a string',
       });
     }
 
@@ -65,7 +69,7 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
     if (classTag && classTag.length > 50) {
       return res.status(400).json({
         success: false,
-        message: 'Class tag must be 50 characters or less'
+        message: 'Class tag must be 50 characters or less',
       });
     }
 
@@ -78,7 +82,7 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: 'Class not found'
+        message: req.t('common:errors.classNotFound'),
       });
     }
 
@@ -86,14 +90,14 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
       success: true,
       message: 'Class tag updated successfully',
       classTag: classData.classTag,
-      className: `${classData.name} ${classData.section}`
+      className: `${classData.name} ${classData.section}`,
     });
   } catch (error) {
     console.error('Error updating class tag:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update class tag',
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -111,15 +115,15 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
     if (!Array.isArray(subjects)) {
       return res.status(400).json({
         success: false,
-        message: 'Subjects must be an array'
+        message: 'Subjects must be an array',
       });
     }
 
     // Validate that all subjects are strings
-    if (!subjects.every(s => typeof s === 'string')) {
+    if (!subjects.every((s) => typeof s === 'string')) {
       return res.status(400).json({
         success: false,
-        message: 'All subjects must be strings'
+        message: 'All subjects must be strings',
       });
     }
 
@@ -127,7 +131,7 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
     if (subjects.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'At least one subject must be assigned'
+        message: 'At least one subject must be assigned',
       });
     }
 
@@ -135,9 +139,9 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
     // This fixes the issue where missing-subjects check uses 'subjects' field
     const classData = await Class.findByIdAndUpdate(
       id,
-      { 
+      {
         assignedSubjects: subjects,
-        subjects: subjects // Sync to subjects field for backward compatibility
+        subjects: subjects, // Sync to subjects field for backward compatibility
       },
       { new: true, runValidators: true }
     ).select('assignedSubjects subjects name section');
@@ -145,7 +149,7 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: 'Class not found'
+        message: req.t('common:errors.classNotFound'),
       });
     }
 
@@ -154,14 +158,14 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
       message: 'Subjects updated successfully',
       assignedSubjects: classData.assignedSubjects,
       subjects: classData.subjects,
-      className: `${classData.name} ${classData.section}`
+      className: `${classData.name} ${classData.section}`,
     });
   } catch (error) {
     console.error('Error updating subjects:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update subjects',
-      error: error.message
+      error: error.message,
     });
   }
 });

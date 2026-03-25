@@ -17,6 +17,82 @@ import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 
 const router = express.Router();
 
+// Public branding endpoint — no auth required, used on login page
+// Query: ?schoolCode=ABC or ?domain=school.example.com
+router.get('/public-branding', async (req, res) => {
+  try {
+    const { schoolCode, domain } = req.query;
+    if (!schoolCode && !domain) {
+      return res.status(400).json({ error: 'schoolCode or domain is required' });
+    }
+
+    let school = null;
+    if (domain) {
+      const normalizedDomain = domain.toLowerCase().trim();
+
+      // 1) Check per-school custom domain in SchoolSettings
+      const settings = await SchoolSettings.findOne({ customDomain: normalizedDomain })
+        .select('schoolId name logo primaryColor secondaryColor')
+        .lean();
+      if (settings) {
+        return res.json({
+          schoolName: settings.name,
+          logo: settings.logo || null,
+          primaryColor: settings.primaryColor || '#0d9488',
+          secondaryColor: settings.secondaryColor || '#134e4a',
+          source: 'school',
+        });
+      }
+
+      // 2) Check group-level white-label domain
+      const group = await SchoolGroup.findOne({
+        'whiteLabelSettings.customDomain': normalizedDomain,
+        'whiteLabelSettings.enabled': true,
+        'whiteLabelSettings.domainVerified': true,
+      })
+        .select('name whiteLabelSettings')
+        .lean();
+
+      if (group) {
+        const b = group.whiteLabelSettings?.branding || {};
+        return res.json({
+          schoolName: b.appName || group.name,
+          logo: b.logo || null,
+          favicon: b.favicon || null,
+          primaryColor: b.primaryColor || '#0d9488',
+          secondaryColor: b.secondaryColor || '#134e4a',
+          source: 'group',
+          groupId: group._id,
+        });
+      }
+
+      return res.status(404).json({ error: 'No school found for this domain' });
+    }
+
+    school = await School.findOne({ code: schoolCode.trim(), status: 'active' })
+      .select('_id name')
+      .lean();
+    if (!school) {
+      return res.status(404).json({ error: 'School not found' });
+    }
+
+    const settings = await SchoolSettings.findOne({ schoolId: school._id })
+      .select('name logo primaryColor secondaryColor')
+      .lean();
+
+    res.json({
+      schoolName: settings?.name || school.name,
+      logo: settings?.logo || null,
+      primaryColor: settings?.primaryColor || '#0d9488',
+      secondaryColor: settings?.secondaryColor || '#134e4a',
+    });
+  } catch (error) {
+    console.error('Error fetching public branding:', error);
+    res.status(500).json({ error: 'Failed to fetch branding' });
+  }
+});
+router.use(authenticate);
+
 const getSettingsQuery = (req) => buildSchoolScopedQuery(req.user?.schoolId);
 const findSchoolSettings = (req) => SchoolSettings.findOne(getSettingsQuery(req));
 
@@ -224,81 +300,6 @@ const BOARD_CONFIG_PRESETS = {
     gradingScale: DEFAULT_GRADING_SCALE,
   },
 };
-
-// Public branding endpoint — no auth required, used on login page
-// Query: ?schoolCode=ABC or ?domain=school.example.com
-router.get('/public-branding', async (req, res) => {
-  try {
-    const { schoolCode, domain } = req.query;
-    if (!schoolCode && !domain) {
-      return res.status(400).json({ error: 'schoolCode or domain is required' });
-    }
-
-    let school = null;
-    if (domain) {
-      const normalizedDomain = domain.toLowerCase().trim();
-
-      // 1) Check per-school custom domain in SchoolSettings
-      const settings = await SchoolSettings.findOne({ customDomain: normalizedDomain })
-        .select('schoolId name logo primaryColor secondaryColor')
-        .lean();
-      if (settings) {
-        return res.json({
-          schoolName: settings.name,
-          logo: settings.logo || null,
-          primaryColor: settings.primaryColor || '#0d9488',
-          secondaryColor: settings.secondaryColor || '#134e4a',
-          source: 'school',
-        });
-      }
-
-      // 2) Check group-level white-label domain
-      const group = await SchoolGroup.findOne({
-        'whiteLabelSettings.customDomain': normalizedDomain,
-        'whiteLabelSettings.enabled': true,
-        'whiteLabelSettings.domainVerified': true,
-      })
-        .select('name whiteLabelSettings')
-        .lean();
-
-      if (group) {
-        const b = group.whiteLabelSettings?.branding || {};
-        return res.json({
-          schoolName: b.appName || group.name,
-          logo: b.logo || null,
-          favicon: b.favicon || null,
-          primaryColor: b.primaryColor || '#0d9488',
-          secondaryColor: b.secondaryColor || '#134e4a',
-          source: 'group',
-          groupId: group._id,
-        });
-      }
-
-      return res.status(404).json({ error: 'No school found for this domain' });
-    }
-
-    school = await School.findOne({ code: schoolCode.trim(), status: 'active' })
-      .select('_id name')
-      .lean();
-    if (!school) {
-      return res.status(404).json({ error: 'School not found' });
-    }
-
-    const settings = await SchoolSettings.findOne({ schoolId: school._id })
-      .select('name logo primaryColor secondaryColor')
-      .lean();
-
-    res.json({
-      schoolName: settings?.name || school.name,
-      logo: settings?.logo || null,
-      primaryColor: settings?.primaryColor || '#0d9488',
-      secondaryColor: settings?.secondaryColor || '#134e4a',
-    });
-  } catch (error) {
-    console.error('Error fetching public branding:', error);
-    res.status(500).json({ error: 'Failed to fetch branding' });
-  }
-});
 
 // Get school settings
 router.get('/school', authenticate, async (req, res) => {

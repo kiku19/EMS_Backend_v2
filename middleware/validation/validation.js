@@ -769,7 +769,7 @@ export function validate(schema, source = 'body') {
 
       return res.status(400).json({
         success: false,
-        error: 'Validation failed',
+        error: req.t ? req.t('common:errors.validationError') : 'Validation failed',
         statusCode: 400,
         details: errors,
       });
@@ -1281,10 +1281,10 @@ export const zodSchemas = {
     teacherId: objectId,
     dueDate: z
       .string()
-      .min(1, 'Due date is required')
       .refine((val) => !isNaN(new Date(val).getTime()), {
         message: 'Invalid due date format. Use YYYY-MM-DD or ISO format.',
-      }),
+      })
+      .optional(),
     attachments: z
       .array(
         z.object({
@@ -1557,7 +1557,7 @@ export function validateZod(schema, source = 'body') {
 
       return res.status(400).json({
         success: false,
-        error: 'Validation failed',
+        error: req.t ? req.t('common:errors.validationError') : 'Validation failed',
         statusCode: 400,
         details: errors,
       });

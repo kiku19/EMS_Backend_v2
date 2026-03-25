@@ -7,6 +7,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -74,7 +75,7 @@ function validateBody(schema) {
     const result = schema.safeParse(req.body);
     if (!result.success) {
       return res.status(400).json({
-        error: 'Validation failed',
+        error: req.t('common:routes.validationFailed'),
         details: result.error.flatten().fieldErrors,
       });
     }
@@ -133,7 +134,7 @@ router.post(
       if (existing) {
         return res
           .status(409)
-          .json({ error: 'A vehicle with this registration number already exists.' });
+          .json({ error: req.t('common:routes.aVehicleWithThisRegistrationNumberAlreadyExists') });
       }
 
       const vehicle = new Vehicle({ ...data, schoolId: req.user.schoolId });
@@ -160,7 +161,7 @@ router.get(
         schoolId: req.user.schoolId,
         isDeleted: { $ne: true },
       });
-      if (!vehicle) return res.status(404).json({ error: 'Vehicle not found.' });
+      if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
       res.json({ data: vehicle });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -191,7 +192,9 @@ router.put(
         if (conflict) {
           return res
             .status(409)
-            .json({ error: 'Another vehicle with this registration number already exists.' });
+            .json({
+              error: req.t('common:routes.anotherVehicleWithThisRegistrationNumberAlreadyExists'),
+            });
         }
       }
 
@@ -200,7 +203,7 @@ router.put(
         { $set: data },
         { new: true }
       );
-      if (!vehicle) return res.status(404).json({ error: 'Vehicle not found.' });
+      if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
       res.json({ data: vehicle });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -223,8 +226,8 @@ router.delete(
         { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: req.user.id } },
         { new: true }
       );
-      if (!vehicle) return res.status(404).json({ error: 'Vehicle not found.' });
-      res.json({ message: 'Vehicle deleted successfully.' });
+      if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
+      res.json({ message: req.t('common:routes.vehicleDeletedSuccessfully') });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -239,7 +242,7 @@ router.patch('/vehicles/:id/gps', authenticate, async (req, res) => {
   try {
     const { lat, lng } = req.body;
     if (typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).json({ error: 'lat and lng are required numbers.' });
+      return res.status(400).json({ error: req.t('common:routes.latAndLngAreRequiredNumbers') });
     }
 
     const vehicle = await Vehicle.findOneAndUpdate(
@@ -247,7 +250,7 @@ router.patch('/vehicles/:id/gps', authenticate, async (req, res) => {
       { $set: { lastLocation: { lat, lng }, lastGpsUpdate: new Date() } },
       { new: true }
     );
-    if (!vehicle) return res.status(404).json({ error: 'Vehicle not found.' });
+    if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
     res.json({
       data: { lastLocation: vehicle.lastLocation, lastGpsUpdate: vehicle.lastGpsUpdate },
     });
@@ -309,7 +312,9 @@ router.post(
       if (existing) {
         return res
           .status(409)
-          .json({ error: 'A route with this route number already exists for the academic year.' });
+          .json({
+            error: req.t('common:routes.aRouteWithThisRouteNumberAlreadyExistsForTheAcademicYear'),
+          });
       }
 
       const route = new TransportRoute({ ...data, schoolId: req.user.schoolId, students: [] });
@@ -338,7 +343,7 @@ router.get('/routes/:id', authenticate, checkPermission('transport', 'view'), as
       )
       .populate('students.studentId', 'name admissionId rollNo classId');
 
-    if (!route) return res.status(404).json({ error: 'Route not found.' });
+    if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
     res.json({ data: route });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -364,7 +369,7 @@ router.put(
           schoolId: req.user.schoolId,
           isDeleted: { $ne: true },
         });
-        if (!current) return res.status(404).json({ error: 'Route not found.' });
+        if (!current) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
 
         const conflict = await TransportRoute.findOne({
           schoolId: req.user.schoolId,
@@ -374,11 +379,11 @@ router.put(
           _id: { $ne: req.params.id },
         });
         if (conflict) {
-          return res
-            .status(409)
-            .json({
-              error: 'Another route with this route number already exists for the academic year.',
-            });
+          return res.status(409).json({
+            error: req.t(
+              'common:routes.anotherRouteWithThisRouteNumberAlreadyExistsForTheAcademicYear'
+            ),
+          });
         }
       }
 
@@ -388,7 +393,7 @@ router.put(
         { new: true }
       ).populate('vehicleId', 'registrationNumber make model capacity driver conductor');
 
-      if (!route) return res.status(404).json({ error: 'Route not found.' });
+      if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
       res.json({ data: route });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -411,8 +416,8 @@ router.delete(
         { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: req.user.id } },
         { new: true }
       );
-      if (!route) return res.status(404).json({ error: 'Route not found.' });
-      res.json({ message: 'Route deleted successfully.' });
+      if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
+      res.json({ message: req.t('common:routes.routeDeletedSuccessfully') });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -439,7 +444,7 @@ router.post(
         schoolId: req.user.schoolId,
         isDeleted: { $ne: true },
       });
-      if (!route) return res.status(404).json({ error: 'Route not found.' });
+      if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
 
       // Verify student belongs to this school
       const student = await Student.findOne({
@@ -447,12 +452,14 @@ router.post(
         schoolId: req.user.schoolId,
         isDeleted: { $ne: true },
       });
-      if (!student) return res.status(404).json({ error: 'Student not found.' });
+      if (!student) return res.status(404).json({ error: req.t('common:routes.studentNotFound') });
 
       // Check if already assigned
       const alreadyAssigned = route.students.some((s) => s.studentId.toString() === studentId);
       if (alreadyAssigned) {
-        return res.status(409).json({ error: 'Student is already assigned to this route.' });
+        return res
+          .status(409)
+          .json({ error: req.t('common:routes.studentIsAlreadyAssignedToThisRoute') });
       }
 
       route.students.push({ studentId, stopId, pickupActive, dropActive });
@@ -468,7 +475,7 @@ router.post(
       }
 
       res.json({
-        message: 'Student assigned to route.',
+        message: req.t('common:routes.studentAssignedToRoute'),
         data: route.students,
         ...(capacityWarning && { warning: capacityWarning }),
       });
@@ -493,7 +500,7 @@ router.delete(
         schoolId: req.user.schoolId,
         isDeleted: { $ne: true },
       });
-      if (!route) return res.status(404).json({ error: 'Route not found.' });
+      if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
 
       const before = route.students.length;
       route.students = route.students.filter(
@@ -501,11 +508,13 @@ router.delete(
       );
 
       if (route.students.length === before) {
-        return res.status(404).json({ error: 'Student is not assigned to this route.' });
+        return res
+          .status(404)
+          .json({ error: req.t('common:routes.studentIsNotAssignedToThisRoute') });
       }
 
       await route.save();
-      res.json({ message: 'Student removed from route.' });
+      res.json({ message: req.t('common:routes.studentRemovedFromRoute') });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

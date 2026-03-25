@@ -87,6 +87,7 @@ export default function piiPlugin(schema, options = {}) {
   schema.pre('updateMany', encryptUpdatePayload);
 
   // ── Post hooks: decrypt after read ────────────────────────────────────────
+  schema.post('save', decryptDocument);
   schema.post('init', decryptDocument);
   schema.post('find', (docs) => {
     if (Array.isArray(docs)) docs.forEach(decryptDocument);

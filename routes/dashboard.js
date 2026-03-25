@@ -59,6 +59,7 @@ import { extractSchoolId } from '../utils/schoolContext.js';
 import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('Dashboard');
 
 const querySchema = z.object({
@@ -84,12 +85,15 @@ router.get('/stats', authenticate, async (req, res) => {
     if (!parsed.success) {
       return res
         .status(400)
-        .json({ error: 'Invalid query parameters', details: parsed.error.errors });
+        .json({
+          error: req.t('common:routes.invalidQueryParameters'),
+          details: parsed.error.errors,
+        });
     }
 
     const schoolId = extractSchoolId(req.user?.schoolId);
     if (!schoolId) {
-      return res.status(400).json({ error: 'schoolId is required' });
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
     }
 
     const { academicYear } = parsed.data;
@@ -296,7 +300,7 @@ router.get('/stats', authenticate, async (req, res) => {
     });
   } catch (error) {
     logger.error('Dashboard stats error', { error: error.message });
-    return res.status(500).json({ error: 'Failed to load dashboard statistics' });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
   }
 });
 

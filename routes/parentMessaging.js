@@ -54,7 +54,10 @@ const chatUpload = multer({
 const chatUploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 30,
-  message: 'Too many uploads, please try again later.',
+  message: (req) =>
+    req.t
+      ? req.t('common:routes.tooManyUploadsPleaseTryAgainLater')
+      : 'Too many uploads. Please try again later.',
 });
 
 const router = express.Router();
@@ -73,7 +76,7 @@ router.post(
       if (!req.file) {
         return res.status(400).json({
           success: false,
-          error: { code: 'NO_FILE', message: 'No file uploaded' },
+          error: { code: 'NO_FILE', message: req.t('common:routes.noFileUploaded') },
         });
       }
 
@@ -88,7 +91,7 @@ router.post(
           success: false,
           error: {
             code: 'STORAGE_NOT_CONFIGURED',
-            message: 'File storage is not configured. Contact support.',
+            message: req.t('common:routes.fileStorageIsNotConfiguredContactSupport'),
           },
         });
       }
@@ -124,7 +127,7 @@ router.post(
       console.error('❌ Parent chat upload error:', error);
       res.status(500).json({
         success: false,
-        error: { code: 'SERVER_ERROR', message: 'Upload failed' },
+        error: { code: 'SERVER_ERROR', message: req.t('common:routes.uploadFailed') },
       });
     }
   }
@@ -220,7 +223,7 @@ router.get('/conversations', authenticateParent, async (req, res) => {
       success: false,
       error: {
         code: 'SERVER_ERROR',
-        message: 'Failed to fetch conversations',
+        message: req.t('common:routes.failedToFetchConversations'),
       },
     });
   }
@@ -248,7 +251,7 @@ router.get('/:id/messages', authenticateParent, async (req, res) => {
         success: false,
         error: {
           code: 'CONVERSATION_NOT_FOUND',
-          message: 'Conversation not found',
+          message: req.t('common:routes.conversationNotFound'),
         },
       });
     }
@@ -262,7 +265,7 @@ router.get('/:id/messages', authenticateParent, async (req, res) => {
         success: false,
         error: {
           code: 'ACCESS_DENIED',
-          message: 'You do not have access to this conversation',
+          message: req.t('common:routes.youDoNotHaveAccessToThisConversation'),
         },
       });
     }
@@ -331,7 +334,7 @@ router.get('/:id/messages', authenticateParent, async (req, res) => {
       success: false,
       error: {
         code: 'SERVER_ERROR',
-        message: 'Failed to fetch messages',
+        message: req.t('common:routes.failedToFetchMessages'),
       },
     });
   }
@@ -377,7 +380,7 @@ router.post('/', authenticateParent, async (req, res) => {
           success: false,
           error: {
             code: 'CONVERSATION_NOT_FOUND',
-            message: 'Conversation not found',
+            message: req.t('common:routes.conversationNotFound'),
           },
         });
       }
@@ -391,7 +394,7 @@ router.post('/', authenticateParent, async (req, res) => {
           success: false,
           error: {
             code: 'ACCESS_DENIED',
-            message: 'You do not have access to this conversation',
+            message: req.t('common:routes.youDoNotHaveAccessToThisConversation'),
           },
         });
       }
@@ -402,7 +405,7 @@ router.post('/', authenticateParent, async (req, res) => {
           success: false,
           error: {
             code: 'MISSING_RECEIVER',
-            message: 'Receiver information is required for new conversation',
+            message: req.t('common:routes.receiverInformationIsRequiredForNewConversation'),
           },
         });
       }
@@ -417,7 +420,7 @@ router.post('/', authenticateParent, async (req, res) => {
           success: false,
           error: {
             code: 'RECEIVER_NOT_FOUND',
-            message: 'Receiver not found',
+            message: req.t('common:routes.receiverNotFound'),
           },
         });
       }
@@ -466,13 +469,14 @@ router.post('/', authenticateParent, async (req, res) => {
         success: false,
         error: {
           code: 'INVALID_CONVERSATION',
-          message: 'Conversation must have at least 2 participants',
+          message: req.t('common:routes.conversationMustHaveAtLeast2Participants'),
         },
       });
     }
 
     // Build message data
     const messageData = {
+      schoolId: req.schoolId,
       conversationId: conversation._id,
       senderId: parentId,
       senderModel: 'Parent',
@@ -551,7 +555,7 @@ router.post('/', authenticateParent, async (req, res) => {
       success: false,
       error: {
         code: 'SERVER_ERROR',
-        message: 'Failed to send message',
+        message: req.t('common:routes.failedToSendMessage'),
       },
     });
   }
@@ -577,7 +581,7 @@ router.put('/:id/read', authenticateParent, async (req, res) => {
         success: false,
         error: {
           code: 'CONVERSATION_NOT_FOUND',
-          message: 'Conversation not found',
+          message: req.t('common:routes.conversationNotFound'),
         },
       });
     }
@@ -591,7 +595,7 @@ router.put('/:id/read', authenticateParent, async (req, res) => {
         success: false,
         error: {
           code: 'ACCESS_DENIED',
-          message: 'You do not have access to this conversation',
+          message: req.t('common:routes.youDoNotHaveAccessToThisConversation'),
         },
       });
     }
@@ -614,7 +618,7 @@ router.put('/:id/read', authenticateParent, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Messages marked as read',
+      message: req.t('common:routes.messagesMarkedAsRead'),
     });
   } catch (error) {
     console.error('❌ Mark parent messages read error:', error);
@@ -622,7 +626,7 @@ router.put('/:id/read', authenticateParent, async (req, res) => {
       success: false,
       error: {
         code: 'SERVER_ERROR',
-        message: 'Failed to mark messages as read',
+        message: req.t('common:routes.failedToMarkMessagesAsRead'),
       },
     });
   }
@@ -650,14 +654,17 @@ router.put('/:messageId', authenticateParent, async (req, res) => {
     if (!message) {
       return res.status(404).json({
         success: false,
-        error: { code: 'MESSAGE_NOT_FOUND', message: 'Message not found' },
+        error: { code: 'MESSAGE_NOT_FOUND', message: req.t('common:routes.messageNotFound') },
       });
     }
 
     if (message.senderId.toString() !== parentId.toString()) {
       return res.status(403).json({
         success: false,
-        error: { code: 'ACCESS_DENIED', message: 'You can only edit your own messages' },
+        error: {
+          code: 'ACCESS_DENIED',
+          message: req.t('common:routes.youCanOnlyEditYourOwnMessages'),
+        },
       });
     }
 
@@ -668,7 +675,10 @@ router.put('/:messageId', authenticateParent, async (req, res) => {
     if (!conversation) {
       return res.status(404).json({
         success: false,
-        error: { code: 'CONVERSATION_NOT_FOUND', message: 'Conversation not found' },
+        error: {
+          code: 'CONVERSATION_NOT_FOUND',
+          message: req.t('common:routes.conversationNotFound'),
+        },
       });
     }
 
@@ -678,7 +688,10 @@ router.put('/:messageId', authenticateParent, async (req, res) => {
     if (!isParticipant) {
       return res.status(403).json({
         success: false,
-        error: { code: 'ACCESS_DENIED', message: 'You do not have access to this conversation' },
+        error: {
+          code: 'ACCESS_DENIED',
+          message: req.t('common:routes.youDoNotHaveAccessToThisConversation'),
+        },
       });
     }
 
@@ -695,7 +708,7 @@ router.put('/:messageId', authenticateParent, async (req, res) => {
     console.error('❌ Edit parent message error:', error);
     res.status(500).json({
       success: false,
-      error: { code: 'SERVER_ERROR', message: 'Failed to edit message' },
+      error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToEditMessage') },
     });
   }
 });
@@ -713,14 +726,17 @@ router.delete('/:messageId', authenticateParent, async (req, res) => {
     if (!message) {
       return res.status(404).json({
         success: false,
-        error: { code: 'MESSAGE_NOT_FOUND', message: 'Message not found' },
+        error: { code: 'MESSAGE_NOT_FOUND', message: req.t('common:routes.messageNotFound') },
       });
     }
 
     if (message.senderId.toString() !== parentId.toString()) {
       return res.status(403).json({
         success: false,
-        error: { code: 'ACCESS_DENIED', message: 'You can only delete your own messages' },
+        error: {
+          code: 'ACCESS_DENIED',
+          message: req.t('common:routes.youCanOnlyDeleteYourOwnMessages'),
+        },
       });
     }
 
@@ -731,7 +747,10 @@ router.delete('/:messageId', authenticateParent, async (req, res) => {
     if (!conversation) {
       return res.status(404).json({
         success: false,
-        error: { code: 'CONVERSATION_NOT_FOUND', message: 'Conversation not found' },
+        error: {
+          code: 'CONVERSATION_NOT_FOUND',
+          message: req.t('common:routes.conversationNotFound'),
+        },
       });
     }
 
@@ -741,7 +760,10 @@ router.delete('/:messageId', authenticateParent, async (req, res) => {
     if (!isParticipant) {
       return res.status(403).json({
         success: false,
-        error: { code: 'ACCESS_DENIED', message: 'You do not have access to this conversation' },
+        error: {
+          code: 'ACCESS_DENIED',
+          message: req.t('common:routes.youDoNotHaveAccessToThisConversation'),
+        },
       });
     }
 
@@ -749,12 +771,12 @@ router.delete('/:messageId', authenticateParent, async (req, res) => {
     message.content = '';
     await message.save();
 
-    res.json({ success: true, message: 'Message deleted' });
+    res.json({ success: true, message: req.t('common:routes.messageDeleted') });
   } catch (error) {
     console.error('❌ Delete parent message error:', error);
     res.status(500).json({
       success: false,
-      error: { code: 'SERVER_ERROR', message: 'Failed to delete message' },
+      error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToDeleteMessage') },
     });
   }
 });

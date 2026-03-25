@@ -49,6 +49,7 @@ describe('intakeForms routes', () => {
 
     it('returns existing forms', async () => {
       await IntakeForm.create({
+        schoolId: school._id,
         formName: 'Student Intake',
         formType: 'student',
         status: 'active',
@@ -62,8 +63,18 @@ describe('intakeForms routes', () => {
     });
 
     it('filters by type query param', async () => {
-      await IntakeForm.create({ formName: 'Student Form', formType: 'student', fields: [] });
-      await IntakeForm.create({ formName: 'Staff Form', formType: 'staff', fields: [] });
+      await IntakeForm.create({
+        schoolId: school._id,
+        formName: 'Student Form',
+        formType: 'student',
+        fields: [],
+      });
+      await IntakeForm.create({
+        schoolId: school._id,
+        formName: 'Staff Form',
+        formType: 'staff',
+        fields: [],
+      });
 
       const res = await request(app).get(`${BASE}?type=student`).set(headers).expect(200);
 
@@ -82,6 +93,7 @@ describe('intakeForms routes', () => {
 
     it('returns the form for a valid id', async () => {
       const form = await IntakeForm.create({
+        schoolId: school._id,
         formName: 'Lookup Form',
         formType: 'parent',
         fields: [],
@@ -126,6 +138,7 @@ describe('intakeForms routes', () => {
 
     it('updates an existing form', async () => {
       const form = await IntakeForm.create({
+        schoolId: school._id,
         formName: 'Old Name',
         formType: 'student',
         fields: [],
@@ -152,6 +165,7 @@ describe('intakeForms routes', () => {
 
     it('deletes an existing form', async () => {
       const form = await IntakeForm.create({
+        schoolId: school._id,
         formName: 'To Delete',
         formType: 'student',
         fields: [],

@@ -12,6 +12,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -188,7 +189,7 @@ router.post(
       if (!staff) {
         return res.status(404).json({
           success: false,
-          message: 'Staff not found',
+          message: req.t('common:errors.staffNotFound'),
         });
       }
 

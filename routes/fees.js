@@ -146,6 +146,7 @@ import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { getFeePaymentGateway } from '../services/paymentGateway/index.js';
 
 const router = express.Router();
+router.use(authenticate);
 const logger = createLogger('Fees');
 
 function scopeBySchool(schoolId, query = {}) {
@@ -489,8 +490,8 @@ router.post(
         Student.findOne(scopeBySchool(schoolId, { _id: studentId })),
         Class.findOne(scopeBySchool(schoolId, { _id: classId })),
       ]);
-      if (!student) return res.status(400).json({ error: 'Student not found' });
-      if (!classDoc) return res.status(400).json({ error: 'Class not found' });
+      if (!student) return res.status(400).json({ error: req.t('students:errors.notFound') });
+      if (!classDoc) return res.status(400).json({ error: req.t('common:errors.classNotFound') });
 
       if (originalPaymentId) {
         const payment = await FeePayment.findOne(

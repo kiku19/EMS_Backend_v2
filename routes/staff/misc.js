@@ -7,6 +7,7 @@ import { scopeBySchool, formatStaffResponse } from './helpers.js';
 import TeacherRating from '../../models/TeacherRating.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Fix 3.1: Add authenticate + schoolId scoping to /public
 router.get('/public', authenticate, async (req, res) => {
@@ -20,7 +21,7 @@ router.get('/public', authenticate, async (req, res) => {
     res.json(staff);
   } catch (error) {
     console.error('Error fetching public staff list:', error);
-    res.status(500).json({ error: 'Failed to fetch staff list' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchStaffList') });
   }
 });
 
@@ -59,14 +60,14 @@ router.get('/me', authenticate, async (req, res) => {
       scopeBySchool(req.user?.schoolId, { _id: req.user.id })
     ).populate('reporterId', 'name');
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     // Fix 3.21: Use formatStaffResponse for consistency
     res.json(formatStaffResponse(staff));
   } catch (error) {
     console.error('Error fetching own profile:', error);
-    res.status(500).json({ error: 'Failed to fetch profile' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchProfile') });
   }
 });
 
@@ -77,7 +78,7 @@ router.get('/:id/classes', authenticate, checkPermission('staff', 'view'), async
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     );
     if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
     const { role } = req.query;
@@ -182,7 +183,7 @@ router.get('/:id/classes', authenticate, checkPermission('staff', 'view'), async
     res.json(classDetails);
   } catch (error) {
     console.error('Error fetching staff classes:', error);
-    res.status(500).json({ error: 'Failed to fetch staff classes' });
+    res.status(500).json({ error: req.t('common:routes.failedToFetchStaffClasses') });
   }
 });
 
@@ -231,7 +232,7 @@ router.get('/:id/ratings', authenticate, checkPermission('staff', 'view'), async
     });
   } catch (error) {
     console.error('GET /staff/:id/ratings error:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch ratings' });
+    res.status(500).json({ success: false, error: req.t('common:routes.failedToFetchRatings') });
   }
 });
 

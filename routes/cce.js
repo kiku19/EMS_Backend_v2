@@ -8,6 +8,7 @@ import { extractSchoolId } from '../utils/schoolContext.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Standard CBSE CCE grading scale (default when no school config exists)
 export const DEFAULT_CCE_SCALE = [

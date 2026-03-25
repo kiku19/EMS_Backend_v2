@@ -220,7 +220,7 @@ router.get('/sms-stats', requireAdmin, async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     if (!schoolId) {
-      return res.status(400).json({ error: 'School context required' });
+      return res.status(400).json({ error: req.t('common:errors.unauthorized') });
     }
 
     const daysNum = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 30);

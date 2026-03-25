@@ -285,6 +285,7 @@ export async function seedStaff(schoolId, creatorId) {
       status: 'active',
       phone: randomPhone(),
       email: `${r.name.toLowerCase().replace(/\s+/g, '.')}@demo.school.in`,
+      username: `${r.name.toLowerCase().replace(/\s+/g, '.')}`,
       gender,
       dob: randomDate(1975, 1995),
       joinDate: randomDate(2018, 2025),
@@ -294,12 +295,7 @@ export async function seedStaff(schoolId, creatorId) {
       employmentType: i < 2 ? 'Permanent' : pick(['Permanent', 'Contract']),
       address: `${randomInt(1, 200)}, ${pick(STREETS)}, ${loc.city}`,
       password: hashedPassword,
-      salary: {
-        basic: randomInt(25000, 60000),
-        hra: randomInt(5000, 15000),
-        da: randomInt(3000, 8000),
-        ta: randomInt(2000, 5000),
-      },
+      salary: randomInt(25000, 60000),
     });
   }
 
@@ -760,17 +756,18 @@ export async function seedFrontDesk(schoolId, staffIds) {
     const gender = Math.random() > 0.5 ? 'Male' : 'Female';
     visitors.push({
       schoolId,
-      name: randomName(gender),
-      phone: randomPhone(),
-      purpose: pick([
-        'Parent Meeting',
-        'Admission Inquiry',
-        'Document Submission',
-        'Fee Payment',
-        'General Visit',
+      visitorName: randomName(gender),
+      phoneNumber: randomPhone(),
+      reasonForVisit: pick([
+        'PARENT_MEETING',
+        'SCHOOL_VISIT_INQUIRY',
+        'DELIVERY_VENDOR',
+        'OFFICIAL_BUSINESS',
+        'OTHER',
       ]),
+      checkedInBy: staffIds[randomInt(0, staffIds.length - 1)],
       toMeet: staffIds[randomInt(0, staffIds.length - 1)],
-      status: pick(['checked-in', 'checked-out', 'scheduled']),
+      status: pick(['ACTIVE', 'CHECKED_OUT']),
       checkInTime: new Date(),
       idType: pick(['Aadhaar', 'PAN', 'Driving License']),
       idNumber: randomAadhaar().slice(0, 10),
@@ -1023,7 +1020,9 @@ router.post(
     try {
       const schoolId = extractSchoolId(req.user?.schoolId);
       if (!schoolId) {
-        return res.status(400).json({ success: false, message: 'School context required' });
+        return res
+          .status(400)
+          .json({ success: false, message: req.t('common:errors.unauthorized') });
       }
 
       const { categories } = req.body;

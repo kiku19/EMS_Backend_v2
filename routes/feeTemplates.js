@@ -7,6 +7,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -57,7 +58,7 @@ router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, re
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
     if (!template) {
-      return res.status(404).json({ error: 'Fee template not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
     }
     res.json(template);
   } catch (error) {
@@ -85,7 +86,7 @@ router.put('/:id', authenticate, checkPermission('fees', 'edit'), async (req, re
       { new: true }
     );
     if (!template) {
-      return res.status(404).json({ error: 'Fee template not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
     }
     res.json(template);
   } catch (error) {
@@ -99,7 +100,7 @@ router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (re
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
     if (!template) {
-      return res.status(404).json({ error: 'Fee template not found' });
+      return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
     }
 
     // Clear dangling templateId references in FeeStructure documents

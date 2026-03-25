@@ -12,6 +12,33 @@ const activeUsers = new Map();
 const typingUsers = new Map();
 
 export function initializeChatHandlers(io) {
+  // Connection-level auth middleware: validate JWT from cookie before the socket is accepted.
+  // Clients that pass a token via the 'authenticate' event are also supported (mobile/legacy).
+  io.use((socket, next) => {
+    try {
+      const fakeReq = { headers: { cookie: socket.handshake?.headers?.cookie || '' } };
+      const cookieToken = extractTokenFromRequest(fakeReq);
+      const handshakeToken = socket.handshake?.auth?.token;
+
+      const token = cookieToken || handshakeToken;
+
+      if (!token) {
+        // Allow connection without cookie token — mobile clients authenticate via event
+        return next();
+      }
+
+      const decoded = verifyToken(token);
+      if (decoded?.userId) {
+        // Pre-populate userId so cookie-based clients skip the 'authenticate' event
+        socket._preAuthUserId = decoded.userId;
+        socket._preAuthUserType = decoded.userType || 'staff';
+      }
+      next();
+    } catch {
+      next(); // Allow connection — event-level auth will still validate
+    }
+  });
+
   io.on('connection', (socket) => {
     // Authentication
     socket.on('authenticate', async (data) => {

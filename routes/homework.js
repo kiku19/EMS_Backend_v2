@@ -244,6 +244,7 @@ import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { zodSchemas, validateZod } from '../middleware/validation.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Fix 8.2: Helper to scope all queries by schoolId for multi-tenancy isolation
 function scopeBySchool(schoolId, query = {}) {
@@ -422,7 +423,7 @@ router.get('/:id', authenticate, async (req, res) => {
       .populate('submissions.studentId', 'name rollNo admissionId');
 
     if (!homework) {
-      return res.status(404).json({ error: 'Homework not found' });
+      return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
     }
 
     res.json(homework);
@@ -446,12 +447,14 @@ router.post('/', authenticate, validateZod(zodSchemas.createHomework), async (re
       sentToParents,
     } = req.body;
 
-    // Validate and parse dueDate
-    const parsedDueDate = new Date(dueDate);
+    // Validate and parse dueDate — default to 7 days from now if omitted
+    const parsedDueDate = dueDate
+      ? new Date(dueDate)
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     if (isNaN(parsedDueDate.getTime())) {
       return res
         .status(400)
-        .json({ error: 'Invalid due date format. Use YYYY-MM-DD or ISO format.' });
+        .json({ error: req.t('common:routes.invalidDueDateFormatUseYyyyMmDdOrIsoFormat') });
     }
 
     const schoolId = extractSchoolId(req.user.schoolId);
@@ -535,7 +538,7 @@ router.put('/:id', authenticate, validateZod(zodSchemas.updateHomework), async (
       if (isNaN(parsedDueDate.getTime())) {
         return res
           .status(400)
-          .json({ error: 'Invalid due date format. Use YYYY-MM-DD or ISO format.' });
+          .json({ error: req.t('common:routes.invalidDueDateFormatUseYyyyMmDdOrIsoFormat') });
       }
     }
 
@@ -556,7 +559,7 @@ router.put('/:id', authenticate, validateZod(zodSchemas.updateHomework), async (
       .populate('teacherId', 'name');
 
     if (!homework) {
-      return res.status(404).json({ error: 'Homework not found' });
+      return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
     }
 
     res.json(homework);
@@ -579,7 +582,7 @@ router.post(
       );
 
       if (!homework) {
-        return res.status(404).json({ error: 'Homework not found' });
+        return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
       }
 
       // Check if already submitted
@@ -605,7 +608,7 @@ router.post(
       homework.updatedAt = new Date();
       await homework.save();
 
-      res.json({ success: true, message: 'Homework submitted successfully' });
+      res.json({ success: true, message: req.t('common:routes.homeworkSubmittedSuccessfully') });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -622,7 +625,7 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
     );
 
     if (!homework) {
-      return res.status(404).json({ error: 'Homework not found' });
+      return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
     }
 
     const submission = homework.submissions.find((s) => s.studentId.toString() === studentId);
@@ -630,7 +633,9 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
     if (!submission) {
       return res
         .status(404)
-        .json({ error: 'Submission not found — student has not submitted this homework' });
+        .json({
+          error: req.t('common:routes.submissionNotFoundStudentHasNotSubmittedThisHomework'),
+        });
     }
 
     submission.marks = marks;
@@ -640,7 +645,7 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
     homework.updatedAt = new Date();
     await homework.save();
 
-    res.json({ success: true, message: 'Homework graded successfully' });
+    res.json({ success: true, message: req.t('common:routes.homeworkGradedSuccessfully') });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -654,10 +659,10 @@ router.delete('/:id', authenticate, async (req, res) => {
     );
 
     if (!homework) {
-      return res.status(404).json({ error: 'Homework not found' });
+      return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
     }
 
-    res.json({ success: true, message: 'Homework deleted successfully' });
+    res.json({ success: true, message: req.t('common:routes.homeworkDeletedSuccessfully') });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

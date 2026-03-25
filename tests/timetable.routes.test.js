@@ -233,7 +233,7 @@ describe('Timetable Routes', () => {
         .send({ classId: 'not-valid' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Validation failed');
+      expect(res.body.error).toBe('Validation Error');
     });
   });
 
@@ -283,7 +283,7 @@ describe('Timetable Routes', () => {
         .send({ day: 'Funday', periodIndex: 0 });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Validation failed');
+      expect(res.body.error).toBe('Validation Error');
     });
   });
 
@@ -365,7 +365,7 @@ describe('Timetable Routes', () => {
         .send({ slots: [] });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Validation failed');
+      expect(res.body.error).toBe('Validation Error');
     });
   });
 });
@@ -464,7 +464,7 @@ describe('Teacher Timetable Routes', () => {
         .send({ day: 'Badday', periodIndex: 0 });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Validation failed');
+      expect(res.body.error).toBe('Validation Error');
     });
   });
 });

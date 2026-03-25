@@ -21,6 +21,194 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
+// GET /api/form-assignments/:token - Get assignment by access token (for public form submission)
+router.get('/form-assignments/token/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const assignment = await FormAssignment.findOne({ accessToken: token }).populate('formId');
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        error: 'Invalid access token',
+      });
+    }
+
+    // Check if token has expired
+    if (assignment.expiresAt && assignment.expiresAt < new Date()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Access token has expired',
+        message: 'Please contact the school for a new link',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        formId: assignment.formId._id,
+        formName: assignment.formId.formName,
+        formType: assignment.formId.formType,
+        fields: assignment.formId.fields,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Get assignment by token error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to fetch assignment',
+    });
+  }
+});
+
+// ============================================================
+// PUBLIC ENDPOINTS (No Authentication Required)
+// ============================================================
+
+// GET /form-submissions/public/:accessToken - Get form details for public submission
+router.get('/form-submissions/public/:accessToken', async (req, res) => {
+  try {
+    const { accessToken } = req.params;
+
+    const assignment = await FormAssignment.findOne({ accessToken }).populate(
+      'formId',
+      'formName formType fields'
+    );
+
+    if (!assignment) {
+      console.warn('⚠️ Invalid access token');
+      return res.status(404).json({
+        error: 'Invalid access token',
+        message: 'This form link is invalid or has been revoked',
+      });
+    }
+
+    // Check if expired
+    if (assignment.expiresAt && new Date() > assignment.expiresAt) {
+      console.warn('⚠️ Access token expired');
+      return res.status(400).json({
+        error: 'Link expired',
+        message: 'This form link has expired. Please request a new one.',
+        expired: true,
+      });
+    }
+
+    // Check if already submitted
+    const existingSubmission = await FormSubmission.findOne({ assignmentId: assignment._id });
+    if (existingSubmission) {
+      console.warn('⚠️ Form already submitted');
+      return res.status(400).json({
+        error: 'Already submitted',
+        message: 'This form has already been submitted',
+        alreadySubmitted: true,
+        submittedAt: existingSubmission.submittedAt,
+        reviewStatus: existingSubmission.reviewStatus,
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        formId: assignment.formId._id,
+        formName: assignment.formId.formName,
+        formType: assignment.formId.formType,
+        fields: assignment.formId.fields,
+        assignedToEmail: assignment.assignedToEmail,
+        assignedToPhone: assignment.assignedToPhone,
+        expiresAt: assignment.expiresAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error fetching public form:', error);
+    res.status(500).json({
+      error: 'Failed to fetch form details',
+      message: error.message,
+    });
+  }
+});
+
+// POST /form-submissions/public/:accessToken - Submit form publicly via access token
+router.post('/form-submissions/public/:accessToken', async (req, res) => {
+  try {
+    const { accessToken } = req.params;
+    const { submissionData } = req.body;
+
+    // Find assignment by access token
+    const assignment = await FormAssignment.findOne({ accessToken }).populate('formId');
+
+    if (!assignment) {
+      console.warn('⚠️ Invalid access token');
+      return res.status(404).json({
+        error: 'Invalid access token',
+        message: 'This form link is invalid or has been revoked',
+      });
+    }
+
+    // Check if expired
+    if (assignment.expiresAt && new Date() > assignment.expiresAt) {
+      console.warn('⚠️ Access token expired');
+      return res.status(400).json({
+        error: 'Link expired',
+        message: 'This form link has expired. Please request a new one.',
+      });
+    }
+
+    // Check if already submitted
+    const existingSubmission = await FormSubmission.findOne({ assignmentId: assignment._id });
+    if (existingSubmission) {
+      console.warn('⚠️ Form already submitted');
+      return res.status(400).json({
+        error: 'Already submitted',
+        message: 'This form has already been submitted',
+      });
+    }
+
+    // Validate submission data
+    if (!submissionData || typeof submissionData !== 'object') {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'submissionData is required and must be an object',
+      });
+    }
+
+    // Create submission (carry schoolId from assignment for funnel scoping)
+    const submission = new FormSubmission({
+      schoolId: assignment.schoolId,
+      assignmentId: assignment._id,
+      formId: assignment.formId._id,
+      submissionData,
+      submittedByEmail: assignment.assignedToEmail,
+      submittedByPhone: assignment.assignedToPhone,
+      submittedAt: new Date(),
+      reviewStatus: 'pending',
+    });
+
+    await submission.save();
+
+    // Update assignment status
+    assignment.status = 'submitted';
+    await assignment.save();
+
+    // Populate references for response
+    await submission.populate('formId', 'formName formType');
+
+    res.status(201).json({
+      success: true,
+      message: 'Form submitted successfully. You will be notified after review.',
+      data: submission,
+    });
+  } catch (error) {
+    console.error('❌ Error submitting public form:', error);
+    res.status(500).json({
+      error: 'Failed to submit form',
+      message: error.message,
+    });
+  }
+});
+router.use(authenticate);
+
 // Helper function to generate unique access token
 function generateAccessToken() {
   return crypto.randomBytes(32).toString('hex');
@@ -970,48 +1158,6 @@ router.get('/form-submissions/staff/:staffId', authenticate, async (req, res) =>
   }
 });
 
-// GET /api/form-assignments/:token - Get assignment by access token (for public form submission)
-router.get('/form-assignments/token/:token', async (req, res) => {
-  try {
-    const { token } = req.params;
-
-    const assignment = await FormAssignment.findOne({ accessToken: token }).populate('formId');
-
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        error: 'Invalid access token',
-      });
-    }
-
-    // Check if token has expired
-    if (assignment.expiresAt && assignment.expiresAt < new Date()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Access token has expired',
-        message: 'Please contact the school for a new link',
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        formId: assignment.formId._id,
-        formName: assignment.formId.formName,
-        formType: assignment.formId.formType,
-        fields: assignment.formId.fields,
-      },
-    });
-  } catch (error) {
-    console.error('❌ Get assignment by token error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to fetch assignment',
-    });
-  }
-});
-
 // PUT /api/form-assignments/:id/status - Update assignment status
 router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
   try {
@@ -1057,151 +1203,6 @@ router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
       success: false,
       error: error.message,
       message: 'Failed to update assignment status',
-    });
-  }
-});
-
-// ============================================================
-// PUBLIC ENDPOINTS (No Authentication Required)
-// ============================================================
-
-// GET /form-submissions/public/:accessToken - Get form details for public submission
-router.get('/form-submissions/public/:accessToken', async (req, res) => {
-  try {
-    const { accessToken } = req.params;
-
-    const assignment = await FormAssignment.findOne({ accessToken }).populate(
-      'formId',
-      'formName formType fields'
-    );
-
-    if (!assignment) {
-      console.warn('⚠️ Invalid access token');
-      return res.status(404).json({
-        error: 'Invalid access token',
-        message: 'This form link is invalid or has been revoked',
-      });
-    }
-
-    // Check if expired
-    if (assignment.expiresAt && new Date() > assignment.expiresAt) {
-      console.warn('⚠️ Access token expired');
-      return res.status(400).json({
-        error: 'Link expired',
-        message: 'This form link has expired. Please request a new one.',
-        expired: true,
-      });
-    }
-
-    // Check if already submitted
-    const existingSubmission = await FormSubmission.findOne({ assignmentId: assignment._id });
-    if (existingSubmission) {
-      console.warn('⚠️ Form already submitted');
-      return res.status(400).json({
-        error: 'Already submitted',
-        message: 'This form has already been submitted',
-        alreadySubmitted: true,
-        submittedAt: existingSubmission.submittedAt,
-        reviewStatus: existingSubmission.reviewStatus,
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        formId: assignment.formId._id,
-        formName: assignment.formId.formName,
-        formType: assignment.formId.formType,
-        fields: assignment.formId.fields,
-        assignedToEmail: assignment.assignedToEmail,
-        assignedToPhone: assignment.assignedToPhone,
-        expiresAt: assignment.expiresAt,
-      },
-    });
-  } catch (error) {
-    console.error('❌ Error fetching public form:', error);
-    res.status(500).json({
-      error: 'Failed to fetch form details',
-      message: error.message,
-    });
-  }
-});
-
-// POST /form-submissions/public/:accessToken - Submit form publicly via access token
-router.post('/form-submissions/public/:accessToken', async (req, res) => {
-  try {
-    const { accessToken } = req.params;
-    const { submissionData } = req.body;
-
-    // Find assignment by access token
-    const assignment = await FormAssignment.findOne({ accessToken }).populate('formId');
-
-    if (!assignment) {
-      console.warn('⚠️ Invalid access token');
-      return res.status(404).json({
-        error: 'Invalid access token',
-        message: 'This form link is invalid or has been revoked',
-      });
-    }
-
-    // Check if expired
-    if (assignment.expiresAt && new Date() > assignment.expiresAt) {
-      console.warn('⚠️ Access token expired');
-      return res.status(400).json({
-        error: 'Link expired',
-        message: 'This form link has expired. Please request a new one.',
-      });
-    }
-
-    // Check if already submitted
-    const existingSubmission = await FormSubmission.findOne({ assignmentId: assignment._id });
-    if (existingSubmission) {
-      console.warn('⚠️ Form already submitted');
-      return res.status(400).json({
-        error: 'Already submitted',
-        message: 'This form has already been submitted',
-      });
-    }
-
-    // Validate submission data
-    if (!submissionData || typeof submissionData !== 'object') {
-      return res.status(400).json({
-        error: 'Validation failed',
-        message: 'submissionData is required and must be an object',
-      });
-    }
-
-    // Create submission (carry schoolId from assignment for funnel scoping)
-    const submission = new FormSubmission({
-      schoolId: assignment.schoolId,
-      assignmentId: assignment._id,
-      formId: assignment.formId._id,
-      submissionData,
-      submittedByEmail: assignment.assignedToEmail,
-      submittedByPhone: assignment.assignedToPhone,
-      submittedAt: new Date(),
-      reviewStatus: 'pending',
-    });
-
-    await submission.save();
-
-    // Update assignment status
-    assignment.status = 'submitted';
-    await assignment.save();
-
-    // Populate references for response
-    await submission.populate('formId', 'formName formType');
-
-    res.status(201).json({
-      success: true,
-      message: 'Form submitted successfully. You will be notified after review.',
-      data: submission,
-    });
-  } catch (error) {
-    console.error('❌ Error submitting public form:', error);
-    res.status(500).json({
-      error: 'Failed to submit form',
-      message: error.message,
     });
   }
 });

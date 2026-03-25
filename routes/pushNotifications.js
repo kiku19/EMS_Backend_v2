@@ -5,6 +5,7 @@ import WebPushSubscription from '../models/WebPushSubscription.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Configure VAPID keys if provided
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {

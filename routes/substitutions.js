@@ -5,6 +5,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -98,7 +99,7 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
     // Validate class exists
     const classData = await Class.findById(classId);
     if (!classData) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     // Validate substitute teacher exists
@@ -185,7 +186,7 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
     if (classId !== undefined) {
       const classData = await Class.findById(classId);
       if (!classData) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
       updateData.classId = classId;
     }

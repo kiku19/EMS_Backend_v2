@@ -20,6 +20,7 @@ import { promoteClassSchema, updateStrengthLimitSchema } from '../validators/ind
 import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -151,7 +152,7 @@ router.post(
         scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
       );
       if (!classData) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const normalizedSchoolId = extractSchoolId(schoolId);
@@ -236,7 +237,7 @@ router.post(
         scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
       );
       if (!classDoc) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       const activity = await ActivityLog.create({
@@ -271,7 +272,7 @@ router.get('/:id/rating', authenticate, async (req, res) => {
       scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
     );
     if (!classDoc) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     let rating = await ClassRating.findOne(scopeBySchool(schoolId, { classId: id, academicYear }));
@@ -301,7 +302,7 @@ router.post('/:id/rating/recalculate', authenticate, async (req, res) => {
       scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
     );
     if (!classData) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     let rating = await ClassRating.findOne(scopeBySchool(schoolId, { classId: id, academicYear }));
@@ -632,7 +633,7 @@ router.post(
         scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
       );
       if (!currentClass) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       // Validate target class exists and belongs to the same school
@@ -766,7 +767,7 @@ router.get('/:id/subjects', authenticate, async (req, res) => {
       scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
     );
     if (!classDoc) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const chapters = await ChapterProgress.find(
@@ -889,7 +890,7 @@ router.put(
         scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
       );
       if (!classData) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       classData.strengthLimit.current = newLimit;
@@ -941,7 +942,7 @@ router.post(
         scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
       );
       if (!classDoc) {
-        return res.status(404).json({ error: 'Class not found' });
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
       // Get all students in class
@@ -1003,7 +1004,7 @@ router.get('/:id/announcements', authenticate, async (req, res) => {
       scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
     );
     if (!classDoc) {
-      return res.status(404).json({ error: 'Class not found' });
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
     const announcements = await ClassAnnouncement.find(scopeBySchool(schoolId, { classId: id }))
