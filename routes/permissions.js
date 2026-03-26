@@ -12,6 +12,7 @@ import {
 import { sanitizeQueryStr, sanitizeQueryId } from '../middleware/validation.js';
 import { authenticate } from '../middleware/auth.js';
 import AuditTrail from '../models/AuditTrail.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 // Fire-and-forget audit entry
 function logPermissionAuditEvent({ schoolId, actorId, action, entityId, newValue, req }) {
@@ -33,6 +34,8 @@ function logPermissionAuditEvent({ schoolId, actorId, action, entityId, newValue
 
 const router = express.Router();
 router.use(authenticate);
+
+const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.schoolId, extra);
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -74,11 +77,12 @@ const customRoleUpdateSchema = customRoleCreateSchema.partial();
 router.get('/user/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
+    const sid = req.user.schoolId;
 
-    let userPermission = await UserPermission.findOne({ userId });
+    let userPermission = await UserPermission.findOne(schoolQuery(req, { userId }));
 
     if (!userPermission) {
-      const user = await Staff.findById(userId);
+      const user = await Staff.findOne(schoolQuery(req, { _id: userId }));
       if (!user) {
         return res.status(404).json({ error: req.t('common:routes.userNotFound') });
       }
@@ -87,8 +91,9 @@ router.get('/user/:userId', authenticate, async (req, res) => {
       const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
       userPermission = await UserPermission.findOneAndUpdate(
-        { userId },
+        schoolQuery(req, { userId }),
         {
+          schoolId: sid,
           userId,
           role,
           permissions: buildPermissionsArray(defaultPermissions),
@@ -113,16 +118,18 @@ router.put('/user/:userId', authenticate, async (req, res) => {
     const { userId } = req.params;
     const { permissions, role, customPermissions } = req.body;
     const adminId = req.user.id;
+    const sid = req.user.schoolId;
 
     // Verify admin
-    const adminPermission = await UserPermission.findOne({ userId: adminId });
+    const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: adminId }));
     if (!adminPermission || adminPermission.role !== 'admin') {
       return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
     const updated = await UserPermission.findOneAndUpdate(
-      { userId },
+      schoolQuery(req, { userId }),
       {
+        schoolId: sid,
         permissions,
         role,
         customPermissions,
@@ -158,11 +165,9 @@ router.post('/request', authenticate, async (req, res) => {
     }
 
     // Check if there's already a pending request for this user and module
-    const existingRequest = await PermissionRequest.findOne({
-      userId,
-      module,
-      status: 'pending',
-    });
+    const existingRequest = await PermissionRequest.findOne(
+      schoolQuery(req, { userId, module, status: 'pending' })
+    );
 
     if (existingRequest) {
       return res.status(400).json({
@@ -172,6 +177,7 @@ router.post('/request', authenticate, async (req, res) => {
     }
 
     const request = await PermissionRequest.create({
+      schoolId: req.user.schoolId,
       userId,
       userName,
       userEmail,
@@ -206,16 +212,18 @@ router.get('/requests', authenticate, async (req, res) => {
     const userId = sanitizeQueryId(req.query.userId);
 
     // Verify admin
-    const adminPermission = await UserPermission.findOne({ userId: req.user.id });
+    const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: req.user.id }));
     if (!adminPermission || adminPermission.role !== 'admin') {
       return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
-    const query = {};
-    if (status) query.status = status;
-    if (userId) query.userId = userId;
+    const filter = {};
+    if (status) filter.status = status;
+    if (userId) filter.userId = userId;
 
-    const requests = await PermissionRequest.find(query).sort({ requestedAt: -1 }).limit(100);
+    const requests = await PermissionRequest.find(schoolQuery(req, filter))
+      .sort({ requestedAt: -1 })
+      .limit(100);
 
     res.json(requests);
   } catch (error) {
@@ -228,12 +236,12 @@ router.get('/requests', authenticate, async (req, res) => {
 router.get('/requests/count/pending', authenticate, async (req, res) => {
   try {
     // Verify admin
-    const adminPermission = await UserPermission.findOne({ userId: req.user.id });
+    const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: req.user.id }));
     if (!adminPermission || adminPermission.role !== 'admin') {
       return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
-    const count = await PermissionRequest.countDocuments({ status: 'pending' });
+    const count = await PermissionRequest.countDocuments(schoolQuery(req, { status: 'pending' }));
     res.json({ count });
   } catch (error) {
     console.error('Error counting pending requests:', error);
@@ -248,18 +256,19 @@ router.put('/requests/:requestId', authenticate, async (req, res) => {
     const { status, reviewNotes } = req.body;
     const adminId = req.user.id;
     const adminName = req.user.name || 'Admin';
+    const sid = req.user.schoolId;
 
     if (!['approved', 'rejected'].includes(status)) {
       return res.status(400).json({ error: req.t('common:routes.invalidStatus') });
     }
 
     // Verify admin
-    const adminPermission = await UserPermission.findOne({ userId: adminId });
+    const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: adminId }));
     if (!adminPermission || adminPermission.role !== 'admin') {
       return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
     }
 
-    const request = await PermissionRequest.findById(requestId);
+    const request = await PermissionRequest.findOne(schoolQuery(req, { _id: requestId }));
     if (!request) {
       return res.status(404).json({ error: req.t('common:routes.requestNotFound') });
     }
@@ -278,16 +287,19 @@ router.put('/requests/:requestId', authenticate, async (req, res) => {
 
     // If approved, update user permissions
     if (status === 'approved') {
-      let userPermission = await UserPermission.findOne({ userId: request.userId });
+      let userPermission = await UserPermission.findOne(
+        schoolQuery(req, { userId: request.userId })
+      );
 
       if (!userPermission) {
-        const user = await Staff.findById(request.userId);
+        const user = await Staff.findOne(schoolQuery(req, { _id: request.userId }));
         const role = determineRole(user.role);
         const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
         userPermission = await UserPermission.findOneAndUpdate(
-          { userId: request.userId },
+          schoolQuery(req, { userId: request.userId }),
           {
+            schoolId: sid,
             userId: request.userId,
             role,
             permissions: buildPermissionsArray(defaultPermissions),
@@ -362,10 +374,12 @@ router.get('/user/:userId/requests', authenticate, async (req, res) => {
     const { userId } = req.params;
     const { status } = req.query;
 
-    const query = { userId };
-    if (status) query.status = status;
+    const filter = { userId };
+    if (status) filter.status = status;
 
-    const requests = await PermissionRequest.find(query).sort({ requestedAt: -1 }).limit(50);
+    const requests = await PermissionRequest.find(schoolQuery(req, filter))
+      .sort({ requestedAt: -1 })
+      .limit(50);
 
     res.json(requests);
   } catch (error) {
@@ -488,6 +502,17 @@ router.delete('/custom-roles/:id', authenticate, async (req, res) => {
 
     if (role.isSystem) {
       return res.status(403).json({ error: req.t('common:routes.systemRolesCannotBeDeleted') });
+    }
+
+    // Check if any users are assigned to this custom role
+    const assignedUsers = await UserPermission.countDocuments({
+      schoolId,
+      customRoleId: id,
+    });
+    if (assignedUsers > 0) {
+      return res.status(400).json({
+        error: `Cannot delete role "${role.name}". ${assignedUsers} user(s) are currently assigned to it. Please reassign them first.`,
+      });
     }
 
     await role.deleteOne();

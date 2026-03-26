@@ -1096,6 +1096,10 @@ export const zodSchemas = {
     classId: optionalObjectId,
     subject: z.string().max(100).default(''),
     room: z.string().max(100).default(''),
+    academicYear: z
+      .string()
+      .regex(/^\d{4}-\d{2}$/)
+      .optional(),
   }),
 
   // POST /api/teacher-timetable/:teacherId/switch-class

@@ -166,6 +166,7 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       // Create recipient records
       recipients = await AnnouncementRecipient.create(
         resolvedRecipients.map((r) => ({
+          schoolId: announcement.schoolId,
           announcementId: announcement._id,
           userId: r.userId,
           userType: r.userType,

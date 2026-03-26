@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const homeworkSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
   title: { type: String, required: true },
   description: { type: String, required: true },
   subject: { type: String, required: true },

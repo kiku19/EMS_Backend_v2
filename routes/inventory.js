@@ -475,8 +475,32 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user.schoolId;
+      const vendorId = req.params.id;
+
+      // Check for dependent records before deleting
+      const [activeAssets, activeMaintenance, activeProcurement] = await Promise.all([
+        Asset.countDocuments(scopeBySchool(schoolId, { vendorId, isDeleted: { $ne: true } })),
+        MaintenanceLog.countDocuments(
+          scopeBySchool(schoolId, { vendorId, isDeleted: { $ne: true } })
+        ),
+        ProcurementRequest.countDocuments(
+          scopeBySchool(schoolId, { vendorId, isDeleted: { $ne: true } })
+        ),
+      ]);
+
+      if (activeAssets > 0 || activeMaintenance > 0 || activeProcurement > 0) {
+        const deps = [];
+        if (activeAssets > 0) deps.push(`${activeAssets} asset(s)`);
+        if (activeMaintenance > 0) deps.push(`${activeMaintenance} maintenance log(s)`);
+        if (activeProcurement > 0) deps.push(`${activeProcurement} procurement request(s)`);
+        return res.status(400).json({
+          success: false,
+          error: `Cannot delete vendor. It is referenced by ${deps.join(', ')}. Please reassign or remove them first.`,
+        });
+      }
+
       const vendor = await Vendor.findOneAndUpdate(
-        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        scopeBySchool(schoolId, { _id: vendorId, isDeleted: { $ne: true } }),
         { isDeleted: true, updatedBy: req.user._id },
         { new: true }
       );
@@ -682,6 +706,17 @@ router.post(
   }
 );
 
+// Allowed procurement status transitions
+const PROCUREMENT_TRANSITIONS = {
+  PENDING: ['APPROVED', 'REJECTED', 'CANCELLED'],
+  APPROVED: ['ORDERED', 'CANCELLED'],
+  REJECTED: ['CANCELLED'],
+  ORDERED: ['RECEIVED', 'CANCELLED'],
+  RECEIVED: ['CANCELLED'],
+  PURCHASED: ['CANCELLED'],
+  CANCELLED: [],
+};
+
 router.put(
   '/procurement/:id',
   authenticate,
@@ -690,6 +725,24 @@ router.put(
     try {
       const data = updateProcurementSchema.parse(req.body);
       const schoolId = req.user.schoolId;
+
+      // Validate status transition if status is being changed
+      if (data.status) {
+        const existing = await ProcurementRequest.findOne(
+          scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+        );
+        if (!existing)
+          return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
+
+        const currentStatus = existing.status || 'PENDING';
+        const allowed = PROCUREMENT_TRANSITIONS[currentStatus] || [];
+        if (data.status !== currentStatus && !allowed.includes(data.status)) {
+          return res.status(400).json({
+            success: false,
+            error: `Invalid status transition from ${currentStatus} to ${data.status}. Allowed: ${allowed.join(', ') || 'none'}`,
+          });
+        }
+      }
 
       const update = { ...data, updatedBy: req.user._id };
       if (data.status === 'APPROVED' || data.status === 'REJECTED') {

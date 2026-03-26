@@ -228,8 +228,9 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
       }
     }
 
-    // Create form submission
+    // Create form submission — inherit schoolId from the assignment (public routes have no req.user)
     const submission = new FormSubmission({
+      schoolId: assignment.schoolId,
       assignmentId: assignment._id,
       formId: populatedAssignment.formId._id,
       submissionData: sanitizedData,
@@ -313,11 +314,30 @@ router.get('/form-submission/:token/status', async (req, res) => {
   }
 });
 
+// Zod schema for public form submission update
+const formSubmissionUpdateSchema = z.object({
+  submissionData: z.record(z.string(), z.unknown()),
+});
+
 // PUT /api/public/form-submission/:token - Update existing submission (if allowed)
 router.put('/form-submission/:token', async (req, res) => {
   try {
     const { token } = req.params;
-    const { submissionData } = req.body;
+
+    // Validate request body with Zod
+    const parseResult = formSubmissionUpdateSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        code: 'VALIDATION_ERROR',
+        details: parseResult.error.issues.map((issue) => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+        })),
+      });
+    }
+
+    const { submissionData } = parseResult.data;
 
     // Validate access token
     const validation = await validateAccessToken(token);

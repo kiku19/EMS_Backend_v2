@@ -1,19 +1,18 @@
 import { z } from 'zod';
 
-const ASSET_CATEGORIES = [
-  'FURNITURE',
-  'ELECTRONICS',
-  'LAB_EQUIPMENT',
-  'SPORTS',
-  'STATIONERY',
-  'VEHICLE',
-  'OTHER',
-];
 const ASSET_STATUSES = ['ACTIVE', 'UNDER_MAINTENANCE', 'DISPOSED', 'LOST'];
 const ASSET_CONDITIONS = ['GOOD', 'FAIR', 'POOR', 'DAMAGED'];
 const MAINTENANCE_TYPES = ['PREVENTIVE', 'CORRECTIVE', 'INSPECTION'];
 const MAINTENANCE_STATUSES = ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'];
-const PROCUREMENT_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'PURCHASED'];
+const PROCUREMENT_STATUSES = [
+  'PENDING',
+  'APPROVED',
+  'REJECTED',
+  'ORDERED',
+  'RECEIVED',
+  'PURCHASED',
+  'CANCELLED',
+];
 const AUDIT_STATUSES = ['PENDING', 'IN_PROGRESS', 'COMPLETED'];
 
 const objectIdRegex = /^[0-9a-fA-F]{24}$/;
@@ -21,7 +20,7 @@ const objectIdRegex = /^[0-9a-fA-F]{24}$/;
 export const createAssetSchema = z.object({
   assetTag: z.string().trim().max(50).optional(),
   name: z.string().trim().min(1).max(200),
-  category: z.enum(ASSET_CATEGORIES),
+  category: z.string().trim().min(1).max(100),
   serialNumber: z.string().trim().max(100).optional(),
   description: z.string().trim().max(1000).optional(),
   location: z.string().trim().max(200).optional(),
@@ -95,7 +94,7 @@ export const updateMaintenanceLogSchema = createMaintenanceLogSchema.partial();
 
 export const createProcurementSchema = z.object({
   itemName: z.string().trim().min(1).max(200),
-  category: z.enum(ASSET_CATEGORIES).optional(),
+  category: z.string().trim().min(1).max(100).optional(),
   quantity: z.number().int().min(1),
   estimatedCost: z.number().min(0).optional(),
   actualCost: z.number().min(0).optional(),

@@ -31,6 +31,14 @@ const createAnnouncementSchema = z
   })
   .strip();
 
+const createActivityLogSchema = z
+  .object({
+    activityType: z.string().min(1, 'Activity type is required').max(100).trim(),
+    description: z.string().min(1, 'Description is required').max(1000).trim(),
+    details: z.record(z.string(), z.unknown()).optional().default({}),
+  })
+  .strip();
+
 const router = express.Router();
 router.use(authenticate);
 
@@ -237,6 +245,7 @@ router.post(
   '/:id/activity-log',
   authenticate,
   checkPermission('classes', 'edit'),
+  validateZod(createActivityLogSchema),
   async (req, res) => {
     try {
       const { id } = req.params;

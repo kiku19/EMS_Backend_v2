@@ -2,6 +2,11 @@ import mongoose from 'mongoose';
 
 const announcementRecipientSchema = new mongoose.Schema(
   {
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+    },
     announcementId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Announcement',
@@ -58,8 +63,8 @@ const announcementRecipientSchema = new mongoose.Schema(
 );
 
 // Indexes
-announcementRecipientSchema.index({ announcementId: 1 });
-announcementRecipientSchema.index({ userId: 1 });
+announcementRecipientSchema.index({ schoolId: 1, announcementId: 1 });
+announcementRecipientSchema.index({ schoolId: 1, userId: 1 });
 announcementRecipientSchema.index({ status: 1 });
 announcementRecipientSchema.index({ 'deliveryStatus.trackingToken': 1 });
 announcementRecipientSchema.index({ 'deliveryStatus.messageId': 1 });

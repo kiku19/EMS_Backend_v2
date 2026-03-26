@@ -1222,77 +1222,107 @@ router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
 async function createStudentFromSubmission(submissionData, form, schoolId = null) {
   const { getNextAdmissionId, getNextRollNumber } = await import('../database.js');
 
-  // Extract and map fields from submissionData
-  const studentData = {
-    schoolId: schoolId || undefined,
-    name: submissionData.name || submissionData.studentName,
-    admissionId: submissionData.admissionId || (await getNextAdmissionId(schoolId)),
-    classId: submissionData.classId,
-    rollNo: submissionData.rollNo,
+  // Build student data using form's field mapping if available.
+  // Each field in form.fields can have a `mapTo` property indicating the Student schema field.
+  // e.g., { label: "Student Name", key: "studentName", mapTo: "name", type: "text" }
+  // This allows custom forms to map arbitrary field names to Student model fields.
+  const studentData = { schoolId: schoolId || undefined };
 
-    // Personal Information
-    gender: submissionData.gender,
-    dateOfBirth: submissionData.dateOfBirth || submissionData.dob,
-    bloodGroup: submissionData.bloodGroup,
-    nationality: submissionData.nationality,
-    religion: submissionData.religion,
-    category: submissionData.category,
-    motherTongue: submissionData.motherTongue,
-    aadhaarNumber: submissionData.aadhaarNumber,
+  // Use dynamic field mapping from the form if fields define mapTo targets
+  const formFields = Array.isArray(form?.fields) ? form.fields : [];
+  const hasMappings = formFields.some((f) => f.mapTo);
 
-    // Contact Information
-    phone: submissionData.phone || submissionData.studentPhone,
-    email: submissionData.email || submissionData.studentEmail,
-    whatsappNumber: submissionData.whatsappNumber,
-    isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true,
-    address: submissionData.address,
-    city: submissionData.city,
-    state: submissionData.state,
-    zipCode: submissionData.zipCode || submissionData.pincode,
+  if (hasMappings) {
+    // Dynamic mapping: iterate form fields and map submission values to student fields
+    for (const field of formFields) {
+      if (!field.mapTo) continue;
+      const fieldKey = field.key || field.name || field.label;
+      if (!fieldKey) continue;
+      const value = submissionData[fieldKey];
+      if (value !== undefined && value !== null && value !== '') {
+        studentData[field.mapTo] = value;
+      }
+    }
+    // Ensure required defaults
+    if (!studentData.status) studentData.status = 'active';
+    if (!studentData.feeStatus) studentData.feeStatus = 'pending';
+  } else {
+    // Fallback: hardcoded field mapping for backward compatibility with forms
+    // that don't define mapTo on their fields
+    Object.assign(studentData, {
+      name: submissionData.name || submissionData.studentName,
+      classId: submissionData.classId,
+      rollNo: submissionData.rollNo,
 
-    // Parent/Guardian Information
-    parentName: submissionData.parentName || submissionData.fatherName,
-    parentPhone: submissionData.parentPhone,
-    parentEmail: submissionData.parentEmail,
-    parentRelationship: submissionData.parentRelationship || 'Father',
-    parentOccupation: submissionData.parentOccupation,
-    alternatePhone: submissionData.alternatePhone,
+      // Personal Information
+      gender: submissionData.gender,
+      dateOfBirth: submissionData.dateOfBirth || submissionData.dob,
+      bloodGroup: submissionData.bloodGroup,
+      nationality: submissionData.nationality,
+      religion: submissionData.religion,
+      category: submissionData.category,
+      motherTongue: submissionData.motherTongue,
+      aadhaarNumber: submissionData.aadhaarNumber,
 
-    // Additional Parents
-    parents: submissionData.parents || [
-      {
-        name: submissionData.parentName || submissionData.fatherName,
-        relationship: submissionData.parentRelationship || 'Father',
-        phone: submissionData.parentPhone,
-        email: submissionData.parentEmail,
-        isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true,
-      },
-    ],
+      // Contact Information
+      phone: submissionData.phone || submissionData.studentPhone,
+      email: submissionData.email || submissionData.studentEmail,
+      whatsappNumber: submissionData.whatsappNumber,
+      isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true,
+      address: submissionData.address,
+      city: submissionData.city,
+      state: submissionData.state,
+      zipCode: submissionData.zipCode || submissionData.pincode,
 
-    // Siblings
-    siblings: submissionData.siblings || [],
+      // Parent/Guardian Information
+      parentName: submissionData.parentName || submissionData.fatherName,
+      parentPhone: submissionData.parentPhone,
+      parentEmail: submissionData.parentEmail,
+      parentRelationship: submissionData.parentRelationship || 'Father',
+      parentOccupation: submissionData.parentOccupation,
+      alternatePhone: submissionData.alternatePhone,
 
-    // Academic Information
-    previousSchool: submissionData.previousSchool,
-    tcNumber: submissionData.tcNumber,
+      // Additional Parents
+      parents: submissionData.parents || [
+        {
+          name: submissionData.parentName || submissionData.fatherName,
+          relationship: submissionData.parentRelationship || 'Father',
+          phone: submissionData.parentPhone,
+          email: submissionData.parentEmail,
+          isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true,
+        },
+      ],
 
-    // Health & Safety
-    medicalConditions: submissionData.medicalConditions,
-    emergencyContactName: submissionData.emergencyContactName,
-    emergencyContactPhone: submissionData.emergencyContactPhone,
+      // Siblings
+      siblings: submissionData.siblings || [],
 
-    // Requirements
-    transportRequired: submissionData.transportRequired || false,
-    hostelRequired: submissionData.hostelRequired || false,
+      // Academic Information
+      previousSchool: submissionData.previousSchool,
+      tcNumber: submissionData.tcNumber,
 
-    // Documents
-    documents: submissionData.documents || [],
-    photo: submissionData.photo,
+      // Health & Safety
+      medicalConditions: submissionData.medicalConditions,
+      emergencyContactName: submissionData.emergencyContactName,
+      emergencyContactPhone: submissionData.emergencyContactPhone,
 
-    // Status
-    status: 'active',
-    feeStatus: 'pending',
-  };
+      // Requirements
+      transportRequired: submissionData.transportRequired || false,
+      hostelRequired: submissionData.hostelRequired || false,
+
+      // Documents
+      documents: submissionData.documents || [],
+      photo: submissionData.photo,
+
+      // Status
+      status: 'active',
+      feeStatus: 'pending',
+    });
+  }
+
+  // Ensure admissionId is generated
+  if (!studentData.admissionId) {
+    studentData.admissionId = submissionData.admissionId || (await getNextAdmissionId(schoolId));
+  }
 
   // Generate roll number if classId provided
   if (studentData.classId && !studentData.rollNo) {
@@ -1418,7 +1448,7 @@ async function createStaffFromSubmission(submissionData, form, schoolId = null) 
 
     // Login credentials (generate temporary password)
     username: submissionData.username || submissionData.email,
-    password: submissionData.password || 'TempPassword123', // Should be changed on first login
+    password: submissionData.password || crypto.randomBytes(12).toString('base64url'), // Auto-generated secure password; should be changed on first login
     joinDate: submissionData.joinDate || new Date().toISOString().split('T')[0],
   };
 
