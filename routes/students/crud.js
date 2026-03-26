@@ -304,13 +304,17 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
   try {
     // Verify student belongs to this school before deleting
     const student = await Student.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     );
     if (!student) {
       return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
-    const { deletedRecords } = await permanentlyDeleteStudentData(req.params.id);
+    // Soft delete: mark as deleted instead of permanent removal
+    student.isDeleted = true;
+    student.deletedAt = new Date();
+    student.status = 'inactive';
+    await student.save();
 
     if (req.user?.schoolId && student.status === 'active') {
       await incrementUsageMetric(req.user.schoolId, 'students', -1);
@@ -328,7 +332,7 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
       await ActivityLog.create({
         schoolId: extractSchoolId(req.user.schoolId),
         activityType: 'student_deleted',
-        description: `Student ${student.name} permanently deleted`,
+        description: `Student ${student.name} soft-deleted`,
         performedBy: req.user?.id,
         details: { studentId: student._id, name: student.name, admissionId: student.admissionId },
       });
@@ -336,12 +340,11 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
 
     res.json({
       success: true,
-      message: req.t('common:routes.studentAndLinkedPersonalDataPermanentlyDeleted'),
+      message: 'Student deleted successfully',
       deletedStudentId: student._id,
-      deletedRecords,
     });
   } catch (error) {
-    console.error('Error permanently deleting student:', error);
+    console.error('Error deleting student:', error);
     res.status(error.status || 500).json({ error: error.message });
   }
 });

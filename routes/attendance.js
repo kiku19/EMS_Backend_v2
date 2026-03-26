@@ -113,16 +113,16 @@ import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { bulkAttendanceSchema, singleAttendanceSchema } from '../validators/attendanceSchema.js';
 
-async function notifyParentsOfAbsent(absentStudentIds, date) {
+async function notifyParentsOfAbsent(absentStudentIds, date, schoolId) {
   if (!absentStudentIds.length) return;
   try {
     const { sendNotification } = await import('./notifications.js');
     const { Parent, Student } = await import('../database.js');
     const { sendAttendanceAlertWhatsApp } = await import('../services/whatsappService.js');
     for (const studentId of absentStudentIds) {
-      const parents = await Parent.find({ 'children.studentId': studentId }).select(
-        '_id phone preferences'
-      );
+      const parentQuery = { 'children.studentId': studentId };
+      if (schoolId) parentQuery.schoolId = schoolId;
+      const parents = await Parent.find(parentQuery).select('_id phone preferences');
       for (const parent of parents) {
         await sendNotification(
           parent._id,
@@ -303,7 +303,7 @@ async function markBulkAttendance(req, res) {
     .filter((r) => r.status === 'absent')
     .map((r) => r.studentId)
     .filter(Boolean);
-  notifyParentsOfAbsent(absentStudentIds, date);
+  notifyParentsOfAbsent(absentStudentIds, date, schoolId);
 
   res.json({
     success: true,
@@ -425,6 +425,39 @@ router.get(
   }
 );
 
+// IMPORTANT: /:classId/:date must be registered BEFORE /:studentId to avoid
+// the single-param route shadowing two-param requests.
+router.get('/:classId/:date', authenticate, async (req, res) => {
+  try {
+    const { classId, date } = req.params;
+    const resolved = await resolveClassId(classId);
+
+    if (!resolved) {
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+    }
+
+    const schoolId = await resolveRequestSchoolId(req);
+    const attendance = await Attendance.find(
+      scopeBySchool(schoolId, { classId: resolved.classId, date })
+    ).populate('studentId', 'name rollNo admissionId');
+
+    // Return same shape as GET /class/:classId/:date for consistency
+    const attendanceObj = {};
+    attendance.forEach((record) => {
+      if (record.studentId) {
+        attendanceObj[record.studentId._id.toString()] = {
+          status: record.status,
+          markedBy: record.markedBy,
+        };
+      }
+    });
+
+    res.json(attendanceObj);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/:studentId', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
     const { studentId } = req.params;
@@ -453,34 +486,6 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
     });
 
     res.json(attendanceObj);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/:classId/:date', authenticate, async (req, res) => {
-  try {
-    const { classId, date } = req.params;
-    const resolved = await resolveClassId(classId);
-
-    if (!resolved) {
-      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-    }
-
-    const schoolId = await resolveRequestSchoolId(req);
-    const attendance = await Attendance.find(
-      scopeBySchool(schoolId, { classId: resolved.classId, date })
-    ).populate('studentId', 'name rollNo admissionId');
-
-    const attendanceArray = attendance.map((record) => ({
-      studentId: (record.studentId?._id || record.studentId)?.toString() || null,
-      studentName: record.studentId?.name || null,
-      rollNo: record.studentId?.rollNo || null,
-      status: record.status,
-      markedBy: record.markedBy,
-    }));
-
-    res.json(attendanceArray);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -546,7 +551,7 @@ router.post(
       });
 
       if (status === 'absent') {
-        notifyParentsOfAbsent([studentId], date);
+        notifyParentsOfAbsent([studentId], date, schoolId);
       }
 
       res.json(attendance);

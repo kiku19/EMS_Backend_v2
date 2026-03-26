@@ -450,14 +450,19 @@ router.delete('/intake-forms/:id', authenticate, async (req, res) => {
       });
     }
 
-    // Optional: Also delete related assignments and submissions
-    // Uncomment if you want this behavior
-    // await FormAssignment.deleteMany({ formId: id });
-    // await FormSubmission.deleteMany({ formId: id });
+    // Cascade: soft-delete related assignments and submissions
+    await FormAssignment.updateMany(
+      { formId: id },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
+    await FormSubmission.updateMany(
+      { formId: id },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
 
     res.json({
       success: true,
-      message: 'Intake form deleted successfully',
+      message: 'Intake form and related assignments/submissions deleted successfully',
       id,
     });
   } catch (error) {

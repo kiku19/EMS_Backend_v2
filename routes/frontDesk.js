@@ -1069,7 +1069,7 @@ router.delete(
 router.get('/feedbacks', authenticate, checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
-    const query = {};
+    const query = { schoolId: req.user.schoolId };
 
     if (status) query.status = status;
 
@@ -1130,7 +1130,7 @@ router.put(
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
-      const feedback = await Feedback.findById(req.params.id);
+      const feedback = await Feedback.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
 
       if (!feedback) {
         return res.status(404).json({
@@ -1181,7 +1181,7 @@ router.delete(
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {
-      await Feedback.deleteOne({ _id: req.params.id });
+      await Feedback.deleteOne({ _id: req.params.id, schoolId: req.user.schoolId });
       res.json({ success: true, message: 'Feedback deleted successfully' });
     } catch (error) {
       console.error('❌ Delete feedback error:', error);

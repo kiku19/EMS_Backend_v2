@@ -24,11 +24,15 @@ const hostelRoomSchema = new mongoose.Schema(
 
     description: { type: String, trim: true },
     isActive: { type: Boolean, default: true },
+    isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
 hostelRoomSchema.index({ schoolId: 1, hostelId: 1, isActive: 1 });
-hostelRoomSchema.index({ schoolId: 1, hostelId: 1, roomNumber: 1 }, { unique: true });
+hostelRoomSchema.index(
+  { schoolId: 1, hostelId: 1, roomNumber: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+);
 
 export default mongoose.model('HostelRoom', hostelRoomSchema);

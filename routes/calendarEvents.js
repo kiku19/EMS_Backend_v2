@@ -33,6 +33,7 @@ const calendarEventSchema = new mongoose.Schema({
     endDate: { type: String },
     endCount: { type: Number },
   },
+  isDeleted: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
@@ -177,7 +178,11 @@ router.post(
 
         if (skipExisting) {
           const exists = await CalendarEvent.findOne(
-            scopeBySchool(schoolId, { title: event.title, date: fullDate })
+            scopeBySchool(schoolId, {
+              title: event.title,
+              date: fullDate,
+              isDeleted: { $ne: true },
+            })
           );
           if (exists) {
             skipped.push(event.title);
@@ -235,6 +240,7 @@ router.post('/calendar/conflict-check', authenticate, async (req, res) => {
     // Query calendar events matching the requested types
     const calendarConflicts = await CalendarEvent.find(
       scopeBySchool(req.user?.schoolId, {
+        isDeleted: { $ne: true },
         type: { $in: checkTypes },
         date: { $gte: startDate, $lte: endDate },
       })
@@ -320,13 +326,21 @@ router.get('/calendar/exam-suggestions', authenticate, async (req, res) => {
 
     // Fetch holidays in range
     const holidays = await CalendarEvent.find(
-      scopeBySchool(schoolId, { type: 'holiday', date: { $gte: startDate, $lte: endDate } })
+      scopeBySchool(schoolId, {
+        isDeleted: { $ne: true },
+        type: 'holiday',
+        date: { $gte: startDate, $lte: endDate },
+      })
     ).select('date');
     const holidaySet = new Set(holidays.map((h) => h.date));
 
     // Fetch existing exam events in range (to avoid suggesting already-occupied dates)
     const existingExamEvents = await CalendarEvent.find(
-      scopeBySchool(schoolId, { type: 'exam', date: { $gte: startDate, $lte: endDate } })
+      scopeBySchool(schoolId, {
+        isDeleted: { $ne: true },
+        type: 'exam',
+        date: { $gte: startDate, $lte: endDate },
+      })
     ).select('date');
     const existingExamDates = new Set(existingExamEvents.map((e) => e.date));
 
@@ -432,7 +446,11 @@ router.get('/calendar/working-days', authenticate, async (req, res) => {
 
     // Fetch holidays in range
     const holidays = await CalendarEvent.find(
-      scopeBySchool(schoolId, { type: 'holiday', date: { $gte: startDate, $lte: endDate } })
+      scopeBySchool(schoolId, {
+        isDeleted: { $ne: true },
+        type: 'holiday',
+        date: { $gte: startDate, $lte: endDate },
+      })
     ).select('date');
 
     const holidaySet = new Set(holidays.map((h) => h.date));
@@ -484,7 +502,7 @@ router.get('/calendar/working-days', authenticate, async (req, res) => {
 router.get('/calendar/events/export.ics', authenticate, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const query = scopeBySchool(req.user?.schoolId);
+    const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
 
     if (startDate || endDate) {
       query.date = {};
@@ -541,7 +559,9 @@ router.get(
   checkPermission('timetable', 'view'),
   async (req, res) => {
     try {
-      const events = await CalendarEvent.find(scopeBySchool(req.user?.schoolId)).sort({
+      const events = await CalendarEvent.find(
+        scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } })
+      ).sort({
         date: 1,
         startTime: 1,
       });
@@ -607,7 +627,7 @@ router.put(
       const updates = { ...req.body, updatedAt: new Date() };
 
       const event = await CalendarEvent.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: id }),
+        scopeBySchool(req.user?.schoolId, { _id: id, isDeleted: { $ne: true } }),
         { $set: updates },
         { new: true }
       );
@@ -633,8 +653,10 @@ router.delete(
     try {
       const { id } = req.params;
 
-      const event = await CalendarEvent.findOneAndDelete(
-        scopeBySchool(req.user?.schoolId, { _id: id })
+      const event = await CalendarEvent.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, { _id: id, isDeleted: { $ne: true } }),
+        { $set: { isDeleted: true, updatedAt: new Date() } },
+        { new: true }
       );
 
       if (!event) {

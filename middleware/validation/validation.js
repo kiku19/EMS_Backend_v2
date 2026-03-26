@@ -1103,7 +1103,10 @@ export const zodSchemas = {
     day: z.enum(VALID_DAYS),
     periodIndex: z.number().int().min(0).max(11),
     newClassId: objectId,
+    oldClassId: z.string(),
     subject: z.string().max(100).optional(),
+    room: z.string().max(100).optional(),
+    academicYear: z.string().optional(),
   }),
 
   // PUT /google-classroom/config — Update Google Classroom sync settings

@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 const notificationPreferenceSchema = new mongoose.Schema(
   {
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+      index: true,
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       required: true,
@@ -97,12 +103,27 @@ notificationPreferenceSchema.methods.getChannelPreferences = function (category,
     return { email: false, sms: false, whatsapp: false, inapp: true };
   }
 
-  const notification = categoryPref.notifications.find((n) => n.type === notificationType);
-  if (!notification || !notification.enabled) {
-    return { email: false, sms: false, whatsapp: false, inapp: false };
+  // Try exact notificationType match first
+  if (notificationType) {
+    const notification = categoryPref.notifications.find((n) => n.type === notificationType);
+    if (notification) {
+      if (!notification.enabled) {
+        return { email: false, sms: false, whatsapp: false, inapp: false };
+      }
+      return notification.channels;
+    }
   }
 
-  return notification.channels;
+  // Fallback: if no specific notificationType match, check if any notification
+  // in this category is enabled and merge their channel preferences
+  const enabledNotifications = categoryPref.notifications.filter((n) => n.enabled);
+  if (enabledNotifications.length === 0) {
+    // Category exists but all notifications disabled — still allow inapp
+    return { email: false, sms: false, whatsapp: false, inapp: true };
+  }
+
+  // Use channels from the first enabled notification as a reasonable default
+  return enabledNotifications[0].channels;
 };
 
 // Method to check if quiet hours are active
