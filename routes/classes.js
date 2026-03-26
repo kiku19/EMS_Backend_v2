@@ -532,7 +532,7 @@ router.put(
 
 router.get('/:id/students', authenticate, async (req, res) => {
   try {
-    const resolved = await resolveClassId(req.params.id);
+    const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
     if (!resolved) {
       return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
@@ -604,7 +604,7 @@ router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), as
 
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const resolved = await resolveClassId(req.params.id);
+    const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
     if (!resolved) {
       return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }

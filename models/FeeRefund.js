@@ -18,7 +18,7 @@ const feeRefundSchema = new mongoose.Schema(
     originalPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeePayment' },
 
     // Refund Method
-    refundMode: { type: String, required: true }, // 'cash', 'cheque', 'bank_transfer'
+    refundMode: { type: String, required: true, enum: ['cash', 'cheque', 'bank_transfer'] },
     transactionId: String,
     chequeNumber: String,
     bankName: String,

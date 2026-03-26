@@ -17,26 +17,27 @@ function scopeBySchool(schoolId, query = {}) {
 }
 
 // Calendar Event Schema - enhanced with recurring events, description, holidayType
-const calendarEventSchema = new mongoose.Schema({
-  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
-  title: { type: String, required: true },
-  date: { type: String, required: true }, // YYYY-MM-DD format
-  type: { type: String, enum: ['event', 'meeting', 'exam', 'holiday'], default: 'event' },
-  startTime: { type: String, default: '' },
-  endTime: { type: String, default: '' },
-  allDay: { type: Boolean, default: false },
-  description: { type: String, default: '' },
-  holidayType: { type: String, enum: ['National', 'Regional', 'School'], default: null },
-  recurrence: {
-    freq: { type: String, enum: ['weekly', 'monthly', 'yearly'] },
-    interval: { type: Number, default: 1 },
-    endDate: { type: String },
-    endCount: { type: Number },
+const calendarEventSchema = new mongoose.Schema(
+  {
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
+    title: { type: String, required: true },
+    date: { type: String, required: true }, // YYYY-MM-DD format
+    type: { type: String, enum: ['event', 'meeting', 'exam', 'holiday'], default: 'event' },
+    startTime: { type: String, default: '' },
+    endTime: { type: String, default: '' },
+    allDay: { type: Boolean, default: false },
+    description: { type: String, default: '' },
+    holidayType: { type: String, enum: ['National', 'Regional', 'School'], default: null },
+    recurrence: {
+      freq: { type: String, enum: ['weekly', 'monthly', 'yearly'] },
+      interval: { type: Number, default: 1 },
+      endDate: { type: String },
+      endCount: { type: Number },
+    },
+    isDeleted: { type: Boolean, default: false },
   },
-  isDeleted: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
-});
+  { timestamps: true }
+);
 
 const transformEvent = (doc) => {
   if (!doc) return null;

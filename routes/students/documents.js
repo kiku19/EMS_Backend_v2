@@ -47,8 +47,8 @@ router.post(
         newDocument.uploadDate = uploadDate || new Date().toISOString();
       }
 
-      const student = await Student.findByIdAndUpdate(
-        req.params.id,
+      const student = await Student.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
         { $push: { documents: newDocument } },
         { new: true, runValidators: true }
       );
@@ -78,8 +78,8 @@ router.delete(
         return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
-      const student = await Student.findByIdAndUpdate(
-        req.params.id,
+      const student = await Student.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
         { $pull: { documents: { id: req.params.docId } } },
         { new: true }
       );
@@ -105,8 +105,8 @@ router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), asyn
       return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
-    const student = await Student.findByIdAndUpdate(
-      req.params.id,
+    const student = await Student.findOneAndUpdate(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
       { photo: req.body.photo },
       { new: true, runValidators: true }
     );
@@ -144,8 +144,8 @@ router.post(
           size: document.size || 'Unknown',
         }));
 
-      const updatedStudent = await Student.findByIdAndUpdate(
-        req.params.id,
+      const updatedStudent = await Student.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
         { documents: fixedDocuments },
         { new: true }
       );

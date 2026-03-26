@@ -761,6 +761,7 @@ router.post(
   async (req, res) => {
     try {
       // Extract only allowed fields for security (input sanitization)
+      // approvedByStaffId/approvedByName excluded from create — set only during approval to prevent impersonation
       const allowedFields = [
         'studentId',
         'studentName',
@@ -776,9 +777,6 @@ router.post(
         'escortName',
         'escortRelation',
         'escortPhone',
-        'approvedBy',
-        'approvedByStaffId',
-        'approvedByName',
         'notes',
       ];
 
@@ -1100,6 +1098,7 @@ router.post(
     try {
       const feedbackData = {
         ...req.body,
+        schoolId: req.user.schoolId,
         date: new Date().toISOString().split('T')[0],
       };
 

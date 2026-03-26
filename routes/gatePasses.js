@@ -20,16 +20,7 @@ async function resolveRequestSchoolId(req) {
 const router = express.Router();
 router.use(authenticate);
 
-// Middleware to attach models to req.app.locals if not already there
-router.use((req, res, next) => {
-  if (!req.app.locals.Student) {
-    req.app.locals.Student = require('../database.js').Student;
-  }
-  if (!req.app.locals.Staff) {
-    req.app.locals.Staff = require('../database.js').Staff;
-  }
-  next();
-});
+// Student and Staff already imported via ESM at top of file
 
 /**
  * GET /api/gate-passes

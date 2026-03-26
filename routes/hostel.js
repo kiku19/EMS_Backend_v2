@@ -165,7 +165,13 @@ router.delete(
 
       hostel.isActive = false;
       await hostel.save();
-      res.json({ message: 'Hostel deleted' });
+
+      // Cascade-deactivate all rooms belonging to this hostel
+      await HostelRoom.updateMany(buildSchoolScopedQuery(schoolId, { hostelId: req.params.id }), {
+        $set: { isActive: false },
+      });
+
+      res.json({ message: 'Hostel and its rooms deactivated' });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

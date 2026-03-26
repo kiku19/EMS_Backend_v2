@@ -94,7 +94,10 @@ const conversationSchema = new mongoose.Schema(
     },
     deletedBy: [
       {
-        type: mongoose.Schema.Types.ObjectId,
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          required: true,
+        },
         deletedAt: {
           type: Date,
           default: Date.now,

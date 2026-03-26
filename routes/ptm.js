@@ -73,21 +73,26 @@ async function checkSessionConflict(
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
-const createSessionSchema = z.object({
-  title: z.string().min(2).max(200),
-  description: z.string().max(1000).optional().default(''),
-  sessionDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date' }),
-  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'startTime must be HH:MM'),
-  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'endTime must be HH:MM'),
-  slotDuration: z.number().int().min(5).max(120).optional().default(15),
-  classId: z.string().length(24, 'Invalid classId'),
-  staffId: z.string().length(24, 'Invalid staffId'),
-  venue: z.string().max(300).optional().default(''),
-  status: z
-    .enum(['scheduled', 'ongoing', 'completed', 'cancelled'])
-    .optional()
-    .default('scheduled'),
-});
+const createSessionSchema = z
+  .object({
+    title: z.string().min(2).max(200),
+    description: z.string().max(1000).optional().default(''),
+    sessionDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date' }),
+    startTime: z.string().regex(/^\d{2}:\d{2}$/, 'startTime must be HH:MM'),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/, 'endTime must be HH:MM'),
+    slotDuration: z.number().int().min(5).max(120).optional().default(15),
+    classId: z.string().length(24, 'Invalid classId'),
+    staffId: z.string().length(24, 'Invalid staffId'),
+    venue: z.string().max(300).optional().default(''),
+    status: z
+      .enum(['scheduled', 'ongoing', 'completed', 'cancelled'])
+      .optional()
+      .default('scheduled'),
+  })
+  .refine((data) => data.startTime < data.endTime, {
+    message: 'startTime must be before endTime',
+    path: ['endTime'],
+  });
 
 const updateSessionSchema = createSessionSchema.partial();
 
@@ -341,9 +346,19 @@ router.post('/:id/slots', authenticate, checkPermission('ptm', 'create'), async 
       });
     }
 
-    // Check for overlapping slot (accounts for slotDuration)
+    // Check that slot time falls within session time range
     const newStart = timeToMinutes(parsed.data.scheduledTime);
     const newEnd = newStart + (session.slotDuration || 15);
+    const sessionStart = timeToMinutes(session.startTime);
+    const sessionEnd = timeToMinutes(session.endTime);
+    if (newStart < sessionStart || newEnd > sessionEnd) {
+      return res.status(400).json({
+        success: false,
+        message: `Slot time must fall within session hours (${session.startTime}–${session.endTime})`,
+      });
+    }
+
+    // Check for overlapping slot (accounts for slotDuration)
     const timeConflict = session.slots.find((s) => {
       if (s.status === 'cancelled') return false;
       const slotStart = timeToMinutes(s.scheduledTime);

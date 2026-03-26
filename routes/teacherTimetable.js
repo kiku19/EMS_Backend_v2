@@ -138,8 +138,9 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
     const { teacherId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-    // Validate teacher exists
-    const teacher = await Staff.findById(teacherId);
+    // Validate teacher exists and belongs to this school
+    const schoolId = await resolveRequestSchoolId(req);
+    const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
     if (!teacher) {
       return res.status(404).json({
         success: false,
@@ -206,9 +207,10 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
   try {
     const { teacherId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR, periods = [] } = req.body;
+    const schoolId = await resolveRequestSchoolId(req);
 
-    // Validate teacher exists
-    const teacher = await Staff.findById(teacherId);
+    // Validate teacher exists and belongs to this school
+    const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
     if (!teacher) {
       return res.status(404).json({
         success: false,
@@ -218,7 +220,7 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
 
     // Check if timetable already exists
     let timetable = await TeacherTimetable.findOne(
-      scopeBySchool(req.user?.schoolId, { teacherId, academicYear })
+      scopeBySchool(schoolId, { teacherId, academicYear })
     );
 
     if (timetable) {
@@ -281,9 +283,10 @@ router.put(
         room,
         academicYear = CURRENT_ACADEMIC_YEAR,
       } = req.body;
+      const schoolId = await resolveRequestSchoolId(req);
 
-      // Validate teacher exists
-      const teacher = await Staff.findById(teacherId);
+      // Validate teacher exists and belongs to this school
+      const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
       if (!teacher) {
         return res.status(404).json({
           success: false,
@@ -375,9 +378,10 @@ router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async
   try {
     const { teacherId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+    const schoolId = await resolveRequestSchoolId(req);
 
-    // Validate teacher exists
-    const teacher = await Staff.findById(teacherId);
+    // Validate teacher exists and belongs to this school
+    const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
     if (!teacher) {
       return res.status(404).json({
         success: false,
@@ -430,9 +434,10 @@ router.post(
         room,
         academicYear = CURRENT_ACADEMIC_YEAR,
       } = req.body;
+      const schoolId = await resolveRequestSchoolId(req);
 
-      // Validate teacher exists
-      const teacher = await Staff.findById(teacherId);
+      // Validate teacher exists and belongs to this school
+      const teacher = await Staff.findOne(scopeBySchool(schoolId, { _id: teacherId }));
       if (!teacher) {
         return res.status(404).json({
           success: false,

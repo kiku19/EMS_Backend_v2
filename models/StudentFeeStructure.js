@@ -37,7 +37,7 @@ const studentFeeStructureSchema = new mongoose.Schema(
 
         // Payment tracking for this fee head
         paidAmount: { type: Number, default: 0 },
-        balanceAmount: { type: Number, default: 0, min: 0 },
+        balanceAmount: { type: Number, default: 0 },
         status: {
           type: String,
           enum: ['pending', 'partial', 'paid', 'overdue'],
@@ -49,7 +49,7 @@ const studentFeeStructureSchema = new mongoose.Schema(
     // Total calculations
     totalFee: { type: Number, default: 0 },
     totalPaid: { type: Number, default: 0 },
-    totalBalance: { type: Number, default: 0, min: 0 },
+    totalBalance: { type: Number, default: 0 },
 
     // Discount
     discountApplied: { type: Number, default: 0 },

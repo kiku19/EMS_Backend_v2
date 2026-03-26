@@ -8,6 +8,8 @@ import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 const router = express.Router();
 router.use(authenticate);
 
+const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.schoolId, extra);
+
 // ============================================================
 // PAYROLL REMINDER ENDPOINT
 // ============================================================
@@ -15,8 +17,8 @@ router.use(authenticate);
 // Get payroll reminder
 router.get('/payroll/reminder', authenticate, async (req, res) => {
   try {
-    // Get the most recent payroll reminder
-    const reminder = await Reminder.findOne({ type: 'payroll', isActive: true })
+    // Get the most recent payroll reminder scoped to this school
+    const reminder = await Reminder.findOne(schoolQuery(req, { type: 'payroll', isActive: true }))
       .sort({ createdAt: -1 })
       .lean();
 
@@ -66,7 +68,7 @@ router.get('/payroll/reminder', authenticate, async (req, res) => {
 router.get('/document-config', authenticate, async (req, res) => {
   try {
     const { DocumentConfig } = await import('../../database.js');
-    const configs = await DocumentConfig.find().sort({ documentName: 1 });
+    const configs = await DocumentConfig.find(schoolQuery(req)).sort({ documentName: 1 });
     res.json(configs);
   } catch (error) {
     console.error('Error fetching document configs:', error);
@@ -78,7 +80,26 @@ router.get('/document-config', authenticate, async (req, res) => {
 router.post('/document-config', authenticate, async (req, res) => {
   try {
     const { DocumentConfig } = await import('../../database.js');
-    const config = await DocumentConfig.create(req.body);
+    // Only allow known fields — prevent injection of _id, createdAt, etc.
+    const {
+      documentName,
+      isRequired,
+      uploadType,
+      allowedFormats,
+      maxFileSize,
+      displayOrder,
+      description,
+    } = req.body;
+    const config = await DocumentConfig.create({
+      documentName,
+      isRequired,
+      uploadType,
+      allowedFormats,
+      maxFileSize,
+      displayOrder,
+      description,
+      schoolId: req.user.schoolId,
+    });
     res.json(config);
   } catch (error) {
     console.error('Error creating document config:', error);
@@ -90,10 +111,12 @@ router.post('/document-config', authenticate, async (req, res) => {
 router.put('/document-config/:id', authenticate, async (req, res) => {
   try {
     const { DocumentConfig } = await import('../../database.js');
-    const config = await DocumentConfig.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
+    const { schoolId: _ignored, ...updateData } = req.body; // never allow schoolId override from body
+    const config = await DocumentConfig.findOneAndUpdate(
+      schoolQuery(req, { _id: req.params.id }),
+      updateData,
+      { new: true, runValidators: true }
+    );
 
     if (!config) {
       return res.status(404).json({ error: 'Document configuration not found' });
@@ -110,7 +133,7 @@ router.put('/document-config/:id', authenticate, async (req, res) => {
 router.delete('/document-config/:id', authenticate, async (req, res) => {
   try {
     const { DocumentConfig } = await import('../../database.js');
-    const config = await DocumentConfig.findByIdAndDelete(req.params.id);
+    const config = await DocumentConfig.findOneAndDelete(schoolQuery(req, { _id: req.params.id }));
 
     if (!config) {
       return res.status(404).json({ error: 'Document configuration not found' });

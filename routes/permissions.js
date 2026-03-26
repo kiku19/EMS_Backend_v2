@@ -417,7 +417,7 @@ router.post('/custom-roles', authenticate, async (req, res) => {
 
     const existing = await CustomRole.findOne({
       schoolId,
-      name: { $regex: new RegExp(`^${name}$`, 'i') },
+      name: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
     });
     if (existing) {
       return res.status(400).json({ error: req.t('common:routes.aRoleWithThisNameAlreadyExists') });
@@ -466,7 +466,7 @@ router.put('/custom-roles/:id', authenticate, async (req, res) => {
     if (name && name !== role.name) {
       const existing = await CustomRole.findOne({
         schoolId,
-        name: { $regex: new RegExp(`^${name}$`, 'i') },
+        name: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
         _id: { $ne: id },
       });
       if (existing) {

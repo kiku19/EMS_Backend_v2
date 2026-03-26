@@ -277,7 +277,7 @@ router.get('/next-admission-id', authenticate, async (req, res) => {
 router.get('/:id', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
     const student = await Student.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     ).populate('classId', 'name section');
     if (!student) {
       return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });

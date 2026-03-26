@@ -21,7 +21,7 @@
  *         name: status
  *         schema:
  *           type: string
- *           enum: [draft, published, completed]
+ *           enum: [scheduled, ongoing, completed, results_published]
  *     responses:
  *       200:
  *         description: Array of exams
@@ -287,7 +287,7 @@ router.get(
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
-      const resolved = await resolveClassId(req.params.classId);
+      const resolved = await resolveClassId(req.params.classId, req.user?.schoolId);
       if (!resolved) {
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
@@ -324,7 +324,7 @@ router.get(
 
       const resolvedClassIds = [];
       for (const classId of allClassIds) {
-        const resolved = await resolveClassId(classId.toString());
+        const resolved = await resolveClassId(classId.toString(), req.user?.schoolId);
         if (resolved) {
           resolvedClassIds.push(resolved.classId);
         }
@@ -382,7 +382,7 @@ router.get('/exams', authenticate, checkPermission('academics', 'view'), async (
       query.academicYear = academicYear;
     }
     if (classId) {
-      const resolved = await resolveClassId(classId);
+      const resolved = await resolveClassId(classId, req.user?.schoolId);
       if (resolved) {
         query.classId = resolved.classId;
       }
@@ -488,7 +488,7 @@ router.post(
 
       let resolvedClassId = classId;
       if (classId) {
-        const resolved = await resolveClassId(classId);
+        const resolved = await resolveClassId(classId, req.user?.schoolId);
         if (resolved) {
           resolvedClassId = resolved.classId;
         }
@@ -562,7 +562,7 @@ router.post(
 
       let resolvedClassId = classId;
       if (classId) {
-        const resolved = await resolveClassId(classId);
+        const resolved = await resolveClassId(classId, req.user?.schoolId);
         if (resolved) {
           resolvedClassId = resolved.classId;
         }
@@ -685,7 +685,7 @@ router.put(
         updateData.type = examType.replace(/-/g, '_');
       }
       if (classId !== undefined) {
-        const resolved = await resolveClassId(classId);
+        const resolved = await resolveClassId(classId, req.user?.schoolId);
         updateData.classId = resolved ? resolved.classId : classId;
       }
       if (subjectId !== undefined) updateData.subjectId = subjectId;
@@ -814,6 +814,14 @@ router.post(
   checkPermission('academics', 'publish'),
   async (req, res) => {
     try {
+      // Verify results exist before publishing — prevents empty notifications to parents
+      const resultsCount = await Result.countDocuments(
+        scopeBySchool(req.user?.schoolId, { examId: req.params.id })
+      );
+      if (resultsCount === 0) {
+        return res.status(400).json({ error: 'Cannot publish exam without any results entered' });
+      }
+
       // Use school-scoped update to prevent cross-tenant manipulation
       // Exclude soft-deleted exams from being published
       const exam = await Exam.findOneAndUpdate(
@@ -897,7 +905,7 @@ router.get(
       const { classId, examId } = req.params;
 
       let resolvedClassId = classId;
-      const resolved = await resolveClassId(classId);
+      const resolved = await resolveClassId(classId, req.user?.schoolId);
       if (resolved) {
         resolvedClassId = resolved.classId;
       }
@@ -962,7 +970,7 @@ router.post(
 
       let resolvedClassId = classId;
       if (classId) {
-        const resolved = await resolveClassId(classId);
+        const resolved = await resolveClassId(classId, req.user?.schoolId);
         if (resolved) {
           resolvedClassId = resolved.classId;
         }

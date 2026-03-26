@@ -209,7 +209,7 @@ export const createStudentSchema = z
     hostelRequired: z.boolean().nullish(),
 
     // Status
-    feeStatus: z.enum(['paid', 'pending', 'partial']).default('pending'),
+    feeStatus: z.enum(['paid', 'pending', 'partial', 'overdue']).default('pending'),
     status: z.enum(['active', 'inactive', 'graduated', 'transferred', 'alumni']).default('active'),
 
     // Documents & Photo
@@ -230,5 +230,7 @@ export const updateStudentSchema = createStudentSchema
     // When explicitly provided as an array, at least 1 parent is still required.
     // .partial() only adds undefined (not null), so .nullish() is needed here explicitly.
     parents: z.array(parentSchema).min(1, 'At least one parent or guardian is required').nullish(),
+    // Teacher-assessed student ratings (Mixed/freeform object)
+    ratings: z.record(z.any()).optional(),
   })
   .strip();

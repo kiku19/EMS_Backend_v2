@@ -565,10 +565,13 @@ router.get('/search', authenticate, async (req, res) => {
       convNameMap.set(conv._id.toString(), other?.name || 'Unknown');
     }
 
+    // Escape special regex chars to prevent ReDoS
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
     // Search messages (exclude deleted for this user)
     const messages = await Message.find({
       conversationId: { $in: conversationIds },
-      content: { $regex: query, $options: 'i' },
+      content: { $regex: escapedQuery, $options: 'i' },
       isDeleted: false,
       deletedFor: { $ne: userId },
     })
@@ -633,7 +636,8 @@ router.get('/presence/:userId', authenticate, async (req, res) => {
 // Get online users — requires auth
 router.get('/presence/online', authenticate, async (req, res) => {
   try {
-    const onlineUsers = await UserPresence.find({ status: 'online' })
+    const schoolId = req.user.schoolId;
+    const onlineUsers = await UserPresence.find({ status: 'online', schoolId })
       .select('userId userModel lastSeen')
       .lean();
 
@@ -651,13 +655,14 @@ router.put('/:messageId/edit', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const userId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
     const { content } = req.body;
 
     if (!content) {
       return res.status(400).json({ error: 'content is required' });
     }
 
-    const message = await Message.findById(messageId);
+    const message = await Message.findOne({ _id: messageId, schoolId });
 
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
@@ -702,6 +707,7 @@ router.post('/:messageId/react', authenticate, async (req, res) => {
   try {
     const { messageId } = req.params;
     const userId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
     const userModel = (req.user.userType || 'staff') === 'staff' ? 'Staff' : 'Student';
     const { emoji } = req.body;
 
@@ -709,7 +715,7 @@ router.post('/:messageId/react', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'emoji is required' });
     }
 
-    const message = await Message.findById(messageId);
+    const message = await Message.findOne({ _id: messageId, schoolId });
 
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
@@ -761,7 +767,8 @@ router.post('/:messageId/reply', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'content is required' });
     }
 
-    const originalMessage = await Message.findById(messageId);
+    const schoolId = req.user.schoolId;
+    const originalMessage = await Message.findOne({ _id: messageId, schoolId });
 
     if (!originalMessage) {
       return res.status(404).json({ error: 'Message not found' });
@@ -780,6 +787,7 @@ router.post('/:messageId/reply', authenticate, async (req, res) => {
     // Create reply message
     const reply = new Message({
       conversationId: originalMessage.conversationId,
+      schoolId,
       senderId,
       senderModel,
       receiverId,
@@ -823,7 +831,8 @@ router.post('/:messageId/forward', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'conversationIds array is required' });
     }
 
-    const originalMessage = await Message.findById(messageId);
+    const schoolId = req.user.schoolId;
+    const originalMessage = await Message.findOne({ _id: messageId, schoolId });
 
     if (!originalMessage) {
       return res.status(404).json({ error: 'Message not found' });
@@ -832,8 +841,8 @@ router.post('/:messageId/forward', authenticate, async (req, res) => {
     const forwardedMessages = [];
 
     for (const conversationId of conversationIds) {
-      // Get conversation to find receiver
-      const conversation = await Conversation.findById(conversationId);
+      // Get conversation to find receiver — scope by schoolId
+      const conversation = await Conversation.findOne({ _id: conversationId, schoolId });
 
       if (!conversation) continue;
 
@@ -847,6 +856,7 @@ router.post('/:messageId/forward', authenticate, async (req, res) => {
       // Create forwarded message
       const forwarded = new Message({
         conversationId,
+        schoolId,
         senderId,
         senderModel,
         receiverId: otherParticipant.userId,
@@ -896,14 +906,15 @@ router.post('/:messageId/pin', authenticate, async (req, res) => {
     const { pinned } = req.body;
     const userId = req.user.id || req.user.userId;
 
-    const message = await Message.findById(messageId);
+    const schoolId = req.user.schoolId;
+    const message = await Message.findOne({ _id: messageId, schoolId });
 
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
     }
 
     // Verify the authenticated user is a participant in this conversation
-    const conversation = await Conversation.findById(message.conversationId);
+    const conversation = await Conversation.findOne({ _id: message.conversationId, schoolId });
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
@@ -1109,19 +1120,24 @@ router.delete('/conversations/:conversationId', authenticate, async (req, res) =
 router.get('/contacts', authenticate, async (req, res) => {
   try {
     const { userType } = req.query;
+    const schoolId = req.user.schoolId;
 
     if (!userType || !['staff', 'student'].includes(userType)) {
       return res.status(400).json({ error: 'Valid userType (staff/student) is required' });
     }
 
-    // Get all active staff members
-    const staff = await Staff.find({ isActive: true })
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School context is required' });
+    }
+
+    // Get all active staff members scoped by school
+    const staff = await Staff.find({ isActive: true, schoolId })
       .select('_id name role picture')
       .sort({ name: 1 })
       .lean();
 
-    // Get all active students
-    const students = await Student.find({ isActive: true })
+    // Get all active students scoped by school
+    const students = await Student.find({ isActive: true, schoolId })
       .select('_id name rollNo picture')
       .sort({ name: 1 })
       .lean();

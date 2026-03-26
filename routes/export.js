@@ -112,7 +112,7 @@ router.get(
           : '',
         rollNo: s.rollNo || '',
         gender: s.gender || '',
-        dob: s.dob ? new Date(s.dob).toLocaleDateString() : '',
+        dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString() : '',
         phone: s.phone || '',
         email: s.email || '',
         parentName: s.parentName || s.fatherName || s.guardianName || '',

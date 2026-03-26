@@ -61,7 +61,11 @@ export const createExamSchema = z
       .nullable()
       .optional(),
   })
-  .strip();
+  .strip()
+  .refine((data) => data.passingMarks <= data.maxMarks, {
+    message: 'Passing marks cannot exceed maximum marks',
+    path: ['passingMarks'],
+  });
 
 // ─── UPDATE EXAM (all fields optional) ───────────────────────────
 export const updateExamSchema = z
@@ -105,7 +109,19 @@ export const updateExamSchema = z
       .nullable()
       .optional(),
   })
-  .strip();
+  .strip()
+  .refine(
+    (data) => {
+      if (data.passingMarks != null && data.maxMarks != null) {
+        return data.passingMarks <= data.maxMarks;
+      }
+      return true;
+    },
+    {
+      message: 'Passing marks cannot exceed maximum marks',
+      path: ['passingMarks'],
+    }
+  );
 
 // ─── BULK RESULTS ─────────────────────────────────────────────────
 export const bulkResultsSchema = z

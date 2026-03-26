@@ -3,7 +3,7 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const timetableSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
     periods: [

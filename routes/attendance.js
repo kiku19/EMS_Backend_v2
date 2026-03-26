@@ -164,30 +164,35 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
-router.get('/student/:studentId', authenticate, async (req, res) => {
-  try {
-    const { studentId } = req.params;
-    const { start, end } = req.query;
+router.get(
+  '/student/:studentId',
+  authenticate,
+  checkPermission('students', 'view'),
+  async (req, res) => {
+    try {
+      const { studentId } = req.params;
+      const { start, end } = req.query;
 
-    const schoolId = await resolveRequestSchoolId(req);
-    const query = scopeBySchool(schoolId, { studentId });
-    if (start && end) {
-      query.date = { $gte: start, $lte: end };
-    } else if (start) {
-      query.date = { $gte: start };
-    } else if (end) {
-      query.date = { $lte: end };
+      const schoolId = await resolveRequestSchoolId(req);
+      const query = scopeBySchool(schoolId, { studentId });
+      if (start && end) {
+        query.date = { $gte: start, $lte: end };
+      } else if (start) {
+        query.date = { $gte: start };
+      } else if (end) {
+        query.date = { $lte: end };
+      }
+
+      const attendance = await Attendance.find(query)
+        .populate('studentId', 'name rollNo admissionId')
+        .sort({ date: -1 });
+
+      res.json(attendance);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    const attendance = await Attendance.find(query)
-      .populate('studentId', 'name rollNo admissionId')
-      .sort({ date: -1 });
-
-    res.json(attendance);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 router.get(
   '/class/:classId/:date',
@@ -196,7 +201,7 @@ router.get(
   async (req, res) => {
     try {
       const { classId, date } = req.params;
-      const resolved = await resolveClassId(classId);
+      const resolved = await resolveClassId(classId, req.user?.schoolId);
 
       if (!resolved) {
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
@@ -231,7 +236,7 @@ async function markBulkAttendance(req, res) {
     return res.status(400).json({ error: 'classId, date, and attendance array are required' });
   }
 
-  const resolved = await resolveClassId(classId);
+  const resolved = await resolveClassId(classId, req.user?.schoolId);
   if (!resolved) {
     return res.status(404).json({ error: req.t('common:errors.classNotFound') });
   }
@@ -335,7 +340,7 @@ router.get(
       const { classId } = req.params;
       const { start, end } = req.query;
 
-      const resolved = await resolveClassId(classId);
+      const resolved = await resolveClassId(classId, req.user?.schoolId);
       if (!resolved) {
         return res.json([]);
       }
@@ -374,7 +379,7 @@ router.get(
         return res.status(400).json({ error: 'startDate and endDate are required' });
       }
 
-      const resolved = await resolveClassId(classId);
+      const resolved = await resolveClassId(classId, req.user?.schoolId);
       if (!resolved) {
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
@@ -435,7 +440,7 @@ router.get(
 router.get('/:classId/:date', authenticate, async (req, res) => {
   try {
     const { classId, date } = req.params;
-    const resolved = await resolveClassId(classId);
+    const resolved = await resolveClassId(classId, req.user?.schoolId);
 
     if (!resolved) {
       return res.status(404).json({ error: req.t('common:errors.classNotFound') });

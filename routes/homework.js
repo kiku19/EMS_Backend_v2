@@ -239,6 +239,7 @@ import mongoose from 'mongoose';
 import Homework from '../models/Homework.js';
 import Parent from '../models/Parent.js';
 import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { Student } from '../database.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
@@ -442,164 +443,176 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Create homework (teacher)
-router.post('/', authenticate, validateZod(zodSchemas.createHomework), async (req, res) => {
-  try {
-    const {
-      title,
-      description,
-      subject,
-      classId,
-      sectionId,
-      teacherId,
-      dueDate,
-      attachments,
-      sentToParents,
-    } = req.body;
-
-    // Validate and parse dueDate — default to 7 days from now if omitted
-    const parsedDueDate = dueDate
-      ? new Date(dueDate)
-      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    if (isNaN(parsedDueDate.getTime())) {
-      return res
-        .status(400)
-        .json({ error: req.t('common:routes.invalidDueDateFormatUseYyyyMmDdOrIsoFormat') });
-    }
-
-    const schoolId = extractSchoolId(req.user.schoolId);
-    const homework = new Homework({
-      schoolId,
-      title,
-      description,
-      subject,
-      classId,
-      ...(sectionId && { sectionId }),
-      teacherId,
-      dueDate: parsedDueDate,
-      attachments: attachments || [],
-      sentToParents: sentToParents !== false,
-    });
-
-    await homework.save();
-
-    // Emit socket event for real-time notification
-    const io = req.app.get('io');
-    emitEvent(io, EVENTS.HOMEWORK_CREATED, {
-      schoolId: req.user?.schoolId?.toString(),
-      classId: classId?.toString(),
-      homeworkId: homework._id.toString(),
-      teacherId: teacherId?.toString(),
-      title,
-      subject,
-      dueDate,
-    });
-
-    // Send push notification to teacher (confirmation) and parents
+router.post(
+  '/',
+  authenticate,
+  checkPermission('homework', 'create'),
+  validateZod(zodSchemas.createHomework),
+  async (req, res) => {
     try {
-      const { default: pushNotificationService } =
-        await import('../services/pushNotificationService.js');
-
-      const notificationData = {
-        type: 'homework',
-        homeworkId: homework._id,
-        classId,
+      const {
+        title,
+        description,
         subject,
-        dueDate,
-      };
-
-      // Send to teacher as confirmation
-      await pushNotificationService.sendToMultipleUsers(
-        [teacherId],
-        'Homework Created',
-        `${title} has been assigned for ${subject}`,
-        notificationData
-      );
-
-      // Send to parents of students in this class
-      const students = await Student.find({
         classId,
-        status: 'active',
-        isDeleted: { $ne: true },
-      }).select('_id');
-      const studentIds = students.map((s) => s._id);
+        sectionId,
+        teacherId,
+        dueDate,
+        attachments,
+        sentToParents,
+      } = req.body;
 
-      if (studentIds.length > 0) {
-        const parents = await Parent.find({
-          'children.studentId': { $in: studentIds },
-        }).select('_id');
-
-        for (const parent of parents) {
-          try {
-            await pushNotificationService.sendToParent(
-              parent._id,
-              'New Homework',
-              `${title} has been assigned for ${subject}. Due: ${dueDate ? new Date(dueDate).toLocaleDateString() : 'TBD'}`,
-              notificationData
-            );
-          } catch {
-            // Individual parent notification failure is non-critical
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error sending push notification:', error);
-    }
-
-    const populatedHomework = await Homework.findById(homework._id)
-      .populate('classId', 'name section')
-      .populate('teacherId', 'name');
-
-    res.status(201).json(populatedHomework);
-  } catch (error) {
-    console.error('Error creating homework:', error);
-    res.status(500).json({
-      error: error.message,
-      details: error.name === 'ValidationError' ? error.errors : undefined,
-    });
-  }
-});
-
-// Update homework
-router.put('/:id', authenticate, validateZod(zodSchemas.updateHomework), async (req, res) => {
-  try {
-    const { title, description, subject, dueDate, attachments, status } = req.body;
-
-    // Validate dueDate if provided (same as create route)
-    let parsedDueDate;
-    if (dueDate !== undefined) {
-      parsedDueDate = new Date(dueDate);
+      // Validate and parse dueDate — default to 7 days from now if omitted
+      const parsedDueDate = dueDate
+        ? new Date(dueDate)
+        : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       if (isNaN(parsedDueDate.getTime())) {
         return res
           .status(400)
           .json({ error: req.t('common:routes.invalidDueDateFormatUseYyyyMmDdOrIsoFormat') });
       }
-    }
 
-    const homework = await Homework.findOneAndUpdate(
-      scopeBySchool(req.user.schoolId, { _id: req.params.id }),
-      {
+      const schoolId = extractSchoolId(req.user.schoolId);
+      const homework = new Homework({
+        schoolId,
         title,
         description,
         subject,
-        ...(parsedDueDate !== undefined && { dueDate: parsedDueDate }),
-        attachments,
-        status,
-        updatedAt: new Date(),
-      },
-      { new: true }
-    )
-      .populate('classId', 'name section')
-      .populate('teacherId', 'name');
+        classId,
+        ...(sectionId && { sectionId }),
+        teacherId,
+        dueDate: parsedDueDate,
+        attachments: attachments || [],
+        sentToParents: sentToParents !== false,
+      });
 
-    if (!homework) {
-      return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
+      await homework.save();
+
+      // Emit socket event for real-time notification
+      const io = req.app.get('io');
+      emitEvent(io, EVENTS.HOMEWORK_CREATED, {
+        schoolId: req.user?.schoolId?.toString(),
+        classId: classId?.toString(),
+        homeworkId: homework._id.toString(),
+        teacherId: teacherId?.toString(),
+        title,
+        subject,
+        dueDate,
+      });
+
+      // Send push notification to teacher (confirmation) and parents
+      try {
+        const { default: pushNotificationService } =
+          await import('../services/pushNotificationService.js');
+
+        const notificationData = {
+          type: 'homework',
+          homeworkId: homework._id,
+          classId,
+          subject,
+          dueDate,
+        };
+
+        // Send to teacher as confirmation
+        await pushNotificationService.sendToMultipleUsers(
+          [teacherId],
+          'Homework Created',
+          `${title} has been assigned for ${subject}`,
+          notificationData
+        );
+
+        // Send to parents of students in this class
+        const students = await Student.find({
+          classId,
+          status: 'active',
+          isDeleted: { $ne: true },
+        }).select('_id');
+        const studentIds = students.map((s) => s._id);
+
+        if (studentIds.length > 0) {
+          const parents = await Parent.find({
+            'children.studentId': { $in: studentIds },
+          }).select('_id');
+
+          for (const parent of parents) {
+            try {
+              await pushNotificationService.sendToParent(
+                parent._id,
+                'New Homework',
+                `${title} has been assigned for ${subject}. Due: ${dueDate ? new Date(dueDate).toLocaleDateString() : 'TBD'}`,
+                notificationData
+              );
+            } catch {
+              // Individual parent notification failure is non-critical
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error sending push notification:', error);
+      }
+
+      const populatedHomework = await Homework.findById(homework._id)
+        .populate('classId', 'name section')
+        .populate('teacherId', 'name');
+
+      res.status(201).json(populatedHomework);
+    } catch (error) {
+      console.error('Error creating homework:', error);
+      res.status(500).json({
+        error: error.message,
+        details: error.name === 'ValidationError' ? error.errors : undefined,
+      });
     }
-
-    res.json(homework);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
+
+// Update homework
+router.put(
+  '/:id',
+  authenticate,
+  checkPermission('homework', 'edit'),
+  validateZod(zodSchemas.updateHomework),
+  async (req, res) => {
+    try {
+      const { title, description, subject, dueDate, attachments, status } = req.body;
+
+      // Validate dueDate if provided (same as create route)
+      let parsedDueDate;
+      if (dueDate !== undefined) {
+        parsedDueDate = new Date(dueDate);
+        if (isNaN(parsedDueDate.getTime())) {
+          return res
+            .status(400)
+            .json({ error: req.t('common:routes.invalidDueDateFormatUseYyyyMmDdOrIsoFormat') });
+        }
+      }
+
+      const homework = await Homework.findOneAndUpdate(
+        scopeBySchool(req.user.schoolId, { _id: req.params.id }),
+        {
+          title,
+          description,
+          subject,
+          ...(parsedDueDate !== undefined && { dueDate: parsedDueDate }),
+          attachments,
+          status,
+          updatedAt: new Date(),
+        },
+        { new: true }
+      )
+        .populate('classId', 'name section')
+        .populate('teacherId', 'name');
+
+      if (!homework) {
+        return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
+      }
+
+      res.json(homework);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 // Submit homework (student — submitted by staff/admin on behalf of student)
 router.post(
@@ -683,7 +696,7 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
 });
 
 // Delete homework (soft delete — preserves grading data)
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, checkPermission('homework', 'delete'), async (req, res) => {
   try {
     const homework = await Homework.findOneAndUpdate(
       scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),

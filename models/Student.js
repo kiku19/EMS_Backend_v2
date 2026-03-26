@@ -177,7 +177,11 @@ const studentSchema = new mongoose.Schema(
     hostelRequired: { type: Boolean, default: false },
 
     // Status
-    feeStatus: { type: String, default: 'pending' },
+    feeStatus: {
+      type: String,
+      enum: ['paid', 'pending', 'partial', 'overdue'],
+      default: 'pending',
+    },
     status: { type: String, default: 'active' },
 
     // Alumni Information (populated when status is set to 'alumni')
@@ -199,7 +203,7 @@ const studentSchema = new mongoose.Schema(
     feeDetails: {
       totalFee: { type: Number, default: 0 },
       paidAmount: { type: Number, default: 0 },
-      balanceAmount: { type: Number, default: 0, min: 0 },
+      balanceAmount: { type: Number, default: 0 },
       discountApplied: { type: Number, default: 0 },
       lastPaymentDate: String,
     },
