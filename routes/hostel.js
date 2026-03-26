@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import Hostel from '../models/Hostel.js';
 import HostelRoom from '../models/HostelRoom.js';
@@ -73,7 +74,14 @@ router.get('/hostels', authenticate, checkPermission('hostel', 'view'), async (r
       Hostel.countDocuments(query),
     ]);
 
-    res.json({ hostels, total, page: parseInt(page), limit: parseInt(limit) });
+    const parsedLimit = parseInt(limit);
+    res.json({
+      hostels,
+      total,
+      page: parseInt(page),
+      limit: parsedLimit,
+      pages: Math.ceil(total / parsedLimit),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -189,7 +197,14 @@ router.get('/rooms', authenticate, checkPermission('hostel', 'view'), async (req
       HostelRoom.countDocuments(query),
     ]);
 
-    res.json({ rooms, total, page: parseInt(page), limit: parseInt(limit) });
+    const parsedLimit = parseInt(limit);
+    res.json({
+      rooms,
+      total,
+      page: parseInt(page),
+      limit: parsedLimit,
+      pages: Math.ceil(total / parsedLimit),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -342,7 +357,14 @@ router.get('/allocations', authenticate, checkPermission('hostel', 'view'), asyn
       HostelAllocation.countDocuments(query),
     ]);
 
-    res.json({ allocations, total, page: parseInt(page), limit: parseInt(limit) });
+    const parsedLimit = parseInt(limit);
+    res.json({
+      allocations,
+      total,
+      page: parseInt(page),
+      limit: parsedLimit,
+      pages: Math.ceil(total / parsedLimit),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -514,12 +536,14 @@ router.get('/stats', authenticate, checkPermission('hostel', 'view'), async (req
   try {
     const schoolId = req.user.schoolId;
 
+    const schoolObjectId = new mongoose.Types.ObjectId(String(schoolId));
+
     const [totalHostels, totalRooms, capacityAgg, activeAllocations, vacatedAllocations] =
       await Promise.all([
         Hostel.countDocuments(buildSchoolScopedQuery(schoolId, { isActive: true })),
         HostelRoom.countDocuments(buildSchoolScopedQuery(schoolId, { isActive: true })),
         HostelRoom.aggregate([
-          { $match: buildSchoolScopedQuery(schoolId, { isActive: true }) },
+          { $match: { schoolId: schoolObjectId, isActive: true } },
           {
             $group: {
               _id: null,

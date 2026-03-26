@@ -55,6 +55,7 @@ import StaffAttendance from '../models/StaffAttendance.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import TeacherLeave from '../models/TeacherLeave.js';
 import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -79,16 +80,14 @@ function hasRole(user, roles) {
 }
 
 // GET /api/v1/dashboard/stats
-router.get('/stats', authenticate, async (req, res) => {
+router.get('/stats', authenticate, checkPermission('dashboard', 'view'), async (req, res) => {
   try {
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({
-          error: req.t('common:routes.invalidQueryParameters'),
-          details: parsed.error.errors,
-        });
+      return res.status(400).json({
+        error: req.t('common:routes.invalidQueryParameters'),
+        details: parsed.error.errors,
+      });
     }
 
     const schoolId = extractSchoolId(req.user?.schoolId);

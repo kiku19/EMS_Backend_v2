@@ -1,4 +1,5 @@
 import express from 'express';
+import { z } from 'zod';
 import { SchoolSettings } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
 import { getDefaultSchoolSettings } from '../../utils/academicYear.js';
@@ -6,6 +7,29 @@ import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 
 const router = express.Router();
 router.use(authenticate);
+
+// ─── Zod Validation Schemas ────────────────────────────────────────────────────
+
+const holidaySchema = z
+  .object({
+    name: z.string().min(1, 'Holiday name is required').max(200).trim(),
+    date: z
+      .string()
+      .min(1, 'Date is required')
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
+    type: z.string().max(50).default('General'),
+    description: z.string().max(500).default(''),
+  })
+  .strip();
+
+const leaveTypeSchema = z
+  .object({
+    name: z.string().min(1, 'Leave type name is required').max(100).trim(),
+    quota: z.number().min(0, 'Quota cannot be negative').default(0),
+    applicableTo: z.string().max(50).default('both'),
+    requiresApproval: z.boolean().default(true),
+  })
+  .strip();
 
 const getSettingsQuery = (req) => buildSchoolScopedQuery(req.user?.schoolId);
 const findSchoolSettings = (req) => SchoolSettings.findOne(getSettingsQuery(req));
@@ -24,16 +48,21 @@ router.get('/holidays', authenticate, async (req, res) => {
 // Add holiday
 router.post('/holidays', authenticate, async (req, res) => {
   try {
+    const parsed = holidaySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
     let settings = await findSchoolSettings(req);
 
     if (!settings) {
       settings = await SchoolSettings.create({
         ...getDefaultSchoolSettings(req.user?.schoolId),
-        holidays: [req.body],
+        holidays: [parsed.data],
       });
     } else {
       settings.holidays = settings.holidays || [];
-      settings.holidays.push(req.body);
+      settings.holidays.push(parsed.data);
       await settings.save();
     }
 
@@ -59,7 +88,12 @@ router.put('/holidays/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Holiday not found' });
     }
 
-    settings.holidays[holidayIndex] = { ...settings.holidays[holidayIndex], ...req.body };
+    const parsed = holidaySchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
+    settings.holidays[holidayIndex] = { ...settings.holidays[holidayIndex], ...parsed.data };
     await settings.save();
 
     res.json(settings.holidays);
@@ -102,16 +136,21 @@ router.get('/leave-types', authenticate, async (req, res) => {
 // Add leave type
 router.post('/leave-types', authenticate, async (req, res) => {
   try {
+    const parsed = leaveTypeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
     let settings = await findSchoolSettings(req);
 
     if (!settings) {
       settings = await SchoolSettings.create({
         ...getDefaultSchoolSettings(req.user?.schoolId),
-        leaveTypes: [req.body],
+        leaveTypes: [parsed.data],
       });
     } else {
       settings.leaveTypes = settings.leaveTypes || [];
-      settings.leaveTypes.push(req.body);
+      settings.leaveTypes.push(parsed.data);
       await settings.save();
     }
 
@@ -139,7 +178,15 @@ router.put('/leave-types/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Leave type not found' });
     }
 
-    settings.leaveTypes[leaveTypeIndex] = { ...settings.leaveTypes[leaveTypeIndex], ...req.body };
+    const parsed = leaveTypeSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
+    settings.leaveTypes[leaveTypeIndex] = {
+      ...settings.leaveTypes[leaveTypeIndex],
+      ...parsed.data,
+    };
     await settings.save();
 
     res.json(settings.leaveTypes);

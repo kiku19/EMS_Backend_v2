@@ -460,6 +460,7 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
       // Find or create student fee structure for the current academic year
       let feeStructure = await StudentFeeStructure.findOne({
         studentId: student._id,
+        schoolId,
         academicYear,
       });
 

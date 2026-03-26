@@ -144,6 +144,17 @@ router.post(
           newStructure.overallStatus = 'pending';
 
           await newStructure.save();
+
+          // Sync Student.feeDetails with the newly created fee structure
+          await Student.findByIdAndUpdate(student._id, {
+            $set: {
+              'feeDetails.totalFee': newStructure.totalFee,
+              'feeDetails.paidAmount': newStructure.totalPaid,
+              'feeDetails.balanceAmount': newStructure.totalBalance,
+              feeStatus: newStructure.overallStatus || 'pending',
+            },
+          });
+
           appliedCount += 1;
         }
       }

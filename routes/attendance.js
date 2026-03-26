@@ -326,35 +326,40 @@ router.post(
   }
 );
 
-router.get('/history/:classId', authenticate, async (req, res) => {
-  try {
-    const { classId } = req.params;
-    const { start, end } = req.query;
+router.get(
+  '/history/:classId',
+  authenticate,
+  checkPermission('attendance', 'view'),
+  async (req, res) => {
+    try {
+      const { classId } = req.params;
+      const { start, end } = req.query;
 
-    const resolved = await resolveClassId(classId);
-    if (!resolved) {
-      return res.json([]);
+      const resolved = await resolveClassId(classId);
+      if (!resolved) {
+        return res.json([]);
+      }
+
+      const schoolId = await resolveRequestSchoolId(req);
+      const query = scopeBySchool(schoolId, { classId: resolved.classId });
+      if (start && end) {
+        query.date = { $gte: start, $lte: end };
+      } else if (start) {
+        query.date = { $gte: start };
+      } else if (end) {
+        query.date = { $lte: end };
+      }
+
+      const attendance = await Attendance.find(query)
+        .populate('studentId', 'name rollNo admissionId')
+        .sort({ date: -1 });
+
+      res.json(attendance);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    const schoolId = await resolveRequestSchoolId(req);
-    const query = scopeBySchool(schoolId, { classId: resolved.classId });
-    if (start && end) {
-      query.date = { $gte: start, $lte: end };
-    } else if (start) {
-      query.date = { $gte: start };
-    } else if (end) {
-      query.date = { $lte: end };
-    }
-
-    const attendance = await Attendance.find(query)
-      .populate('studentId', 'name rollNo admissionId')
-      .sort({ date: -1 });
-
-    res.json(attendance);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 router.get(
   '/report/:classId',

@@ -469,6 +469,29 @@ router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async 
       });
     }
 
+    // Block arbitrary status/approvalStatus changes through the update route.
+    // Status transitions must use dedicated endpoints (approve, reject, use, cancel).
+    if (req.body.status && req.body.status !== gatePass.status) {
+      const ALLOWED_STATUS_TRANSITIONS = {
+        ACTIVE: ['CANCELLED'], // Can only cancel an active pass via update
+      };
+      const allowed = ALLOWED_STATUS_TRANSITIONS[gatePass.status] || [];
+      if (!allowed.includes(req.body.status)) {
+        return res.status(400).json({
+          success: false,
+          error: `Cannot transition status from ${gatePass.status} to ${req.body.status}. Use dedicated endpoints for approve/reject/use.`,
+        });
+      }
+    }
+
+    // Prevent setting approvalStatus directly — must use /approve or /reject endpoints
+    if (req.body.approvalStatus && req.body.approvalStatus !== gatePass.approvalStatus) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot change approvalStatus directly. Use the approve or reject endpoints.',
+      });
+    }
+
     const {
       reason,
       otherReason,

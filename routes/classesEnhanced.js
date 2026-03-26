@@ -1,5 +1,6 @@
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import express from 'express';
+import { z } from 'zod';
 import {
   Class,
   Student,
@@ -18,6 +19,17 @@ import { checkPermission } from '../middleware/permissions.js';
 import { validateZod } from '../middleware/validation.js';
 import { promoteClassSchema, updateStrengthLimitSchema } from '../validators/index.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
+
+const createAnnouncementSchema = z
+  .object({
+    title: z.string().min(1, 'Title is required').max(200).trim(),
+    description: z.string().min(1, 'Content/description is required').max(5000).trim(),
+    targetAudience: z.string().max(50).optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).default('normal'),
+    attachments: z.array(z.string().url()).optional().default([]),
+    scheduledFor: z.string().datetime().optional().nullable(),
+  })
+  .strip();
 
 const router = express.Router();
 router.use(authenticate);
@@ -931,6 +943,7 @@ router.post(
   '/:id/announcements',
   authenticate,
   checkPermission('classes', 'edit'),
+  validateZod(createAnnouncementSchema),
   async (req, res) => {
     try {
       const { id } = req.params;

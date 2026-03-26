@@ -172,8 +172,10 @@ router.get('/payments', authenticate, checkPermission('fees', 'view'), async (re
     if (status) filter.status = status;
     if (startDate || endDate) {
       filter.paymentDate = {};
-      if (startDate) filter.paymentDate.$gte = new Date(startDate);
-      if (endDate) filter.paymentDate.$lte = new Date(endDate);
+      // paymentDate is stored as a String (YYYY-MM-DD) in FeePayment schema,
+      // so use string comparison instead of Date objects
+      if (startDate) filter.paymentDate.$gte = startDate;
+      if (endDate) filter.paymentDate.$lte = endDate;
     }
 
     const payments = await FeePayment.find(filter)
@@ -272,6 +274,7 @@ router.post(
         gatewaySignature: gatewaySignature || undefined,
         gatewayVerified,
         remarks: remarks || '',
+        collectedBy: req.body.collectedBy || req.user?.id || undefined,
         status: 'completed',
         schoolId,
       });
@@ -609,6 +612,52 @@ router.put(
       if (req.body.transactionId) refund.transactionId = req.body.transactionId;
       if (req.body.remarks) refund.remarks = req.body.remarks;
       await refund.save();
+
+      // Reverse student fee balances when refund is processed
+      const refundAmount = refund.amount || 0;
+      if (refund.studentId && refundAmount > 0) {
+        try {
+          // Update StudentFeeStructure — decrease totalPaid, increase totalBalance
+          const sfs = await StudentFeeStructure.findOne(
+            scopeBySchool(req.user?.schoolId, {
+              studentId: refund.studentId,
+              academicYear: refund.academicYear,
+            })
+          );
+          if (sfs) {
+            sfs.totalPaid = Math.max((sfs.totalPaid || 0) - refundAmount, 0);
+            const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+            sfs.totalBalance = totalBalance;
+            sfs.overallStatus = overallStatus;
+            await sfs.save();
+          }
+
+          // Update Student.feeDetails — decrease paidAmount, increase balanceAmount
+          const student = await Student.findOne(
+            scopeBySchool(req.user?.schoolId, { _id: refund.studentId })
+          );
+          if (student) {
+            await Student.findByIdAndUpdate(student._id, {
+              $inc: { 'feeDetails.paidAmount': -refundAmount },
+            });
+            const updated = await Student.findById(student._id);
+            if (updated) {
+              const totalFee = updated.feeDetails?.totalFee || 0;
+              const discountApplied = updated.feeDetails?.discountApplied || 0;
+              const paidAmount = updated.feeDetails?.paidAmount || 0;
+              const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
+              await Student.findByIdAndUpdate(student._id, {
+                $set: { 'feeDetails.balanceAmount': balanceAmount },
+              });
+            }
+          }
+        } catch (reverseErr) {
+          logger.warn(
+            { err: reverseErr, studentId: refund.studentId, refundId: refund._id },
+            'Could not reverse student fee balances after refund processing'
+          );
+        }
+      }
 
       res.json(refund);
     } catch (error) {

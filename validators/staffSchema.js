@@ -76,7 +76,7 @@ export const createStaffSchema = z
 
     // Optional core
     department: optionalString(50),
-    status: z.enum(['active', 'inactive', 'on-leave']).default('active'),
+    status: z.enum(['active', 'inactive', 'on-leave', 'suspended', 'terminated']).default('active'),
     phone: optionalPhone,
     email: optionalEmail,
     joinDate: dateString.nullish().or(z.literal('')),

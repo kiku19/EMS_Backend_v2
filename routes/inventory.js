@@ -336,12 +336,10 @@ router.post(
         });
       }
       if (error.code === 11000) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: req.t('common:routes.categoryWithThisNameAlreadyExists'),
-          });
+        return res.status(400).json({
+          success: false,
+          error: req.t('common:routes.categoryWithThisNameAlreadyExists'),
+        });
       }
       res.status(400).json({ success: false, error: error.message });
     }
@@ -568,12 +566,22 @@ router.put(
       if (!log)
         return res.status(404).json({ error: req.t('common:routes.maintenanceLogNotFound') });
 
-      // If completed, restore asset to ACTIVE
+      // If completed, only restore asset to ACTIVE if no other active maintenance logs exist
       if (data.status === 'COMPLETED') {
-        await Asset.findOneAndUpdate(
-          scopeBySchool(schoolId, { _id: log.assetId, isDeleted: { $ne: true } }),
-          { status: 'ACTIVE' }
+        const otherActiveLogs = await MaintenanceLog.countDocuments(
+          scopeBySchool(schoolId, {
+            assetId: log.assetId,
+            _id: { $ne: log._id },
+            status: { $nin: ['COMPLETED', 'CANCELLED'] },
+            isDeleted: { $ne: true },
+          })
         );
+        if (otherActiveLogs === 0) {
+          await Asset.findOneAndUpdate(
+            scopeBySchool(schoolId, { _id: log.assetId, isDeleted: { $ne: true } }),
+            { status: 'ACTIVE' }
+          );
+        }
       }
 
       res.json(log);
