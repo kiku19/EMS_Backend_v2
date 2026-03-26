@@ -362,7 +362,12 @@ router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
   try {
     const { defaultSalary = 50000, defaultType = 'full_time' } = req.body;
 
-    const allStaff = await Staff.find({});
+    const schoolId = req.user?.schoolId;
+    if (!schoolId) {
+      return res.status(400).json({ success: false, error: 'schoolId is required' });
+    }
+
+    const allStaff = await Staff.find({ schoolId });
     let updatedCount = 0;
     let alreadySetCount = 0;
     const results = [];
@@ -1323,8 +1328,16 @@ router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) 
   try {
     const { employeeId, month, year } = req.params;
 
+    // Authorization: user must be the employee themselves or have payroll view permission
+    const isOwnPayslip = req.user._id.toString() === employeeId;
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    if (!isOwnPayslip && !isAdmin) {
+      return res.status(403).json({ success: false, error: 'Not authorized to view this payslip' });
+    }
+
     const payslip = await Payslip.findOne({
       employeeId,
+      schoolId: req.user.schoolId,
       month: parseInt(month),
       year: parseInt(year),
     }).populate('payrollRecordId');
@@ -1410,7 +1423,11 @@ router.get('/audit-logs', authenticate, requireAdmin, async (req, res) => {
 router.get('/adjustments/:employeeId', authenticate, async (req, res) => {
   try {
     const { employeeId } = req.params;
-    const adjustments = await SalaryAdjustment.find({ employeeId, isActive: true });
+    const adjustments = await SalaryAdjustment.find({
+      employeeId,
+      schoolId: req.user.schoolId,
+      isActive: true,
+    });
     res.json({ success: true, data: adjustments });
   } catch (error) {
     console.error('Error fetching adjustments:', error);

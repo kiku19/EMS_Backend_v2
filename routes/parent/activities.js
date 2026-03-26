@@ -154,12 +154,10 @@ router.post('/feedback', validateZod(zodSchemas.parentFeedbackCreate), async (re
     });
   } catch (error) {
     console.error('POST /parent/feedback error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to submit feedback' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Failed to submit feedback' },
+    });
   }
 });
 
@@ -178,12 +176,10 @@ router.get('/feedback', async (req, res) => {
     res.json({ success: true, data: { feedbacks } });
   } catch (error) {
     console.error('GET /parent/feedback error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to fetch feedback' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Failed to fetch feedback' },
+    });
   }
 });
 
@@ -209,10 +205,11 @@ router.get('/students/:id/homework', validateParentChildAccess, async (req, res)
 
     const studentObjectId = new mongoose.Types.ObjectId(studentId);
 
+    // Show both active and completed homework so parents can review past submissions
     const homeworkList = await Homework.find(
       scopeBySchool(schoolId, {
         classId: student.classId,
-        status: 'active',
+        status: { $in: ['active', 'completed'] },
         sentToParents: true,
       }),
       {
@@ -263,12 +260,10 @@ router.get('/students/:id/homework', validateParentChildAccess, async (req, res)
     res.json({ success: true, data: { homework } });
   } catch (error) {
     console.error('GET /parent/students/:id/homework error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to fetch homework' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Failed to fetch homework' },
+    });
   }
 });
 
@@ -299,12 +294,10 @@ router.post(
         scopeBySchool(schoolId, { _id: homeworkId, status: 'active' })
       );
       if (!homework) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: { code: 'NOT_FOUND', message: 'Homework not found or not active' },
-          });
+        return res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Homework not found or not active' },
+        });
       }
 
       const existingIndex = homework.submissions.findIndex(
@@ -329,12 +322,10 @@ router.post(
       res.json({ success: true, data: { message: 'Homework submitted successfully' } });
     } catch (error) {
       console.error('POST /parent/students/:id/homework/:homeworkId/submit error:', error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: { code: 'SERVER_ERROR', message: 'Failed to submit homework' },
-        });
+      res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: 'Failed to submit homework' },
+      });
     }
   }
 );
@@ -388,12 +379,10 @@ router.post('/students/:id/leave', validateParentChildAccess, async (req, res) =
     res.status(201).json({ success: true, data: { leave } });
   } catch (error) {
     console.error('POST /parent/students/:id/leave error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to apply for leave' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Failed to apply for leave' },
+    });
   }
 });
 
@@ -412,12 +401,10 @@ router.get('/students/:id/leaves', validateParentChildAccess, async (req, res) =
     res.json({ success: true, data: { leaves } });
   } catch (error) {
     console.error('GET /parent/students/:id/leaves error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to fetch leave requests' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Failed to fetch leave requests' },
+    });
   }
 });
 
@@ -460,12 +447,10 @@ router.delete('/students/:id/leave/:leaveId', validateParentChildAccess, async (
     res.json({ success: true, message: 'Leave request cancelled successfully' });
   } catch (error) {
     console.error('DELETE /parent/students/:id/leave/:leaveId error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: 'Failed to cancel leave request' },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Failed to cancel leave request' },
+    });
   }
 });
 
@@ -514,12 +499,10 @@ router.post(
       });
     } catch (error) {
       console.error('POST /parent/teachers/:teacherId/rate error:', error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: { code: 'SERVER_ERROR', message: 'Failed to submit rating' },
-        });
+      res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: 'Failed to submit rating' },
+      });
     }
   }
 );

@@ -1,5 +1,6 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import Asset from '../models/Asset.js';
 import AssetCategory from '../models/AssetCategory.js';
@@ -32,9 +33,13 @@ function scopeBySchool(schoolId, query = {}) {
   return { ...query, schoolId: id };
 }
 
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ─── STATS ───────────────────────────────────────────────────────────────────
 
-router.get('/stats', authenticate, async (req, res) => {
+router.get('/stats', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const base = scopeBySchool(schoolId, { isDeleted: { $ne: true } });
@@ -77,7 +82,7 @@ router.get('/stats', authenticate, async (req, res) => {
 
 // ─── ASSETS ──────────────────────────────────────────────────────────────────
 
-router.get('/assets', authenticate, async (req, res) => {
+router.get('/assets', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { page = 1, limit = 50, search, category, status, condition } = req.query;
     const schoolId = req.user.schoolId;
@@ -87,7 +92,7 @@ router.get('/assets', authenticate, async (req, res) => {
     if (status) query.status = status;
     if (condition) query.condition = condition;
     if (search) {
-      const regex = new RegExp(search, 'i');
+      const regex = new RegExp(escapeRegex(search), 'i');
       query.$or = [
         { name: regex },
         { assetTag: regex },
@@ -113,24 +118,29 @@ router.get('/assets', authenticate, async (req, res) => {
   }
 });
 
-router.get('/assets/low-stock', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const assets = await Asset.find({
-      ...scopeBySchool(schoolId, { isDeleted: { $ne: true } }),
-      minimumQuantity: { $gt: 0 },
-      $expr: { $lte: ['$quantity', '$minimumQuantity'] },
-    })
-      .populate('vendorId', 'name phone')
-      .sort({ quantity: 1 });
+router.get(
+  '/assets/low-stock',
+  authenticate,
+  checkPermission('inventory', 'view'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const assets = await Asset.find({
+        ...scopeBySchool(schoolId, { isDeleted: { $ne: true } }),
+        minimumQuantity: { $gt: 0 },
+        $expr: { $lte: ['$quantity', '$minimumQuantity'] },
+      })
+        .populate('vendorId', 'name phone')
+        .sort({ quantity: 1 });
 
-    res.json(assets);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+      res.json(assets);
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
-router.get('/assets/:id', authenticate, async (req, res) => {
+router.get('/assets/:id', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const asset = await Asset.findOne(
@@ -144,7 +154,7 @@ router.get('/assets/:id', authenticate, async (req, res) => {
   }
 });
 
-router.post('/assets', authenticate, async (req, res) => {
+router.post('/assets', authenticate, checkPermission('inventory', 'create'), async (req, res) => {
   try {
     const data = createAssetSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -158,19 +168,17 @@ router.post('/assets', authenticate, async (req, res) => {
     res.status(201).json(asset);
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
+      return res.status(400).json({
+        success: false,
+        error: req.t('common:routes.validationFailed'),
+        details: error.errors,
+      });
     }
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
-router.put('/assets/:id', authenticate, async (req, res) => {
+router.put('/assets/:id', authenticate, checkPermission('inventory', 'edit'), async (req, res) => {
   try {
     const data = updateAssetSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -185,102 +193,113 @@ router.put('/assets/:id', authenticate, async (req, res) => {
     res.json(asset);
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
-    }
-    res.status(400).json({ success: false, error: error.message });
-  }
-});
-
-router.put('/assets/:id/assign', authenticate, async (req, res) => {
-  try {
-    const data = assignAssetSchema.parse(req.body);
-    const schoolId = req.user.schoolId;
-
-    const asset = await Asset.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { assignedTo: data.assignedTo, updatedBy: req.user._id },
-      { new: true }
-    );
-
-    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
-    res.json(asset);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
-    }
-    res.status(400).json({ success: false, error: error.message });
-  }
-});
-
-router.get('/assets/:id/depreciation', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const asset = await Asset.findOne(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-    );
-
-    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
-    if (!asset.purchasePrice || !asset.purchaseDate) {
-      return res.json({
-        asset: asset._id,
-        depreciation: null,
-        message: req.t('common:routes.purchasePriceAndDateAreRequiredForDepreciationCalculation'),
+      return res.status(400).json({
+        success: false,
+        error: req.t('common:routes.validationFailed'),
+        details: error.errors,
       });
     }
-
-    const rate = asset.depreciationRate || 0;
-    const purchaseDate = new Date(asset.purchaseDate);
-    const now = new Date();
-    const yearsElapsed = (now - purchaseDate) / (1000 * 60 * 60 * 24 * 365.25);
-    const currentValue = asset.purchasePrice * Math.pow(1 - rate / 100, yearsElapsed);
-    const totalDepreciation = asset.purchasePrice - currentValue;
-
-    res.json({
-      assetId: asset._id,
-      name: asset.name,
-      purchasePrice: asset.purchasePrice,
-      purchaseDate: asset.purchaseDate,
-      depreciationRate: rate,
-      yearsElapsed: Math.round(yearsElapsed * 100) / 100,
-      currentValue: Math.max(0, Math.round(currentValue * 100) / 100),
-      totalDepreciation: Math.round(totalDepreciation * 100) / 100,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 
-router.delete('/assets/:id', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const asset = await Asset.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { isDeleted: true, updatedBy: req.user._id },
-      { new: true }
-    );
+router.put(
+  '/assets/:id/assign',
+  authenticate,
+  checkPermission('inventory', 'edit'),
+  async (req, res) => {
+    try {
+      const data = assignAssetSchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+      const asset = await Asset.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { assignedTo: data.assignedTo, updatedBy: req.user._id },
+        { new: true }
+      );
+
+      if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
+      res.json(asset);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
+      }
+      res.status(400).json({ success: false, error: error.message });
+    }
   }
-});
+);
+
+router.get(
+  '/assets/:id/depreciation',
+  authenticate,
+  checkPermission('inventory', 'view'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const asset = await Asset.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      );
+
+      if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
+      if (!asset.purchasePrice || !asset.purchaseDate) {
+        return res.json({
+          asset: asset._id,
+          depreciation: null,
+          message: req.t('common:routes.purchasePriceAndDateAreRequiredForDepreciationCalculation'),
+        });
+      }
+
+      const rate = asset.depreciationRate || 0;
+      const purchaseDate = new Date(asset.purchaseDate);
+      const now = new Date();
+      const yearsElapsed = (now - purchaseDate) / (1000 * 60 * 60 * 24 * 365.25);
+      const currentValue = asset.purchasePrice * Math.pow(1 - rate / 100, yearsElapsed);
+      const totalDepreciation = asset.purchasePrice - currentValue;
+
+      res.json({
+        assetId: asset._id,
+        name: asset.name,
+        purchasePrice: asset.purchasePrice,
+        purchaseDate: asset.purchaseDate,
+        depreciationRate: rate,
+        yearsElapsed: Math.round(yearsElapsed * 100) / 100,
+        currentValue: Math.max(0, Math.round(currentValue * 100) / 100),
+        totalDepreciation: Math.round(totalDepreciation * 100) / 100,
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+router.delete(
+  '/assets/:id',
+  authenticate,
+  checkPermission('inventory', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const asset = await Asset.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { isDeleted: true, updatedBy: req.user._id },
+        { new: true }
+      );
+
+      if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
 
 // ─── ASSET CATEGORIES ─────────────────────────────────────────────────────────
 
-router.get('/categories', authenticate, async (req, res) => {
+router.get('/categories', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const categories = await AssetCategory.find(
@@ -292,90 +311,106 @@ router.get('/categories', authenticate, async (req, res) => {
   }
 });
 
-router.post('/categories', authenticate, async (req, res) => {
-  try {
-    const data = createAssetCategorySchema.parse(req.body);
-    const schoolId = req.user.schoolId;
+router.post(
+  '/categories',
+  authenticate,
+  checkPermission('inventory', 'create'),
+  async (req, res) => {
+    try {
+      const data = createAssetCategorySchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    const category = await AssetCategory.create({
-      ...data,
-      schoolId: extractSchoolId(schoolId),
-      createdBy: req.user._id,
-    });
+      const category = await AssetCategory.create({
+        ...data,
+        schoolId: extractSchoolId(schoolId),
+        createdBy: req.user._id,
+      });
 
-    res.status(201).json(category);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
+      res.status(201).json(category);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
           success: false,
           error: req.t('common:routes.validationFailed'),
           details: error.errors,
         });
+      }
+      if (error.code === 11000) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: req.t('common:routes.categoryWithThisNameAlreadyExists'),
+          });
+      }
+      res.status(400).json({ success: false, error: error.message });
     }
-    if (error.code === 11000) {
-      return res
-        .status(400)
-        .json({ success: false, error: req.t('common:routes.categoryWithThisNameAlreadyExists') });
-    }
-    res.status(400).json({ success: false, error: error.message });
   }
-});
+);
 
-router.put('/categories/:id', authenticate, async (req, res) => {
-  try {
-    const data = updateAssetCategorySchema.parse(req.body);
-    const schoolId = req.user.schoolId;
+router.put(
+  '/categories/:id',
+  authenticate,
+  checkPermission('inventory', 'edit'),
+  async (req, res) => {
+    try {
+      const data = updateAssetCategorySchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    const category = await AssetCategory.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { ...data, updatedBy: req.user._id },
-      { new: true, runValidators: true }
-    );
+      const category = await AssetCategory.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { ...data, updatedBy: req.user._id },
+        { new: true, runValidators: true }
+      );
 
-    if (!category) return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
-    res.json(category);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
+      if (!category)
+        return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
+      res.json(category);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
           success: false,
           error: req.t('common:routes.validationFailed'),
           details: error.errors,
         });
+      }
+      res.status(400).json({ success: false, error: error.message });
     }
-    res.status(400).json({ success: false, error: error.message });
   }
-});
+);
 
-router.delete('/categories/:id', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const category = await AssetCategory.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { isDeleted: true, updatedBy: req.user._id },
-      { new: true }
-    );
+router.delete(
+  '/categories/:id',
+  authenticate,
+  checkPermission('inventory', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const category = await AssetCategory.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { isDeleted: true, updatedBy: req.user._id },
+        { new: true }
+      );
 
-    if (!category) return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+      if (!category)
+        return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // ─── VENDORS ─────────────────────────────────────────────────────────────────
 
-router.get('/vendors', authenticate, async (req, res) => {
+router.get('/vendors', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { search } = req.query;
     const schoolId = req.user.schoolId;
     const query = scopeBySchool(schoolId, { isDeleted: { $ne: true } });
 
     if (search) {
-      const regex = new RegExp(search, 'i');
+      const regex = new RegExp(escapeRegex(search), 'i');
       query.$or = [{ name: regex }, { contactPerson: regex }, { phone: regex }];
     }
 
@@ -386,7 +421,7 @@ router.get('/vendors', authenticate, async (req, res) => {
   }
 });
 
-router.post('/vendors', authenticate, async (req, res) => {
+router.post('/vendors', authenticate, checkPermission('inventory', 'create'), async (req, res) => {
   try {
     const data = createVendorSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -400,19 +435,17 @@ router.post('/vendors', authenticate, async (req, res) => {
     res.status(201).json(vendor);
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
+      return res.status(400).json({
+        success: false,
+        error: req.t('common:routes.validationFailed'),
+        details: error.errors,
+      });
     }
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
-router.put('/vendors/:id', authenticate, async (req, res) => {
+router.put('/vendors/:id', authenticate, checkPermission('inventory', 'edit'), async (req, res) => {
   try {
     const data = updateVendorSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -427,37 +460,40 @@ router.put('/vendors/:id', authenticate, async (req, res) => {
     res.json(vendor);
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
+      return res.status(400).json({
+        success: false,
+        error: req.t('common:routes.validationFailed'),
+        details: error.errors,
+      });
     }
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
-router.delete('/vendors/:id', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const vendor = await Vendor.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { isDeleted: true, updatedBy: req.user._id },
-      { new: true }
-    );
+router.delete(
+  '/vendors/:id',
+  authenticate,
+  checkPermission('inventory', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const vendor = await Vendor.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { isDeleted: true, updatedBy: req.user._id },
+        { new: true }
+      );
 
-    if (!vendor) return res.status(404).json({ error: req.t('common:routes.vendorNotFound') });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+      if (!vendor) return res.status(404).json({ error: req.t('common:routes.vendorNotFound') });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // ─── MAINTENANCE LOGS ─────────────────────────────────────────────────────────
 
-router.get('/maintenance', authenticate, async (req, res) => {
+router.get('/maintenance', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { assetId, status } = req.query;
     const schoolId = req.user.schoolId;
@@ -477,79 +513,118 @@ router.get('/maintenance', authenticate, async (req, res) => {
   }
 });
 
-router.post('/maintenance', authenticate, async (req, res) => {
-  try {
-    const data = createMaintenanceLogSchema.parse(req.body);
-    const schoolId = req.user.schoolId;
+router.post(
+  '/maintenance',
+  authenticate,
+  checkPermission('inventory', 'create'),
+  async (req, res) => {
+    try {
+      const data = createMaintenanceLogSchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    const log = await MaintenanceLog.create({
-      ...data,
-      schoolId: extractSchoolId(schoolId),
-      createdBy: req.user._id,
-    });
+      const log = await MaintenanceLog.create({
+        ...data,
+        schoolId: extractSchoolId(schoolId),
+        createdBy: req.user._id,
+      });
 
-    // Update asset status if needed
-    if (data.status === 'IN_PROGRESS' || data.status === 'SCHEDULED') {
-      await Asset.findOneAndUpdate(
-        scopeBySchool(schoolId, { _id: data.assetId, isDeleted: { $ne: true } }),
-        { status: 'UNDER_MAINTENANCE' }
-      );
-    }
+      // Update asset status if needed
+      if (data.status === 'IN_PROGRESS' || data.status === 'SCHEDULED') {
+        await Asset.findOneAndUpdate(
+          scopeBySchool(schoolId, { _id: data.assetId, isDeleted: { $ne: true } }),
+          { status: 'UNDER_MAINTENANCE' }
+        );
+      }
 
-    res.status(201).json(log);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
+      res.status(201).json(log);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
           success: false,
           error: req.t('common:routes.validationFailed'),
           details: error.errors,
         });
+      }
+      res.status(400).json({ success: false, error: error.message });
     }
-    res.status(400).json({ success: false, error: error.message });
   }
-});
+);
 
-router.put('/maintenance/:id', authenticate, async (req, res) => {
-  try {
-    const data = updateMaintenanceLogSchema.parse(req.body);
-    const schoolId = req.user.schoolId;
+router.put(
+  '/maintenance/:id',
+  authenticate,
+  checkPermission('inventory', 'edit'),
+  async (req, res) => {
+    try {
+      const data = updateMaintenanceLogSchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    const log = await MaintenanceLog.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { ...data, updatedBy: req.user._id },
-      { new: true, runValidators: true }
-    );
-
-    if (!log) return res.status(404).json({ error: req.t('common:routes.maintenanceLogNotFound') });
-
-    // If completed, restore asset to ACTIVE
-    if (data.status === 'COMPLETED') {
-      await Asset.findOneAndUpdate(
-        scopeBySchool(schoolId, { _id: log.assetId, isDeleted: { $ne: true } }),
-        { status: 'ACTIVE' }
+      const log = await MaintenanceLog.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { ...data, updatedBy: req.user._id },
+        { new: true, runValidators: true }
       );
-    }
 
-    res.json(log);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
+      if (!log)
+        return res.status(404).json({ error: req.t('common:routes.maintenanceLogNotFound') });
+
+      // If completed, restore asset to ACTIVE
+      if (data.status === 'COMPLETED') {
+        await Asset.findOneAndUpdate(
+          scopeBySchool(schoolId, { _id: log.assetId, isDeleted: { $ne: true } }),
+          { status: 'ACTIVE' }
+        );
+      }
+
+      res.json(log);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
           success: false,
           error: req.t('common:routes.validationFailed'),
           details: error.errors,
         });
+      }
+      res.status(400).json({ success: false, error: error.message });
     }
-    res.status(400).json({ success: false, error: error.message });
   }
-});
+);
+
+router.delete(
+  '/maintenance/:id',
+  authenticate,
+  checkPermission('inventory', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+
+      const log = await MaintenanceLog.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { isDeleted: true, deletedAt: new Date(), deletedBy: req.user._id },
+        { new: true }
+      );
+
+      if (!log)
+        return res.status(404).json({ error: req.t('common:routes.maintenanceLogNotFound') });
+
+      // If the log was for an active maintenance, restore asset status
+      if (log.status !== 'COMPLETED') {
+        await Asset.findOneAndUpdate(
+          scopeBySchool(schoolId, { _id: log.assetId, isDeleted: { $ne: true } }),
+          { status: 'ACTIVE' }
+        );
+      }
+
+      res.json({ success: true, message: 'Maintenance log deleted' });
+    } catch (error) {
+      res.status(400).json({ success: false, error: error.message });
+    }
+  }
+);
 
 // ─── PROCUREMENT ─────────────────────────────────────────────────────────────
 
-router.get('/procurement', authenticate, async (req, res) => {
+router.get('/procurement', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
     const schoolId = req.user.schoolId;
@@ -569,88 +644,99 @@ router.get('/procurement', authenticate, async (req, res) => {
   }
 });
 
-router.post('/procurement', authenticate, async (req, res) => {
-  try {
-    const data = createProcurementSchema.parse(req.body);
-    const schoolId = req.user.schoolId;
+router.post(
+  '/procurement',
+  authenticate,
+  checkPermission('inventory', 'create'),
+  async (req, res) => {
+    try {
+      const data = createProcurementSchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    const request = await ProcurementRequest.create({
-      ...data,
-      schoolId: extractSchoolId(schoolId),
-      requestedBy: req.user._id,
-      createdBy: req.user._id,
-    });
+      const request = await ProcurementRequest.create({
+        ...data,
+        schoolId: extractSchoolId(schoolId),
+        requestedBy: req.user._id,
+        createdBy: req.user._id,
+      });
 
-    res.status(201).json(request);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
+      res.status(201).json(request);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
           success: false,
           error: req.t('common:routes.validationFailed'),
           details: error.errors,
         });
+      }
+      res.status(400).json({ success: false, error: error.message });
     }
-    res.status(400).json({ success: false, error: error.message });
   }
-});
+);
 
-router.put('/procurement/:id', authenticate, async (req, res) => {
-  try {
-    const data = updateProcurementSchema.parse(req.body);
-    const schoolId = req.user.schoolId;
+router.put(
+  '/procurement/:id',
+  authenticate,
+  checkPermission('inventory', 'edit'),
+  async (req, res) => {
+    try {
+      const data = updateProcurementSchema.parse(req.body);
+      const schoolId = req.user.schoolId;
 
-    const update = { ...data, updatedBy: req.user._id };
-    if (data.status === 'APPROVED' || data.status === 'REJECTED') {
-      update.approvedBy = req.user._id;
-    }
+      const update = { ...data, updatedBy: req.user._id };
+      if (data.status === 'APPROVED' || data.status === 'REJECTED') {
+        update.approvedBy = req.user._id;
+      }
 
-    const request = await ProcurementRequest.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      update,
-      { new: true, runValidators: true }
-    )
-      .populate('requestedBy', 'name')
-      .populate('approvedBy', 'name');
+      const request = await ProcurementRequest.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        update,
+        { new: true, runValidators: true }
+      )
+        .populate('requestedBy', 'name')
+        .populate('approvedBy', 'name');
 
-    if (!request)
-      return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
-    res.json(request);
-  } catch (error) {
-    if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
+      if (!request)
+        return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
+      res.json(request);
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
           success: false,
           error: req.t('common:routes.validationFailed'),
           details: error.errors,
         });
+      }
+      res.status(400).json({ success: false, error: error.message });
     }
-    res.status(400).json({ success: false, error: error.message });
   }
-});
+);
 
-router.delete('/procurement/:id', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const request = await ProcurementRequest.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { isDeleted: true, updatedBy: req.user._id },
-      { new: true }
-    );
+router.delete(
+  '/procurement/:id',
+  authenticate,
+  checkPermission('inventory', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const request = await ProcurementRequest.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { isDeleted: true, updatedBy: req.user._id },
+        { new: true }
+      );
 
-    if (!request)
-      return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+      if (!request)
+        return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // ─── ASSET AUDITS ─────────────────────────────────────────────────────────────
 
-router.get('/audits', authenticate, async (req, res) => {
+router.get('/audits', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
     const schoolId = req.user.schoolId;
@@ -668,7 +754,7 @@ router.get('/audits', authenticate, async (req, res) => {
   }
 });
 
-router.post('/audits', authenticate, async (req, res) => {
+router.post('/audits', authenticate, checkPermission('inventory', 'create'), async (req, res) => {
   try {
     const data = createAssetAuditSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -682,19 +768,17 @@ router.post('/audits', authenticate, async (req, res) => {
     res.status(201).json(audit);
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
+      return res.status(400).json({
+        success: false,
+        error: req.t('common:routes.validationFailed'),
+        details: error.errors,
+      });
     }
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
-router.put('/audits/:id', authenticate, async (req, res) => {
+router.put('/audits/:id', authenticate, checkPermission('inventory', 'edit'), async (req, res) => {
   try {
     const data = updateAssetAuditSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -726,37 +810,40 @@ router.put('/audits/:id', authenticate, async (req, res) => {
     res.json(audit);
   } catch (error) {
     if (error.name === 'ZodError') {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: req.t('common:routes.validationFailed'),
-          details: error.errors,
-        });
+      return res.status(400).json({
+        success: false,
+        error: req.t('common:routes.validationFailed'),
+        details: error.errors,
+      });
     }
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
-router.delete('/audits/:id', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const audit = await AssetAudit.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { isDeleted: true, updatedBy: req.user._id },
-      { new: true }
-    );
+router.delete(
+  '/audits/:id',
+  authenticate,
+  checkPermission('inventory', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user.schoolId;
+      const audit = await AssetAudit.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+        { isDeleted: true, updatedBy: req.user._id },
+        { new: true }
+      );
 
-    if (!audit) return res.status(404).json({ error: req.t('common:routes.auditNotFound') });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+      if (!audit) return res.status(404).json({ error: req.t('common:routes.auditNotFound') });
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   }
-});
+);
 
 // ─── REPORTS ─────────────────────────────────────────────────────────────────
 
-router.get('/reports', authenticate, async (req, res) => {
+router.get('/reports', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const base = scopeBySchool(schoolId, { isDeleted: { $ne: true } });

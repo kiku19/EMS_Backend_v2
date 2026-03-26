@@ -598,7 +598,11 @@ router.post(
       let resultsInitialized = 0;
       if (resolvedClassId) {
         const students = await Student.find(
-          { classId: resolvedClassId, isDeleted: { $ne: true } },
+          {
+            classId: resolvedClassId,
+            isDeleted: { $ne: true },
+            ...(resolvedSchoolId ? { schoolId: resolvedSchoolId } : {}),
+          },
           '_id'
         );
 
@@ -811,8 +815,9 @@ router.post(
   async (req, res) => {
     try {
       // Use school-scoped update to prevent cross-tenant manipulation
+      // Exclude soft-deleted exams from being published
       const exam = await Exam.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         { status: 'results_published', isPublished: true, publishedAt: new Date() },
         { new: true }
       );
@@ -1045,7 +1050,11 @@ router.post(
 
         return {
           updateOne: {
-            filter: { studentId: result.studentId, examId },
+            filter: {
+              studentId: result.studentId,
+              examId,
+              ...(resolvedSchoolId ? { schoolId: resolvedSchoolId } : {}),
+            },
             update: {
               $set: {
                 studentId: result.studentId,

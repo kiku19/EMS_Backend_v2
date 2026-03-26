@@ -116,7 +116,8 @@ class TimetableService {
   }) {
     // Get or create class timetable
     const query = { classId, academicYear };
-    if (schoolId) query.schoolId = schoolId;
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     const classTimetable = session
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
@@ -210,7 +211,8 @@ class TimetableService {
   }) {
     // Get or create teacher timetable
     const query = { teacherId, academicYear };
-    if (schoolId) query.schoolId = schoolId;
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     let teacherTimetable = session
       ? await TeacherTimetable.findOne(query).session(session)
       : await TeacherTimetable.findOne(query);
@@ -220,7 +222,7 @@ class TimetableService {
       teacherTimetable = new TeacherTimetable({
         teacherId,
         academicYear,
-        schoolId: schoolId || null,
+        schoolId,
         schedule: {},
       });
     }
@@ -319,7 +321,8 @@ class TimetableService {
     session,
   }) {
     const query = { classId, academicYear };
-    if (schoolId) query.schoolId = schoolId;
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     let classTimetable = session
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
@@ -349,6 +352,7 @@ class TimetableService {
 
       classTimetable = new Timetable({
         classId,
+        schoolId,
         academicYear,
         periods: defaultPeriods,
         schedule: emptySchedule,
@@ -407,7 +411,8 @@ class TimetableService {
     session,
   }) {
     const query = { classId, academicYear };
-    if (schoolId) query.schoolId = schoolId;
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     const classTimetable = session
       ? await Timetable.findOne(query).session(session)
       : await Timetable.findOne(query);
@@ -457,7 +462,8 @@ class TimetableService {
     session,
   }) {
     const query = { teacherId, academicYear };
-    if (schoolId) query.schoolId = schoolId;
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     let teacherTimetable = session
       ? await TeacherTimetable.findOne(query).session(session)
       : await TeacherTimetable.findOne(query);
@@ -466,6 +472,7 @@ class TimetableService {
       teacherTimetable = new TeacherTimetable({
         teacherId,
         academicYear,
+        schoolId,
         schedule: {},
       });
     }
@@ -515,7 +522,8 @@ class TimetableService {
     session,
   }) {
     const query = { teacherId, academicYear };
-    if (schoolId) query.schoolId = schoolId;
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     const teacherTimetable = session
       ? await TeacherTimetable.findOne(query).session(session)
       : await TeacherTimetable.findOne(query);
@@ -543,11 +551,19 @@ class TimetableService {
   /**
    * Delete a slot from class timetable and sync to teacher
    */
-  async deleteClassSlot({ classId, day, periodIndex, academicYear = CURRENT_ACADEMIC_YEAR }) {
+  async deleteClassSlot({
+    classId,
+    day,
+    periodIndex,
+    academicYear = CURRENT_ACADEMIC_YEAR,
+    schoolId,
+  }) {
     // Proceed without transactions for compatibility
     const session = null;
 
     const query = { classId, academicYear };
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     const classTimetable = await Timetable.findOne(query);
 
     if (
@@ -587,6 +603,7 @@ class TimetableService {
         day,
         periodIndex,
         academicYear,
+        schoolId,
         session,
       });
     }
@@ -597,11 +614,19 @@ class TimetableService {
   /**
    * Delete a slot from teacher timetable and sync to class
    */
-  async deleteTeacherSlot({ teacherId, day, periodIndex, academicYear = CURRENT_ACADEMIC_YEAR }) {
+  async deleteTeacherSlot({
+    teacherId,
+    day,
+    periodIndex,
+    academicYear = CURRENT_ACADEMIC_YEAR,
+    schoolId,
+  }) {
     // Proceed without transactions for compatibility
     const session = null;
 
     const query = { teacherId, academicYear };
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
     const teacherTimetable = await TeacherTimetable.findOne(query);
 
     if (!teacherTimetable || !teacherTimetable.schedule[day]) {
@@ -638,6 +663,7 @@ class TimetableService {
         day,
         periodIndex,
         academicYear,
+        schoolId,
         session,
       });
     }
@@ -648,7 +674,7 @@ class TimetableService {
   /**
    * Get class timetable
    */
-  async getClassTimetable(classId, academicYear = CURRENT_ACADEMIC_YEAR) {
+  async getClassTimetable(classId, academicYear = CURRENT_ACADEMIC_YEAR, schoolId = null) {
     // Check cache first
     const cacheKey = cacheService.getClassTimetableKey(classId, academicYear);
     const cached = await cacheService.get(cacheKey);
@@ -656,7 +682,10 @@ class TimetableService {
       return cached;
     }
 
-    const timetable = await Timetable.findOne({ classId, academicYear })
+    const findQuery = { classId, academicYear };
+    if (schoolId) findQuery.schoolId = schoolId;
+
+    const timetable = await Timetable.findOne(findQuery)
       .populate('classId', 'name section')
       .populate('schedule.Monday.teacherId', 'name code')
       .populate('schedule.Tuesday.teacherId', 'name code')
@@ -678,7 +707,7 @@ class TimetableService {
   /**
    * Get teacher timetable
    */
-  async getTeacherTimetable(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
+  async getTeacherTimetable(teacherId, academicYear = CURRENT_ACADEMIC_YEAR, schoolId = null) {
     // Check cache first
     const cacheKey = cacheService.getTeacherTimetableKey(teacherId, academicYear);
     const cached = await cacheService.get(cacheKey);
@@ -686,7 +715,10 @@ class TimetableService {
       return cached;
     }
 
-    const timetable = await TeacherTimetable.findOne({ teacherId, academicYear })
+    const findQuery = { teacherId, academicYear };
+    if (schoolId) findQuery.schoolId = schoolId;
+
+    const timetable = await TeacherTimetable.findOne(findQuery)
       .populate('teacherId', 'name code')
       .populate('schedule.Monday.classId', 'name section')
       .populate('schedule.Tuesday.classId', 'name section')
@@ -733,6 +765,7 @@ class TimetableService {
       room = '',
       academicYear = CURRENT_ACADEMIC_YEAR,
       modifiedBy = null,
+      schoolId = null,
     } = options;
 
     // Validate inputs
@@ -748,14 +781,18 @@ class TimetableService {
       throw new Error(`Invalid day. Must be one of: ${validDays.join(', ')}`);
     }
 
-    // Validate teacher exists
-    const teacher = await Staff.findById(teacherId);
+    // Validate teacher exists within the school
+    const teacherQuery = { _id: teacherId };
+    if (schoolId) teacherQuery.schoolId = schoolId;
+    const teacher = await Staff.findOne(teacherQuery);
     if (!teacher) {
       throw new Error('Teacher not found');
     }
 
-    // Validate new class exists
-    const newClass = await Class.findById(newClassId);
+    // Validate new class exists within the school
+    const classQuery = { _id: newClassId };
+    if (schoolId) classQuery.schoolId = schoolId;
+    const newClass = await Class.findOne(classQuery);
     if (!newClass) {
       throw new Error('New class not found');
     }
@@ -780,8 +817,14 @@ class TimetableService {
 
     try {
       // Get original states
+      const ttQuery = (extra) => {
+        const q = { ...extra, academicYear };
+        if (schoolId) q.schoolId = schoolId;
+        return q;
+      };
+
       if (oldClassId) {
-        originalOldClassTimetable = await Timetable.findOne({ classId: oldClassId, academicYear });
+        originalOldClassTimetable = await Timetable.findOne(ttQuery({ classId: oldClassId }));
         if (originalOldClassTimetable) {
           originalOldClassTimetable = JSON.parse(
             JSON.stringify(originalOldClassTimetable.toObject())
@@ -789,14 +832,14 @@ class TimetableService {
         }
       }
 
-      originalNewClassTimetable = await Timetable.findOne({ classId: newClassId, academicYear });
+      originalNewClassTimetable = await Timetable.findOne(ttQuery({ classId: newClassId }));
       if (originalNewClassTimetable) {
         originalNewClassTimetable = JSON.parse(
           JSON.stringify(originalNewClassTimetable.toObject())
         );
       }
 
-      originalTeacherTimetable = await TeacherTimetable.findOne({ teacherId, academicYear });
+      originalTeacherTimetable = await TeacherTimetable.findOne(ttQuery({ teacherId }));
       if (originalTeacherTimetable) {
         originalTeacherTimetable = JSON.parse(JSON.stringify(originalTeacherTimetable.toObject()));
       }
@@ -809,6 +852,7 @@ class TimetableService {
           day,
           periodIndex,
           academicYear,
+          schoolId,
         });
       }
 
@@ -822,10 +866,11 @@ class TimetableService {
         room,
         academicYear,
         modifiedBy,
+        schoolId,
       });
 
       // Step 3: Update teacher timetable
-      const teacherTimetable = await TeacherTimetable.findOne({ teacherId, academicYear });
+      const teacherTimetable = await TeacherTimetable.findOne(ttQuery({ teacherId }));
       if (!teacherTimetable) {
         throw new Error('Teacher timetable not found');
       }
@@ -857,13 +902,10 @@ class TimetableService {
 
       // Get updated timetables for response
       const updatedOldClassTimetable = oldClassId
-        ? await Timetable.findOne({ classId: oldClassId, academicYear })
+        ? await Timetable.findOne(ttQuery({ classId: oldClassId }))
         : null;
-      const updatedNewClassTimetable = await Timetable.findOne({
-        classId: newClassId,
-        academicYear,
-      });
-      const updatedTeacherTimetable = await TeacherTimetable.findOne({ teacherId, academicYear });
+      const updatedNewClassTimetable = await Timetable.findOne(ttQuery({ classId: newClassId }));
+      const updatedTeacherTimetable = await TeacherTimetable.findOne(ttQuery({ teacherId }));
 
       return {
         success: true,
@@ -882,40 +924,37 @@ class TimetableService {
       );
 
       try {
+        const rbQuery = (extra) => {
+          const q = { ...extra, academicYear };
+          if (schoolId) q.schoolId = schoolId;
+          return q;
+        };
+
         // Restore old class timetable
         if (originalOldClassTimetable) {
-          await Timetable.findOneAndUpdate(
-            { classId: oldClassId, academicYear },
-            {
-              schedule: originalOldClassTimetable.schedule,
-              version: originalOldClassTimetable.version,
-              lastSyncedAt: originalOldClassTimetable.lastSyncedAt,
-            }
-          );
+          await Timetable.findOneAndUpdate(rbQuery({ classId: oldClassId }), {
+            schedule: originalOldClassTimetable.schedule,
+            version: originalOldClassTimetable.version,
+            lastSyncedAt: originalOldClassTimetable.lastSyncedAt,
+          });
         }
 
         // Restore new class timetable
         if (originalNewClassTimetable) {
-          await Timetable.findOneAndUpdate(
-            { classId: newClassId, academicYear },
-            {
-              schedule: originalNewClassTimetable.schedule,
-              version: originalNewClassTimetable.version,
-              lastSyncedAt: originalNewClassTimetable.lastSyncedAt,
-            }
-          );
+          await Timetable.findOneAndUpdate(rbQuery({ classId: newClassId }), {
+            schedule: originalNewClassTimetable.schedule,
+            version: originalNewClassTimetable.version,
+            lastSyncedAt: originalNewClassTimetable.lastSyncedAt,
+          });
         }
 
         // Restore teacher timetable
         if (originalTeacherTimetable) {
-          await TeacherTimetable.findOneAndUpdate(
-            { teacherId, academicYear },
-            {
-              schedule: originalTeacherTimetable.schedule,
-              version: originalTeacherTimetable.version,
-              lastSyncedAt: originalTeacherTimetable.lastSyncedAt,
-            }
-          );
+          await TeacherTimetable.findOneAndUpdate(rbQuery({ teacherId }), {
+            schedule: originalTeacherTimetable.schedule,
+            version: originalTeacherTimetable.version,
+            lastSyncedAt: originalTeacherTimetable.lastSyncedAt,
+          });
         }
       } catch (rollbackError) {
         logger.error({ err: rollbackError }, 'Rollback failed');
@@ -941,7 +980,14 @@ class TimetableService {
    * @returns {Promise<Object>} - Result with success status
    */
   async removeTeacherFromSlot(options) {
-    const { classId, teacherId, day, periodIndex, academicYear = CURRENT_ACADEMIC_YEAR } = options;
+    const {
+      classId,
+      teacherId,
+      day,
+      periodIndex,
+      academicYear = CURRENT_ACADEMIC_YEAR,
+      schoolId,
+    } = options;
 
     // Validate inputs
     if (!classId || !teacherId || !day || periodIndex === undefined) {
@@ -951,7 +997,10 @@ class TimetableService {
     }
 
     // Get class timetable
-    const classTimetable = await Timetable.findOne({ classId, academicYear });
+    const query = { classId, academicYear };
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
+    const classTimetable = await Timetable.findOne(query);
     if (!classTimetable) {
       throw new Error(`Class timetable not found for classId: ${classId}`);
     }
@@ -1010,6 +1059,7 @@ class TimetableService {
       room = '',
       academicYear = CURRENT_ACADEMIC_YEAR,
       modifiedBy = null,
+      schoolId = null,
     } = options;
 
     // Validate inputs
@@ -1020,7 +1070,10 @@ class TimetableService {
     }
 
     // Get or create class timetable
-    const classTimetable = await Timetable.findOne({ classId, academicYear });
+    const query = { classId, academicYear };
+    if (!schoolId) throw new Error('schoolId is required for timetable operations');
+    query.schoolId = schoolId;
+    const classTimetable = await Timetable.findOne(query);
     if (!classTimetable) {
       throw new Error(`Class timetable not found for classId: ${classId}`);
     }
