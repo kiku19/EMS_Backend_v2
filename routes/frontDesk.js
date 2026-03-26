@@ -1202,7 +1202,8 @@ router.delete(
  */
 router.get('/call-logs', authenticate, checkPermission('front-desk', 'view'), async (req, res) => {
   try {
-    const callLogs = await CallLog.find().sort({ dateTime: -1 });
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+    const callLogs = await CallLog.find(scopeBySchool(schoolId)).sort({ dateTime: -1 });
 
     res.json(callLogs);
   } catch (error) {
@@ -1225,8 +1226,10 @@ router.post(
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
+      const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
       const callLogData = {
         ...req.body,
+        schoolId,
         loggedBy: req.user.id,
       };
 
@@ -1253,7 +1256,8 @@ router.put(
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
-      const callLog = await CallLog.findById(req.params.id);
+      const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+      const callLog = await CallLog.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
       if (!callLog) {
         return res.status(404).json({
@@ -1303,7 +1307,8 @@ router.delete(
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {
-      await CallLog.deleteOne({ _id: req.params.id });
+      const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+      await CallLog.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
       res.json({ success: true, message: 'Call log deleted successfully' });
     } catch (error) {
       console.error('❌ Delete call log error:', error);

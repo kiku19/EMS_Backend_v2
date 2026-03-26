@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const announcementSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     title: {
       type: String,
       required: true,

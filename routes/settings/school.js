@@ -168,7 +168,7 @@ const schoolSettingsSchema = z
       })
       .optional(),
   })
-  .passthrough();
+  .strict();
 
 const DEFAULT_GRADING_SCALE = [
   { minPercentage: 90, grade: 'A+', color: '#16a34a' },

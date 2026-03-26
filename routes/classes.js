@@ -571,7 +571,7 @@ router.get(
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
-      const rollNumber = await getNextRollNumber(req.params.id);
+      const rollNumber = await getNextRollNumber(req.params.id, req.user?.schoolId);
       res.json({ rollNumber });
     } catch (error) {
       console.error('Error getting next roll number:', error);

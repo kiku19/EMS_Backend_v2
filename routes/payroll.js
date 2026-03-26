@@ -1385,7 +1385,7 @@ router.get('/audit-logs', authenticate, requireAdmin, async (req, res) => {
     const employeeId = sanitizeQueryId(req.query.employeeId);
     const action = sanitizeQueryStr(req.query.action);
 
-    const query = {};
+    const query = { schoolId: req.user.schoolId };
     if (month || year) {
       query['context.month'] = month;
       query['context.year'] = year;
@@ -1437,7 +1437,7 @@ router.get('/adjustments/:employeeId', authenticate, async (req, res) => {
 
 router.post('/adjustments', authenticate, requireAdmin, async (req, res) => {
   try {
-    const adjustment = new SalaryAdjustment(req.body);
+    const adjustment = new SalaryAdjustment({ ...req.body, schoolId: req.user.schoolId });
     await adjustment.save();
 
     // Log audit
@@ -1468,7 +1468,10 @@ router.post('/adjustments', authenticate, requireAdmin, async (req, res) => {
 router.delete('/adjustments/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const adjustment = await SalaryAdjustment.findByIdAndUpdate(id, { isActive: false });
+    const adjustment = await SalaryAdjustment.findOneAndUpdate(
+      { _id: id, schoolId: req.user.schoolId },
+      { isActive: false }
+    );
 
     // Log audit
     await logAudit({

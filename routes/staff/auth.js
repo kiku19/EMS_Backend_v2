@@ -56,7 +56,7 @@ router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) 
     }
 
     const staff = await Staff.findOneAndUpdate(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
       updateData,
       { new: true }
     );
@@ -105,7 +105,9 @@ router.put('/:id/change-password', authenticate, async (req, res) => {
         .json({ error: req.t('common:routes.passwordMustContainAtLeastOneNumber') });
     }
 
-    const staff = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: req.params.id }));
+    const staff = await Staff.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    );
     if (!staff) {
       return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }

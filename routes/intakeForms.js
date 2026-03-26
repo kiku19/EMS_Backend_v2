@@ -1291,7 +1291,7 @@ async function createStudentFromSubmission(submissionData, form, schoolId = null
 
   // Generate roll number if classId provided
   if (studentData.classId && !studentData.rollNo) {
-    studentData.rollNo = await getNextRollNumber(studentData.classId);
+    studentData.rollNo = await getNextRollNumber(studentData.classId, schoolId);
   }
 
   const student = await Student.create(studentData);

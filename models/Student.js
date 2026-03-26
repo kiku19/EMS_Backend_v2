@@ -4,7 +4,7 @@ import piiPlugin from '../utils/piiPlugin.js';
 
 const studentSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     name: { type: String, required: true },
     admissionId: { type: String },
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
@@ -220,6 +220,12 @@ const studentSchema = new mongoose.Schema(
     ],
 
     photo: String,
+
+    // Student ratings (teacher-assessed dimensions)
+    ratings: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
 
     // COPPA compliance flag
     coppaApplicable: {

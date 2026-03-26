@@ -312,12 +312,16 @@ export async function getNextStaffCode(schoolId) {
   return staffId;
 }
 
-export async function getNextRollNumber(classId) {
-  const lastStudent = await StudentModel.findOne({
+export async function getNextRollNumber(classId, schoolId) {
+  const query = {
     classId,
     isDeleted: { $ne: true },
     rollNo: { $exists: true, $ne: null },
-  })
+  };
+  if (schoolId) {
+    query.schoolId = schoolId;
+  }
+  const lastStudent = await StudentModel.findOne(query)
     .sort({ rollNo: -1 })
     .select('rollNo')
     .lean();

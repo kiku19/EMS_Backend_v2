@@ -237,6 +237,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import Homework from '../models/Homework.js';
+import Parent from '../models/Parent.js';
 import { authenticate } from '../middleware/auth.js';
 import { Student } from '../database.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
@@ -261,7 +262,14 @@ router.get('/teacher/:teacherId', authenticate, async (req, res) => {
     const { teacherId } = req.params;
     const { status, classId, sectionId } = req.query;
 
-    const query = scopeBySchool(req.user.schoolId, { teacherId });
+    // Authorization: user must be the teacher themselves or an admin
+    const isOwner = req.user._id?.toString() === teacherId || req.user.id?.toString() === teacherId;
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ error: "Not authorized to view this teacher's homework" });
+    }
+
+    const query = scopeBySchool(req.user.schoolId, { teacherId, isDeleted: { $ne: true } });
     if (status) query.status = status;
     if (classId) query.classId = classId;
     if (sectionId) query.sectionId = sectionId;
@@ -282,7 +290,7 @@ router.get('/class/:classId', authenticate, async (req, res) => {
     const { classId } = req.params;
     const { status = 'active', sectionId } = req.query;
 
-    const filter = scopeBySchool(req.user.schoolId, { classId, status });
+    const filter = scopeBySchool(req.user.schoolId, { classId, status, isDeleted: { $ne: true } });
     // Optional section-level targeting within a class
     if (sectionId) filter.sectionId = sectionId;
 
@@ -302,7 +310,7 @@ router.get('/', authenticate, async (req, res) => {
   try {
     const { status, classId, teacherId } = req.query;
 
-    const query = scopeBySchool(req.user.schoolId, {});
+    const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
     if (status) query.status = status;
     if (classId) query.classId = classId;
     if (teacherId) query.teacherId = teacherId;
@@ -323,7 +331,7 @@ router.get('/', authenticate, async (req, res) => {
 router.get('/analytics', authenticate, async (req, res) => {
   try {
     const { teacherId, classId, academicYear } = req.query;
-    const query = scopeBySchool(req.user.schoolId, {});
+    const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
     if (teacherId) query.teacherId = teacherId;
     if (classId) query.classId = classId;
     if (academicYear) query.academicYear = academicYear;
@@ -337,6 +345,7 @@ router.get('/analytics', authenticate, async (req, res) => {
       const counts = await Student.aggregate([
         {
           $match: {
+            schoolId: new mongoose.Types.ObjectId(req.user.schoolId),
             classId: { $in: classIds.map((id) => new mongoose.Types.ObjectId(id)) },
             status: 'active',
             isDeleted: { $ne: true },
@@ -416,7 +425,7 @@ router.get('/analytics', authenticate, async (req, res) => {
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const homework = await Homework.findOne(
-      scopeBySchool(req.user.schoolId, { _id: req.params.id })
+      scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     )
       .populate('teacherId', 'name email')
       .populate('classId', 'name section')
@@ -485,29 +494,53 @@ router.post('/', authenticate, validateZod(zodSchemas.createHomework), async (re
       dueDate,
     });
 
-    // Send push notification to students' parents
+    // Send push notification to teacher (confirmation) and parents
     try {
       const { default: pushNotificationService } =
         await import('../services/pushNotificationService.js');
 
-      // Get students in this class
-      // FIXED: Filter by isDeleted for consistency
-      const students = await Student.find({ classId, status: 'active', isDeleted: { $ne: true } });
+      const notificationData = {
+        type: 'homework',
+        homeworkId: homework._id,
+        classId,
+        subject,
+        dueDate,
+      };
 
-      // Get parents of these students (you may need to adjust based on your parent linking)
-      // For now, we'll send to all staff as an example
+      // Send to teacher as confirmation
       await pushNotificationService.sendToMultipleUsers(
-        [teacherId], // Send to teacher as confirmation
+        [teacherId],
         'Homework Created',
         `${title} has been assigned for ${subject}`,
-        {
-          type: 'homework',
-          homeworkId: homework._id,
-          classId,
-          subject,
-          dueDate,
-        }
+        notificationData
       );
+
+      // Send to parents of students in this class
+      const students = await Student.find({
+        classId,
+        status: 'active',
+        isDeleted: { $ne: true },
+      }).select('_id');
+      const studentIds = students.map((s) => s._id);
+
+      if (studentIds.length > 0) {
+        const parents = await Parent.find({
+          'children.studentId': { $in: studentIds },
+        }).select('_id');
+
+        for (const parent of parents) {
+          try {
+            await pushNotificationService.sendToParent(
+              parent._id,
+              'New Homework',
+              `${title} has been assigned for ${subject}. Due: ${dueDate ? new Date(dueDate).toLocaleDateString() : 'TBD'}`,
+              notificationData
+            );
+          } catch {
+            // Individual parent notification failure is non-critical
+          }
+        }
+      }
     } catch (error) {
       console.error('Error sending push notification:', error);
     }
@@ -631,11 +664,9 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
     const submission = homework.submissions.find((s) => s.studentId.toString() === studentId);
 
     if (!submission) {
-      return res
-        .status(404)
-        .json({
-          error: req.t('common:routes.submissionNotFoundStudentHasNotSubmittedThisHomework'),
-        });
+      return res.status(404).json({
+        error: req.t('common:routes.submissionNotFoundStudentHasNotSubmittedThisHomework'),
+      });
     }
 
     submission.marks = marks;
@@ -651,11 +682,13 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
   }
 });
 
-// Delete homework
+// Delete homework (soft delete — preserves grading data)
 router.delete('/:id', authenticate, async (req, res) => {
   try {
-    const homework = await Homework.findOneAndDelete(
-      scopeBySchool(req.user.schoolId, { _id: req.params.id })
+    const homework = await Homework.findOneAndUpdate(
+      scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+      { $set: { isDeleted: true, deletedAt: new Date() } },
+      { new: true }
     );
 
     if (!homework) {

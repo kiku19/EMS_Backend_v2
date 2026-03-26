@@ -306,7 +306,7 @@ async function createStudentTool(args, context) {
 
   const academicYear = args.academicYear || CURRENT_ACADEMIC_YEAR;
   const admissionId = args.admissionId || (await getNextAdmissionId(context.schoolId));
-  const rollNo = args.rollNo || (await getNextRollNumber(args.classId));
+  const rollNo = args.rollNo || (await getNextRollNumber(args.classId, context.schoolId));
   const parents = [
     {
       name: args.parentName,
