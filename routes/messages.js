@@ -11,6 +11,7 @@ import {
 } from '../middleware/chatPermissions.js';
 import { authenticate } from '../middleware/auth.js';
 import { createLogger } from '../utils/logger.js';
+import { sendMessageSchema, editMessageSchema } from '../validators/messagingSchema.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -328,6 +329,11 @@ router.post('/conversations', authenticate, async (req, res) => {
 // Send message (REST fallback) — sender identity derived from session
 router.post('/', authenticate, async (req, res) => {
   try {
+    const parsed = sendMessageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
     const senderId = req.user.id || req.user.userId;
     const senderModel = (req.user.userType || 'staff') === 'staff' ? 'Staff' : 'Student';
     const schoolId = req.user.schoolId;
@@ -336,7 +342,7 @@ router.post('/', authenticate, async (req, res) => {
       receiverId,
       receiverModel,
       content,
-      type = 'text',
+      type,
       fileUrl,
       fileName,
       fileSize,
@@ -345,12 +351,7 @@ router.post('/', authenticate, async (req, res) => {
       duration,
       waveform,
       clientMessageId,
-    } = req.body;
-
-    // Note: For voice/audio messages, content can be empty string
-    if (!conversationId || !receiverId || content === undefined) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
+    } = parsed.data;
 
     // Idempotency check: return existing message if clientMessageId already exists
     if (clientMessageId) {
@@ -599,16 +600,33 @@ router.get('/search', authenticate, async (req, res) => {
   }
 });
 
+// Get online users — requires auth (MUST be before /presence/:userId to avoid route shadowing)
+router.get('/presence/online', authenticate, async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const onlineUsers = await UserPresence.find({ status: 'online', schoolId })
+      .select('userId userModel lastSeen')
+      .lean();
+
+    res.json(onlineUsers);
+  } catch (error) {
+    logger.error({ err: error }, 'Get online users error');
+    res.status(500).json({ error: 'Failed to get online users' });
+  }
+});
+
 // Get user presence — requires auth; only for users sharing a conversation
 router.get('/presence/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
     const currentUserId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
 
     // Allow querying own presence
     if (userId !== currentUserId) {
-      // Verify the authenticated user shares at least one conversation with the target user
+      // Verify the authenticated user shares at least one conversation with the target user (scoped by school)
       const sharedConversation = await Conversation.findOne({
+        schoolId,
         'participants.userId': { $all: [currentUserId, userId] },
       }).lean();
 
@@ -617,7 +635,7 @@ router.get('/presence/:userId', authenticate, async (req, res) => {
       }
     }
 
-    const presence = await UserPresence.findOne({ userId });
+    const presence = await UserPresence.findOne({ userId, schoolId });
 
     if (!presence) {
       return res.json({ status: 'offline', lastSeen: null });
@@ -633,34 +651,20 @@ router.get('/presence/:userId', authenticate, async (req, res) => {
   }
 });
 
-// Get online users — requires auth
-router.get('/presence/online', authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const onlineUsers = await UserPresence.find({ status: 'online', schoolId })
-      .select('userId userModel lastSeen')
-      .lean();
-
-    res.json(onlineUsers);
-  } catch (error) {
-    logger.error({ err: error }, 'Get online users error');
-    res.status(500).json({ error: 'Failed to get online users' });
-  }
-});
-
 // ============ ENHANCED MESSAGE ACTIONS ============
 
 // Edit message — requires auth
 router.put('/:messageId/edit', authenticate, async (req, res) => {
   try {
+    const parsed = editMessageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
     const { messageId } = req.params;
     const userId = req.user.id || req.user.userId;
     const schoolId = req.user.schoolId;
-    const { content } = req.body;
-
-    if (!content) {
-      return res.status(400).json({ error: 'content is required' });
-    }
+    const { content } = parsed.data;
 
     const message = await Message.findOne({ _id: messageId, schoolId });
 
@@ -970,8 +974,9 @@ router.get('/conversations/:conversationId/pinned-messages', authenticate, async
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
 
-    const conversation = await Conversation.findById(conversationId)
+    const conversation = await Conversation.findOne({ _id: conversationId, schoolId })
       .populate('pinnedMessages.messageId')
       .lean();
 
@@ -997,9 +1002,10 @@ router.post('/conversations/:conversationId/pin', authenticate, async (req, res)
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
     const { pinned } = req.body;
 
-    const conversation = await Conversation.findById(conversationId);
+    const conversation = await Conversation.findOne({ _id: conversationId, schoolId });
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found' });
@@ -1037,9 +1043,10 @@ router.post('/conversations/:conversationId/mute', authenticate, async (req, res
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
     const { muted, mutedUntil } = req.body;
 
-    const conversation = await Conversation.findById(conversationId);
+    const conversation = await Conversation.findOne({ _id: conversationId, schoolId });
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found' });
@@ -1077,8 +1084,9 @@ router.delete('/conversations/:conversationId', authenticate, async (req, res) =
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
+    const schoolId = req.user.schoolId;
 
-    const conversation = await Conversation.findById(conversationId);
+    const conversation = await Conversation.findOne({ _id: conversationId, schoolId });
 
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found' });

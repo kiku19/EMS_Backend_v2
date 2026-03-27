@@ -368,14 +368,14 @@ router.post(
 
       // Default periods if not provided
       const defaultPeriods = [
-        { name: 'Period 1', startTime: '09:00', endTime: '09:45', isBreak: false },
-        { name: 'Period 2', startTime: '09:45', endTime: '10:30', isBreak: false },
-        { name: 'Break', startTime: '10:30', endTime: '10:45', isBreak: true },
-        { name: 'Period 3', startTime: '10:45', endTime: '11:30', isBreak: false },
-        { name: 'Period 4', startTime: '11:30', endTime: '12:15', isBreak: false },
-        { name: 'Lunch', startTime: '12:15', endTime: '13:00', isBreak: true },
-        { name: 'Period 5', startTime: '13:00', endTime: '13:45', isBreak: false },
-        { name: 'Period 6', startTime: '13:45', endTime: '14:30', isBreak: false },
+        { name: 'Period 1', startTime: '08:00', endTime: '08:45', isBreak: false },
+        { name: 'Period 2', startTime: '08:45', endTime: '09:30', isBreak: false },
+        { name: 'Break', startTime: '09:30', endTime: '09:45', isBreak: true },
+        { name: 'Period 3', startTime: '09:45', endTime: '10:30', isBreak: false },
+        { name: 'Period 4', startTime: '10:30', endTime: '11:15', isBreak: false },
+        { name: 'Lunch', startTime: '11:15', endTime: '12:00', isBreak: true },
+        { name: 'Period 5', startTime: '12:00', endTime: '12:45', isBreak: false },
+        { name: 'Period 6', startTime: '12:45', endTime: '13:30', isBreak: false },
       ];
 
       // Track teacher busy slots across all classes to prevent double-booking
@@ -921,46 +921,69 @@ router.post(
         return res.status(404).json({ error: 'Timetable not found' });
       }
 
-      // Process each update (already validated by Zod)
+      // Use timetableService to sync each slot to both class and teacher timetables
+      // (mirrors the single-slot PUT /:classId/slot approach)
       for (const update of updates) {
         const { day, periodIndex, subject, teacherId, room } = update;
 
-        // Ensure schedule array has enough slots
-        while (timetable.schedule[day].length <= periodIndex) {
-          timetable.schedule[day].push({
-            subject: '',
-            teacherId: null,
-            room: '',
+        try {
+          await timetableService.syncTimetables({
+            sourceType: 'class',
+            sourceId: classId,
+            day,
+            periodIndex,
+            slotData: {
+              subject: subject || '',
+              teacherId: teacherId || null,
+              room: room || '',
+            },
+            academicYear,
+            modifiedBy: req.user?.id,
+            schoolId: req.user?.schoolId,
+          });
+        } catch (syncError) {
+          console.error(
+            `Batch sync error for slot ${day}[${periodIndex}] (falling back to direct save):`,
+            syncError
+          );
+          // Fallback: save class timetable directly (without teacher sync)
+          // Ensure schedule array has enough slots
+          while (timetable.schedule[day].length <= periodIndex) {
+            timetable.schedule[day].push({
+              subject: '',
+              teacherId: null,
+              room: '',
+              lastModified: new Date(),
+              modifiedBy: req.user?.id,
+            });
+          }
+
+          timetable.schedule[day][periodIndex] = {
+            subject: subject || '',
+            teacherId: teacherId || null,
+            room: room || '',
             lastModified: new Date(),
             modifiedBy: req.user?.id,
-          });
+          };
+          timetable.version += 1;
+          timetable.lastSyncedAt = new Date();
+          await timetable.save();
         }
-
-        // Update the slot
-        timetable.schedule[day][periodIndex] = {
-          subject: subject || '',
-          teacherId: teacherId || null,
-          room: room || '',
-          lastModified: new Date(),
-          modifiedBy: req.user?.id,
-        };
       }
 
-      // Increment version
-      timetable.version += 1;
-      timetable.lastSyncedAt = new Date();
-
-      await timetable.save();
-      await timetable.populate('classId', 'name section');
+      // Reload and populate for response
+      const updated = await Timetable.findOne(
+        scopeBySchool(req.user?.schoolId, { classId, academicYear })
+      ).populate('classId', 'name section');
 
       const io = req.app.get('io');
       emitEvent(io, EVENTS.TIMETABLE_UPDATED, {
-        schoolId: timetable.schoolId?.toString(),
+        schoolId: req.user?.schoolId?.toString(),
         classId: classId?.toString(),
         academicYear,
       });
 
-      res.json(timetable);
+      res.json(updated);
     } catch (error) {
       console.error('Error batch updating timetable:', error);
       res.status(500).json({ error: error.message });
@@ -1068,6 +1091,57 @@ router.put(
       }
 
       await timetable.save();
+
+      // Sync schedule changes to TeacherTimetable entries
+      if (schedule) {
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        // First, remove all existing TeacherTimetable entries for this class
+        const existingTeacherTimetables = await TeacherTimetable.find(
+          scopeBySchool(req.user?.schoolId, { academicYear })
+        );
+        for (const tt of existingTeacherTimetables) {
+          let modified = false;
+          for (const day of days) {
+            if (tt.schedule[day]) {
+              const before = tt.schedule[day].length;
+              tt.schedule[day] = tt.schedule[day].filter(
+                (slot) => slot.classId?.toString() !== classId.toString()
+              );
+              if (tt.schedule[day].length !== before) modified = true;
+            }
+          }
+          if (modified) {
+            tt.version += 1;
+            tt.lastSyncedAt = new Date();
+            await tt.save();
+          }
+        }
+        // Now add back teacher slots from the new schedule
+        for (const day of days) {
+          const slots = schedule[day] || [];
+          for (let periodIndex = 0; periodIndex < slots.length; periodIndex++) {
+            const slot = slots[periodIndex];
+            if (slot?.teacherId) {
+              try {
+                await timetableService._addToTeacherTimetable({
+                  teacherId: slot.teacherId,
+                  classId,
+                  day,
+                  periodIndex,
+                  subject: slot.subject || '',
+                  room: slot.room || '',
+                  academicYear,
+                  schoolId: timetable.schoolId,
+                  session: null,
+                });
+              } catch (syncErr) {
+                console.error('Teacher timetable sync error:', syncErr.message);
+              }
+            }
+          }
+        }
+      }
+
       await timetable.populate('classId', 'name section');
 
       const io = req.app.get('io');
@@ -1101,6 +1175,29 @@ router.delete('/:classId', authenticate, checkPermission('classes', 'delete'), a
 
     if (!timetable) {
       return res.status(404).json({ error: 'Timetable not found' });
+    }
+
+    // Clean up related TeacherTimetable entries for this class
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const teacherTimetables = await TeacherTimetable.find(
+      scopeBySchool(req.user?.schoolId, { academicYear })
+    );
+    for (const tt of teacherTimetables) {
+      let modified = false;
+      for (const day of days) {
+        if (tt.schedule[day]) {
+          const before = tt.schedule[day].length;
+          tt.schedule[day] = tt.schedule[day].filter(
+            (slot) => slot.classId?.toString() !== classId.toString()
+          );
+          if (tt.schedule[day].length !== before) modified = true;
+        }
+      }
+      if (modified) {
+        tt.version += 1;
+        tt.lastSyncedAt = new Date();
+        await tt.save();
+      }
     }
 
     const io = req.app.get('io');

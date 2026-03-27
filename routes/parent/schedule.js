@@ -8,6 +8,12 @@ import { scopeBySchool, resolveRequestSchoolId } from './helpers.js';
 
 const router = express.Router();
 
+/** Convert "HH:MM" to total minutes for comparison */
+function timeToMinutes(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
 // Normalize :studentId is already the correct param name for timetable route
 // Normalize :id → req.params.studentId for validateParentChildAccess (not used in this router)
 
@@ -97,9 +103,17 @@ router.get('/timetable/:studentId', validateParentChildAccess, async (req, res) 
       .lean();
 
     if (!timetableDoc) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'TIMETABLE_NOT_FOUND', message: 'Timetable not found for this class' },
+      // Return 200 with empty timetable instead of 404 (timetable may not be created yet)
+      const emptyDayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      return res.json({
+        success: true,
+        data: {
+          studentId,
+          studentName: student.name,
+          class: student.classId,
+          timetable: emptyDayNames.map((day) => ({ day, periods: [] })),
+          _initialized: false,
+        },
       });
     }
 
@@ -226,13 +240,36 @@ router.post('/ptm/:sessionId/book', async (req, res) => {
         .json({ success: false, message: `Cannot book a slot for a ${session.status} session` });
     }
 
-    const timeConflict = session.slots.some(
-      (s) => s.scheduledTime === scheduledTime && s.status !== 'cancelled'
-    );
+    // Duration-based overlap check (not just exact time equality)
+    const slotDuration = session.slotDuration || 15;
+    const newStartMin = timeToMinutes(scheduledTime);
+    const newEndMin = newStartMin + slotDuration;
+
+    // Verify slot falls within session bounds
+    const sessionStartMin = timeToMinutes(session.startTime);
+    const sessionEndMin = timeToMinutes(session.endTime);
+    if (newStartMin < sessionStartMin || newEndMin > sessionEndMin) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: `Slot time must fall within session hours (${session.startTime}–${session.endTime})`,
+        });
+    }
+
+    const timeConflict = session.slots.find((s) => {
+      if (s.status === 'cancelled') return false;
+      const existStart = timeToMinutes(s.scheduledTime);
+      const existEnd = existStart + slotDuration;
+      return newStartMin < existEnd && existStart < newEndMin;
+    });
     if (timeConflict) {
       return res
         .status(409)
-        .json({ success: false, message: `Slot at ${scheduledTime} is already booked` });
+        .json({
+          success: false,
+          message: `Slot overlaps with existing booking at ${timeConflict.scheduledTime} (${slotDuration} min slots)`,
+        });
     }
 
     const studentSlot = session.slots.find(

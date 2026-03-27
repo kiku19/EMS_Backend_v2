@@ -107,7 +107,7 @@ const messageSchema = new mongoose.Schema(
         },
         userModel: {
           type: String,
-          enum: ['Staff', 'Student'],
+          enum: ['Staff', 'Student', 'Parent'],
           required: true,
         },
         createdAt: {

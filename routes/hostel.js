@@ -41,8 +41,15 @@ const allocationSchema = z.object({
   roomId: objectId,
   studentId: objectId,
   bedNumber: z.string().trim().optional(),
-  startDate: z.string().min(1),
-  endDate: z.string().optional(),
+  startDate: z
+    .string()
+    .min(1)
+    .regex(/^\d{4}-\d{2}-\d{2}/, 'startDate must be YYYY-MM-DD format'),
+  endDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}/, 'endDate must be YYYY-MM-DD format')
+    .optional(),
+  academicYear: z.string().optional(),
   monthlyFee: z.number().min(0).optional(),
   notes: z.string().trim().optional(),
 });
@@ -65,7 +72,8 @@ router.get('/hostels', authenticate, checkPermission('hostel', 'view'), async (r
     const query = buildSchoolScopedQuery(schoolId, { isActive: true });
     if (type) query.type = type;
     if (search) {
-      query.$or = [{ name: new RegExp(search, 'i') }, { wardenName: new RegExp(search, 'i') }];
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [{ name: new RegExp(escaped, 'i') }, { wardenName: new RegExp(escaped, 'i') }];
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -108,6 +116,14 @@ router.post('/hostels', authenticate, checkPermission('hostel', 'create'), async
   try {
     const data = hostelSchema.parse(req.body);
     const schoolId = req.user.schoolId;
+
+    // Check for duplicate hostel name within same school
+    const existing = await Hostel.findOne(
+      buildSchoolScopedQuery(schoolId, { name: data.name, isActive: true })
+    );
+    if (existing) {
+      return res.status(409).json({ error: 'A hostel with this name already exists' });
+    }
 
     const hostel = new Hostel({ ...data, schoolId });
     await hostel.save();
@@ -186,12 +202,19 @@ router.delete(
 router.get('/rooms', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    const { hostelId, type, available, page = 1, limit = 50 } = req.query;
+    const { hostelId, type, available, search, page = 1, limit = 50 } = req.query;
 
     const query = buildSchoolScopedQuery(schoolId, { isActive: true });
     if (hostelId) query.hostelId = hostelId;
     if (type) query.type = type;
     if (available === 'true') query.$expr = { $lt: ['$occupiedBeds', '$capacity'] };
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { roomNumber: new RegExp(escaped, 'i') },
+        { description: new RegExp(escaped, 'i') },
+      ];
+    }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [rooms, total] = await Promise.all([
@@ -246,12 +269,12 @@ router.post('/rooms', authenticate, checkPermission('hostel', 'create'), async (
     );
     if (!hostel) return res.status(404).json({ error: 'Hostel not found' });
 
-    // Check duplicate room number in same hostel
+    // Check duplicate room number in same hostel (match unique index filter)
     const existing = await HostelRoom.findOne(
       buildSchoolScopedQuery(schoolId, {
         hostelId: data.hostelId,
         roomNumber: data.roomNumber,
-        isActive: true,
+        isDeleted: { $ne: true },
       })
     );
     if (existing)
@@ -284,6 +307,13 @@ router.put('/rooms/:id', authenticate, checkPermission('hostel', 'edit'), async 
 
     const room = await HostelRoom.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
     if (!room) return res.status(404).json({ error: 'Room not found' });
+
+    // Prevent reducing capacity below current occupancy
+    if (data.capacity !== undefined && data.capacity < room.occupiedBeds) {
+      return res.status(400).json({
+        error: `Cannot reduce capacity to ${data.capacity}. Room currently has ${room.occupiedBeds} occupied bed(s).`,
+      });
+    }
 
     const oldCapacity = room.capacity;
     Object.assign(room, data);
@@ -343,13 +373,32 @@ router.delete('/rooms/:id', authenticate, checkPermission('hostel', 'delete'), a
 router.get('/allocations', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    const { hostelId, roomId, status, studentId, page = 1, limit = 50 } = req.query;
+    const {
+      hostelId,
+      roomId,
+      status,
+      studentId,
+      academicYear,
+      search,
+      page = 1,
+      limit = 50,
+    } = req.query;
 
     const query = buildSchoolScopedQuery(schoolId, {});
     if (hostelId) query.hostelId = hostelId;
     if (roomId) query.roomId = roomId;
     if (status) query.status = status;
     if (studentId) query.studentId = studentId;
+    if (academicYear) query.academicYear = academicYear;
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { studentName: new RegExp(escaped, 'i') },
+        { admissionNo: new RegExp(escaped, 'i') },
+        { roomNumber: new RegExp(escaped, 'i') },
+        { hostelName: new RegExp(escaped, 'i') },
+      ];
+    }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [allocations, total] = await Promise.all([
@@ -410,21 +459,36 @@ router.post('/allocations', authenticate, checkPermission('hostel', 'create'), a
     const data = allocationSchema.parse(req.body);
     const schoolId = req.user.schoolId;
 
-    // Verify room exists and has capacity
-    const room = await HostelRoom.findOne(
-      buildSchoolScopedQuery(schoolId, { _id: data.roomId, isActive: true })
-    );
-    if (!room) return res.status(404).json({ error: 'Room not found' });
-    if (room.occupiedBeds >= room.capacity) {
-      return res.status(400).json({ error: 'Room is at full capacity' });
-    }
-
     // Check student doesn't already have an active allocation
     const existing = await HostelAllocation.findOne(
       buildSchoolScopedQuery(schoolId, { studentId: data.studentId, status: 'active' })
     );
     if (existing) {
       return res.status(400).json({ error: 'Student already has an active hostel allocation' });
+    }
+
+    // Atomically increment occupiedBeds ONLY if room has capacity.
+    // Also verify hostelId matches the room's hostelId to prevent mismatched allocations.
+    const room = await HostelRoom.findOneAndUpdate(
+      buildSchoolScopedQuery(schoolId, {
+        _id: data.roomId,
+        hostelId: data.hostelId,
+        isActive: true,
+        $expr: { $lt: ['$occupiedBeds', '$capacity'] },
+      }),
+      { $inc: { occupiedBeds: 1 } },
+      { new: true }
+    );
+    if (!room) {
+      // Determine whether room doesn't exist, doesn't belong to hostel, or is just full
+      const roomExists = await HostelRoom.findOne(
+        buildSchoolScopedQuery(schoolId, { _id: data.roomId, isActive: true })
+      );
+      if (!roomExists) return res.status(404).json({ error: 'Room not found' });
+      if (roomExists.hostelId.toString() !== data.hostelId) {
+        return res.status(400).json({ error: 'Room does not belong to the specified hostel' });
+      }
+      return res.status(400).json({ error: 'Room is at full capacity' });
     }
 
     // Fetch denormalized names
@@ -448,18 +512,22 @@ router.post('/allocations', authenticate, checkPermission('hostel', 'create'), a
       bedNumber: data.bedNumber,
       startDate: new Date(data.startDate),
       endDate: data.endDate ? new Date(data.endDate) : undefined,
+      academicYear: data.academicYear || undefined,
       monthlyFee: data.monthlyFee ?? room.monthlyFee,
       notes: data.notes,
       status: 'active',
     });
 
-    room.occupiedBeds += 1;
-
-    await Promise.all([
-      allocation.save(),
-      room.save(),
-      Hostel.findByIdAndUpdate(data.hostelId, { $inc: { occupiedBeds: 1 } }),
-    ]);
+    try {
+      await Promise.all([
+        allocation.save(),
+        Hostel.findByIdAndUpdate(data.hostelId, { $inc: { occupiedBeds: 1 } }),
+      ]);
+    } catch (saveError) {
+      // Rollback the atomic room increment if allocation save fails
+      await HostelRoom.findByIdAndUpdate(data.roomId, { $inc: { occupiedBeds: -1 } });
+      throw saveError;
+    }
 
     res.status(201).json({ allocation });
   } catch (error) {
@@ -494,8 +562,14 @@ router.put(
 
       await Promise.all([
         allocation.save(),
-        HostelRoom.findByIdAndUpdate(allocation.roomId, { $inc: { occupiedBeds: -1 } }),
-        Hostel.findByIdAndUpdate(allocation.hostelId, { $inc: { occupiedBeds: -1 } }),
+        HostelRoom.findOneAndUpdate(
+          { _id: allocation.roomId, occupiedBeds: { $gt: 0 } },
+          { $inc: { occupiedBeds: -1 } }
+        ),
+        Hostel.findOneAndUpdate(
+          { _id: allocation.hostelId, occupiedBeds: { $gt: 0 } },
+          { $inc: { occupiedBeds: -1 } }
+        ),
       ]);
 
       res.json({ allocation });

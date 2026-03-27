@@ -52,7 +52,7 @@
 
 import express from 'express';
 import mongoose from 'mongoose';
-import { Student, Staff, Class } from '../database.js';
+import { Student, Staff, Class, Exam, Announcement } from '../database.js';
 import FeePayment from '../models/FeePayment.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateZod } from '../validators/zodHelpers.js';
@@ -275,6 +275,36 @@ async function regexSearchFees(q, schoolId, limit, skip, academicYear) {
     .lean();
 }
 
+async function regexSearchExams(q, schoolId, limit, skip, academicYear) {
+  const regex = new RegExp(escapeRegex(q), 'i');
+  const match = {
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    isDeleted: { $ne: true },
+    $or: [{ name: regex }, { type: regex }, { subjectName: regex }],
+  };
+  if (academicYear) match.academicYear = academicYear;
+
+  return Exam.find(match)
+    .select('name type status classId subjectName startDate endDate academicYear')
+    .populate('classId', 'name section')
+    .skip(skip)
+    .limit(limit)
+    .lean();
+}
+
+async function regexSearchAnnouncements(q, schoolId, limit, skip) {
+  const regex = new RegExp(escapeRegex(q), 'i');
+  return Announcement.find({
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    $or: [{ title: regex }, { content: regex }],
+  })
+    .select('title status channels createdAt')
+    .skip(skip)
+    .limit(limit)
+    .sort({ createdAt: -1 })
+    .lean();
+}
+
 // ─── Route ────────────────────────────────────────────────────────────────────
 
 /**
@@ -381,6 +411,18 @@ router.get('/', authenticate, validateZod(searchQuerySchema, 'query'), async (re
         // Fee search always uses regex (student name lookup requires join)
         const docs = await regexSearchFees(q, schoolId, limit, skip, academicYear);
         results.fees = { results: docs, count: docs.length };
+      })(),
+
+      (async () => {
+        if (!types.includes('exams')) return;
+        const docs = await regexSearchExams(q, schoolId, limit, skip, academicYear);
+        results.exams = { results: docs, count: docs.length };
+      })(),
+
+      (async () => {
+        if (!types.includes('announcements')) return;
+        const docs = await regexSearchAnnouncements(q, schoolId, limit, skip);
+        results.announcements = { results: docs, count: docs.length };
       })(),
     ]);
 

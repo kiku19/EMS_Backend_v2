@@ -3,7 +3,7 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const schoolSettingsSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null, index: true },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     name: { type: String, default: 'School Name', trim: true },
     schoolName: { type: String, default: 'School Name', trim: true },
     address: { type: String, default: '' },
@@ -109,6 +109,16 @@ const schoolSettingsSchema = new mongoose.Schema(
         enabled: Boolean,
       },
     ],
+
+    // Attendance Rules Configuration
+    attendanceRules: {
+      defaulterThreshold: { type: Number, default: 75, min: 0, max: 100 },
+      lockTime: { type: String, default: '16:00' },
+      allowEdit: { type: Boolean, default: true },
+      editWindow: { type: Number, default: 24, enum: [12, 24, 48] },
+      notifyAbsent: { type: Boolean, default: true },
+      notifyDefaulter: { type: Boolean, default: true },
+    },
 
     // Payroll Configuration
     payroll: {

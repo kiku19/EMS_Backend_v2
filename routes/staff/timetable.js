@@ -46,14 +46,16 @@ router.get('/:id/timetable/today', authenticate, async (req, res) => {
         .lean(),
     ]);
 
-    // Get student counts
+    // Get student counts (scoped by school)
+    const studentCountMatch = {
+      classId: { $in: classIds.map((id) => new mongoose.Types.ObjectId(id)) },
+      isDeleted: { $ne: true },
+    };
+    if (req.user?.schoolId) {
+      studentCountMatch.schoolId = new mongoose.Types.ObjectId(String(req.user.schoolId));
+    }
     const studentCounts = await Student.aggregate([
-      {
-        $match: {
-          classId: { $in: classIds.map((id) => new mongoose.Types.ObjectId(id)) },
-          isDeleted: { $ne: true },
-        },
-      },
+      { $match: studentCountMatch },
       { $group: { _id: '$classId', count: { $sum: 1 } } },
     ]);
     const countMap = Object.fromEntries(studentCounts.map((sc) => [sc._id.toString(), sc.count]));
@@ -144,6 +146,9 @@ router.get('/:id/timetable/week', authenticate, async (req, res) => {
           $match: {
             classId: { $in: classIdArr.map((id) => new mongoose.Types.ObjectId(id)) },
             isDeleted: { $ne: true },
+            ...(req.user?.schoolId
+              ? { schoolId: new mongoose.Types.ObjectId(String(req.user.schoolId)) }
+              : {}),
           },
         },
         { $group: { _id: '$classId', count: { $sum: 1 } } },

@@ -3,9 +3,23 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const examSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     name: { type: String, required: true },
-    type: { type: String }, // Canonical field: unit_test, quiz, midterm, final
+    type: {
+      type: String,
+      enum: [
+        'unit_test',
+        'quiz',
+        'midterm',
+        'final',
+        'quarterly',
+        'half_yearly',
+        'annual',
+        'practice',
+        'class_test',
+        'assignment',
+      ],
+    }, // Canonical field
     examType: { type: String }, // Deprecated - use 'type' instead. Kept for backward compat, auto-migrated via pre-save
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
     subjectId: { type: mongoose.Schema.Types.ObjectId }, // Removed ref:'Subject' - no Subject model exists

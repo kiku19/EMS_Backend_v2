@@ -12,6 +12,19 @@ const logger = createLogger('TimetableService');
  */
 class TimetableService {
   /**
+   * Compute the total number of periods per week from a teacher timetable schedule.
+   * Counts all non-empty slots across all days.
+   * @param {Object} schedule - The schedule map { Monday: [...], Tuesday: [...], ... }
+   * @returns {number} Total periods count
+   * @private
+   */
+  _computeTotalPeriodsPerWeek(schedule) {
+    if (!schedule) return 0;
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return days.reduce((sum, day) => sum + (schedule[day]?.length || 0), 0);
+  }
+
+  /**
    * Synchronize timetables bidirectionally
    * @param {Object} options - Synchronization options
    * @param {string} options.sourceType - 'class' or 'teacher'
@@ -258,6 +271,9 @@ class TimetableService {
     // Sort by periodIndex
     teacherTimetable.schedule[day].sort((a, b) => a.periodIndex - b.periodIndex);
 
+    teacherTimetable.totalPeriodsPerWeek = this._computeTotalPeriodsPerWeek(
+      teacherTimetable.schedule
+    );
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
 
@@ -498,6 +514,9 @@ class TimetableService {
     // Sort by periodIndex
     teacherTimetable.schedule[day].sort((a, b) => a.periodIndex - b.periodIndex);
 
+    teacherTimetable.totalPeriodsPerWeek = this._computeTotalPeriodsPerWeek(
+      teacherTimetable.schedule
+    );
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
 
@@ -538,6 +557,9 @@ class TimetableService {
         !(slot.periodIndex === periodIndex && slot.classId?.toString() === classId.toString())
     );
 
+    teacherTimetable.totalPeriodsPerWeek = this._computeTotalPeriodsPerWeek(
+      teacherTimetable.schedule
+    );
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
 
@@ -645,6 +667,9 @@ class TimetableService {
       (s) => s.periodIndex !== periodIndex
     );
 
+    teacherTimetable.totalPeriodsPerWeek = this._computeTotalPeriodsPerWeek(
+      teacherTimetable.schedule
+    );
     teacherTimetable.version += 1;
     teacherTimetable.lastSyncedAt = new Date();
     await teacherTimetable.save();
@@ -896,6 +921,9 @@ class TimetableService {
       // Sort by periodIndex
       teacherTimetable.schedule[day].sort((a, b) => a.periodIndex - b.periodIndex);
 
+      teacherTimetable.totalPeriodsPerWeek = this._computeTotalPeriodsPerWeek(
+        teacherTimetable.schedule
+      );
       teacherTimetable.version += 1;
       teacherTimetable.lastSyncedAt = new Date();
       await teacherTimetable.save();

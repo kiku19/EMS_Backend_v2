@@ -1,6 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/auth.js';
+import { checkPermission } from '../../middleware/auth/permissions.js';
 import { ensureSchoolSettings } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 import { SchoolSettings } from '../../database.js';
@@ -52,69 +53,74 @@ router.get('/communication', authenticate, async (req, res) => {
   }
 });
 
-// PUT /settings/communication
-router.put('/communication', authenticate, async (req, res) => {
-  try {
-    const parsed = communicationSettingsSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+// PUT /settings/communication (admin/settings-edit only)
+router.put(
+  '/communication',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const parsed = communicationSettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+      }
+
+      const query = buildSchoolScopedQuery(req.user?.schoolId);
+      const settings = await SchoolSettings.findOne(query);
+      if (!settings) {
+        return res.status(404).json({ error: 'School settings not found' });
+      }
+
+      const data = parsed.data;
+      const existing = settings.communicationSettings || {};
+
+      // If password/apiKey is the masked placeholder, keep the existing value
+      const smsApiKey =
+        data.sms.apiKey === '••••••••' ? (existing.sms?.apiKey ?? '') : data.sms.apiKey;
+      const emailPassword =
+        data.email.password === '••••••••' ? (existing.email?.password ?? '') : data.email.password;
+
+      settings.communicationSettings = {
+        sms: {
+          enabled: data.sms.enabled,
+          provider: data.sms.provider,
+          senderId: data.sms.senderId,
+          apiKey: smsApiKey,
+        },
+        email: {
+          enabled: data.email.enabled,
+          provider: data.email.provider,
+          smtpHost: data.email.smtpHost,
+          port: data.email.port,
+          username: data.email.username,
+          password: emailPassword,
+        },
+      };
+
+      await settings.save();
+
+      // Return with masked secrets
+      res.json({
+        sms: {
+          enabled: settings.communicationSettings.sms.enabled,
+          provider: settings.communicationSettings.sms.provider,
+          senderId: settings.communicationSettings.sms.senderId,
+          apiKey: settings.communicationSettings.sms.apiKey ? '••••••••' : '',
+        },
+        email: {
+          enabled: settings.communicationSettings.email.enabled,
+          provider: settings.communicationSettings.email.provider,
+          smtpHost: settings.communicationSettings.email.smtpHost,
+          port: settings.communicationSettings.email.port,
+          username: settings.communicationSettings.email.username,
+          password: settings.communicationSettings.email.password ? '••••••••' : '',
+        },
+      });
+    } catch (error) {
+      console.error('Error updating communication settings:', error);
+      res.status(500).json({ error: 'Failed to update communication settings' });
     }
-
-    const query = buildSchoolScopedQuery(req.user?.schoolId);
-    const settings = await SchoolSettings.findOne(query);
-    if (!settings) {
-      return res.status(404).json({ error: 'School settings not found' });
-    }
-
-    const data = parsed.data;
-    const existing = settings.communicationSettings || {};
-
-    // If password/apiKey is the masked placeholder, keep the existing value
-    const smsApiKey =
-      data.sms.apiKey === '••••••••' ? (existing.sms?.apiKey ?? '') : data.sms.apiKey;
-    const emailPassword =
-      data.email.password === '••••••••' ? (existing.email?.password ?? '') : data.email.password;
-
-    settings.communicationSettings = {
-      sms: {
-        enabled: data.sms.enabled,
-        provider: data.sms.provider,
-        senderId: data.sms.senderId,
-        apiKey: smsApiKey,
-      },
-      email: {
-        enabled: data.email.enabled,
-        provider: data.email.provider,
-        smtpHost: data.email.smtpHost,
-        port: data.email.port,
-        username: data.email.username,
-        password: emailPassword,
-      },
-    };
-
-    await settings.save();
-
-    // Return with masked secrets
-    res.json({
-      sms: {
-        enabled: settings.communicationSettings.sms.enabled,
-        provider: settings.communicationSettings.sms.provider,
-        senderId: settings.communicationSettings.sms.senderId,
-        apiKey: settings.communicationSettings.sms.apiKey ? '••••••••' : '',
-      },
-      email: {
-        enabled: settings.communicationSettings.email.enabled,
-        provider: settings.communicationSettings.email.provider,
-        smtpHost: settings.communicationSettings.email.smtpHost,
-        port: settings.communicationSettings.email.port,
-        username: settings.communicationSettings.email.username,
-        password: settings.communicationSettings.email.password ? '••••••••' : '',
-      },
-    });
-  } catch (error) {
-    console.error('Error updating communication settings:', error);
-    res.status(500).json({ error: 'Failed to update communication settings' });
   }
-});
+);
 
 export default router;

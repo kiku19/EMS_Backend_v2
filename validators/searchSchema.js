@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const SEARCH_TYPES = ['students', 'staff', 'classes', 'fees'];
+const SEARCH_TYPES = ['students', 'staff', 'classes', 'fees', 'exams', 'announcements'];
 
 export const searchQuerySchema = z.object({
   q: z.string().min(1, 'Search query is required').max(200, 'Search query too long').trim(),

@@ -210,9 +210,12 @@ import { Student, Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { zodSchemas, validateZod } from '../middleware/validation/validation.js';
+import { computeFeeHeadStatus } from '../utils/feeCalculator.js';
+import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
 router.use(authenticate);
+const logger = createLogger('FeeHeads');
 
 // Get all fee heads
 router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) => {
@@ -222,7 +225,7 @@ router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) 
     });
     res.json(feeHeads);
   } catch (error) {
-    console.error('Error fetching fee heads:', error);
+    logger.error('Error fetching fee heads:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -236,7 +239,7 @@ router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, re
     }
     res.json(feeHead);
   } catch (error) {
-    console.error('Error fetching fee head:', error);
+    logger.error('Error fetching fee head:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -289,7 +292,7 @@ router.post(
               'Fee head created but no students were found to apply it to. Check that students exist in the selected classes.';
           }
         } catch (applyError) {
-          console.error('Failed to auto-apply fee head to students:', applyError);
+          logger.error('Failed to auto-apply fee head to students:', applyError);
           response.applied = false;
           response.applyError = `Fee head created but failed to apply to students: ${applyError.message}`;
         }
@@ -297,7 +300,7 @@ router.post(
 
       res.status(201).json(response);
     } catch (error) {
-      console.error('Error creating fee head:', error);
+      logger.error('Error creating fee head:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -354,7 +357,7 @@ router.put(
             response.applyWarning = 'Fee head updated but no students were found to apply it to.';
           }
         } catch (applyError) {
-          console.error('Failed to auto-apply fee head to students:', applyError);
+          logger.error('Failed to auto-apply fee head to students:', applyError);
           response.applied = false;
           response.applyError = `Fee head updated but failed to apply to students: ${applyError.message}`;
         }
@@ -362,7 +365,7 @@ router.put(
 
       res.json(response);
     } catch (error) {
-      console.error('Error updating fee head:', error);
+      logger.error('Error updating fee head:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -400,7 +403,7 @@ router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (re
 
     res.json({ success: true, message: req.t('common:routes.feeHeadDeletedSuccessfully') });
   } catch (error) {
-    console.error('Error deleting fee head:', error);
+    logger.error('Error deleting fee head:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -422,7 +425,7 @@ router.post('/:id/apply', authenticate, checkPermission('fees', 'edit'), async (
       studentsUpdated: result.studentsUpdated,
     });
   } catch (error) {
-    console.error('Error applying fee head:', error);
+    logger.error('Error applying fee head:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -479,31 +482,43 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
         (fh) => fh.feeHeadId.toString() === feeHead._id.toString()
       );
 
-      const feeHeadData = {
-        feeHeadId: feeHead._id,
-        name: feeHead.name,
-        category: feeHead.category,
-        amount: feeHead.amount,
-        mandatory: feeHead.mandatory,
-        frequency: feeHead.frequency,
-        paidAmount: 0,
-        balanceAmount: feeHead.amount,
-        status: 'pending',
-      };
-
       if (existingIndex >= 0) {
-        // Update existing fee head
+        // Update existing fee head — preserve paidAmount and recalculate balance/status
+        const existing = feeStructure.feeHeads[existingIndex];
+        const preservedPaidAmount = existing.paidAmount || 0;
+
         feeStructure.feeHeads[existingIndex] = {
-          ...feeStructure.feeHeads[existingIndex].toObject(),
-          ...feeHeadData,
-          // Preserve payment data
-          paidAmount: feeStructure.feeHeads[existingIndex].paidAmount,
-          balanceAmount: feeHead.amount - feeStructure.feeHeads[existingIndex].paidAmount,
-          status: feeStructure.feeHeads[existingIndex].status,
+          ...existing.toObject(),
+          // Update metadata from the fee head definition
+          name: feeHead.name,
+          category: feeHead.category,
+          amount: feeHead.amount,
+          mandatory: feeHead.mandatory,
+          frequency: feeHead.frequency,
+          // Preserve the payment data
+          paidAmount: preservedPaidAmount,
         };
+
+        // Recalculate balance and status using centralized helper
+        const headResult = computeFeeHeadStatus({
+          amount: feeHead.amount,
+          paidAmount: preservedPaidAmount,
+        });
+        feeStructure.feeHeads[existingIndex].balanceAmount = headResult.balanceAmount;
+        feeStructure.feeHeads[existingIndex].status = headResult.status;
       } else {
-        // Add new fee head
-        feeStructure.feeHeads.push(feeHeadData);
+        // Add new fee head with zero payments
+        feeStructure.feeHeads.push({
+          feeHeadId: feeHead._id,
+          name: feeHead.name,
+          category: feeHead.category,
+          amount: feeHead.amount,
+          mandatory: feeHead.mandatory,
+          frequency: feeHead.frequency,
+          paidAmount: 0,
+          balanceAmount: feeHead.amount,
+          status: 'pending',
+        });
       }
 
       // Recalculate totals
@@ -527,7 +542,7 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
 
     return { studentsUpdated };
   } catch (error) {
-    console.error('Error applying fee head to students:', error);
+    logger.error('Error applying fee head to students:', error);
     throw error;
   }
 }

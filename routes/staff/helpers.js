@@ -19,12 +19,30 @@ export const ROLE_MAPPING = {
 
 // Fix 3.19: Use crypto.randomInt() instead of Math.random() for cryptographically secure password generation
 export function generatePassword(length = 8) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  let password = '';
-  for (let index = 0; index < length; index += 1) {
-    password += chars.charAt(crypto.randomInt(chars.length));
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghjkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const allChars = upper + lower + digits;
+
+  // Guarantee at least one uppercase, one lowercase, and one digit
+  const mandatory = [
+    upper.charAt(crypto.randomInt(upper.length)),
+    lower.charAt(crypto.randomInt(lower.length)),
+    digits.charAt(crypto.randomInt(digits.length)),
+  ];
+
+  // Fill remaining characters from the full set
+  for (let i = mandatory.length; i < length; i += 1) {
+    mandatory.push(allChars.charAt(crypto.randomInt(allChars.length)));
   }
-  return password;
+
+  // Shuffle using Fisher-Yates to avoid predictable positions
+  for (let i = mandatory.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(i + 1);
+    [mandatory[i], mandatory[j]] = [mandatory[j], mandatory[i]];
+  }
+
+  return mandatory.join('');
 }
 
 export function getPermissionRole(role) {
@@ -119,7 +137,7 @@ export function formatStaffResponse(staff, assignedClass = null) {
     professionalQualifications: staff.professionalQualifications,
     qualification: staff.professionalQualifications?.map((item) => item.name).join(', ') || '',
     totalExperience: staff.totalExperience,
-    experience: parseInt(staff.totalExperience, 10) || 0,
+    experience: staff.experience ?? (parseInt(staff.totalExperience, 10) || 0),
     previousOrganization: staff.previousOrganization,
     roleInOrganization: staff.roleInOrganization,
     qualificationDocs: staff.qualificationDocs,

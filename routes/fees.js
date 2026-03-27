@@ -161,10 +161,13 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
-// Get all payments with optional filters
-router.get('/payments', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+// Get all payments with optional filters (paginated)
+router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { studentId, academicYear, status, startDate, endDate } = req.query;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const skip = (page - 1) * limit;
 
     const filter = scopeBySchool(req.user?.schoolId, {});
     if (studentId) filter.studentId = studentId;
@@ -178,11 +181,24 @@ router.get('/payments', authenticate, checkPermission('fees', 'view'), async (re
       if (endDate) filter.paymentDate.$lte = endDate;
     }
 
-    const payments = await FeePayment.find(filter)
-      .populate('studentId', 'name admissionId class')
-      .sort({ paymentDate: -1 });
+    const [payments, total] = await Promise.all([
+      FeePayment.find(filter)
+        .populate('studentId', 'name admissionId class')
+        .sort({ paymentDate: -1 })
+        .skip(skip)
+        .limit(limit),
+      FeePayment.countDocuments(filter),
+    ]);
 
-    res.json(payments);
+    res.json({
+      payments,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     logger.error({ err: error }, 'Error fetching payments');
     res.status(500).json({ error: 'Failed to fetch payments' });
@@ -420,7 +436,7 @@ router.post(
 );
 
 // Get payment by ID
-router.get('/payments/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/payments/:id', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const payment = await FeePayment.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
@@ -437,10 +453,184 @@ router.get('/payments/:id', authenticate, checkPermission('fees', 'view'), async
   }
 });
 
+// Delete (cancel) a payment and reverse the student's fee balances
+router.delete(
+  '/payments/:id',
+  authenticate,
+  checkPermission('fees', 'delete'),
+  async (req, res) => {
+    try {
+      const schoolId = await resolveRequestSchoolId(req);
+
+      const payment = await FeePayment.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+      if (!payment) {
+        return res.status(404).json({ error: 'Payment not found' });
+      }
+
+      if (payment.status === 'cancelled') {
+        return res.status(400).json({ error: 'Payment is already cancelled' });
+      }
+
+      const cancelledAmount = payment.amount || 0;
+      const previousStatus = payment.status;
+
+      // Mark payment as cancelled (soft-delete)
+      payment.status = 'cancelled';
+      payment.cancelledAt = new Date();
+      payment.cancelledBy = req.user?._id;
+      await payment.save();
+
+      // Only reverse balances if the payment was previously completed
+      if (previousStatus === 'completed' && payment.studentId && cancelledAmount > 0) {
+        // Reverse StudentFeeStructure balances
+        try {
+          const resolvedYear = payment.academicYear || (await resolveAcademicYear(null, schoolId));
+          const sfs = await StudentFeeStructure.findOne(
+            scopeBySchool(schoolId, {
+              studentId: payment.studentId,
+              academicYear: resolvedYear,
+            })
+          );
+
+          if (sfs) {
+            // Reverse per-fee-head amounts if breakdown was recorded
+            if (
+              Array.isArray(payment.feeHeads) &&
+              payment.feeHeads.length > 0 &&
+              Array.isArray(sfs.feeHeads)
+            ) {
+              for (const paymentHead of payment.feeHeads) {
+                const matchingHead = sfs.feeHeads.find(
+                  (h) =>
+                    (paymentHead.feeHeadId &&
+                      h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
+                    (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
+                );
+                if (matchingHead) {
+                  matchingHead.paidAmount = Math.max(
+                    (matchingHead.paidAmount || 0) - (paymentHead.amount || 0),
+                    0
+                  );
+                  const headResult = computeFeeHeadStatus(matchingHead);
+                  matchingHead.balanceAmount = headResult.balanceAmount;
+                  matchingHead.status = headResult.status;
+                }
+              }
+            }
+
+            sfs.totalPaid = Math.max((sfs.totalPaid || 0) - cancelledAmount, 0);
+            const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+            sfs.totalBalance = totalBalance;
+            sfs.overallStatus = overallStatus;
+
+            await sfs.save();
+          }
+        } catch (sfsError) {
+          logger.warn(
+            { err: sfsError, paymentId: payment._id },
+            'Could not reverse StudentFeeStructure after payment cancellation'
+          );
+        }
+
+        // Reverse Student.feeDetails balances
+        try {
+          const student = await Student.findOne(
+            scopeBySchool(schoolId, { _id: payment.studentId })
+          );
+          if (student) {
+            await Student.findByIdAndUpdate(student._id, {
+              $inc: { 'feeDetails.paidAmount': -cancelledAmount },
+            });
+            const updated = await Student.findById(student._id);
+            if (updated) {
+              const totalFee = updated.feeDetails?.totalFee || 0;
+              const discountApplied = updated.feeDetails?.discountApplied || 0;
+              const paidAmount = updated.feeDetails?.paidAmount || 0;
+              const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
+              const { overallStatus } = computeFeeBalance({
+                totalFee,
+                totalPaid: paidAmount,
+                discountApplied,
+              });
+              await Student.findByIdAndUpdate(student._id, {
+                $set: {
+                  'feeDetails.balanceAmount': balanceAmount,
+                  feeStatus: overallStatus,
+                },
+              });
+            }
+          }
+        } catch (studentError) {
+          logger.warn(
+            { err: studentError, paymentId: payment._id },
+            'Could not reverse Student feeDetails after payment cancellation'
+          );
+        }
+      }
+
+      res.json({
+        success: true,
+        message: 'Payment cancelled successfully',
+        payment,
+      });
+    } catch (error) {
+      logger.error({ err: error }, 'Error cancelling payment');
+      res.status(500).json({ error: 'Failed to cancel payment' });
+    }
+  }
+);
+
+// Update payment metadata (remarks, mode, transaction details — amount changes
+// require cancel + re-record to preserve the audit trail)
+router.put('/payments/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
+  try {
+    const payment = await FeePayment.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
+
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (payment.status === 'cancelled') {
+      return res.status(400).json({ error: 'Cannot update a cancelled payment' });
+    }
+
+    // Only allow updating metadata fields — not amount or studentId
+    const ALLOWED_FIELDS = [
+      'paymentMode',
+      'transactionId',
+      'chequeNumber',
+      'bankName',
+      'remarks',
+      'paymentDate',
+    ];
+
+    for (const field of ALLOWED_FIELDS) {
+      if (req.body[field] !== undefined) {
+        payment[field] = req.body[field];
+      }
+    }
+
+    await payment.save();
+
+    const populated = await FeePayment.findById(payment._id).populate(
+      'studentId',
+      'name admissionId class'
+    );
+
+    res.json(populated);
+  } catch (error) {
+    logger.error({ err: error }, 'Error updating payment');
+    res.status(500).json({ error: 'Failed to update payment' });
+  }
+});
+
 // ── Refunds ──────────────────────────────────────────────────────────────────
 
 // Get all refunds
-router.get('/refunds', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/refunds', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { studentId, status, academicYear } = req.query;
     const filter = scopeBySchool(req.user?.schoolId, {});
@@ -461,7 +651,7 @@ router.get('/refunds', authenticate, checkPermission('fees', 'view'), async (req
 });
 
 // Get refund by ID
-router.get('/refunds/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/refunds/:id', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const refund = await FeeRefund.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })

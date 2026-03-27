@@ -266,10 +266,10 @@ const commonComponents = {
         date: { type: 'string', format: 'date', example: '2024-11-15' },
         status: {
           type: 'string',
-          enum: ['present', 'absent', 'late', 'half-day', 'excused'],
+          enum: ['present', 'absent', 'late', 'leave', 'halfday'],
           example: 'present',
         },
-        note: { type: 'string' },
+        markedBy: { $ref: '#/components/schemas/ObjectId' },
         schoolId: { $ref: '#/components/schemas/ObjectId' },
       },
     },
@@ -284,7 +284,7 @@ const commonComponents = {
           description: 'Map of studentId → status',
           additionalProperties: {
             type: 'string',
-            enum: ['present', 'absent', 'late', 'half-day', 'excused'],
+            enum: ['present', 'absent', 'late', 'leave', 'halfday'],
           },
           example: { '64a1b2c3d4e5f6a7b8c9d0e1': 'present', '64a1b2c3d4e5f6a7b8c9d0e2': 'absent' },
         },

@@ -32,6 +32,12 @@ agenda.define('process daily digest', async (job) => {
   await processDailyDigest(job.attrs.data.userType);
 });
 
+agenda.define('process queued notifications', async (job) => {
+  const { processQueuedNotifications } = await import('../routes/notifications.js');
+  const result = await processQueuedNotifications();
+  console.log(`[Agenda] Processed ${result.processed}/${result.total} queued notifications`);
+});
+
 agenda.define('cleanup old jobs', async (job) => {
   const result = await agenda.cancel({ nextRunAt: { $lt: new Date() } });
 });
@@ -39,6 +45,14 @@ agenda.define('cleanup old jobs', async (job) => {
 agenda.define('purge expired trash', async (job) => {
   const { purgeExpiredTrashItems } = await import('../services/trashCleanupService.js');
   const result = await purgeExpiredTrashItems();
+});
+
+agenda.define('cleanup old notifications', async (job) => {
+  const { cleanupOldNotifications } = await import('../routes/notifications.js');
+  const result = await cleanupOldNotifications();
+  console.log(
+    `[Agenda] Notification cleanup: ${result.readDeleted} read (>90d) + ${result.allDeleted} all (>180d) removed`
+  );
 });
 
 agenda.define('bulk import students', async (job) => {
@@ -160,8 +174,15 @@ export const startAgenda = async () => {
     // Fee due/overdue reminders — runs daily at 7 AM
     await agenda.every('0 7 * * *', 'process fee reminders');
 
+    // Process notifications queued during quiet hours — every 15 minutes
+    await agenda.every('15 minutes', 'process queued notifications');
+
     // DR-05: Archive old school data quarterly (3rd of Jan, Apr, Jul, Oct at 1 AM)
     await agenda.every('0 1 3 1,4,7,10 *', 'archive old school data', { triggeredBy: 'system' });
+
+    // Cleanup old notifications — daily at 2:30 AM
+    // Deletes read notifications older than 90 days and all notifications older than 180 days
+    await agenda.every('30 2 * * *', 'cleanup old notifications');
   } catch (error) {
     console.error('❌ Agenda start error:', error);
     throw error;

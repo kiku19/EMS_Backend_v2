@@ -3,14 +3,14 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const feePaymentSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
     receiptNumber: { type: String, required: true },
 
     // Payment Details
-    paymentDate: { type: String, required: true },
+    paymentDate: { type: Date, required: true },
     amount: { type: Number, required: true },
     paymentMode: { type: String, required: true }, // 'cash', 'cheque', 'online', 'card'
 
@@ -40,7 +40,11 @@ const feePaymentSchema = new mongoose.Schema(
     discount: { type: Number, default: 0 },
 
     // Status
-    status: { type: String, default: 'completed' }, // 'completed', 'pending', 'failed'
+    status: { type: String, default: 'completed' }, // 'completed', 'pending', 'failed', 'cancelled'
+
+    // Cancellation tracking
+    cancelledAt: Date,
+    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
 
     // Collected By
     collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },

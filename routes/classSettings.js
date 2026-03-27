@@ -1,10 +1,32 @@
 import express from 'express';
+import { z } from 'zod';
 import { Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 
 const router = express.Router();
 router.use(authenticate);
+
+// ─── Zod Schemas ─────────────────────────────────────────────────────────────
+
+const updateTagSchema = z.object({
+  classTag: z
+    .string()
+    .max(50, 'Class tag must be 50 characters or less')
+    .trim()
+    .optional()
+    .default(''),
+});
+
+const updateSubjectsSchema = z.object({
+  subjects: z.array(z.string().trim()).min(1, 'At least one subject must be assigned'),
+});
+
+// ─── Helper ──────────────────────────────────────────────────────────────────
+
+const schoolQuery = (req, extra = {}) =>
+  buildSchoolScopedQuery(req.user?.schoolId, { isDeleted: { $ne: true }, ...extra });
 
 /**
  * GET /api/class-settings/:id
@@ -14,7 +36,7 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
   try {
     const { id } = req.params;
 
-    const classData = await Class.findById(id).select(
+    const classData = await Class.findOne(schoolQuery(req, { _id: id })).select(
       'classTag assignedSubjects subjects name section'
     );
 
@@ -43,7 +65,6 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
     res.status(500).json({
       success: false,
       message: 'Failed to fetch class settings',
-      error: error.message,
     });
   }
 });
@@ -55,27 +76,11 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
 router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { classTag } = req.body;
+    const parsed = updateTagSchema.parse(req.body);
 
-    // Validate input
-    if (classTag && typeof classTag !== 'string') {
-      return res.status(400).json({
-        success: false,
-        message: 'Class tag must be a string',
-      });
-    }
-
-    // Validate length
-    if (classTag && classTag.length > 50) {
-      return res.status(400).json({
-        success: false,
-        message: 'Class tag must be 50 characters or less',
-      });
-    }
-
-    const classData = await Class.findByIdAndUpdate(
-      id,
-      { classTag: classTag || '' },
+    const classData = await Class.findOneAndUpdate(
+      schoolQuery(req, { _id: id }),
+      { classTag: parsed.classTag },
       { new: true, runValidators: true }
     ).select('classTag name section');
 
@@ -93,11 +98,17 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
       className: `${classData.name} ${classData.section}`,
     });
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+      });
+    }
     console.error('Error updating class tag:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update class tag',
-      error: error.message,
     });
   }
 });
@@ -109,39 +120,15 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
 router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { subjects } = req.body;
-
-    // Validate input
-    if (!Array.isArray(subjects)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Subjects must be an array',
-      });
-    }
-
-    // Validate that all subjects are strings
-    if (!subjects.every((s) => typeof s === 'string')) {
-      return res.status(400).json({
-        success: false,
-        message: 'All subjects must be strings',
-      });
-    }
-
-    // Validate at least one subject
-    if (subjects.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'At least one subject must be assigned',
-      });
-    }
+    const parsed = updateSubjectsSchema.parse(req.body);
 
     // Update both assignedSubjects AND subjects fields to ensure consistency
     // This fixes the issue where missing-subjects check uses 'subjects' field
-    const classData = await Class.findByIdAndUpdate(
-      id,
+    const classData = await Class.findOneAndUpdate(
+      schoolQuery(req, { _id: id }),
       {
-        assignedSubjects: subjects,
-        subjects: subjects, // Sync to subjects field for backward compatibility
+        assignedSubjects: parsed.subjects,
+        subjects: parsed.subjects, // Sync to subjects field for backward compatibility
       },
       { new: true, runValidators: true }
     ).select('assignedSubjects subjects name section');
@@ -161,11 +148,17 @@ router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), as
       className: `${classData.name} ${classData.section}`,
     });
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+      });
+    }
     console.error('Error updating subjects:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update subjects',
-      error: error.message,
     });
   }
 });

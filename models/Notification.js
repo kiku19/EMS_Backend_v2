@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 const notificationSchema = new mongoose.Schema(
   {
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+      index: true,
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       required: true,
@@ -66,6 +72,13 @@ const notificationSchema = new mongoose.Schema(
       index: true,
     },
     readAt: Date,
+
+    // Quiet hours queuing — when set, channel delivery is deferred until this time
+    scheduledFor: {
+      type: Date,
+      default: null,
+      index: true,
+    },
 
     // Delivery channels
     channels: [

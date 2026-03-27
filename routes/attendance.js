@@ -70,7 +70,7 @@
  *               type: object
  *               additionalProperties:
  *                 type: string
- *                 enum: [present, absent, late, half-day, excused]
+ *                 enum: [present, absent, late, leave, halfday]
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  *       404:
@@ -112,6 +112,23 @@ import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { bulkAttendanceSchema, singleAttendanceSchema } from '../validators/attendanceSchema.js';
+import { resolveAcademicYear, parseAcademicYear } from '../utils/academicYear.js';
+import SchoolSettings from '../models/SchoolSettings.js';
+
+/**
+ * Convert an academic year (e.g. "2025-26") into a date range filter object.
+ * Academic year runs April 1 to March 31.
+ * Returns { $gte, $lte } for the date field, or null if no academic year.
+ */
+async function getAcademicYearDateRange(academicYear, schoolId) {
+  if (!academicYear) return null;
+  const resolved = await resolveAcademicYear(academicYear, schoolId);
+  const { startYear, endYear } = parseAcademicYear(resolved);
+  return {
+    $gte: `${startYear}-04-01`,
+    $lte: `${endYear}-03-31`,
+  };
+}
 
 async function notifyParentsOfAbsent(absentStudentIds, date, schoolId) {
   if (!absentStudentIds.length) return;
@@ -164,6 +181,45 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
+// ─── Today Snapshot ──────────────────────────────────────────────────────
+// Single-call endpoint that returns per-class present/absent counts for today.
+// Replaces the dashboard's N+1 pattern of calling GET /:classId/:date for
+// every class individually — a school with 20 classes now needs 1 request
+// instead of 20.
+router.get(
+  '/today-snapshot',
+  authenticate,
+  checkPermission('students', 'view'),
+  async (req, res) => {
+    try {
+      const schoolId = await resolveRequestSchoolId(req);
+      const today = new Date().toISOString().split('T')[0];
+
+      const records = await Attendance.find(scopeBySchool(schoolId, { date: today }))
+        .select('classId studentId status')
+        .lean();
+
+      // Group by classId → { present, absent, late, leave, halfday, total }
+      const byClass = {};
+      for (const record of records) {
+        const classKey = String(record.classId);
+        if (!byClass[classKey]) {
+          byClass[classKey] = { present: 0, absent: 0, late: 0, leave: 0, halfday: 0, total: 0 };
+        }
+        const status = String(record.status || '').toLowerCase();
+        if (byClass[classKey][status] !== undefined) {
+          byClass[classKey][status] += 1;
+        }
+        byClass[classKey].total += 1;
+      }
+
+      res.json({ date: today, classes: byClass });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
 router.get(
   '/student/:studentId',
   authenticate,
@@ -171,7 +227,7 @@ router.get(
   async (req, res) => {
     try {
       const { studentId } = req.params;
-      const { start, end } = req.query;
+      const { start, end, academicYear } = req.query;
 
       const schoolId = await resolveRequestSchoolId(req);
       const query = scopeBySchool(schoolId, { studentId });
@@ -181,13 +237,22 @@ router.get(
         query.date = { $gte: start };
       } else if (end) {
         query.date = { $lte: end };
+      } else if (academicYear) {
+        // Scope to academic year date range when no explicit dates provided
+        const dateRange = await getAcademicYearDateRange(academicYear, schoolId);
+        if (dateRange) query.date = dateRange;
       }
 
       const attendance = await Attendance.find(query)
-        .populate('studentId', 'name rollNo admissionId')
+        .populate({
+          path: 'studentId',
+          select: 'name rollNo admissionId',
+          match: { isDeleted: { $ne: true } },
+        })
         .sort({ date: -1 });
 
-      res.json(attendance);
+      // Filter out records where student was deleted (populate returns null)
+      res.json(attendance.filter((r) => r.studentId != null));
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -209,7 +274,11 @@ router.get(
 
       const attendance = await Attendance.find(
         scopeBySchool(req.user?.schoolId, { classId: resolved.classId, date })
-      ).populate('studentId', 'name rollNo admissionId');
+      ).populate({
+        path: 'studentId',
+        select: 'name rollNo admissionId',
+        match: { isDeleted: { $ne: true } },
+      });
 
       const attendanceObj = {};
       attendance.forEach((record) => {
@@ -242,6 +311,35 @@ async function markBulkAttendance(req, res) {
   }
 
   const schoolId = await resolveRequestSchoolId(req);
+
+  // Weekend/holiday validation — warn if marking on a non-working day or holiday
+  try {
+    const settings = await SchoolSettings.findOne({ schoolId });
+    if (settings) {
+      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const attendanceDate = new Date(date);
+      const dayOfWeek = dayNames[attendanceDate.getUTCDay()];
+      const workingDays = settings.workingDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+      if (!workingDays.includes(dayOfWeek)) {
+        return res.status(400).json({
+          error: `Cannot mark attendance on ${dayOfWeek} — it is not a working day`,
+          nonWorkingDay: true,
+        });
+      }
+
+      const dateStr = attendanceDate.toISOString().split('T')[0];
+      const holiday = (settings.holidays || []).find((h) => h.date === dateStr);
+      if (holiday) {
+        return res.status(400).json({
+          error: `Cannot mark attendance on ${dateStr} — it is a holiday (${holiday.name})`,
+          holiday: true,
+        });
+      }
+    }
+  } catch (settingsErr) {
+    // Non-blocking — if settings can't be fetched, allow attendance marking
+  }
 
   // Dirty-state detection: reject if another user saved after the client loaded the data
   if (clientTimestamp) {
@@ -338,7 +436,7 @@ router.get(
   async (req, res) => {
     try {
       const { classId } = req.params;
-      const { start, end } = req.query;
+      const { start, end, academicYear } = req.query;
 
       const resolved = await resolveClassId(classId, req.user?.schoolId);
       if (!resolved) {
@@ -353,13 +451,22 @@ router.get(
         query.date = { $gte: start };
       } else if (end) {
         query.date = { $lte: end };
+      } else if (academicYear) {
+        // Scope to academic year date range when no explicit dates provided
+        const dateRange = await getAcademicYearDateRange(academicYear, schoolId);
+        if (dateRange) query.date = dateRange;
       }
 
       const attendance = await Attendance.find(query)
-        .populate('studentId', 'name rollNo admissionId')
+        .populate({
+          path: 'studentId',
+          select: 'name rollNo admissionId',
+          match: { isDeleted: { $ne: true } },
+        })
         .sort({ date: -1 });
 
-      res.json(attendance);
+      // Filter out records where student was deleted
+      res.json(attendance.filter((r) => r.studentId != null));
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -389,7 +496,11 @@ router.get(
           classId: resolved.classId,
           date: { $gte: startDate, $lte: endDate },
         })
-      ).populate('studentId', 'name rollNo admissionId');
+      ).populate({
+        path: 'studentId',
+        select: 'name rollNo admissionId',
+        match: { isDeleted: { $ne: true } },
+      });
 
       const summary = {};
       attendance.forEach((record) => {
@@ -449,7 +560,11 @@ router.get('/:classId/:date', authenticate, async (req, res) => {
     const schoolId = await resolveRequestSchoolId(req);
     const attendance = await Attendance.find(
       scopeBySchool(schoolId, { classId: resolved.classId, date })
-    ).populate('studentId', 'name rollNo admissionId');
+    ).populate({
+      path: 'studentId',
+      select: 'name rollNo admissionId',
+      match: { isDeleted: { $ne: true } },
+    });
 
     // Return same shape as GET /class/:classId/:date for consistency
     const attendanceObj = {};
@@ -471,7 +586,7 @@ router.get('/:classId/:date', authenticate, async (req, res) => {
 router.get('/:studentId', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {
     const { studentId } = req.params;
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, academicYear } = req.query;
 
     const query = scopeBySchool(req.user?.schoolId, { studentId });
     if (startDate || endDate) {
@@ -482,6 +597,10 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
       if (endDate) {
         query.date.$lte = endDate;
       }
+    } else if (academicYear) {
+      // Scope to academic year date range when no explicit dates provided
+      const dateRange = await getAcademicYearDateRange(academicYear, req.user?.schoolId);
+      if (dateRange) query.date = dateRange;
     }
 
     const attendance = await Attendance.find(query).sort({ date: -1 });
@@ -581,6 +700,50 @@ router.post(
       await markBulkAttendance(req, res);
     } catch (error) {
       res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+// ─── Notify Parents of Absent Students ──────────────────────────────────
+// On-demand endpoint to send absence notifications for a specific class+date.
+// Used by the "Notify Parents" button in the dashboard attendance page.
+router.post(
+  '/notify-parents',
+  authenticate,
+  checkPermission('students', 'edit'),
+  async (req, res) => {
+    try {
+      const { classId, date } = req.body;
+      if (!classId || !date) {
+        return res.status(400).json({ error: 'classId and date are required' });
+      }
+
+      const schoolId = await resolveRequestSchoolId(req);
+
+      // Find all absent students for the given class and date
+      const absentRecords = await Attendance.find(
+        scopeBySchool(schoolId, { classId, date, status: 'absent' })
+      )
+        .select('studentId')
+        .lean();
+
+      const absentStudentIds = absentRecords.map((r) => r.studentId?.toString()).filter(Boolean);
+
+      if (absentStudentIds.length === 0) {
+        return res.json({ success: true, message: 'No absent students to notify', notified: 0 });
+      }
+
+      // Send notifications (fire-and-forget, but we await to report count)
+      await notifyParentsOfAbsent(absentStudentIds, date, schoolId);
+
+      res.json({
+        success: true,
+        message: `Notifications sent for ${absentStudentIds.length} absent student(s)`,
+        notified: absentStudentIds.length,
+      });
+    } catch (error) {
+      console.error('Error notifying parents:', error);
+      res.status(500).json({ error: error.message || 'Failed to notify parents' });
     }
   }
 );

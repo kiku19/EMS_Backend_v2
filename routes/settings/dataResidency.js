@@ -1,6 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/auth.js';
+import { checkPermission } from '../../middleware/auth/permissions.js';
 import { ensureSchoolSettings } from '../../utils/academicYear.js';
 
 const router = express.Router();
@@ -70,49 +71,100 @@ router.get('/data-residency', authenticate, async (req, res) => {
   }
 });
 
-// PUT /settings/data-residency
-router.put('/data-residency', authenticate, async (req, res) => {
-  try {
-    const parsed = dataResidencySchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+// PUT /settings/data-residency (admin/settings-edit only)
+router.put(
+  '/data-residency',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const parsed = dataResidencySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+      }
+
+      const settings = await ensureSchoolSettings(req.user?.schoolId);
+
+      // Prevent changing region once locked
+      if (settings.dataResidency?.lockedAt) {
+        return res
+          .status(400)
+          .json({ error: 'Data residency region is locked and cannot be changed.' });
+      }
+
+      const { region } = parsed.data;
+      const meta = DATA_RESIDENCY_REGIONS[region];
+
+      settings.dataResidency = {
+        region,
+        selectedAt: new Date(),
+        lockedAt: settings.dataResidency?.lockedAt || null,
+        complianceFrameworks: meta.complianceFrameworks,
+      };
+
+      await settings.save();
+
+      res.json({
+        region,
+        dataCenter: meta.dataCenter,
+        label: meta.label,
+        complianceFrameworks: settings.dataResidency.complianceFrameworks,
+        description: meta.description,
+        selectedAt: settings.dataResidency.selectedAt,
+        lockedAt: settings.dataResidency.lockedAt,
+        isLocked: false,
+      });
+    } catch (error) {
+      console.error('Error updating data residency settings:', error);
+      res.status(500).json({ error: 'Failed to update data residency settings' });
     }
-
-    const settings = await ensureSchoolSettings(req.user?.schoolId);
-
-    // Prevent changing region once locked
-    if (settings.dataResidency?.lockedAt) {
-      return res
-        .status(400)
-        .json({ error: 'Data residency region is locked and cannot be changed.' });
-    }
-
-    const { region } = parsed.data;
-    const meta = DATA_RESIDENCY_REGIONS[region];
-
-    settings.dataResidency = {
-      region,
-      selectedAt: new Date(),
-      lockedAt: settings.dataResidency?.lockedAt || null,
-      complianceFrameworks: meta.complianceFrameworks,
-    };
-
-    await settings.save();
-
-    res.json({
-      region,
-      dataCenter: meta.dataCenter,
-      label: meta.label,
-      complianceFrameworks: settings.dataResidency.complianceFrameworks,
-      description: meta.description,
-      selectedAt: settings.dataResidency.selectedAt,
-      lockedAt: settings.dataResidency.lockedAt,
-      isLocked: false,
-    });
-  } catch (error) {
-    console.error('Error updating data residency settings:', error);
-    res.status(500).json({ error: 'Failed to update data residency settings' });
   }
-});
+);
+
+// POST /settings/data-residency/lock — permanently lock the selected region (admin only)
+router.post(
+  '/data-residency/lock',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const settings = await ensureSchoolSettings(req.user?.schoolId);
+      const dr = settings.dataResidency || {};
+
+      if (!dr.region) {
+        return res.status(400).json({ error: 'Select a data residency region before locking.' });
+      }
+
+      if (dr.lockedAt) {
+        return res.status(400).json({ error: 'Data residency region is already locked.' });
+      }
+
+      settings.dataResidency = {
+        ...dr,
+        lockedAt: new Date(),
+      };
+      settings.markModified('dataResidency');
+      await settings.save();
+
+      const region = dr.region;
+      const meta = DATA_RESIDENCY_REGIONS[region];
+
+      res.json({
+        region,
+        dataCenter: meta.dataCenter,
+        label: meta.label,
+        complianceFrameworks:
+          settings.dataResidency.complianceFrameworks || meta.complianceFrameworks,
+        description: meta.description,
+        selectedAt: settings.dataResidency.selectedAt,
+        lockedAt: settings.dataResidency.lockedAt,
+        isLocked: true,
+      });
+    } catch (error) {
+      console.error('Error locking data residency:', error);
+      res.status(500).json({ error: 'Failed to lock data residency' });
+    }
+  }
+);
 
 export default router;

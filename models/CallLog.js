@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const callLogSchema = new mongoose.Schema(
   {
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     callerName: String,
     phoneNumber: String,
     dateTime: { type: String, required: true },

@@ -20,6 +20,7 @@ function scopeBySchool(schoolId, query = {}) {
 const calendarEventSchema = new mongoose.Schema(
   {
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
+    academicYear: { type: String, default: '' }, // e.g. "2025-2026"
     title: { type: String, required: true },
     date: { type: String, required: true }, // YYYY-MM-DD format
     type: { type: String, enum: ['event', 'meeting', 'exam', 'holiday'], default: 'event' },
@@ -39,22 +40,72 @@ const calendarEventSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-const transformEvent = (doc) => {
+const transformEvent = (doc, dateOverride) => {
   if (!doc) return null;
   const obj = doc.toObject ? doc.toObject() : doc;
   return {
     id: obj._id.toString(),
     title: obj.title,
-    date: obj.date,
+    date: dateOverride || obj.date,
     type: obj.type || 'event',
     startTime: obj.startTime || '',
     endTime: obj.endTime || '',
     allDay: obj.allDay || false,
     description: obj.description || '',
     holidayType: obj.holidayType || null,
+    academicYear: obj.academicYear || '',
     recurrence: obj.recurrence?.freq ? obj.recurrence : null,
   };
 };
+
+/**
+ * Expand a single recurring event into occurrences within [rangeStart, rangeEnd].
+ * Returns an array of transformed event objects (one per occurrence).
+ */
+function expandRecurringEvent(event, rangeStart, rangeEnd) {
+  const rec = event.recurrence;
+  if (!rec || !rec.freq) return [transformEvent(event)];
+
+  const occurrences = [];
+  const interval = rec.interval || 1;
+  const recEndDate = rec.endDate || rangeEnd;
+  const effectiveEnd = recEndDate < rangeEnd ? recEndDate : rangeEnd;
+  const maxOccurrences = rec.endCount || 365; // safety cap
+
+  // Start from the event's original date
+  const cur = new Date(event.date + 'T00:00:00');
+  let count = 0;
+
+  while (count < maxOccurrences) {
+    const dateStr = cur.toISOString().split('T')[0];
+
+    if (dateStr > effectiveEnd) break;
+
+    if (dateStr >= rangeStart) {
+      const transformed = transformEvent(event, dateStr);
+      // Mark expanded occurrences with a unique id suffix so frontend can differentiate
+      if (dateStr !== event.date) {
+        transformed.id = `${event._id.toString()}_${dateStr}`;
+        transformed.isRecurrenceInstance = true;
+      }
+      occurrences.push(transformed);
+      count++;
+    }
+
+    // Advance by interval
+    if (rec.freq === 'weekly') {
+      cur.setDate(cur.getDate() + 7 * interval);
+    } else if (rec.freq === 'monthly') {
+      cur.setMonth(cur.getMonth() + interval);
+    } else if (rec.freq === 'yearly') {
+      cur.setFullYear(cur.getFullYear() + interval);
+    } else {
+      break;
+    }
+  }
+
+  return occurrences;
+}
 
 const CalendarEvent =
   mongoose.models.CalendarEvent || mongoose.model('CalendarEvent', calendarEventSchema);
@@ -523,12 +574,18 @@ router.get('/calendar/events/export.ics', authenticate, async (req, res) => {
 
     for (const event of events) {
       const dateStr = event.date.replace(/-/g, '');
-      const dtStart = event.allDay
-        ? `DTSTART;VALUE=DATE:${dateStr}`
-        : `DTSTART:${dateStr}T${(event.startTime || '00:00').replace(':', '')}00`;
-      const dtEnd = event.allDay
-        ? `DTEND;VALUE=DATE:${dateStr}`
-        : `DTEND:${dateStr}T${(event.endTime || event.startTime || '00:00').replace(':', '')}00`;
+      let dtStart, dtEnd;
+      if (event.allDay) {
+        dtStart = `DTSTART;VALUE=DATE:${dateStr}`;
+        // iCalendar spec: DTEND for all-day events must be the *next* day (exclusive)
+        const nextDay = new Date(event.date + 'T00:00:00');
+        nextDay.setDate(nextDay.getDate() + 1);
+        const nextDayStr = nextDay.toISOString().split('T')[0].replace(/-/g, '');
+        dtEnd = `DTEND;VALUE=DATE:${nextDayStr}`;
+      } else {
+        dtStart = `DTSTART:${dateStr}T${(event.startTime || '00:00').replace(':', '')}00`;
+        dtEnd = `DTEND:${dateStr}T${(event.endTime || event.startTime || '00:00').replace(':', '')}00`;
+      }
 
       lines.push('BEGIN:VEVENT');
       lines.push(`UID:${event._id}@ems-calendar`);
@@ -554,19 +611,52 @@ router.get('/calendar/events/export.ics', authenticate, async (req, res) => {
 });
 
 // ─── GET /calendar/events ────────────────────────────────────────────────────
+// Accepts optional query params: startDate, endDate (YYYY-MM-DD) to filter & expand recurring events
 router.get(
   '/calendar/events',
   authenticate,
   checkPermission('timetable', 'view'),
   async (req, res) => {
     try {
-      const events = await CalendarEvent.find(
-        scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } })
-      ).sort({
+      const { startDate, endDate } = req.query;
+      const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
+
+      // When a date range is provided, fetch events whose base date falls in range
+      // OR have recurrence (may generate occurrences in range even if base date is earlier)
+      if (startDate && endDate) {
+        query.$or = [
+          { date: { $gte: startDate, $lte: endDate } },
+          { 'recurrence.freq': { $exists: true, $ne: null } },
+        ];
+      }
+
+      const events = await CalendarEvent.find(query).sort({
         date: 1,
         startTime: 1,
       });
-      res.json(events.map(transformEvent));
+
+      // Default range for expansion: if no range provided, use current year +/- 6 months
+      const rangeStart =
+        startDate || new Date(Date.now() - 180 * 86400000).toISOString().split('T')[0];
+      const rangeEnd = endDate || new Date(Date.now() + 180 * 86400000).toISOString().split('T')[0];
+
+      // Expand recurring events into individual occurrences
+      const expanded = [];
+      for (const event of events) {
+        if (event.recurrence?.freq) {
+          expanded.push(...expandRecurringEvent(event, rangeStart, rangeEnd));
+        } else {
+          expanded.push(transformEvent(event));
+        }
+      }
+
+      // Sort by date after expansion
+      expanded.sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) || (a.startTime || '').localeCompare(b.startTime || '')
+      );
+
+      res.json(expanded);
     } catch (error) {
       console.error('Error fetching calendar events:', error);
       res.status(500).json({ error: 'Failed to fetch calendar events' });
@@ -592,10 +682,12 @@ router.post(
         description,
         holidayType,
         recurrence,
+        academicYear,
       } = req.body;
 
       const event = new CalendarEvent({
         schoolId: extractSchoolId(req.user?.schoolId),
+        academicYear: academicYear || '',
         title,
         date,
         type: type || 'event',

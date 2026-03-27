@@ -252,16 +252,15 @@ class SubstitutionService {
    * @param {string} reason - Reason for absence
    * @returns {Promise<Array>} Created substitution records
    */
-  async createSubstitutionFromAbsence(teacherId, date, reason = 'Absent') {
+  async createSubstitutionFromAbsence(teacherId, date, reason = 'Absent', schoolId = null) {
     try {
       const dayOfWeek = this.getDayOfWeek(date);
       const academicYear = CURRENT_ACADEMIC_YEAR; // Should be dynamic
 
-      // Get teacher's timetable for the day
-      const teacherTimetable = await TeacherTimetable.findOne({
-        teacherId,
-        academicYear,
-      });
+      // Get teacher's timetable for the day (scoped by school)
+      const ttQuery = { teacherId, academicYear };
+      if (schoolId) ttQuery.schoolId = schoolId;
+      const teacherTimetable = await TeacherTimetable.findOne(ttQuery);
 
       if (!teacherTimetable) {
         return [];
@@ -277,18 +276,20 @@ class SubstitutionService {
       for (const slot of daySchedule) {
         if (!slot.classId || !slot.subject) continue;
 
-        // Check if substitution already exists
-        const existing = await Substitution.findOne({
+        // Check if substitution already exists (scoped by school)
+        const existingQuery = {
           date,
           classId: slot.classId,
           period: String(slot.periodIndex + 1),
-        });
+        };
+        if (schoolId) existingQuery.schoolId = schoolId;
+        const existing = await Substitution.findOne(existingQuery);
 
         if (existing) {
           continue;
         }
 
-        // Create pending substitution
+        // Create pending substitution (with schoolId for multi-tenancy)
         const substitution = new Substitution({
           date,
           classId: slot.classId,
@@ -298,6 +299,7 @@ class SubstitutionService {
           reason,
           type: 'auto',
           status: 'pending',
+          ...(schoolId ? { schoolId } : {}),
         });
 
         await substitution.save();
@@ -409,12 +411,12 @@ class SubstitutionService {
    * @param {string} date
    * @returns {Promise<Array>}
    */
-  async getPendingSubstitutionsWithDetails(date) {
+  async getPendingSubstitutionsWithDetails(date, schoolId = null) {
     try {
-      const substitutions = await Substitution.find({
-        date,
-        status: 'pending',
-      })
+      const query = { date, status: 'pending' };
+      if (schoolId) query.schoolId = schoolId;
+
+      const substitutions = await Substitution.find(query)
         .populate('classId', 'name section')
         .populate('absentTeacherId', 'name code department')
         .populate('substituteTeacherId', 'name code department')

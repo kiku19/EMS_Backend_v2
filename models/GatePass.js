@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const gatePassSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     // Student Information
     studentId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -230,8 +230,8 @@ gatePassSchema.methods.cancel = function (reason) {
 };
 
 // Static method to get active gate passes
-gatePassSchema.statics.getActivePasses = function () {
-  return this.find({ status: 'ACTIVE', approvalStatus: 'APPROVED' })
+gatePassSchema.statics.getActivePasses = function (schoolId) {
+  return this.find({ schoolId, status: 'ACTIVE', approvalStatus: 'APPROVED' })
     .sort({ leavingDate: 1, leavingTime: 1 })
     .populate('studentId', 'name admissionId photo rollNo')
     .populate('approvedByStaffId', 'name code')
@@ -239,7 +239,7 @@ gatePassSchema.statics.getActivePasses = function () {
 };
 
 // Static method to get today's gate passes
-gatePassSchema.statics.getTodaysPasses = function () {
+gatePassSchema.statics.getTodaysPasses = function (schoolId) {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 
@@ -247,6 +247,7 @@ gatePassSchema.statics.getTodaysPasses = function () {
   endOfDay.setHours(23, 59, 59, 999);
 
   return this.find({
+    schoolId,
     leavingDate: { $gte: startOfDay, $lte: endOfDay },
   })
     .sort({ leavingDate: 1, leavingTime: 1 })
@@ -256,8 +257,8 @@ gatePassSchema.statics.getTodaysPasses = function () {
 };
 
 // Static method to get pending approvals
-gatePassSchema.statics.getPendingApprovals = function (staffId) {
-  const query = { approvalStatus: 'PENDING' };
+gatePassSchema.statics.getPendingApprovals = function (schoolId, staffId) {
+  const query = { schoolId, approvalStatus: 'PENDING' };
 
   // If staffId is provided, filter by their approval type
   if (staffId) {
@@ -275,8 +276,8 @@ gatePassSchema.statics.getPendingApprovals = function (staffId) {
 };
 
 // Static method to get gate passes by student
-gatePassSchema.statics.getByStudent = function (studentId) {
-  return this.find({ studentId })
+gatePassSchema.statics.getByStudent = function (schoolId, studentId) {
+  return this.find({ schoolId, studentId })
     .sort({ createdAt: -1 })
     .populate('approvedByStaffId', 'name code')
     .populate('requestedById', 'name code');

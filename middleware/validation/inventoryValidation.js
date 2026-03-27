@@ -17,6 +17,8 @@ const AUDIT_STATUSES = ['PENDING', 'IN_PROGRESS', 'COMPLETED'];
 
 const objectIdRegex = /^[0-9a-fA-F]{24}$/;
 
+const DEPRECIATION_METHODS = ['STRAIGHT_LINE', 'DECLINING_BALANCE'];
+
 export const createAssetSchema = z.object({
   assetTag: z.string().trim().max(50).optional(),
   name: z.string().trim().min(1).max(200),
@@ -24,7 +26,12 @@ export const createAssetSchema = z.object({
   serialNumber: z.string().trim().max(100).optional(),
   description: z.string().trim().max(1000).optional(),
   location: z.string().trim().max(200).optional(),
-  assignedTo: z.string().trim().max(200).optional(),
+  assignedTo: z
+    .string()
+    .regex(objectIdRegex, 'assignedTo must be a valid Staff ID')
+    .optional()
+    .nullable(),
+  assignedToName: z.string().trim().max(200).optional(),
   quantity: z.number().int().min(0).default(1),
   minimumQuantity: z.number().int().min(0).optional(),
   purchaseDate: z
@@ -41,6 +48,8 @@ export const createAssetSchema = z.object({
   purchasePrice: z.number().min(0).optional(),
   currentValue: z.number().min(0).optional(),
   depreciationRate: z.number().min(0).max(100).optional(),
+  depreciationMethod: z.enum(DEPRECIATION_METHODS).default('DECLINING_BALANCE').optional(),
+  usefulLifeYears: z.number().min(0).optional(),
   warrantyExpiry: z
     .string()
     .datetime({ offset: true })
@@ -61,7 +70,7 @@ export const createAssetSchema = z.object({
 export const updateAssetSchema = createAssetSchema.partial();
 
 export const assignAssetSchema = z.object({
-  assignedTo: z.string().trim().max(200),
+  assignedTo: z.string().regex(objectIdRegex, 'assignedTo must be a valid Staff ID'),
 });
 
 export const createVendorSchema = z.object({
@@ -81,8 +90,15 @@ export const createMaintenanceLogSchema = z.object({
   assetId: z.string().regex(objectIdRegex),
   maintenanceType: z.enum(MAINTENANCE_TYPES),
   description: z.string().trim().min(1).max(1000),
-  scheduledDate: z.string(),
-  completedDate: z.string().optional(),
+  scheduledDate: z
+    .string()
+    .datetime({ offset: true })
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'scheduledDate must be YYYY-MM-DD or ISO 8601')),
+  completedDate: z
+    .string()
+    .datetime({ offset: true })
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'completedDate must be YYYY-MM-DD or ISO 8601'))
+    .optional(),
   cost: z.number().min(0).optional(),
   status: z.enum(MAINTENANCE_STATUSES).default('SCHEDULED'),
   vendorId: z.string().regex(objectIdRegex).optional(),
@@ -126,8 +142,28 @@ const auditItemSchema = z.object({
 export const createAssetAuditSchema = z.object({
   title: z.string().trim().min(1).max(200),
   status: z.enum(AUDIT_STATUSES).default('PENDING'),
-  startDate: z.string().optional(),
-  completedDate: z.string().optional(),
+  startDate: z
+    .string()
+    .datetime({ offset: true })
+    .optional()
+    .or(
+      z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+    )
+    .optional(),
+  completedDate: z
+    .string()
+    .datetime({ offset: true })
+    .optional()
+    .or(
+      z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+    )
+    .optional(),
   auditItems: z.array(auditItemSchema).optional(),
   notes: z.string().trim().max(1000).optional(),
 });

@@ -2,7 +2,6 @@ import { z } from 'zod';
 import {
   objectId,
   optionalObjectId,
-  phone10,
   optionalPhone,
   optionalEmail,
   optionalUri,
@@ -164,5 +163,14 @@ export const updateStaffSchema = createStaffSchema
       .nullish()
       .or(z.literal('')),
     status: z.enum(['active', 'inactive', 'on-leave', 'suspended', 'terminated']).optional(),
+  })
+  .strip();
+
+// ─── TEACHER ASSIGNMENT: CREATE / UPDATE ────────────────────────
+export const teacherAssignmentSchema = z
+  .object({
+    teacherId: objectId,
+    subject: z.string().min(1, 'Subject is required').max(100).trim(),
+    classIds: z.array(objectId).min(1, 'At least one class is required'),
   })
   .strip();

@@ -1,5 +1,5 @@
 import express from 'express';
-import FeeConsession from '../models/FeeConsession.js';
+import FeeConsession from '../models/FeeConcession.js';
 import LateFeeRule from '../models/LateFeeRule.js';
 import FeeRule from '../models/FeeRule.js';
 import PaymentMethodConfig from '../models/PaymentMethodConfig.js';
@@ -7,9 +7,11 @@ import FeeCollectionPeriod from '../models/FeeCollectionPeriod.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { sanitizeQueryStr } from '../middleware/validation.js';
+import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
 router.use(authenticate);
+const logger = createLogger('FeeSettings');
 
 // ============ FEE CONCESSIONS ============
 
@@ -26,7 +28,7 @@ router.get('/concessions', authenticate, checkPermission('fees', 'view'), async 
 
     res.json(concessions);
   } catch (error) {
-    console.error('Error fetching concessions:', error);
+    logger.error('Error fetching concessions:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -45,7 +47,7 @@ router.get('/concessions/:id', authenticate, checkPermission('fees', 'view'), as
 
     res.json(concession);
   } catch (error) {
-    console.error('Error fetching concession:', error);
+    logger.error('Error fetching concession:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -53,7 +55,8 @@ router.get('/concessions/:id', authenticate, checkPermission('fees', 'view'), as
 // Create concession
 router.post('/concessions', authenticate, checkPermission('fees', 'create'), async (req, res) => {
   try {
-    const concession = new FeeConsession({ ...req.body, schoolId: req.user.schoolId });
+    const { schoolId: _ignored, ...data } = req.body;
+    const concession = new FeeConsession({ ...data, schoolId: req.user.schoolId });
     await concession.save();
 
     const populated = await FeeConsession.findById(concession._id).populate(
@@ -63,7 +66,7 @@ router.post('/concessions', authenticate, checkPermission('fees', 'create'), asy
 
     res.status(201).json(populated);
   } catch (error) {
-    console.error('Error creating concession:', error);
+    logger.error('Error creating concession:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -84,7 +87,7 @@ router.put('/concessions/:id', authenticate, checkPermission('fees', 'edit'), as
 
     res.json(concession);
   } catch (error) {
-    console.error('Error updating concession:', error);
+    logger.error('Error updating concession:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -107,7 +110,7 @@ router.delete(
 
       res.json({ message: req.t('common:routes.concessionDeletedSuccessfully') });
     } catch (error) {
-      console.error('Error deleting concession:', error);
+      logger.error('Error deleting concession:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -128,7 +131,7 @@ router.get('/late-fee-rules', authenticate, checkPermission('fees', 'view'), asy
 
     res.json(rules);
   } catch (error) {
-    console.error('Error fetching late fee rules:', error);
+    logger.error('Error fetching late fee rules:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -151,7 +154,7 @@ router.get(
 
       res.json(rule);
     } catch (error) {
-      console.error('Error fetching late fee rule:', error);
+      logger.error('Error fetching late fee rule:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -160,20 +163,21 @@ router.get(
 // Create or update late fee rule (only one per school per academic year)
 router.post('/late-fee-rules', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
-    const { academicYear } = req.body;
+    const { schoolId: _bodySchoolId, academicYear, ...rest } = req.body;
     const schoolId = req.user.schoolId;
 
     // Check if rule already exists for this school + academic year
     let rule = await LateFeeRule.findOne({ schoolId, academicYear });
 
+    let isNewRule = false;
     if (rule) {
       // Update existing rule
-      const { schoolId: _ignored, ...updateData } = req.body;
-      Object.assign(rule, updateData);
+      Object.assign(rule, { ...rest, academicYear });
       await rule.save();
     } else {
       // Create new rule
-      rule = new LateFeeRule({ ...req.body, schoolId });
+      isNewRule = true;
+      rule = new LateFeeRule({ ...rest, academicYear, schoolId });
       await rule.save();
     }
 
@@ -182,9 +186,9 @@ router.post('/late-fee-rules', authenticate, checkPermission('fees', 'edit'), as
       'name amount'
     );
 
-    res.status(rule.isNew ? 201 : 200).json(populated);
+    res.status(isNewRule ? 201 : 200).json(populated);
   } catch (error) {
-    console.error('Error saving late fee rule:', error);
+    logger.error('Error saving late fee rule:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -209,7 +213,7 @@ router.put(
 
       res.json(rule);
     } catch (error) {
-      console.error('Error updating late fee rule:', error);
+      logger.error('Error updating late fee rule:', error);
       res.status(400).json({ error: error.message });
     }
   }
@@ -233,7 +237,7 @@ router.delete(
 
       res.json({ message: req.t('common:routes.lateFeeRuleDeletedSuccessfully') });
     } catch (error) {
-      console.error('Error deleting late fee rule:', error);
+      logger.error('Error deleting late fee rule:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -252,7 +256,7 @@ router.get('/rules', authenticate, checkPermission('fees', 'view'), async (req, 
 
     res.json(rules);
   } catch (error) {
-    console.error('Error fetching fee rules:', error);
+    logger.error('Error fetching fee rules:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -268,7 +272,7 @@ router.get('/rules/:id', authenticate, checkPermission('fees', 'view'), async (r
 
     res.json(rule);
   } catch (error) {
-    console.error('Error fetching fee rule:', error);
+    logger.error('Error fetching fee rule:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -276,26 +280,27 @@ router.get('/rules/:id', authenticate, checkPermission('fees', 'view'), async (r
 // Create or update fee rule (only one per school per academic year)
 router.post('/rules', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
   try {
-    const { academicYear } = req.body;
+    const { schoolId: _bodySchoolId, academicYear, ...rest } = req.body;
     const schoolId = req.user.schoolId;
 
     // Check if rule already exists for this school + academic year
     let rule = await FeeRule.findOne({ schoolId, academicYear });
+    let isNewRule = false;
 
     if (rule) {
       // Update existing rule
-      const { schoolId: _ignored, ...updateData } = req.body;
-      Object.assign(rule, updateData);
+      Object.assign(rule, { ...rest, academicYear });
       await rule.save();
     } else {
       // Create new rule
-      rule = new FeeRule({ ...req.body, schoolId });
+      isNewRule = true;
+      rule = new FeeRule({ ...rest, academicYear, schoolId });
       await rule.save();
     }
 
-    res.status(rule.isNew ? 201 : 200).json(rule);
+    res.status(isNewRule ? 201 : 200).json(rule);
   } catch (error) {
-    console.error('Error saving fee rule:', error);
+    logger.error('Error saving fee rule:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -316,7 +321,7 @@ router.put('/rules/:id', authenticate, checkPermission('fees', 'edit'), async (r
 
     res.json(rule);
   } catch (error) {
-    console.error('Error updating fee rule:', error);
+    logger.error('Error updating fee rule:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -335,7 +340,7 @@ router.delete('/rules/:id', authenticate, checkPermission('fees', 'delete'), asy
 
     res.json({ message: req.t('common:routes.feeRuleDeletedSuccessfully') });
   } catch (error) {
-    console.error('Error deleting fee rule:', error);
+    logger.error('Error deleting fee rule:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -353,7 +358,7 @@ router.get('/payment-methods', authenticate, checkPermission('fees', 'view'), as
 
     res.json(configs);
   } catch (error) {
-    console.error('Error fetching payment method config:', error);
+    logger.error('Error fetching payment method config:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -376,7 +381,7 @@ router.get(
 
       res.json(config);
     } catch (error) {
-      console.error('Error fetching payment method config:', error);
+      logger.error('Error fetching payment method config:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -390,6 +395,7 @@ router.post('/payment-methods', authenticate, checkPermission('fees', 'edit'), a
 
     // Check if config already exists for this school + academic year
     let config = await PaymentMethodConfig.findOne({ schoolId, academicYear });
+    let isNewConfig = false;
 
     if (config) {
       // Update existing config
@@ -398,13 +404,14 @@ router.post('/payment-methods', authenticate, checkPermission('fees', 'edit'), a
       await config.save();
     } else {
       // Create new config
+      isNewConfig = true;
       config = new PaymentMethodConfig({ ...req.body, schoolId });
       await config.save();
     }
 
-    res.status(config.isNew ? 201 : 200).json(config);
+    res.status(isNewConfig ? 201 : 200).json(config);
   } catch (error) {
-    console.error('Error saving payment method config:', error);
+    logger.error('Error saving payment method config:', error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -429,7 +436,7 @@ router.put(
 
       res.json(config);
     } catch (error) {
-      console.error('Error updating payment method config:', error);
+      logger.error('Error updating payment method config:', error);
       res.status(400).json({ error: error.message });
     }
   }
@@ -453,7 +460,7 @@ router.delete(
 
       res.json({ message: req.t('common:routes.paymentMethodConfigDeletedSuccessfully') });
     } catch (error) {
-      console.error('Error deleting payment method config:', error);
+      logger.error('Error deleting payment method config:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -476,7 +483,7 @@ router.get(
 
       res.json(configs);
     } catch (error) {
-      console.error('Error fetching collection period config:', error);
+      logger.error('Error fetching collection period config:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -502,7 +509,7 @@ router.get(
 
       res.json(config);
     } catch (error) {
-      console.error('Error fetching collection period config:', error);
+      logger.error('Error fetching collection period config:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -515,26 +522,27 @@ router.post(
   checkPermission('fees', 'edit'),
   async (req, res) => {
     try {
-      const { academicYear } = req.body;
+      const { schoolId: _bodySchoolId, academicYear, ...rest } = req.body;
       const schoolId = req.user.schoolId;
 
       // Check if config already exists for this school + academic year
       let config = await FeeCollectionPeriod.findOne({ schoolId, academicYear });
+      let isNewConfig = false;
 
       if (config) {
         // Update existing config
-        const { schoolId: _ignored, ...updateData } = req.body;
-        Object.assign(config, updateData);
+        Object.assign(config, { ...rest, academicYear });
         await config.save();
       } else {
         // Create new config
-        config = new FeeCollectionPeriod({ ...req.body, schoolId });
+        isNewConfig = true;
+        config = new FeeCollectionPeriod({ ...rest, academicYear, schoolId });
         await config.save();
       }
 
-      res.status(config.isNew ? 201 : 200).json(config);
+      res.status(isNewConfig ? 201 : 200).json(config);
     } catch (error) {
-      console.error('Error saving collection period config:', error);
+      logger.error('Error saving collection period config:', error);
       res.status(400).json({ error: error.message });
     }
   }
@@ -562,7 +570,7 @@ router.put(
 
       res.json(config);
     } catch (error) {
-      console.error('Error updating collection period config:', error);
+      logger.error('Error updating collection period config:', error);
       res.status(400).json({ error: error.message });
     }
   }
@@ -588,7 +596,7 @@ router.delete(
 
       res.json({ message: req.t('common:routes.collectionPeriodConfigDeletedSuccessfully') });
     } catch (error) {
-      console.error('Error deleting collection period config:', error);
+      logger.error('Error deleting collection period config:', error);
       res.status(500).json({ error: error.message });
     }
   }

@@ -7,6 +7,11 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 import { sanitizeString, sanitizeQueryStr } from '../middleware/validation.js';
+import { validateZod } from '../validators/zodHelpers.js';
+import {
+  singleStaffAttendanceSchema,
+  bulkStaffAttendanceSchema,
+} from '../validators/staffAttendanceSchema.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -174,134 +179,147 @@ router.get('/staff/:staffId/today', authenticate, async (req, res) => {
 });
 
 // Mark attendance (admin/manual)
-router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
-  try {
-    const { staffId, date, status, checkInTime, checkOutTime, reason } = req.body;
-    const markedBy = req.user.id;
+router.post(
+  '/',
+  authenticate,
+  checkPermission('staff', 'edit'),
+  validateZod(singleStaffAttendanceSchema),
+  async (req, res) => {
+    try {
+      const { staffId, date, status, checkInTime, checkOutTime, reason } = req.body;
+      const markedBy = req.user.id;
 
-    // Prevent marking attendance for future dates
-    const today = new Date().toISOString().split('T')[0];
-    if (date > today) {
-      return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
-    }
-
-    const schoolId = await resolveRequestSchoolId(req);
-
-    const attendance = await StaffAttendance.findOneAndUpdate(
-      scopeBySchool(schoolId, { staffId, date }),
-      {
-        staffId,
-        date,
-        status,
-        checkInTime,
-        checkOutTime,
-        reason,
-        markedBy,
-        lastModifiedBy: markedBy,
-        checkInMethod: 'admin',
-        checkOutMethod: 'admin',
-        schoolId,
-      },
-      { upsert: true, new: true }
-    ).populate('staffId', 'name code department role');
-
-    // Emit socket event for real-time update
-    if (req.app?.get('io')) {
-      const staff = attendance.staffId;
-      req.app.get('io').emit('attendance_updated', {
-        type: 'staff',
-        staffId: staffId.toString(),
-        staffName: staff?.name || 'Unknown',
-        date: date,
-        status: status,
-        inTime: attendance.checkInTime,
-        outTime: attendance.checkOutTime,
-        reason: reason || '',
-      });
-    }
-
-    // TRIGGER: Create substitution alerts if teacher is absent
-    if (status === 'absent' || status === 'leave') {
-      try {
-        const staff = attendance.staffId;
-        const isTeacher = staff?.role?.includes('Teacher') || staff?.staffType?.includes('Teacher');
-
-        if (isTeacher) {
-          const substitutions = await substitutionService.createSubstitutionFromAbsence(
-            staffId,
-            date,
-            reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`
-          );
-
-          // Emit substitution alert
-          if (req.app?.get('io') && substitutions.length > 0) {
-            req.app.get('io').emit('substitution_alert', {
-              type: 'new_alerts',
-              teacherName: staff.name,
-              teacherId: staffId,
-              date: date,
-              count: substitutions.length,
-              markedBy: req.user.name || req.user.id,
-            });
-          }
-        }
-      } catch (subError) {
-        console.error('[StaffAttendance] Error creating substitution alerts:', subError);
+      // Prevent marking attendance for future dates
+      const today = new Date().toISOString().split('T')[0];
+      if (date > today) {
+        return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
       }
-    }
 
-    res.json(attendance);
-  } catch (error) {
-    console.error('[StaffAttendance] Error marking attendance:', error);
-    res.status(500).json({ error: 'Failed to mark attendance' });
+      const schoolId = await resolveRequestSchoolId(req);
+
+      const attendance = await StaffAttendance.findOneAndUpdate(
+        scopeBySchool(schoolId, { staffId, date }),
+        {
+          staffId,
+          date,
+          status,
+          checkInTime,
+          checkOutTime,
+          reason,
+          markedBy,
+          lastModifiedBy: markedBy,
+          checkInMethod: 'admin',
+          checkOutMethod: 'admin',
+          schoolId,
+        },
+        { upsert: true, new: true }
+      ).populate('staffId', 'name code department role');
+
+      // Emit socket event for real-time update
+      if (req.app?.get('io')) {
+        const staff = attendance.staffId;
+        req.app.get('io').emit('attendance_updated', {
+          type: 'staff',
+          staffId: staffId.toString(),
+          staffName: staff?.name || 'Unknown',
+          date: date,
+          status: status,
+          inTime: attendance.checkInTime,
+          outTime: attendance.checkOutTime,
+          reason: reason || '',
+        });
+      }
+
+      // TRIGGER: Create substitution alerts if teacher is absent
+      if (status === 'absent' || status === 'leave') {
+        try {
+          const staff = attendance.staffId;
+          const isTeacher =
+            staff?.role?.includes('Teacher') || staff?.staffType?.includes('Teacher');
+
+          if (isTeacher) {
+            const substitutions = await substitutionService.createSubstitutionFromAbsence(
+              staffId,
+              date,
+              reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`
+            );
+
+            // Emit substitution alert
+            if (req.app?.get('io') && substitutions.length > 0) {
+              req.app.get('io').emit('substitution_alert', {
+                type: 'new_alerts',
+                teacherName: staff.name,
+                teacherId: staffId,
+                date: date,
+                count: substitutions.length,
+                markedBy: req.user.name || req.user.id,
+              });
+            }
+          }
+        } catch (subError) {
+          console.error('[StaffAttendance] Error creating substitution alerts:', subError);
+        }
+      }
+
+      res.json(attendance);
+    } catch (error) {
+      console.error('[StaffAttendance] Error marking attendance:', error);
+      res.status(500).json({ error: 'Failed to mark attendance' });
+    }
   }
-});
+);
 
 // Bulk mark attendance
-router.post('/bulk', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
-  try {
-    const { date, staffIds, status, reason, checkInTime, checkOutTime } = req.body;
-    const markedBy = req.user.id;
+router.post(
+  '/bulk',
+  authenticate,
+  checkPermission('staff', 'edit'),
+  validateZod(bulkStaffAttendanceSchema),
+  async (req, res) => {
+    try {
+      const { date, staffIds, status, reason, checkInTime, checkOutTime } = req.body;
+      const markedBy = req.user.id;
 
-    // Prevent marking attendance for future dates
-    const today = new Date().toISOString().split('T')[0];
-    if (date > today) {
-      return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
-    }
+      // Prevent marking attendance for future dates
+      const today = new Date().toISOString().split('T')[0];
+      if (date > today) {
+        return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
+      }
 
-    // Default times if not provided
-    const defaultInTime = checkInTime || (status === 'present' ? '09:00' : '-');
-    const defaultOutTime = checkOutTime || '-';
-    const finalReason = reason || '';
+      // Default times if not provided
+      const defaultInTime = checkInTime || (status === 'present' ? '09:00' : '-');
+      const defaultOutTime = checkOutTime || '-';
+      const finalReason = reason || '';
 
-    const schoolId = await resolveRequestSchoolId(req);
+      const schoolId = await resolveRequestSchoolId(req);
 
-    const operations = staffIds.map((staffId) => ({
-      updateOne: {
-        filter: scopeBySchool(schoolId, { staffId, date }),
-        update: {
-          $set: {
-            status,
-            checkInTime: defaultInTime,
-            checkOutTime: defaultOutTime,
-            reason: finalReason,
-            markedBy,
-            lastModifiedBy: markedBy,
-            checkInMethod: 'admin',
-            schoolId,
+      const operations = staffIds.map((staffId) => ({
+        updateOne: {
+          filter: scopeBySchool(schoolId, { staffId, date }),
+          update: {
+            $set: {
+              status,
+              checkInTime: defaultInTime,
+              checkOutTime: defaultOutTime,
+              reason: finalReason,
+              markedBy,
+              lastModifiedBy: markedBy,
+              checkInMethod: 'admin',
+              schoolId,
+            },
           },
+          upsert: true,
         },
-        upsert: true,
-      },
-    }));
+      }));
 
-    const result = await StaffAttendance.bulkWrite(operations);
-    res.json({ success: true, modified: result.modifiedCount, upserted: result.upsertedCount });
-  } catch (error) {
-    console.error('[StaffAttendance] Error bulk marking attendance:', error);
-    res.status(500).json({ error: 'Failed to bulk mark attendance' });
+      const result = await StaffAttendance.bulkWrite(operations);
+      res.json({ success: true, modified: result.modifiedCount, upserted: result.upsertedCount });
+    } catch (error) {
+      console.error('[StaffAttendance] Error bulk marking attendance:', error);
+      res.status(500).json({ error: 'Failed to bulk mark attendance' });
+    }
   }
-});
+);
 
 // Regularize attendance
 router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
@@ -447,14 +465,14 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
       });
     }
 
-    // Check for duplicate submission
+    // Check if attendance was already marked by admin — don't allow mobile override
     const existingAttendance = await StaffAttendance.findOne(
       scopeBySchool(req.user?.schoolId, { staffId, date })
     );
-    if (existingAttendance) {
-      return res.status(400).json({
+    if (existingAttendance && existingAttendance.checkInMethod === 'admin') {
+      return res.status(409).json({
         success: false,
-        error: 'Attendance already marked for today',
+        error: `Attendance already marked as '${existingAttendance.status}' by admin. Contact your administrator to modify.`,
       });
     }
 
@@ -466,23 +484,25 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
       });
     }
 
-    // Create new attendance record
+    // Upsert attendance record (allows both create and update from mobile)
     const mobileSchoolId = await resolveRequestSchoolId(req);
-    const newAttendance = new StaffAttendance({
-      staffId,
-      date,
-      status,
-      checkInTime: status === 'present' ? currentTime : '-',
-      checkOutTime: '-',
-      reason: reason || '',
-      checkInMethod: 'mobile',
-      checkInLocation: location || null,
-      markedBy: staffId,
-      lastModifiedBy: staffId,
-      schoolId: mobileSchoolId,
-    });
-
-    await newAttendance.save();
+    const newAttendance = await StaffAttendance.findOneAndUpdate(
+      scopeBySchool(mobileSchoolId, { staffId, date }),
+      {
+        staffId,
+        date,
+        status,
+        checkInTime: status === 'present' ? currentTime : '-',
+        checkOutTime: existingAttendance?.checkOutTime || '-',
+        reason: reason || '',
+        checkInMethod: 'mobile',
+        checkInLocation: location || null,
+        markedBy: staffId,
+        lastModifiedBy: staffId,
+        schoolId: mobileSchoolId,
+      },
+      { upsert: true, new: true }
+    );
 
     // TRIGGER: Create substitution alerts if teacher is absent
     if (status === 'absent' || status === 'leave') {
@@ -539,7 +559,10 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
 
     res.json({
       success: true,
-      message: 'Attendance marked successfully',
+      message: existingAttendance
+        ? 'Attendance updated successfully'
+        : 'Attendance marked successfully',
+      updated: !!existingAttendance,
       attendance: {
         id: newAttendance._id,
         staffId: newAttendance.staffId,

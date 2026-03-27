@@ -168,7 +168,7 @@ import Notification from './models/Notification.js';
 // Fee management models
 import FeeHead from './models/FeeHead.js';
 import StudentFeeStructure from './models/StudentFeeStructure.js';
-import FeeConsession from './models/FeeConsession.js';
+import FeeConsession from './models/FeeConcession.js';
 import LateFeeRule from './models/LateFeeRule.js';
 import FeeRule from './models/FeeRule.js';
 import PaymentMethodConfig from './models/PaymentMethodConfig.js';

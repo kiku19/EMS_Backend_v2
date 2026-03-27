@@ -969,17 +969,28 @@ const calendarRecurrenceSchema = z
   .optional()
   .nullable();
 
-const createCalendarEventSchema = z.object({
-  title: z.string().min(1, 'Title is required').max(200).trim(),
-  date: dateString,
-  type: z.enum(['event', 'meeting', 'exam', 'holiday']).default('event'),
-  startTime: timeOrEmpty,
-  endTime: timeOrEmpty,
-  allDay: z.boolean().default(false),
-  description: z.string().max(1000).optional().nullable(),
-  holidayType: z.enum(['National', 'Regional', 'School']).optional().nullable(),
-  recurrence: calendarRecurrenceSchema,
-});
+const createCalendarEventSchema = z
+  .object({
+    title: z.string().min(1, 'Title is required').max(200).trim(),
+    date: dateString,
+    type: z.enum(['event', 'meeting', 'exam', 'holiday']).default('event'),
+    startTime: timeOrEmpty,
+    endTime: timeOrEmpty,
+    allDay: z.boolean().default(false),
+    description: z.string().max(1000).optional().nullable(),
+    holidayType: z.enum(['National', 'Regional', 'School']).optional().nullable(),
+    recurrence: calendarRecurrenceSchema,
+  })
+  .refine(
+    (data) => {
+      // For non-all-day events, startTime must be before endTime when both are provided
+      if (!data.allDay && data.startTime && data.endTime) {
+        return data.startTime < data.endTime;
+      }
+      return true;
+    },
+    { message: 'startTime must be before endTime', path: ['endTime'] }
+  );
 
 const updateCalendarEventSchema = z
   .object({
@@ -995,7 +1006,17 @@ const updateCalendarEventSchema = z
   })
   .refine((data) => Object.values(data).some((v) => v !== undefined), {
     message: 'At least one field must be provided',
-  });
+  })
+  .refine(
+    (data) => {
+      // For non-all-day events, startTime must be before endTime when both are provided
+      if (!data.allDay && data.startTime && data.endTime) {
+        return data.startTime < data.endTime;
+      }
+      return true;
+    },
+    { message: 'startTime must be before endTime', path: ['endTime'] }
+  );
 
 export const zodSchemas = {
   // Auth
@@ -1284,13 +1305,22 @@ export const zodSchemas = {
     subject: z.string().min(1, 'Subject is required').max(100),
     classId: objectId,
     // Optional section identifier (e.g. 'A') for section-level targeting within a class
-    sectionId: z.string().max(10).optional(),
+    sectionId: z.string().trim().min(1, 'Section cannot be empty').max(10).optional(),
     teacherId: objectId,
     dueDate: z
       .string()
       .refine((val) => !isNaN(new Date(val).getTime()), {
         message: 'Invalid due date format. Use YYYY-MM-DD or ISO format.',
       })
+      .refine(
+        (val) => {
+          const due = new Date(val);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          return due >= today;
+        },
+        { message: 'Due date must not be in the past' }
+      )
       .optional(),
     attachments: z
       .array(
@@ -1300,6 +1330,11 @@ export const zodSchemas = {
           type: z.string().max(50).optional(),
         })
       )
+      .optional(),
+    totalMarks: z
+      .number()
+      .min(0, 'Total marks cannot be negative')
+      .max(1000, 'Total marks seems too high')
       .optional(),
     sentToParents: z.boolean().optional(),
   }),
@@ -1317,6 +1352,11 @@ export const zodSchemas = {
         })
         .optional(),
       status: z.enum(['active', 'cancelled', 'completed']).optional(),
+      totalMarks: z
+        .number()
+        .min(0, 'Total marks cannot be negative')
+        .max(1000, 'Total marks seems too high')
+        .optional(),
       attachments: z
         .array(
           z.object({
@@ -1346,6 +1386,8 @@ export const zodSchemas = {
   }),
 
   // POST /api/homework/:id/grade — Grade a submission (teacher)
+  // Note: upper-bound check (marks <= totalMarks) is done in the route handler
+  // because the max depends on the homework's totalMarks field.
   gradeHomework: z.object({
     studentId: objectId,
     marks: z
@@ -1353,8 +1395,7 @@ export const zodSchemas = {
         required_error: 'Marks are required',
         invalid_type_error: 'Marks must be a number',
       })
-      .min(0, 'Marks cannot be negative')
-      .max(100, 'Marks cannot exceed 100'),
+      .min(0, 'Marks cannot be negative'),
     feedback: z.string().max(1000).optional(),
   }),
 

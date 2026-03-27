@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 const reminderLogSchema = new mongoose.Schema(
   {
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+      index: true,
+    },
     reminderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Reminder',

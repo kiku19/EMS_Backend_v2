@@ -9,6 +9,7 @@ import smsTemplatesRouter from './settings/smsTemplates.js';
 import emailDomainRouter from './settings/emailDomain.js';
 import dataResidencyRouter from './settings/dataResidency.js';
 import communicationRouter from './settings/communication.js';
+import admissionFormConfigRouter from './settings/admissionFormConfig.js';
 
 const router = express.Router();
 
@@ -22,5 +23,6 @@ router.use('/', smsTemplatesRouter);
 router.use('/', emailDomainRouter);
 router.use('/', dataResidencyRouter);
 router.use('/', communicationRouter);
+router.use('/', admissionFormConfigRouter);
 
 export default router;

@@ -270,7 +270,7 @@ import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import FeeHead from '../models/FeeHead.js';
-import { Student, Class, FeePayment } from '../database.js';
+import { Student, Class, FeePayment, getNextReceiptNumber } from '../database.js';
 import { emitFeeUpdate } from '../utils/socketEmitter.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
@@ -685,6 +685,37 @@ router.post(
 
       await feeStructure.save();
 
+      // Create a FeePayment record so the payments collection stays in sync
+      // (fixes bug where studentFees payment endpoint didn't create FeePayment)
+      const schoolId = extractSchoolId(req.user?.schoolId);
+      const resolvedYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
+      try {
+        const receiptNumber = await getNextReceiptNumber(schoolId);
+        const studentDoc = await Student.findById(req.params.studentId).select('classId name');
+        const feePayment = new FeePayment({
+          schoolId,
+          studentId: req.params.studentId,
+          classId: feeStructure.classId || studentDoc?.classId,
+          academicYear: resolvedYear,
+          receiptNumber,
+          paymentDate: new Date().toISOString().split('T')[0],
+          amount,
+          paymentMode: req.body.paymentMode || 'cash',
+          feeHeads: Array.isArray(feeHeadPayments)
+            ? feeHeadPayments.map((fh) => ({
+                feeHeadId: fh.feeHeadId,
+                name: fh.name || '',
+                amount: fh.amount,
+              }))
+            : [],
+          status: 'completed',
+          remarks: req.body.remarks || '',
+        });
+        await feePayment.save();
+      } catch (fpError) {
+        console.error('Non-critical: could not create FeePayment record:', fpError.message);
+      }
+
       // Sync fee data to Student model for consistent reads
       await syncStudentFeeDetails(req.params.studentId, feeStructure);
 
@@ -807,6 +838,32 @@ router.post(
         totalBalance: feeStructure.totalBalance,
         overallStatus: feeStructure.overallStatus,
       };
+
+      // ── Redistribute payments across individual fee heads ────────────
+      // Build a map of feeHeadId -> total paid from all FeePayment records
+      const headPaidMap = new Map();
+      for (const payment of payments) {
+        if (Array.isArray(payment.feeHeads)) {
+          for (const ph of payment.feeHeads) {
+            const key = ph.feeHeadId ? ph.feeHeadId.toString() : ph.name;
+            if (key) {
+              headPaidMap.set(key, (headPaidMap.get(key) || 0) + (ph.amount || 0));
+            }
+          }
+        }
+      }
+
+      // Update each fee head's paidAmount from the aggregated payment data
+      if (Array.isArray(feeStructure.feeHeads)) {
+        for (const fh of feeStructure.feeHeads) {
+          const key = fh.feeHeadId ? fh.feeHeadId.toString() : fh.name;
+          fh.paidAmount = headPaidMap.get(key) || 0;
+          const headResult = computeFeeHeadStatus(fh);
+          fh.balanceAmount = headResult.balanceAmount;
+          fh.status = headResult.status;
+        }
+      }
+      // ────────────────────────────────────────────────────────────────
 
       // Correct stored totals
       feeStructure.totalPaid = actualTotalPaid;

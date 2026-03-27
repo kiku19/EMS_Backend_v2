@@ -69,7 +69,7 @@ const feeHeadSchema = new mongoose.Schema(
     },
 
     // School scoping
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
 
     // Status
     isActive: { type: Boolean, default: true },

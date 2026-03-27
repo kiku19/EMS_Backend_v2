@@ -281,6 +281,56 @@ import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { createSmsRateLimiter } from '../middleware/tenantRateLimit.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
+// --- Zod validation schemas ---
+
+// Shared sub-schemas
+const recipientSchema = z.object({
+  type: z.enum(['all', 'staff', 'students', 'parents', 'custom'], {
+    required_error: 'Recipient type is required',
+    invalid_type_error: 'Recipient type must be one of: all, staff, students, parents, custom',
+  }),
+  classIds: z.array(z.string().min(1)).optional().default([]),
+  userIds: z.array(z.string().min(1)).optional().default([]),
+});
+
+const attachmentSchema = z.object({
+  url: z.string().url('Invalid attachment URL').optional(),
+  name: z.string().optional(),
+  type: z.string().optional(),
+  size: z.number().nonnegative().optional(),
+});
+
+const channelEnum = z.enum(['email', 'sms', 'whatsapp', 'inapp'], {
+  invalid_type_error: 'Channel must be one of: email, sms, whatsapp, inapp',
+});
+
+// Create announcement schema
+const createAnnouncementSchema = z.object({
+  title: z.string().min(1, 'Title is required').max(200, 'Title must be 200 characters or fewer'),
+  content: z.string().min(1, 'Content is required'),
+  recipients: z.array(recipientSchema).min(1, 'At least one recipient group is required'),
+  channels: z.array(channelEnum).min(1, 'At least one channel is required'),
+  attachments: z.array(attachmentSchema).optional().default([]),
+  scheduledFor: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+// Update announcement schema (all fields optional)
+const updateAnnouncementSchema = z.object({
+  title: z
+    .string()
+    .min(1, 'Title cannot be empty')
+    .max(200, 'Title must be 200 characters or fewer')
+    .optional(),
+  content: z.string().min(1, 'Content cannot be empty').optional(),
+  recipients: z
+    .array(recipientSchema)
+    .min(1, 'At least one recipient group is required')
+    .optional(),
+  channels: z.array(channelEnum).min(1, 'At least one channel is required').optional(),
+  attachments: z.array(attachmentSchema).optional(),
+  scheduledFor: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
 // Zod schemas for email preview/test-send
 const previewEmailSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
@@ -358,8 +408,8 @@ async function resolveRecipients(recipients, schoolId) {
         // Get students from specific classes
         const classes = await Class.find({ _id: { $in: recipient.classIds }, ...schoolFilter });
         for (const cls of classes) {
-          cls.students.forEach((studentId) => {
-            const student = Student.findById(studentId);
+          for (const studentId of cls.students) {
+            const student = await Student.findById(studentId);
             if (student) {
               recipientList.push({
                 userId: student._id,
@@ -368,7 +418,7 @@ async function resolveRecipients(recipients, schoolId) {
                 phone: student.phone,
               });
             }
-          });
+          }
         }
       } else {
         // All students
@@ -439,16 +489,21 @@ async function resolveRecipients(recipients, schoolId) {
 // POST /api/announcements - Create announcement (draft)
 router.post('/', async (req, res) => {
   try {
-    const { title, content, recipients, channels, attachments, scheduledFor } = req.body;
-    const user = req.user;
-
-    // Validate required fields
-    if (!title || !content) {
-      return res.status(400).json({ error: req.t('common:routes.titleAndContentAreRequired') });
+    // Validate request body with Zod
+    const parsed = createAnnouncementSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: req.t('common:routes.validationFailed'),
+        details: parsed.error.flatten(),
+      });
     }
 
-    if (!recipients || recipients.length === 0) {
-      return res.status(400).json({ error: req.t('common:routes.recipientsAreRequired') });
+    const { title, content, recipients, channels, attachments, scheduledFor } = parsed.data;
+    const user = req.user;
+
+    // Require schoolId — multi-tenancy guard
+    if (!user.schoolId) {
+      return res.status(401).json({ error: 'Unauthorized: missing schoolId' });
     }
 
     // Create announcement
@@ -465,7 +520,7 @@ router.post('/', async (req, res) => {
       status: scheduledFor ? 'scheduled' : 'draft',
       createdBy: user.id,
       creatorModel: user.role === 'admin' || user.role === 'staff' ? 'Staff' : 'Student',
-      schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
+      schoolId: extractSchoolId(user.schoolId),
     });
 
     await announcement.save();
@@ -664,7 +719,16 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: req.t('common:routes.cannotEditSentAnnouncement') });
     }
 
-    const { title, content, recipients, channels, attachments, scheduledFor } = req.body;
+    // Validate request body with Zod
+    const parsed = updateAnnouncementSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: req.t('common:routes.validationFailed'),
+        details: parsed.error.flatten(),
+      });
+    }
+
+    const { title, content, recipients, channels, attachments, scheduledFor } = parsed.data;
 
     if (title) announcement.title = title;
     if (content) announcement.content = content;
@@ -718,11 +782,11 @@ router.delete('/:id', async (req, res) => {
       await cancelJobs({ 'data.announcementId': announcement._id });
     }
 
-    // Delete recipients
-    await AnnouncementRecipient.deleteMany({ announcementId: announcement._id });
-
-    // Delete announcement
-    await Announcement.findByIdAndDelete(announcement._id);
+    // Soft delete announcement instead of hard delete to preserve audit trail
+    announcement.isDeleted = true;
+    announcement.deletedAt = new Date();
+    announcement.deletedBy = req.user._id;
+    await announcement.save();
 
     res.json({ message: req.t('common:routes.announcementDeletedSuccessfully') });
   } catch (error) {

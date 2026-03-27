@@ -572,12 +572,23 @@ router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), a
           continue;
         }
 
-        // Get salary adjustments
+        // Get salary adjustments: one-time for this exact month AND recurring
+        // adjustments whose effective date is on or before this month
         const adjustments = await SalaryAdjustment.find({
           employeeId: empId,
-          effectiveMonth: month,
-          effectiveYear: year,
           isActive: true,
+          $or: [
+            // One-time adjustments for this exact month/year
+            { isRecurring: { $ne: true }, effectiveMonth: month, effectiveYear: year },
+            // Recurring adjustments that started on or before this month/year
+            {
+              isRecurring: true,
+              $or: [
+                { effectiveYear: { $lt: year } },
+                { effectiveYear: year, effectiveMonth: { $lte: month } },
+              ],
+            },
+          ],
         });
 
         const allowances = adjustments

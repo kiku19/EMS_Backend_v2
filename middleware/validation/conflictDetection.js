@@ -27,8 +27,11 @@ export const checkConflicts = async (req, res, next) => {
     );
 
     if (!validation.isValid) {
-      // Log the conflict
-      await conflictDetectionService.logConflict(validation.error);
+      // Log the conflict with schoolId for multi-tenancy
+      await conflictDetectionService.logConflict({
+        ...validation.error,
+        schoolId: req.user?.schoolId,
+      });
 
       return res.status(409).json({
         type: 'ConflictError',
@@ -78,8 +81,11 @@ export const checkTeacherTimetableConflicts = async (req, res, next) => {
     );
 
     if (!validation.isValid) {
-      // Log the conflict
-      await conflictDetectionService.logConflict(validation.error);
+      // Log the conflict with schoolId for multi-tenancy
+      await conflictDetectionService.logConflict({
+        ...validation.error,
+        schoolId: req.user?.schoolId,
+      });
 
       return res.status(409).json({
         type: 'ConflictError',

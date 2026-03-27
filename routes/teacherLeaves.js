@@ -3,6 +3,7 @@ import TeacherLeave from '../models/TeacherLeave.js';
 import { authenticate } from '../middleware/auth.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { applyLeaveSchema, updateLeaveStatusSchema } from '../validators/leaveSchema.js';
 
 const router = express.Router();
@@ -57,7 +58,7 @@ router.get('/teacher/:teacherId', authenticate, async (req, res) => {
 });
 
 // Get all pending leaves (for admin)
-router.get('/pending', authenticate, async (req, res) => {
+router.get('/pending', authenticate, checkPermission('staff', 'view'), async (req, res) => {
   try {
     const leaves = await TeacherLeave.find(scopeBySchool(req.user.schoolId, { status: 'pending' }))
       .populate('teacherId', 'name code email phone')
@@ -247,6 +248,13 @@ router.put('/:id/cancel', authenticate, async (req, res) => {
         req.user.role.some((r) => ['Admin', 'Principal'].includes(r)));
     if (!isOwner && !isAdmin) {
       return res.status(403).json({ error: 'Not authorized to cancel this leave' });
+    }
+
+    // Only allow cancellation if leave is pending or approved
+    if (!['pending', 'approved'].includes(leave.status)) {
+      return res.status(400).json({
+        error: `Cannot cancel a leave that is already '${leave.status}'`,
+      });
     }
 
     leave.status = 'cancelled';

@@ -130,8 +130,20 @@ notificationPreferenceSchema.methods.getChannelPreferences = function (category,
 notificationPreferenceSchema.methods.isQuietHours = function () {
   if (!this.quietHours.enabled) return false;
 
-  const now = new Date();
-  const currentTime = now.toTimeString().slice(0, 5); // HH:mm format
+  // Use the user's configured timezone (falls back to Asia/Kolkata)
+  const tz = this.quietHours.timezone || 'Asia/Kolkata';
+  let currentTime;
+  try {
+    currentTime = new Date().toLocaleTimeString('en-GB', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }); // HH:mm format
+  } catch {
+    // If timezone is invalid, fall back to server time
+    currentTime = new Date().toTimeString().slice(0, 5);
+  }
 
   // Handle case where quiet hours span midnight (e.g., 22:00 to 08:00)
   if (this.quietHours.startTime > this.quietHours.endTime) {

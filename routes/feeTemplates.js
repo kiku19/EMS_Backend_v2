@@ -5,6 +5,11 @@ import SchoolGroup from '../models/SchoolGroup.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import {
+  validateZod,
+  createFeeTemplateSchema,
+  updateFeeTemplateSchema,
+} from '../validators/index.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -66,33 +71,67 @@ router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, re
   }
 });
 
-router.post('/', authenticate, checkPermission('fees', 'create'), async (req, res) => {
-  try {
-    const schoolId = await resolveRequestSchoolId(req);
-    const template = new FeeTemplate({ ...req.body, schoolId });
-    await template.save();
-    res.status(201).json(template);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.put('/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
-  try {
-    const { schoolId: _ignore, ...updateData } = req.body;
-    const template = await FeeTemplate.findOneAndUpdate(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
-      updateData,
-      { new: true }
-    );
-    if (!template) {
-      return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+router.post(
+  '/',
+  authenticate,
+  checkPermission('fees', 'create'),
+  validateZod(createFeeTemplateSchema),
+  async (req, res) => {
+    try {
+      const schoolId = await resolveRequestSchoolId(req);
+      const {
+        name,
+        description,
+        section,
+        applicableFor,
+        feeHeads,
+        totalAnnualFee,
+        discounts,
+        isActive,
+        academicYear,
+      } = req.body;
+      const template = new FeeTemplate({
+        name,
+        description,
+        section,
+        applicableFor,
+        feeHeads,
+        totalAnnualFee,
+        discounts,
+        isActive,
+        academicYear,
+        schoolId,
+      });
+      await template.save();
+      res.status(201).json(template);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-    res.json(template);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
+
+router.put(
+  '/:id',
+  authenticate,
+  checkPermission('fees', 'edit'),
+  validateZod(updateFeeTemplateSchema),
+  async (req, res) => {
+    try {
+      // req.body is already validated and stripped by Zod — no raw fields leak through
+      const template = await FeeTemplate.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
+        req.body,
+        { new: true }
+      );
+      if (!template) {
+        return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+      }
+      res.json(template);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
   try {

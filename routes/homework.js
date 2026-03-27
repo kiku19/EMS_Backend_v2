@@ -21,7 +21,7 @@
  *         name: status
  *         schema:
  *           type: string
- *           enum: [active, completed, expired]
+ *           enum: [active, completed, cancelled]
  *       - in: query
  *         name: classId
  *         schema:
@@ -94,7 +94,7 @@
  *                 format: date-time
  *               status:
  *                 type: string
- *                 enum: [active, completed, expired]
+ *                 enum: [active, completed, cancelled]
  *               attachments:
  *                 type: array
  *                 items:
@@ -156,6 +156,11 @@
  *                 items:
  *                   type: string
  *                   format: uri
+ *               totalMarks:
+ *                 type: number
+ *                 minimum: 0
+ *                 default: 100
+ *                 description: Maximum marks for grading
  *               sentToParents:
  *                 type: boolean
  *                 default: true
@@ -223,6 +228,7 @@
  *               marks:
  *                 type: number
  *                 minimum: 0
+ *                 description: Must not exceed the homework's totalMarks
  *               remarks:
  *                 type: string
  *     responses:
@@ -261,7 +267,7 @@ function scopeBySchool(schoolId, query = {}) {
 router.get('/teacher/:teacherId', authenticate, async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { status, classId, sectionId } = req.query;
+    const { status, classId, sectionId, academicYear } = req.query;
 
     // Authorization: user must be the teacher themselves or an admin
     const isOwner = req.user._id?.toString() === teacherId || req.user.id?.toString() === teacherId;
@@ -274,6 +280,7 @@ router.get('/teacher/:teacherId', authenticate, async (req, res) => {
     if (status) query.status = status;
     if (classId) query.classId = classId;
     if (sectionId) query.sectionId = sectionId;
+    if (academicYear) query.academicYear = academicYear;
 
     const homework = await Homework.find(query)
       .populate('classId', 'name section')
@@ -289,11 +296,12 @@ router.get('/teacher/:teacherId', authenticate, async (req, res) => {
 router.get('/class/:classId', authenticate, async (req, res) => {
   try {
     const { classId } = req.params;
-    const { status = 'active', sectionId } = req.query;
+    const { status = 'active', sectionId, academicYear } = req.query;
 
     const filter = scopeBySchool(req.user.schoolId, { classId, status, isDeleted: { $ne: true } });
     // Optional section-level targeting within a class
     if (sectionId) filter.sectionId = sectionId;
+    if (academicYear) filter.academicYear = academicYear;
 
     const homework = await Homework.find(filter)
       .populate('teacherId', 'name')
@@ -309,20 +317,38 @@ router.get('/class/:classId', authenticate, async (req, res) => {
 // Get all homework for the school (admin dashboard)
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { status, classId, teacherId } = req.query;
+    const { status, classId, teacherId, academicYear, page = 1, limit = 50 } = req.query;
 
     const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
     if (status) query.status = status;
     if (classId) query.classId = classId;
     if (teacherId) query.teacherId = teacherId;
+    if (academicYear) query.academicYear = academicYear;
 
-    const homework = await Homework.find(query)
-      .populate('classId', 'name section')
-      .populate('teacherId', 'name')
-      .sort({ dueDate: -1 })
-      .limit(200);
+    // Pagination
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const skip = (pageNum - 1) * limitNum;
 
-    res.json(homework);
+    const [homework, total] = await Promise.all([
+      Homework.find(query)
+        .populate('classId', 'name section')
+        .populate('teacherId', 'name')
+        .sort({ dueDate: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      Homework.countDocuments(query),
+    ]);
+
+    res.json({
+      data: homework,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -459,6 +485,7 @@ router.post(
         teacherId,
         dueDate,
         attachments,
+        totalMarks,
         sentToParents,
       } = req.body;
 
@@ -482,6 +509,7 @@ router.post(
         ...(sectionId && { sectionId }),
         teacherId,
         dueDate: parsedDueDate,
+        ...(totalMarks !== undefined && { totalMarks }),
         attachments: attachments || [],
         sentToParents: sentToParents !== false,
       });
@@ -524,6 +552,7 @@ router.post(
         // Send to parents of students in this class
         const students = await Student.find({
           classId,
+          schoolId: extractSchoolId(req.user.schoolId),
           status: 'active',
           isDeleted: { $ne: true },
         }).select('_id');
@@ -574,7 +603,7 @@ router.put(
   validateZod(zodSchemas.updateHomework),
   async (req, res) => {
     try {
-      const { title, description, subject, dueDate, attachments, status } = req.body;
+      const { title, description, subject, dueDate, attachments, status, totalMarks } = req.body;
 
       // Validate dueDate if provided (same as create route)
       let parsedDueDate;
@@ -594,6 +623,7 @@ router.put(
           description,
           subject,
           ...(parsedDueDate !== undefined && { dueDate: parsedDueDate }),
+          ...(totalMarks !== undefined && { totalMarks }),
           attachments,
           status,
           updatedAt: new Date(),
@@ -672,6 +702,14 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
 
     if (!homework) {
       return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
+    }
+
+    // Validate marks against homework's totalMarks upper bound
+    const maxMarks = homework.totalMarks ?? 100;
+    if (marks > maxMarks) {
+      return res.status(400).json({
+        error: `Marks (${marks}) cannot exceed total marks (${maxMarks}) for this homework`,
+      });
     }
 
     const submission = homework.submissions.find((s) => s.studentId.toString() === studentId);

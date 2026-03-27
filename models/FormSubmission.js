@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const formSubmissionSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'FormAssignment', required: true },
     formId: { type: mongoose.Schema.Types.ObjectId, ref: 'IntakeForm', required: true },
     submissionData: mongoose.Schema.Types.Mixed, // All form field responses

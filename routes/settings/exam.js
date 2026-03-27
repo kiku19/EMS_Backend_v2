@@ -1,6 +1,7 @@
 import express from 'express';
 import { SchoolSettings } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
+import { checkPermission } from '../../middleware/auth/permissions.js';
 import { getDefaultSchoolSettings } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 
@@ -22,7 +23,7 @@ router.get('/subjects', authenticate, async (req, res) => {
 });
 
 // Add subject
-router.post('/subjects', authenticate, async (req, res) => {
+router.post('/subjects', authenticate, checkPermission('settings', 'create'), async (req, res) => {
   try {
     let settings = await findSchoolSettings(req);
 
@@ -45,7 +46,7 @@ router.post('/subjects', authenticate, async (req, res) => {
 });
 
 // Update subject
-router.put('/subjects/:id', authenticate, async (req, res) => {
+router.put('/subjects/:id', authenticate, checkPermission('settings', 'edit'), async (req, res) => {
   try {
     const settings = await findSchoolSettings(req);
 
@@ -70,22 +71,27 @@ router.put('/subjects/:id', authenticate, async (req, res) => {
 });
 
 // Delete subject
-router.delete('/subjects/:id', authenticate, async (req, res) => {
-  try {
-    const settings = await findSchoolSettings(req);
+router.delete(
+  '/subjects/:id',
+  authenticate,
+  checkPermission('settings', 'delete'),
+  async (req, res) => {
+    try {
+      const settings = await findSchoolSettings(req);
 
-    if (!settings) {
-      return res.status(404).json({ error: 'Settings not found' });
+      if (!settings) {
+        return res.status(404).json({ error: 'Settings not found' });
+      }
+
+      settings.subjects = settings.subjects.filter((s) => s._id.toString() !== req.params.id);
+      await settings.save();
+
+      res.json(settings.subjects);
+    } catch (error) {
+      console.error('Error deleting subject:', error);
+      res.status(500).json({ error: 'Failed to delete subject' });
     }
-
-    settings.subjects = settings.subjects.filter((s) => s._id.toString() !== req.params.id);
-    await settings.save();
-
-    res.json(settings.subjects);
-  } catch (error) {
-    console.error('Error deleting subject:', error);
-    res.status(500).json({ error: 'Failed to delete subject' });
   }
-});
+);
 
 export default router;

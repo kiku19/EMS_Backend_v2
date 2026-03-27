@@ -4,8 +4,10 @@ import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { resolveAcademicYear } from '../../utils/academicYear.js';
 import { scopeBySchool, sendReminderSchema } from './helpers.js';
+import { createLogger } from '../../utils/logger.js';
 
 const router = express.Router();
+const logger = createLogger('StudentFees');
 router.use(authenticate);
 
 router.get(
@@ -89,7 +91,7 @@ router.get(
         overallStatus: feeStructure.overallStatus,
       });
     } catch (error) {
-      console.error('Error fetching fee summary:', error);
+      logger.error('Error fetching fee summary:', error);
       res.status(500).json({ error: error.message });
     }
   }
@@ -143,7 +145,7 @@ router.post(
           });
           notified++;
         } catch (notifError) {
-          console.error('Error sending reminder notification to parent:', notifError);
+          logger.error('Error sending reminder notification to parent:', notifError);
         }
       }
 
@@ -154,7 +156,7 @@ router.post(
         notified,
       });
     } catch (error) {
-      console.error('Error sending reminder:', error);
+      logger.error('Error sending reminder:', error);
       res.status(500).json({ error: error.message });
     }
   }

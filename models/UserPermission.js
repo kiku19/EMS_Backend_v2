@@ -1,45 +1,67 @@
 import mongoose from 'mongoose';
 
-const modulePermissionSchema = new mongoose.Schema({
-  module: {
-    type: String,
-    required: true,
-    enum: ['dashboard', 'staff', 'students', 'classes', 'academics', 'attendance', 'timetable', 'fees', 'payroll', 'messaging', 'reports', 'settings', 'front-desk', 'intake-forms']
+const modulePermissionSchema = new mongoose.Schema(
+  {
+    module: {
+      type: String,
+      required: true,
+      enum: [
+        'dashboard',
+        'staff',
+        'students',
+        'classes',
+        'academics',
+        'attendance',
+        'timetable',
+        'fees',
+        'payroll',
+        'messaging',
+        'communication',
+        'reports',
+        'settings',
+        'front-desk',
+        'intake-forms',
+      ],
+    },
+    view: { type: Boolean, default: false },
+    create: { type: Boolean, default: false },
+    edit: { type: Boolean, default: false },
+    delete: { type: Boolean, default: false },
+    publish: { type: Boolean, default: false },
   },
-  view: { type: Boolean, default: false },
-  create: { type: Boolean, default: false },
-  edit: { type: Boolean, default: false },
-  delete: { type: Boolean, default: false },
-  publish: { type: Boolean, default: false }
-}, { _id: false });
+  { _id: false }
+);
 
-const userPermissionSchema = new mongoose.Schema({
-  schoolId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'School',
-    default: null,
-    index: true,
+const userPermissionSchema = new mongoose.Schema(
+  {
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+      index: true,
+    },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Staff',
+      required: true,
+    },
+    role: {
+      type: String,
+      required: true,
+      enum: ['admin', 'teacher', 'accountant', 'receptionist', 'custom'],
+    },
+    permissions: [modulePermissionSchema],
+    customPermissions: { type: Boolean, default: false },
+    lastUpdated: { type: Date, default: Date.now },
+    updatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Staff',
+    },
   },
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Staff',
-    required: true,
-    unique: true
-  },
-  role: {
-    type: String,
-    required: true,
-    enum: ['admin', 'teacher', 'accountant', 'receptionist', 'custom']
-  },
-  permissions: [modulePermissionSchema],
-  customPermissions: { type: Boolean, default: false },
-  lastUpdated: { type: Date, default: Date.now },
-  updatedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Staff'
-  }
-}, { timestamps: true });
+  { timestamps: true }
+);
 
+userPermissionSchema.index({ userId: 1, schoolId: 1 }, { unique: true });
 userPermissionSchema.index({ schoolId: 1, role: 1 });
 
 export const PERMISSION_TEMPLATES = {
@@ -54,10 +76,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: true, create: true, edit: true, delete: true },
     payroll: { view: true, create: true, edit: true, delete: true },
     messaging: { view: true, create: true, edit: true, delete: true },
+    communication: { view: true, create: true, edit: true, delete: true },
     reports: { view: true, create: true, edit: true, delete: true },
     settings: { view: true, create: true, edit: true, delete: true },
     'front-desk': { view: true, create: true, edit: true, delete: true },
-    'intake-forms': { view: true, create: true, edit: true, delete: true }
+    'intake-forms': { view: true, create: true, edit: true, delete: true },
   },
   principal: {
     dashboard: { view: true, create: true, edit: true, delete: true },
@@ -70,10 +93,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: true, create: true, edit: true, delete: true },
     payroll: { view: true, create: true, edit: true, delete: true },
     messaging: { view: true, create: true, edit: true, delete: true },
+    communication: { view: true, create: true, edit: true, delete: true },
     reports: { view: true, create: true, edit: true, delete: true },
     settings: { view: true, create: true, edit: true, delete: false },
     'front-desk': { view: true, create: true, edit: true, delete: true },
-    'intake-forms': { view: true, create: true, edit: true, delete: true }
+    'intake-forms': { view: true, create: true, edit: true, delete: true },
   },
   'vice-principal': {
     dashboard: { view: true, create: true, edit: true, delete: false },
@@ -86,10 +110,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: true, create: false, edit: false, delete: false },
     payroll: { view: true, create: false, edit: false, delete: false },
     messaging: { view: true, create: true, edit: true, delete: false },
+    communication: { view: true, create: true, edit: true, delete: false },
     reports: { view: true, create: true, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: true, create: true, edit: true, delete: false },
-    'intake-forms': { view: true, create: true, edit: true, delete: false }
+    'intake-forms': { view: true, create: true, edit: true, delete: false },
   },
   teacher: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -102,10 +127,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: true, create: false, edit: false, delete: false },
     payroll: { view: false, create: false, edit: false, delete: false },
     messaging: { view: true, create: true, edit: true, delete: false },
+    communication: { view: true, create: true, edit: false, delete: false },
     reports: { view: true, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: false, create: false, edit: false, delete: false },
-    'intake-forms': { view: true, create: true, edit: true, delete: false }
+    'intake-forms': { view: true, create: true, edit: true, delete: false },
   },
   accountant: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -118,10 +144,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: true, create: true, edit: true, delete: true },
     payroll: { view: true, create: true, edit: true, delete: false },
     messaging: { view: true, create: true, edit: false, delete: false },
+    communication: { view: true, create: false, edit: false, delete: false },
     reports: { view: true, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: false, create: false, edit: false, delete: false },
-    'intake-forms': { view: true, create: false, edit: false, delete: false }
+    'intake-forms': { view: true, create: false, edit: false, delete: false },
   },
   librarian: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -134,10 +161,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: false, create: false, edit: false, delete: false },
     payroll: { view: false, create: false, edit: false, delete: false },
     messaging: { view: true, create: true, edit: false, delete: false },
+    communication: { view: true, create: false, edit: false, delete: false },
     reports: { view: false, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: false, create: false, edit: false, delete: false },
-    'intake-forms': { view: false, create: false, edit: false, delete: false }
+    'intake-forms': { view: false, create: false, edit: false, delete: false },
   },
   'lab-assistant': {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -150,10 +178,11 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: false, create: false, edit: false, delete: false },
     payroll: { view: false, create: false, edit: false, delete: false },
     messaging: { view: true, create: true, edit: false, delete: false },
+    communication: { view: true, create: false, edit: false, delete: false },
     reports: { view: false, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: false, create: false, edit: false, delete: false },
-    'intake-forms': { view: false, create: false, edit: false, delete: false }
+    'intake-forms': { view: false, create: false, edit: false, delete: false },
   },
   receptionist: {
     dashboard: { view: true, create: false, edit: false, delete: false },
@@ -166,11 +195,12 @@ export const PERMISSION_TEMPLATES = {
     fees: { view: true, create: false, edit: false, delete: false },
     payroll: { view: false, create: false, edit: false, delete: false },
     messaging: { view: true, create: true, edit: false, delete: false },
+    communication: { view: true, create: true, edit: false, delete: false },
     reports: { view: false, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
     'front-desk': { view: true, create: true, edit: true, delete: false },
-    'intake-forms': { view: true, create: true, edit: true, delete: false }
-  }
+    'intake-forms': { view: true, create: true, edit: true, delete: false },
+  },
 };
 
 const UserPermission = mongoose.model('UserPermission', userPermissionSchema);

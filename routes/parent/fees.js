@@ -13,8 +13,10 @@ import {
 } from '../../utils/feeCalculator.js';
 import { applyOutputSchema, paymentOutputSchema } from '../../validators/parentOutputSchemas.js';
 import { scopeBySchool, resolveRequestSchoolId } from './helpers.js';
+import { createLogger } from '../../utils/logger.js';
 
 const router = express.Router();
+const logger = createLogger('ParentFees');
 
 // Normalize :id → req.params.studentId for validateParentChildAccess
 router.param('id', (req, res, next, id) => {
@@ -96,7 +98,7 @@ router.get('/students/:id/fees', validateParentChildAccess, async (req, res) => 
       },
     });
   } catch (error) {
-    console.error('Get student fees error:', error);
+    logger.error('Get student fees error:', error);
     res.status(500).json({
       success: false,
       error: { code: 'SERVER_ERROR', message: 'Failed to fetch fee details' },
@@ -191,7 +193,7 @@ router.post(
         },
       });
     } catch (error) {
-      console.error('Create payment order error:', error);
+      logger.error('Create payment order error:', error);
       res.status(500).json({
         success: false,
         error: { code: 'ORDER_CREATION_FAILED', message: 'Failed to create payment order' },
@@ -347,7 +349,7 @@ router.post(
         },
       });
     } catch (error) {
-      console.error('Verify payment error:', error);
+      logger.error('Verify payment error:', error);
       res.status(500).json({
         success: false,
         error: { code: 'VERIFICATION_FAILED', message: 'Payment verification failed' },

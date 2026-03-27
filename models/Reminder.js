@@ -1,107 +1,126 @@
 import mongoose from 'mongoose';
 
-const reminderSchema = new mongoose.Schema({
-  title: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  type: {
-    type: String,
-    enum: ['fee', 'attendance', 'academic', 'events', 'custom'],
-    required: true
-  },
-
-  // Trigger conditions
-  triggers: [{
-    condition: {
-      type: String,
-      required: true
-      // Examples: "days_before_due", "days_after_overdue", "attendance_below",
-    // "exam_days_before", "event_days_before"
+const reminderSchema = new mongoose.Schema(
+  {
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+      index: true,
     },
-    value: mongoose.Schema.Types.Mixed, // e.g., 7 (days), 75 (percentage)
-    field: String // e.g., "feeDueDate", "attendancePercentage"
-  }],
-
-  // Message content
-  message: {
-    type: String,
-    required: true
-  },
-
-  // Template reference (if using template)
-  templateId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'ReminderTemplate'
-  },
-
-  // Recipients
-  recipients: [{
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     type: {
       type: String,
-      enum: ['all', 'staff', 'students', 'parents', 'custom'],
-      required: true
+      enum: ['fee', 'attendance', 'academic', 'events', 'payroll', 'custom'],
+      required: true,
     },
-    classIds: [{
+
+    // Trigger conditions
+    triggers: [
+      {
+        condition: {
+          type: String,
+          required: true,
+          // Examples: "days_before_due", "days_after_overdue", "attendance_below",
+          // "exam_days_before", "event_days_before"
+        },
+        value: mongoose.Schema.Types.Mixed, // e.g., 7 (days), 75 (percentage)
+        field: String, // e.g., "feeDueDate", "attendancePercentage"
+      },
+    ],
+
+    // Message content
+    message: {
+      type: String,
+      required: true,
+    },
+
+    // Template reference (if using template)
+    templateId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Class'
-    }],
-    userIds: [{
-      type: mongoose.Schema.Types.ObjectId
-    }]
-  }],
+      ref: 'ReminderTemplate',
+    },
 
-  // Channels to send through
-  channels: [{
-    type: String,
-    enum: ['email', 'sms', 'whatsapp', 'inapp']
-  }],
+    // Recipients
+    recipients: [
+      {
+        type: {
+          type: String,
+          enum: ['all', 'staff', 'students', 'parents', 'custom'],
+          required: true,
+        },
+        classIds: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Class',
+          },
+        ],
+        userIds: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+          },
+        ],
+      },
+    ],
 
-  // Schedule
-  startDate: {
-    type: Date,
-    required: true
-  },
-  endDate: Date,
-  frequency: {
-    type: String,
-    enum: ['once', 'daily', 'weekly'],
-    default: 'once'
-  },
+    // Channels to send through
+    channels: [
+      {
+        type: String,
+        enum: ['email', 'sms', 'whatsapp', 'inapp'],
+      },
+    ],
 
-  // Status
-  isActive: {
-    type: Boolean,
-    default: true,
-    index: true
-  },
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Staff',
-    required: true
-  },
+    // Schedule
+    startDate: {
+      type: Date,
+      required: true,
+    },
+    endDate: Date,
+    frequency: {
+      type: String,
+      enum: ['once', 'daily', 'weekly'],
+      default: 'once',
+    },
 
-  // Execution tracking
-  lastExecutedAt: Date,
-  nextExecutionAt: {
-    type: Date,
-    index: true
-  },
-  executionCount: {
-    type: Number,
-    default: 0
-  },
+    // Status
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Staff',
+      required: true,
+    },
 
-  // Statistics
-  stats: {
-    totalSent: { type: Number, default: 0 },
-    totalDelivered: { type: Number, default: 0 },
-    totalFailed: { type: Number, default: 0 }
+    // Execution tracking
+    lastExecutedAt: Date,
+    nextExecutionAt: {
+      type: Date,
+      index: true,
+    },
+    executionCount: {
+      type: Number,
+      default: 0,
+    },
+
+    // Statistics
+    stats: {
+      totalSent: { type: Number, default: 0 },
+      totalDelivered: { type: Number, default: 0 },
+      totalFailed: { type: Number, default: 0 },
+    },
+  },
+  {
+    timestamps: true,
   }
-}, {
-  timestamps: true
-});
+);
 
 // Indexes
 reminderSchema.index({ isActive: 1, nextExecutionAt: 1 });
@@ -110,7 +129,7 @@ reminderSchema.index({ createdBy: 1 });
 reminderSchema.index({ createdAt: -1 });
 
 // Method to calculate next execution time
-reminderSchema.methods.calculateNextExecution = function() {
+reminderSchema.methods.calculateNextExecution = function () {
   const now = new Date();
 
   if (this.frequency === 'once') {
@@ -144,7 +163,7 @@ reminderSchema.methods.calculateNextExecution = function() {
 };
 
 // Method to mark as executed
-reminderSchema.methods.markExecuted = function() {
+reminderSchema.methods.markExecuted = function () {
   this.lastExecutedAt = new Date();
   this.executionCount += 1;
   return this.calculateNextExecution();

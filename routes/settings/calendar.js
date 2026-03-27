@@ -2,6 +2,7 @@ import express from 'express';
 import { z } from 'zod';
 import { SchoolSettings } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
+import { checkPermission } from '../../middleware/auth/permissions.js';
 import { getDefaultSchoolSettings } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 
@@ -46,7 +47,7 @@ router.get('/holidays', authenticate, async (req, res) => {
 });
 
 // Add holiday
-router.post('/holidays', authenticate, async (req, res) => {
+router.post('/holidays', authenticate, checkPermission('settings', 'create'), async (req, res) => {
   try {
     const parsed = holidaySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -74,7 +75,7 @@ router.post('/holidays', authenticate, async (req, res) => {
 });
 
 // Update holiday
-router.put('/holidays/:id', authenticate, async (req, res) => {
+router.put('/holidays/:id', authenticate, checkPermission('settings', 'edit'), async (req, res) => {
   try {
     const settings = await findSchoolSettings(req);
 
@@ -104,23 +105,28 @@ router.put('/holidays/:id', authenticate, async (req, res) => {
 });
 
 // Delete holiday
-router.delete('/holidays/:id', authenticate, async (req, res) => {
-  try {
-    const settings = await findSchoolSettings(req);
+router.delete(
+  '/holidays/:id',
+  authenticate,
+  checkPermission('settings', 'delete'),
+  async (req, res) => {
+    try {
+      const settings = await findSchoolSettings(req);
 
-    if (!settings) {
-      return res.status(404).json({ error: 'Settings not found' });
+      if (!settings) {
+        return res.status(404).json({ error: 'Settings not found' });
+      }
+
+      settings.holidays = settings.holidays.filter((h) => h._id.toString() !== req.params.id);
+      await settings.save();
+
+      res.json(settings.holidays);
+    } catch (error) {
+      console.error('Error deleting holiday:', error);
+      res.status(500).json({ error: 'Failed to delete holiday' });
     }
-
-    settings.holidays = settings.holidays.filter((h) => h._id.toString() !== req.params.id);
-    await settings.save();
-
-    res.json(settings.holidays);
-  } catch (error) {
-    console.error('Error deleting holiday:', error);
-    res.status(500).json({ error: 'Failed to delete holiday' });
   }
-});
+);
 
 // Get leave types
 router.get('/leave-types', authenticate, async (req, res) => {
@@ -134,85 +140,100 @@ router.get('/leave-types', authenticate, async (req, res) => {
 });
 
 // Add leave type
-router.post('/leave-types', authenticate, async (req, res) => {
-  try {
-    const parsed = leaveTypeSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+router.post(
+  '/leave-types',
+  authenticate,
+  checkPermission('settings', 'create'),
+  async (req, res) => {
+    try {
+      const parsed = leaveTypeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+      }
+
+      let settings = await findSchoolSettings(req);
+
+      if (!settings) {
+        settings = await SchoolSettings.create({
+          ...getDefaultSchoolSettings(req.user?.schoolId),
+          leaveTypes: [parsed.data],
+        });
+      } else {
+        settings.leaveTypes = settings.leaveTypes || [];
+        settings.leaveTypes.push(parsed.data);
+        await settings.save();
+      }
+
+      res.json(settings.leaveTypes);
+    } catch (error) {
+      console.error('Error adding leave type:', error);
+      res.status(500).json({ error: 'Failed to add leave type' });
     }
-
-    let settings = await findSchoolSettings(req);
-
-    if (!settings) {
-      settings = await SchoolSettings.create({
-        ...getDefaultSchoolSettings(req.user?.schoolId),
-        leaveTypes: [parsed.data],
-      });
-    } else {
-      settings.leaveTypes = settings.leaveTypes || [];
-      settings.leaveTypes.push(parsed.data);
-      await settings.save();
-    }
-
-    res.json(settings.leaveTypes);
-  } catch (error) {
-    console.error('Error adding leave type:', error);
-    res.status(500).json({ error: 'Failed to add leave type' });
   }
-});
+);
 
 // Update leave type
-router.put('/leave-types/:id', authenticate, async (req, res) => {
-  try {
-    const settings = await findSchoolSettings(req);
+router.put(
+  '/leave-types/:id',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const settings = await findSchoolSettings(req);
 
-    if (!settings) {
-      return res.status(404).json({ error: 'Settings not found' });
+      if (!settings) {
+        return res.status(404).json({ error: 'Settings not found' });
+      }
+
+      const leaveTypeIndex = settings.leaveTypes.findIndex(
+        (lt) => lt._id.toString() === req.params.id
+      );
+
+      if (leaveTypeIndex === -1) {
+        return res.status(404).json({ error: 'Leave type not found' });
+      }
+
+      const parsed = leaveTypeSchema.partial().safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+      }
+
+      settings.leaveTypes[leaveTypeIndex] = {
+        ...settings.leaveTypes[leaveTypeIndex],
+        ...parsed.data,
+      };
+      await settings.save();
+
+      res.json(settings.leaveTypes);
+    } catch (error) {
+      console.error('Error updating leave type:', error);
+      res.status(500).json({ error: 'Failed to update leave type' });
     }
-
-    const leaveTypeIndex = settings.leaveTypes.findIndex(
-      (lt) => lt._id.toString() === req.params.id
-    );
-
-    if (leaveTypeIndex === -1) {
-      return res.status(404).json({ error: 'Leave type not found' });
-    }
-
-    const parsed = leaveTypeSchema.partial().safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
-    }
-
-    settings.leaveTypes[leaveTypeIndex] = {
-      ...settings.leaveTypes[leaveTypeIndex],
-      ...parsed.data,
-    };
-    await settings.save();
-
-    res.json(settings.leaveTypes);
-  } catch (error) {
-    console.error('Error updating leave type:', error);
-    res.status(500).json({ error: 'Failed to update leave type' });
   }
-});
+);
 
 // Delete leave type
-router.delete('/leave-types/:id', authenticate, async (req, res) => {
-  try {
-    const settings = await findSchoolSettings(req);
+router.delete(
+  '/leave-types/:id',
+  authenticate,
+  checkPermission('settings', 'delete'),
+  async (req, res) => {
+    try {
+      const settings = await findSchoolSettings(req);
 
-    if (!settings) {
-      return res.status(404).json({ error: 'Settings not found' });
+      if (!settings) {
+        return res.status(404).json({ error: 'Settings not found' });
+      }
+
+      settings.leaveTypes = settings.leaveTypes.filter((lt) => lt._id.toString() !== req.params.id);
+      await settings.save();
+
+      res.json(settings.leaveTypes);
+    } catch (error) {
+      console.error('Error deleting leave type:', error);
+      res.status(500).json({ error: 'Failed to delete leave type' });
     }
-
-    settings.leaveTypes = settings.leaveTypes.filter((lt) => lt._id.toString() !== req.params.id);
-    await settings.save();
-
-    res.json(settings.leaveTypes);
-  } catch (error) {
-    console.error('Error deleting leave type:', error);
-    res.status(500).json({ error: 'Failed to delete leave type' });
   }
-});
+);
 
 export default router;

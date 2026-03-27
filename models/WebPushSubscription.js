@@ -9,7 +9,7 @@ const webPushSubscriptionSchema = new mongoose.Schema(
     },
     userModel: {
       type: String,
-      enum: ['Staff', 'Parent'],
+      enum: ['Staff', 'Student', 'Parent'],
       default: 'Staff',
     },
     schoolId: {

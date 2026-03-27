@@ -16,6 +16,9 @@ const homeworkSchema = new mongoose.Schema(
     // Due date and time
     dueDate: { type: Date, required: true },
 
+    // Maximum marks for grading (teacher sets when creating)
+    totalMarks: { type: Number, default: 100, min: 0 },
+
     // Attachments
     attachments: [
       {

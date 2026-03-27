@@ -1,9 +1,11 @@
 import express from 'express';
 import GatePass from '../models/GatePass.js';
-import { Student, Staff } from '../database.js';
+import { Student, Staff, Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
+import { validateZod } from '../validators/zodHelpers.js';
+import { createGatePassSchema, updateGatePassSchema } from '../validators/frontDeskSchema.js';
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -268,282 +270,285 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
  * POST /api/gate-passes
  * Create new gate pass
  */
-router.post('/', authenticate, checkPermission('front-office', 'create'), async (req, res) => {
-  try {
-    const {
-      studentId,
-      reason,
-      otherReason,
-      leavingDate,
-      leavingTime,
-      expectedReturnDate,
-      expectedReturnTime,
-      leavingWith,
-      // For Parents
-      parentType,
-      // For Others
-      escortName,
-      escortRelation,
-      escortPhone,
-      escortIdProof,
-      // Approval
-      approvedBy,
-      notes,
-    } = req.body;
+router.post(
+  '/',
+  authenticate,
+  checkPermission('front-office', 'create'),
+  validateZod(createGatePassSchema),
+  async (req, res) => {
+    try {
+      const {
+        studentId,
+        reason,
+        otherReason,
+        leavingDate,
+        leavingTime,
+        expectedReturnDate,
+        expectedReturnTime,
+        leavingWith,
+        // For Parents
+        parentType,
+        // For Others
+        escortName,
+        escortRelation,
+        escortPhone,
+        escortIdProof,
+        // Approval
+        approvedBy,
+        notes,
+      } = req.body;
 
-    // Validation
-    if (!studentId || !reason || !leavingDate || !leavingTime || !leavingWith || !approvedBy) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields',
-        message: 'Student, reason, leaving date/time, leaving with, and approver are required',
-      });
-    }
-
-    // Get student details
-    const student = await Student.findById(studentId).populate('classId');
-    if (!student) {
-      return res.status(404).json({
-        success: false,
-        error: req.t('students:errors.notFound'),
-      });
-    }
-
-    // Get requesting staff details
-    const requestingStaff = await Staff.findById(req.user.id);
-    if (!requestingStaff) {
-      return res.status(404).json({
-        success: false,
-        error: 'Requesting staff not found',
-      });
-    }
-
-    // Prepare gate pass data
-    const gatePassData = {
-      studentId,
-      studentName: student.name,
-      class: student.classId?.name || '',
-      section: student.classId?.section || '',
-      reason,
-      leavingDate: new Date(leavingDate),
-      leavingTime,
-      leavingWith,
-      requestedById: req.user.id,
-      requestedByName: requestingStaff.name,
-      notes,
-    };
-
-    // Add optional fields
-    if (reason === 'OTHER' && otherReason) {
-      gatePassData.otherReason = otherReason;
-    }
-
-    if (expectedReturnDate) {
-      gatePassData.expectedReturnDate = new Date(expectedReturnDate);
-    }
-    if (expectedReturnTime) {
-      gatePassData.expectedReturnTime = expectedReturnTime;
-    }
-
-    // Add escort information
-    if (leavingWith === 'PARENTS') {
-      if (!parentType) {
-        return res.status(400).json({
+      // Get student details
+      const student = await Student.findById(studentId).populate('classId');
+      if (!student) {
+        return res.status(404).json({
           success: false,
-          error: 'Parent type is required when leaving with parents',
+          error: req.t('students:errors.notFound'),
         });
       }
-      gatePassData.parentType = parentType;
-    } else if (leavingWith === 'OTHERS') {
-      if (!escortName || !escortRelation || !escortPhone) {
-        return res.status(400).json({
+
+      // Get requesting staff details
+      const requestingStaff = await Staff.findById(req.user.id);
+      if (!requestingStaff) {
+        return res.status(404).json({
           success: false,
-          error: 'Escort name, relation, and phone are required when leaving with others',
+          error: 'Requesting staff not found',
         });
       }
-      gatePassData.escortName = escortName;
-      gatePassData.escortRelation = escortRelation;
-      gatePassData.escortPhone = escortPhone;
-      gatePassData.escortIdProof = escortIdProof || '';
-    }
 
-    // Set approval
-    gatePassData.approvedBy = approvedBy;
+      // Prepare gate pass data
+      const gatePassData = {
+        studentId,
+        studentName: student.name,
+        class: student.classId?.name || '',
+        section: student.classId?.section || '',
+        reason,
+        leavingDate: new Date(leavingDate),
+        leavingTime,
+        leavingWith,
+        requestedById: req.user.id,
+        requestedByName: requestingStaff.name,
+        notes,
+      };
 
-    // Determine approver staff ID based on approval type
-    let approverStaffId = req.user.id; // Default to requester
-
-    if (approvedBy === 'CLASS_TEACHER') {
-      // Get class teacher
-      const classData = await require('../database.js')
-        .Class.findById(student.classId?._id)
-        .populate('classTeacherId');
-      if (classData?.classTeacherId) {
-        approverStaffId = classData.classTeacherId._id;
+      // Add optional fields
+      if (reason === 'OTHER' && otherReason) {
+        gatePassData.otherReason = otherReason;
       }
-    } else if (approvedBy === 'PRINCIPAL') {
-      // Find principal/admin
-      const principal = await Staff.findOne({
-        $or: [{ role: /admin/i }, { role: /principal/i }],
+
+      if (expectedReturnDate) {
+        gatePassData.expectedReturnDate = new Date(expectedReturnDate);
+      }
+      if (expectedReturnTime) {
+        gatePassData.expectedReturnTime = expectedReturnTime;
+      }
+
+      // Add escort information
+      if (leavingWith === 'PARENTS') {
+        if (!parentType) {
+          return res.status(400).json({
+            success: false,
+            error: 'Parent type is required when leaving with parents',
+          });
+        }
+        gatePassData.parentType = parentType;
+      } else if (leavingWith === 'OTHERS') {
+        if (!escortName || !escortRelation || !escortPhone) {
+          return res.status(400).json({
+            success: false,
+            error: 'Escort name, relation, and phone are required when leaving with others',
+          });
+        }
+        gatePassData.escortName = escortName;
+        gatePassData.escortRelation = escortRelation;
+        gatePassData.escortPhone = escortPhone;
+        gatePassData.escortIdProof = escortIdProof || '';
+      }
+
+      // Set approval
+      gatePassData.approvedBy = approvedBy;
+
+      // Determine approver staff ID based on approval type
+      let approverStaffId = req.user.id; // Default to requester
+
+      if (approvedBy === 'CLASS_TEACHER') {
+        // Get class teacher
+        const classData = await Class.findById(student.classId?._id).populate('classTeacherId');
+        if (classData?.classTeacherId) {
+          approverStaffId = classData.classTeacherId._id;
+        }
+      } else if (approvedBy === 'PRINCIPAL') {
+        // Find principal/admin scoped to school
+        const principal = await Staff.findOne({
+          schoolId: extractSchoolId(req.user.schoolId),
+          $or: [{ role: /admin/i }, { role: /principal/i }],
+          isDeleted: { $ne: true },
+        });
+        if (principal) {
+          approverStaffId = principal._id;
+        }
+      }
+
+      gatePassData.approvedByStaffId = approverStaffId;
+      gatePassData.approvedByName = requestingStaff.name;
+      gatePassData.schoolId = await resolveRequestSchoolId(req);
+
+      // Create gate pass
+      const gatePass = await GatePass.create(gatePassData);
+
+      // If approver is the requester, auto-approve
+      if (approverStaffId.toString() === req.user.id.toString()) {
+        await gatePass.approve(requestingStaff);
+      }
+
+      // Populate for response
+      await gatePass.populate('studentId', 'name admissionId photo rollNo');
+      await gatePass.populate('approvedByStaffId', 'name code');
+      await gatePass.populate('requestedById', 'name code');
+
+      // TODO: Send notifications to approver, front office, security
+
+      res.status(201).json({
+        success: true,
+        data: gatePass,
+        message:
+          approverStaffId.toString() === req.user.id.toString()
+            ? 'Gate pass created and auto-approved'
+            : 'Gate pass created successfully. Pending approval.',
       });
-      if (principal) {
-        approverStaffId = principal._id;
-      }
+    } catch (error) {
+      console.error('❌ Create gate pass error:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        message: 'Failed to create gate pass',
+      });
     }
-
-    gatePassData.approvedByStaffId = approverStaffId;
-    gatePassData.approvedByName = requestingStaff.name;
-    gatePassData.schoolId = await resolveRequestSchoolId(req);
-
-    // Create gate pass
-    const gatePass = await GatePass.create(gatePassData);
-
-    // If approver is the requester, auto-approve
-    if (approverStaffId.toString() === req.user.id.toString()) {
-      await gatePass.approve(requestingStaff);
-    }
-
-    // Populate for response
-    await gatePass.populate('studentId', 'name admissionId photo rollNo');
-    await gatePass.populate('approvedByStaffId', 'name code');
-    await gatePass.populate('requestedById', 'name code');
-
-    // TODO: Send notifications to approver, front office, security
-
-    res.status(201).json({
-      success: true,
-      data: gatePass,
-      message:
-        approverStaffId.toString() === req.user.id.toString()
-          ? 'Gate pass created and auto-approved'
-          : 'Gate pass created successfully. Pending approval.',
-    });
-  } catch (error) {
-    console.error('❌ Create gate pass error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to create gate pass',
-    });
   }
-});
+);
 
 /**
  * PUT /api/gate-passes/:id
  * Update gate pass (only if not used)
  */
-router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async (req, res) => {
-  try {
-    const schoolId = await resolveRequestSchoolId(req);
-    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+router.put(
+  '/:id',
+  authenticate,
+  checkPermission('front-office', 'edit'),
+  validateZod(updateGatePassSchema),
+  async (req, res) => {
+    try {
+      const schoolId = await resolveRequestSchoolId(req);
+      const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
-    if (!gatePass) {
-      return res.status(404).json({
-        success: false,
-        error: 'Gate pass not found',
-      });
-    }
-
-    // Don't allow updating used gate passes
-    if (gatePass.status === 'USED') {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot update used gate pass',
-      });
-    }
-
-    // Don't allow updating rejected/cancelled passes
-    if (gatePass.approvalStatus === 'REJECTED' || gatePass.approvalStatus === 'CANCELLED') {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot update rejected or cancelled gate pass',
-      });
-    }
-
-    // Block arbitrary status/approvalStatus changes through the update route.
-    // Status transitions must use dedicated endpoints (approve, reject, use, cancel).
-    if (req.body.status && req.body.status !== gatePass.status) {
-      const ALLOWED_STATUS_TRANSITIONS = {
-        ACTIVE: ['CANCELLED'], // Can only cancel an active pass via update
-      };
-      const allowed = ALLOWED_STATUS_TRANSITIONS[gatePass.status] || [];
-      if (!allowed.includes(req.body.status)) {
-        return res.status(400).json({
+      if (!gatePass) {
+        return res.status(404).json({
           success: false,
-          error: `Cannot transition status from ${gatePass.status} to ${req.body.status}. Use dedicated endpoints for approve/reject/use.`,
+          error: 'Gate pass not found',
         });
       }
-    }
 
-    // Prevent setting approvalStatus directly — must use /approve or /reject endpoints
-    if (req.body.approvalStatus && req.body.approvalStatus !== gatePass.approvalStatus) {
-      return res.status(400).json({
+      // Don't allow updating used gate passes
+      if (gatePass.status === 'USED') {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot update used gate pass',
+        });
+      }
+
+      // Don't allow updating rejected/cancelled passes
+      if (gatePass.approvalStatus === 'REJECTED' || gatePass.approvalStatus === 'CANCELLED') {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot update rejected or cancelled gate pass',
+        });
+      }
+
+      // Block arbitrary status/approvalStatus changes through the update route.
+      // Status transitions must use dedicated endpoints (approve, reject, use, cancel).
+      if (req.body.status && req.body.status !== gatePass.status) {
+        const ALLOWED_STATUS_TRANSITIONS = {
+          ACTIVE: ['CANCELLED'], // Can only cancel an active pass via update
+        };
+        const allowed = ALLOWED_STATUS_TRANSITIONS[gatePass.status] || [];
+        if (!allowed.includes(req.body.status)) {
+          return res.status(400).json({
+            success: false,
+            error: `Cannot transition status from ${gatePass.status} to ${req.body.status}. Use dedicated endpoints for approve/reject/use.`,
+          });
+        }
+      }
+
+      // Prevent setting approvalStatus directly — must use /approve or /reject endpoints
+      if (req.body.approvalStatus && req.body.approvalStatus !== gatePass.approvalStatus) {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot change approvalStatus directly. Use the approve or reject endpoints.',
+        });
+      }
+
+      const {
+        reason,
+        otherReason,
+        leavingDate,
+        leavingTime,
+        expectedReturnDate,
+        expectedReturnTime,
+        leavingWith,
+        parentType,
+        escortName,
+        escortRelation,
+        escortPhone,
+        escortIdProof,
+        approvedBy,
+        notes,
+      } = req.body;
+
+      // Update allowed fields
+      if (reason) gatePass.reason = reason;
+      if (otherReason !== undefined) gatePass.otherReason = otherReason;
+      if (leavingDate) gatePass.leavingDate = new Date(leavingDate);
+      if (leavingTime) gatePass.leavingTime = leavingTime;
+      if (expectedReturnDate !== undefined) {
+        gatePass.expectedReturnDate = expectedReturnDate ? new Date(expectedReturnDate) : null;
+      }
+      if (expectedReturnTime !== undefined) gatePass.expectedReturnTime = expectedReturnTime;
+      if (leavingWith) gatePass.leavingWith = leavingWith;
+      if (parentType !== undefined) gatePass.parentType = parentType;
+      if (escortName !== undefined) gatePass.escortName = escortName;
+      if (escortRelation !== undefined) gatePass.escortRelation = escortRelation;
+      if (escortPhone !== undefined) gatePass.escortPhone = escortPhone;
+      if (escortIdProof !== undefined) gatePass.escortIdProof = escortIdProof;
+      if (approvedBy) gatePass.approvedBy = approvedBy;
+      if (notes !== undefined) gatePass.notes = notes;
+
+      // Reset to pending if updating approved pass
+      if (gatePass.approvalStatus === 'APPROVED') {
+        gatePass.approvalStatus = 'PENDING';
+      }
+
+      await gatePass.save();
+
+      // Populate for response
+      await gatePass.populate('studentId', 'name admissionId photo rollNo');
+      await gatePass.populate('approvedByStaffId', 'name code');
+      await gatePass.populate('requestedById', 'name code');
+
+      res.json({
+        success: true,
+        data: gatePass,
+        message: 'Gate pass updated successfully',
+      });
+    } catch (error) {
+      console.error('❌ Update gate pass error:', error);
+      res.status(500).json({
         success: false,
-        error: 'Cannot change approvalStatus directly. Use the approve or reject endpoints.',
+        error: error.message,
+        message: 'Failed to update gate pass',
       });
     }
-
-    const {
-      reason,
-      otherReason,
-      leavingDate,
-      leavingTime,
-      expectedReturnDate,
-      expectedReturnTime,
-      leavingWith,
-      parentType,
-      escortName,
-      escortRelation,
-      escortPhone,
-      escortIdProof,
-      approvedBy,
-      notes,
-    } = req.body;
-
-    // Update allowed fields
-    if (reason) gatePass.reason = reason;
-    if (otherReason !== undefined) gatePass.otherReason = otherReason;
-    if (leavingDate) gatePass.leavingDate = new Date(leavingDate);
-    if (leavingTime) gatePass.leavingTime = leavingTime;
-    if (expectedReturnDate !== undefined) {
-      gatePass.expectedReturnDate = expectedReturnDate ? new Date(expectedReturnDate) : null;
-    }
-    if (expectedReturnTime !== undefined) gatePass.expectedReturnTime = expectedReturnTime;
-    if (leavingWith) gatePass.leavingWith = leavingWith;
-    if (parentType !== undefined) gatePass.parentType = parentType;
-    if (escortName !== undefined) gatePass.escortName = escortName;
-    if (escortRelation !== undefined) gatePass.escortRelation = escortRelation;
-    if (escortPhone !== undefined) gatePass.escortPhone = escortPhone;
-    if (escortIdProof !== undefined) gatePass.escortIdProof = escortIdProof;
-    if (approvedBy) gatePass.approvedBy = approvedBy;
-    if (notes !== undefined) gatePass.notes = notes;
-
-    // Reset to pending if updating approved pass
-    if (gatePass.approvalStatus === 'APPROVED') {
-      gatePass.approvalStatus = 'PENDING';
-    }
-
-    await gatePass.save();
-
-    // Populate for response
-    await gatePass.populate('studentId', 'name admissionId photo rollNo');
-    await gatePass.populate('approvedByStaffId', 'name code');
-    await gatePass.populate('requestedById', 'name code');
-
-    res.json({
-      success: true,
-      data: gatePass,
-      message: 'Gate pass updated successfully',
-    });
-  } catch (error) {
-    console.error('❌ Update gate pass error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to update gate pass',
-    });
   }
-});
+);
 
 /**
  * POST /api/gate-passes/:id/approve

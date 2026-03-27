@@ -268,6 +268,7 @@ router.put(
         photo: req.body.photo,
         documents: Array.isArray(req.body.documents) ? req.body.documents : undefined,
         alumniInfo: req.body.alumniInfo !== undefined ? req.body.alumniInfo : undefined,
+        ratings: req.body.ratings !== undefined ? req.body.ratings : undefined,
       };
 
       // Auto-set alumniInfo.since when status is first changed to alumni

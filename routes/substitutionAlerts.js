@@ -3,10 +3,14 @@ import express from 'express';
 import { Substitution, Staff, Class, Timetable } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import substitutionService from '../services/substitutionService.js';
 
 const router = express.Router();
 router.use(authenticate);
+
+/** Helper: build a school-scoped query from the authenticated user */
+const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.schoolId, extra);
 
 /**
  * GET /api/substitution-alerts
@@ -18,8 +22,11 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
     const { date = new Date().toISOString().split('T')[0], academicYear = CURRENT_ACADEMIC_YEAR } =
       req.query;
 
-    // Get pending substitutions with details
-    const alerts = await substitutionService.getPendingSubstitutionsWithDetails(date);
+    // Get pending substitutions with details (scoped by school)
+    const alerts = await substitutionService.getPendingSubstitutionsWithDetails(
+      date,
+      req.user?.schoolId
+    );
 
     // Calculate summary stats
     const summary = {
@@ -76,6 +83,7 @@ router.get(
         day,
         period,
         date,
+        schoolId: req.user?.schoolId,
       });
 
       res.json({
@@ -109,8 +117,8 @@ router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), a
       });
     }
 
-    // Verify teacher exists
-    const teacher = await Staff.findById(teacherId);
+    // Verify teacher exists within this school
+    const teacher = await Staff.findOne(schoolQuery(req, { _id: teacherId }));
     if (!teacher) {
       return res.status(404).json({
         success: false,
@@ -118,11 +126,12 @@ router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), a
       });
     }
 
-    // Create substitutions from absence
+    // Create substitutions from absence (scoped by school)
     const substitutions = await substitutionService.createSubstitutionFromAbsence(
       teacherId,
       date,
-      reason
+      reason,
+      req.user?.schoolId
     );
 
     res.json({
@@ -161,8 +170,8 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
       });
     }
 
-    // Find the substitution
-    const substitution = await Substitution.findById(id);
+    // Find the substitution (scoped by school)
+    const substitution = await Substitution.findOne(schoolQuery(req, { _id: id }));
     if (!substitution) {
       return res.status(404).json({
         success: false,
@@ -170,9 +179,11 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
       });
     }
 
-    // Verify substitute teacher exists and is active
-    const substitute = await Staff.findById(substituteTeacherId);
-    if (!substitute || substitute.status !== 'active') {
+    // Verify substitute teacher exists and is active (scoped by school)
+    const substitute = await Staff.findOne(
+      schoolQuery(req, { _id: substituteTeacherId, status: 'active' })
+    );
+    if (!substitute) {
       return res.status(400).json({
         success: false,
         message: 'Substitute teacher not found or inactive',
@@ -215,7 +226,7 @@ router.post('/:id/notify', authenticate, checkPermission('classes', 'edit'), asy
     const { id } = req.params;
     const { method = 'push' } = req.body;
 
-    const substitution = await Substitution.findById(id)
+    const substitution = await Substitution.findOne(schoolQuery(req, { _id: id }))
       .populate('classId', 'name section')
       .populate('substituteTeacherId', 'name code');
 
@@ -267,14 +278,14 @@ router.get('/stats', authenticate, checkPermission('classes', 'view'), async (re
   try {
     const { startDate, endDate } = req.query;
 
-    const query = {};
+    const dateFilter = {};
     if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = startDate;
-      if (endDate) query.date.$lte = endDate;
+      dateFilter.date = {};
+      if (startDate) dateFilter.date.$gte = startDate;
+      if (endDate) dateFilter.date.$lte = endDate;
     }
 
-    const substitutions = await Substitution.find(query);
+    const substitutions = await Substitution.find(schoolQuery(req, dateFilter));
 
     const stats = {
       total: substitutions.length,
@@ -342,7 +353,7 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
       try {
         const { substitutionId, substituteTeacherId } = assignment;
 
-        const substitution = await Substitution.findById(substitutionId);
+        const substitution = await Substitution.findOne(schoolQuery(req, { _id: substitutionId }));
         if (!substitution) {
           results.failed.push({
             substitutionId,
@@ -351,8 +362,10 @@ router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), as
           continue;
         }
 
-        const substitute = await Staff.findById(substituteTeacherId);
-        if (!substitute || substitute.status !== 'active') {
+        const substitute = await Staff.findOne(
+          schoolQuery(req, { _id: substituteTeacherId, status: 'active' })
+        );
+        if (!substitute) {
           results.failed.push({
             substitutionId,
             error: 'Invalid substitute teacher',

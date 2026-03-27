@@ -31,7 +31,8 @@ class ConflictDetectionService {
     day,
     periodIndex,
     excludeClassId = null,
-    skipDebounce = false
+    skipDebounce = false,
+    schoolId = null
   ) {
     // Check cache first
     const cacheKey = `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}`;
@@ -44,8 +45,14 @@ class ConflictDetectionService {
     const shouldSkipDebounce = skipDebounce || process.env.NODE_ENV === 'test';
 
     const result = shouldSkipDebounce
-      ? await this._checkTeacherConflictInternal(teacherId, day, periodIndex, excludeClassId)
-      : await this.debouncedConflictCheck(teacherId, day, periodIndex, excludeClassId);
+      ? await this._checkTeacherConflictInternal(
+          teacherId,
+          day,
+          periodIndex,
+          excludeClassId,
+          schoolId
+        )
+      : await this.debouncedConflictCheck(teacherId, day, periodIndex, excludeClassId, schoolId);
 
     // Cache the result for 30 seconds
     cacheService.set(cacheKey, result, 30000).catch(() => {}); // fire-and-forget
@@ -56,11 +63,18 @@ class ConflictDetectionService {
    * Internal method for checking teacher conflicts (not debounced)
    * @private
    */
-  async _checkTeacherConflictInternal(teacherId, day, periodIndex, excludeClassId = null) {
+  async _checkTeacherConflictInternal(
+    teacherId,
+    day,
+    periodIndex,
+    excludeClassId = null,
+    schoolId = null
+  ) {
     try {
       // Find all timetables where this teacher is assigned at this time slot
       const query = {};
       query[`schedule.${day}.teacherId`] = teacherId;
+      if (schoolId) query.schoolId = schoolId;
 
       const conflictingTimetables = await Timetable.find(query).populate('classId', 'name section');
 
@@ -114,18 +128,20 @@ class ConflictDetectionService {
    * @param {string} academicYear - Academic year (e.g., CURRENT_ACADEMIC_YEAR)
    * @returns {Array} Array of conflict objects
    */
-  async getTeacherConflicts(teacherId, academicYear = CURRENT_ACADEMIC_YEAR) {
+  async getTeacherConflicts(teacherId, academicYear = CURRENT_ACADEMIC_YEAR, schoolId = null) {
     try {
       const conflicts = [];
       const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
       // Get all timetables for this academic year where the teacher is assigned
-      const timetables = await Timetable.find({
+      const findQuery = {
         academicYear: academicYear,
         $or: days.map((day) => ({
           [`schedule.${day}.teacherId`]: teacherId,
         })),
-      }).populate('classId', 'name section');
+      };
+      if (schoolId) findQuery.schoolId = schoolId;
+      const timetables = await Timetable.find(findQuery).populate('classId', 'name section');
 
       // Build a map of teacher assignments by day and period
       const assignmentMap = {};
@@ -188,10 +204,25 @@ class ConflictDetectionService {
    * @param {boolean} strictMode - If true, enforce qualification checks; if false, only check conflicts
    * @returns {Object} Validation result with isValid flag and error/warning details
    */
-  async validateSlotAssignment(teacherId, classId, subject, day, periodIndex, strictMode = true) {
+  async validateSlotAssignment(
+    teacherId,
+    classId,
+    subject,
+    day,
+    periodIndex,
+    strictMode = true,
+    schoolId = null
+  ) {
     try {
       // Always check for time conflicts (hard validation)
-      const timeConflict = await this.checkTeacherConflict(teacherId, day, periodIndex, classId);
+      const timeConflict = await this.checkTeacherConflict(
+        teacherId,
+        day,
+        periodIndex,
+        classId,
+        false,
+        schoolId
+      );
       if (timeConflict) {
         return {
           isValid: false,
@@ -265,6 +296,7 @@ class ConflictDetectionService {
   async logConflict(conflictData) {
     try {
       const conflictLog = await ConflictLog.create({
+        schoolId: conflictData.schoolId || null,
         teacherId: conflictData.teacherId,
         conflictType: conflictData.type,
         day: conflictData.day,

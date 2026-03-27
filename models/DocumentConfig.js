@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const documentConfigSchema = new mongoose.Schema(
   {
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     documentName: { type: String, required: true },
     isRequired: { type: Boolean, default: false },
     uploadType: { type: String, enum: ['single', 'multiple', 'front-back'], default: 'single' },

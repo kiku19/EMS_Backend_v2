@@ -3,13 +3,14 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const feeStructureSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
     templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeTemplate' },
 
     feeHeads: [
       {
+        feeHeadId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeHead' },
         name: String,
         category: String,
         amount: Number,

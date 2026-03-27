@@ -28,10 +28,18 @@ import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('TenantRateLimit');
 
-/** Requests per minute, per plan tier */
+/**
+ * Requests per minute, per plan tier.
+ *
+ * A typical SPA dashboard page load fires 15-30+ API calls in the first
+ * second (context data, settings, attendance snapshot, conversations, etc.).
+ * The previous starter limit of 100/min was too aggressive and caused 429s
+ * on normal page loads. 300/min gives ~5 req/s which handles burst loads
+ * from navigation while still protecting against abuse.
+ */
 export const PLAN_RATE_LIMITS = {
-  starter: 100,
-  growth: 500,
+  starter: 300,
+  growth: 600,
   scale: 2000,
 };
 

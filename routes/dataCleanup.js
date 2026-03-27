@@ -45,7 +45,7 @@ import ClassAnnouncement from '../models/ClassAnnouncement.js';
 import ClassRating from '../models/ClassRating.js';
 import Conversation from '../models/Conversation.js';
 import FeeCollectionPeriod from '../models/FeeCollectionPeriod.js';
-import FeeConsession from '../models/FeeConsession.js';
+import FeeConsession from '../models/FeeConcession.js';
 import FeeHead from '../models/FeeHead.js';
 import FeeRule from '../models/FeeRule.js';
 import GatePass from '../models/GatePass.js';

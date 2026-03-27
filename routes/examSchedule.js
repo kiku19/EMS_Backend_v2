@@ -1,5 +1,5 @@
 import express from 'express';
-import { Class, Exam, ExamSchedule, Student, Parent } from '../database.js';
+import { Class, Exam, ExamSchedule, Result, Student, Parent } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { validateZod, sanitizeQueryStr } from '../middleware/validation.js';
@@ -517,12 +517,18 @@ router.delete(
       schedule.deletedAt = new Date();
       await schedule.save();
 
-      // Also soft-delete generated exams
+      // Also soft-delete generated exams and their results
       if (schedule.generatedExamIds?.length > 0) {
-        await Exam.updateMany(
-          { _id: { $in: schedule.generatedExamIds }, schoolId },
-          { $set: { isDeleted: true, deletedAt: new Date() } }
-        );
+        await Promise.all([
+          Exam.updateMany(
+            { _id: { $in: schedule.generatedExamIds }, schoolId },
+            { $set: { isDeleted: true, deletedAt: new Date() } }
+          ),
+          Result.updateMany(
+            { examId: { $in: schedule.generatedExamIds }, schoolId },
+            { $set: { isDeleted: true, deletedAt: new Date() } }
+          ),
+        ]);
       }
 
       res.json({ message: 'Exam schedule deleted successfully' });

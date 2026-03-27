@@ -90,6 +90,65 @@ export const defaultersQuerySchema = z
   })
   .strip();
 
+// ─── FEE TEMPLATE ──────────────────────────────────────────────
+const feeTemplateFeeHeadSchema = z
+  .object({
+    name: z.string().min(1, 'Fee head name is required').max(200),
+    category: z
+      .enum(['Academic', 'Transport', 'Extra-curricular', 'Hostel', 'Other'])
+      .default('Academic'),
+    amount: z.number().min(0, 'Amount cannot be negative'),
+    frequency: z.enum(['monthly', 'quarterly', 'term', 'yearly', 'one-time']).default('yearly'),
+    mandatory: z.boolean().default(true),
+    applicableTerms: z.array(z.number()).optional(),
+    dueDay: z.number().int().min(1).max(31).default(10),
+    refundable: z.boolean().default(false),
+  })
+  .strip();
+
+const feeTemplateDiscountSchema = z
+  .object({
+    name: z.string().max(200).optional(),
+    percentage: z.number().min(0).max(100).optional(),
+    conditions: z.string().max(500).optional(),
+  })
+  .strip();
+
+const feeTemplateApplicableForSchema = z
+  .object({
+    classGrade: z.string().max(20).optional(),
+    applicable: z.boolean().optional(),
+  })
+  .strip();
+
+export const createFeeTemplateSchema = z
+  .object({
+    name: z.string().min(1, 'Template name is required').max(200).trim(),
+    description: optionalString(500),
+    section: z.string().min(1, 'Section is required').max(50).trim(),
+    applicableFor: z.array(feeTemplateApplicableForSchema).optional(),
+    feeHeads: z.array(feeTemplateFeeHeadSchema).optional().default([]),
+    totalAnnualFee: z.number().min(0, 'Total annual fee cannot be negative'),
+    discounts: z.array(feeTemplateDiscountSchema).optional().default([]),
+    isActive: z.boolean().default(true),
+    academicYear: academicYear.optional(),
+  })
+  .strip();
+
+export const updateFeeTemplateSchema = z
+  .object({
+    name: z.string().min(1, 'Template name is required').max(200).trim().optional(),
+    description: optionalString(500),
+    section: z.string().min(1).max(50).trim().optional(),
+    applicableFor: z.array(feeTemplateApplicableForSchema).optional(),
+    feeHeads: z.array(feeTemplateFeeHeadSchema).optional(),
+    totalAnnualFee: z.number().min(0, 'Total annual fee cannot be negative').optional(),
+    discounts: z.array(feeTemplateDiscountSchema).optional(),
+    isActive: z.boolean().optional(),
+    academicYear: academicYear.optional(),
+  })
+  .strip();
+
 // ─── CREATE REFUND ───────────────────────────────────────────────
 export const createRefundSchema = z
   .object({

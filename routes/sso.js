@@ -19,7 +19,7 @@
 
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'crypto';
 import { promisify } from 'util';
 import { deflateRaw } from 'zlib';
 import { Staff } from '../database.js';
@@ -391,15 +391,17 @@ router.put('/config', authenticate, validateZod(zodSchemas.updateSsoConfig), asy
 
 /**
  * GET /auth/sso/scim/token
- * Returns the plaintext SCIM bearer token for the school (admin-only).
- * Only reveals the token if it exists; returns `null` otherwise.
+ * Returns a masked version of the SCIM bearer token for the school (admin-only).
+ * The full token is never returned — only the last 4 characters are visible.
+ * Use the regenerate-token endpoint to obtain the full token (shown only once).
  */
 router.get('/scim/token', authenticate, async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId).select('ssoConfig');
     if (!school) return res.status(404).json({ error: 'School not found' });
     const token = school.ssoConfig?.scim?.token || null;
-    return res.json({ success: true, token });
+    const maskedToken = token ? '••••••••' + token.slice(-4) : null;
+    return res.json({ success: true, token: maskedToken, hasToken: !!token });
   } catch (err) {
     logger.error({ err }, 'Failed to retrieve SCIM token');
     return res.status(500).json({ error: 'Failed to retrieve SCIM token' });
@@ -936,9 +938,9 @@ async function authenticateScim(req, res, next) {
 
   // Constant-time comparison to prevent timing attacks
   const expected = school.ssoConfig.scim.token;
-  const expectedHash = createHash('sha256').update(expected).digest('hex');
-  const actualHash = createHash('sha256').update(token).digest('hex');
-  if (expectedHash !== actualHash) {
+  const expectedHash = createHash('sha256').update(expected).digest();
+  const actualHash = createHash('sha256').update(token).digest();
+  if (!timingSafeEqual(expectedHash, actualHash)) {
     return res.status(401).json({
       schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
       status: '401',

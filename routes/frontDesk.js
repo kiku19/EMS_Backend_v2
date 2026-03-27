@@ -1,7 +1,8 @@
 import express from 'express';
 import { Admission, Appointment, Feedback, CallLog, Staff, Student } from '../database.js';
-import Visitor from '../models/Visitor.js';
-import GatePass from '../models/GatePass.js';
+// NOTE: Visitor and GatePass models are NOT imported here.
+// Visitor CRUD is handled by routes/visitors.js (mounted at /api/visitors).
+// Gate Pass CRUD is handled by routes/gatePasses.js (mounted at /api/gate-passes).
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
@@ -72,16 +73,39 @@ router.post(
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
+      const {
+        studentName,
+        dateOfBirth,
+        parentName,
+        phoneNumber,
+        email,
+        classApplyingFor,
+        hscGroup,
+        assessmentRequired,
+        assignedTeacher,
+        testDate,
+        testTime,
+        source,
+        documents,
+      } = req.body;
+
       const admissionData = {
-        ...req.body,
+        studentName,
+        dateOfBirth,
+        parentName,
+        phoneNumber,
+        email,
+        classApplyingFor,
+        hscGroup,
+        assessmentRequired,
+        assignedTeacher: assignedTeacher || undefined,
+        testDate,
+        testTime,
+        source,
+        documents,
         schoolId,
         dateOfInquiry: new Date().toISOString().split('T')[0],
       };
-
-      // If assignedTeacher is provided, populate assignedTeacher field
-      if (req.body.assignedTeacher) {
-        admissionData.assignedTeacher = req.body.assignedTeacher;
-      }
 
       const admission = await Admission.create(admissionData);
 
@@ -413,515 +437,16 @@ router.get(
 );
 
 // ============= VISITORS ROUTES =============
+// REMOVED: Duplicate visitor CRUD routes previously here.
+// All visitor operations are now handled by the dedicated routes in visitors.js
+// mounted at /api/visitors (with proper Zod validation and consistent response shapes).
+// The frontend frontDeskApi methods delegate to /api/visitors endpoints.
 
-/**
- * GET /api/front-desk/visitors/today
- * Get today's visitors
- */
-router.get(
-  '/visitors/today',
-  authenticate,
-  checkPermission('front-desk', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-      const visitors = await Visitor.find(
-        scopeBySchool(schoolId, {
-          checkInTime: { $gte: startOfDay, $lte: endOfDay },
-        })
-      )
-        .sort({ checkInTime: -1 })
-        .populate('checkedInBy', 'name code')
-        .populate('studentId', 'name admissionId rollNo classId');
-      res.json(visitors);
-    } catch (error) {
-      console.error('❌ Get today visitors error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to fetch visitors',
-      });
-    }
-  }
-);
-
-/**
- * GET /api/front-desk/visitors
- * Get all visitors with optional filters
- */
-router.get('/visitors', authenticate, checkPermission('front-desk', 'view'), async (req, res) => {
-  try {
-    const { status, search } = req.query;
-    const schoolId = await resolveRequestSchoolId(req);
-    let visitors;
-
-    if (search) {
-      const searchRegex = new RegExp(search, 'i');
-      visitors = await Visitor.find(
-        scopeBySchool(schoolId, {
-          $or: [
-            { name: searchRegex },
-            { visitorName: searchRegex },
-            { phone: searchRegex },
-            { phoneNumber: searchRegex },
-            { email: searchRegex },
-            { whomToMeet: searchRegex },
-          ],
-        })
-      )
-        .sort({ checkInTime: -1 })
-        .limit(50);
-    } else if (status === 'active') {
-      visitors = await Visitor.find(scopeBySchool(schoolId, { status: 'ACTIVE' }))
-        .sort({ checkInTime: -1 })
-        .populate('checkedInBy', 'name code')
-        .populate('studentId', 'name admissionId rollNo classId')
-        .populate('gatePassId');
-    } else {
-      visitors = await Visitor.find({ schoolId })
-        .sort({ checkInTime: -1 })
-        .populate('checkedInBy', 'name code')
-        .populate('studentId', 'name admissionId rollNo classId');
-    }
-
-    res.json(visitors);
-  } catch (error) {
-    console.error('❌ Get visitors error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: 'Failed to fetch visitors',
-    });
-  }
-});
-
-/**
- * POST /api/front-desk/visitors
- * Create new visitor
- */
-router.post(
-  '/visitors',
-  authenticate,
-  checkPermission('front-desk', 'create'),
-  async (req, res) => {
-    try {
-      // Extract only allowed fields for security (input sanitization)
-      const allowedFields = [
-        'visitorName',
-        'phoneNumber',
-        'email',
-        'reasonForVisit',
-        'otherPurpose',
-        'whomToMeet',
-        'department',
-        'companyName',
-        'deliveryPerson',
-        'studentId',
-        'studentName',
-        'parentMapping',
-        'gatePassRequired',
-        'appointmentRequired',
-        'admissionInquiry',
-        'itemsDeclared',
-        'notes',
-      ];
-
-      const schoolId = await resolveRequestSchoolId(req);
-      const visitorData = {
-        schoolId,
-        checkInTime: new Date(),
-        checkedInBy: req.user.id,
-        status: 'ACTIVE',
-      };
-
-      // Only copy allowed fields from request body
-      allowedFields.forEach((field) => {
-        if (req.body[field] !== undefined) {
-          visitorData[field] = req.body[field];
-        }
-      });
-
-      const visitor = await Visitor.create(visitorData);
-
-      // Populate for response
-      await visitor.populate('checkedInBy', 'name code');
-      if (visitor.studentId) {
-        await visitor.populate('studentId', 'name admissionId rollNo classId');
-      }
-
-      res.status(201).json(visitor);
-    } catch (error) {
-      console.error('❌ Create visitor error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to create visitor',
-      });
-    }
-  }
-);
-
-/**
- * PUT /api/front-desk/visitors/:id
- * Update visitor (for checkout or edit)
- */
-router.put(
-  '/visitors/:id',
-  authenticate,
-  checkPermission('front-desk', 'edit'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const visitor = await Visitor.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
-
-      if (!visitor) {
-        return res.status(404).json({
-          success: false,
-          error: 'Visitor not found',
-        });
-      }
-
-      // Update allowed fields - support both old and new field names
-      const allowedFields = [
-        'name',
-        'visitorName',
-        'phone',
-        'phoneNumber',
-        'email',
-        'purpose',
-        'reasonForVisit',
-        'otherPurpose',
-        'whomToMeet',
-        'department',
-        'companyName',
-        'deliveryPerson',
-        'notes',
-        'studentId',
-        'studentName',
-        'parentMapping',
-        'gatePassRequired',
-        'appointmentRequired',
-      ];
-
-      allowedFields.forEach((field) => {
-        if (req.body[field] !== undefined) {
-          visitor[field] = req.body[field];
-        }
-      });
-
-      // Handle checkout
-      if (req.body.checkOutTime && visitor.status === 'ACTIVE') {
-        await visitor.checkOut(req.user.id, req.body.notes || '');
-      }
-
-      await visitor.save();
-      await visitor.populate('checkedInBy', 'name code');
-      if (visitor.studentId) {
-        await visitor.populate('studentId', 'name admissionId rollNo classId');
-      }
-
-      res.json(visitor);
-    } catch (error) {
-      console.error('❌ Update visitor error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to update visitor',
-      });
-    }
-  }
-);
-
-/**
- * DELETE /api/front-desk/visitors/:id
- * Delete visitor
- */
-router.delete(
-  '/visitors/:id',
-  authenticate,
-  checkPermission('front-desk', 'delete'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      await Visitor.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
-      res.json({ success: true, message: 'Visitor deleted successfully' });
-    } catch (error) {
-      console.error('❌ Delete visitor error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to delete visitor',
-      });
-    }
-  }
-);
-
-// ============= GATE PASSES ROUTES =============
-
-/**
- * GET /api/front-desk/gate-passes/today
- * Get today's gate passes
- */
-router.get(
-  '/gate-passes/today',
-  authenticate,
-  checkPermission('front-desk', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-      const gatePasses = await GatePass.find(
-        scopeBySchool(schoolId, {
-          leavingDate: { $gte: startOfDay, $lte: endOfDay },
-        })
-      )
-        .sort({ leavingDate: 1, leavingTime: 1 })
-        .populate('studentId', 'name admissionId photo rollNo')
-        .populate('approvedByStaffId', 'name code')
-        .populate('requestedById', 'name code');
-      res.json(gatePasses);
-    } catch (error) {
-      console.error('❌ Get today gate passes error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to fetch gate passes',
-      });
-    }
-  }
-);
-
-/**
- * GET /api/front-desk/gate-passes
- * Get all gate passes with optional filters
- */
-router.get(
-  '/gate-passes',
-  authenticate,
-  checkPermission('front-desk', 'view'),
-  async (req, res) => {
-    try {
-      const { status, approvalStatus, studentId } = req.query;
-      const schoolId = await resolveRequestSchoolId(req);
-      let gatePasses;
-
-      if (studentId) {
-        gatePasses = await GatePass.find(scopeBySchool(schoolId, { studentId }))
-          .sort({ createdAt: -1 })
-          .populate('studentId', 'name admissionId photo rollNo')
-          .populate('approvedByStaffId', 'name code')
-          .populate('requestedById', 'name code');
-      } else if (status === 'active') {
-        gatePasses = await GatePass.find(
-          scopeBySchool(schoolId, { status: 'ACTIVE', approvalStatus: 'APPROVED' })
-        )
-          .sort({ leavingDate: -1, leavingTime: -1 })
-          .populate('studentId', 'name admissionId photo rollNo')
-          .populate('approvedByStaffId', 'name code')
-          .populate('requestedById', 'name code');
-      } else {
-        const query = {};
-        if (status) query.status = status;
-        if (approvalStatus) query.approvalStatus = approvalStatus;
-
-        gatePasses = await GatePass.find(scopeBySchool(schoolId, query))
-          .sort({ leavingDate: -1, leavingTime: -1 })
-          .populate('studentId', 'name admissionId photo rollNo')
-          .populate('approvedByStaffId', 'name code')
-          .populate('requestedById', 'name code');
-      }
-
-      res.json(gatePasses);
-    } catch (error) {
-      console.error('❌ Get gate passes error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to fetch gate passes',
-      });
-    }
-  }
-);
-
-/**
- * POST /api/front-desk/gate-passes
- * Create new gate pass
- */
-router.post(
-  '/gate-passes',
-  authenticate,
-  checkPermission('front-desk', 'create'),
-  async (req, res) => {
-    try {
-      // Extract only allowed fields for security (input sanitization)
-      // approvedByStaffId/approvedByName excluded from create — set only during approval to prevent impersonation
-      const allowedFields = [
-        'studentId',
-        'studentName',
-        'class',
-        'section',
-        'reason',
-        'otherReason',
-        'leavingDate',
-        'leavingTime',
-        'expectedReturnDate',
-        'expectedReturnTime',
-        'leavingWith',
-        'escortName',
-        'escortRelation',
-        'escortPhone',
-        'notes',
-      ];
-
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePassData = {
-        schoolId,
-        requestedById: req.user.id,
-        requestedByName: req.user.name || 'Front Desk',
-        status: 'PENDING',
-        approvalStatus: 'PENDING',
-      };
-
-      // Only copy allowed fields from request body
-      allowedFields.forEach((field) => {
-        if (req.body[field] !== undefined) {
-          gatePassData[field] = req.body[field];
-        }
-      });
-
-      // Validate required fields
-      if (!gatePassData.studentId || !gatePassData.reason) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields: studentId and reason are required',
-        });
-      }
-
-      const gatePass = await GatePass.create(gatePassData);
-
-      // Populate for response
-      await gatePass.populate('studentId', 'name admissionId photo rollNo');
-      await gatePass.populate('approvedByStaffId', 'name code');
-      await gatePass.populate('requestedById', 'name code');
-
-      res.status(201).json(gatePass);
-    } catch (error) {
-      console.error('❌ Create gate pass error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to create gate pass',
-      });
-    }
-  }
-);
-
-/**
- * PUT /api/front-desk/gate-passes/:id
- * Update gate pass
- */
-router.put(
-  '/gate-passes/:id',
-  authenticate,
-  checkPermission('front-desk', 'edit'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
-
-      if (!gatePass) {
-        return res.status(404).json({
-          success: false,
-          error: 'Gate pass not found',
-        });
-      }
-
-      // Update allowed fields
-      const allowedFields = [
-        'reason',
-        'otherReason',
-        'leavingDate',
-        'leavingTime',
-        'expectedReturnDate',
-        'expectedReturnTime',
-        'leavingWith',
-        'parentType',
-        'escortName',
-        'escortRelation',
-        'escortPhone',
-        'approvedBy',
-        'approvedByStaffId',
-        'approvedByName',
-        'notes',
-      ];
-
-      allowedFields.forEach((field) => {
-        if (req.body[field] !== undefined) {
-          gatePass[field] = req.body[field];
-        }
-      });
-
-      // If status is being updated
-      if (req.body.approvalStatus) {
-        gatePass.approvalStatus = req.body.approvalStatus;
-        if (req.body.approvalStatus === 'APPROVED') {
-          gatePass.status = 'ACTIVE';
-        } else if (req.body.approvalStatus === 'REJECTED') {
-          gatePass.status = 'CANCELLED';
-        }
-      }
-
-      if (req.body.status) {
-        gatePass.status = req.body.status;
-      }
-
-      await gatePass.save();
-      await gatePass.populate('studentId', 'name admissionId photo rollNo');
-      await gatePass.populate('approvedByStaffId', 'name code');
-      await gatePass.populate('requestedById', 'name code');
-
-      res.json(gatePass);
-    } catch (error) {
-      console.error('❌ Update gate pass error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to update gate pass',
-      });
-    }
-  }
-);
-
-/**
- * DELETE /api/front-desk/gate-passes/:id
- * Delete gate pass
- */
-router.delete(
-  '/gate-passes/:id',
-  authenticate,
-  checkPermission('front-desk', 'delete'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      await GatePass.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
-      res.json({ success: true, message: 'Gate pass deleted successfully' });
-    } catch (error) {
-      console.error('❌ Delete gate pass error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to delete gate pass',
-      });
-    }
-  }
-);
+// REMOVED: Duplicate gate pass CRUD routes previously here.
+// All gate pass operations are now handled by the dedicated routes in gatePasses.js
+// mounted at /api/gate-passes (with proper Zod validation, status transition guards,
+// and dedicated approve/reject/mark-used/cancel endpoints).
+// The frontend frontDeskApi methods delegate to /api/gate-passes endpoints.
 
 // ============= APPOINTMENTS ROUTES =============
 
@@ -968,7 +493,27 @@ router.post(
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
-      const appointment = await Appointment.create({ ...req.body, schoolId });
+      const {
+        visitorName,
+        phoneNumber,
+        purpose,
+        fromDateTime,
+        toDateTime,
+        meetingWith,
+        notes,
+        status,
+      } = req.body;
+      const appointment = await Appointment.create({
+        visitorName,
+        phoneNumber,
+        purpose,
+        fromDateTime,
+        toDateTime,
+        meetingWith,
+        notes,
+        status,
+        schoolId,
+      });
       res.status(201).json(appointment);
     } catch (error) {
       console.error('❌ Create appointment error:', error);
@@ -1096,8 +641,15 @@ router.post(
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
+      const { name, phoneNumber, category, assignedStaff, notifyStaff, status, notes } = req.body;
       const feedbackData = {
-        ...req.body,
+        name,
+        phoneNumber,
+        category,
+        assignedStaff,
+        notifyStaff,
+        status,
+        notes,
         schoolId: req.user.schoolId,
         date: new Date().toISOString().split('T')[0],
       };
@@ -1129,7 +681,8 @@ router.put(
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
-      const feedback = await Feedback.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
+      const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+      const feedback = await Feedback.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
       if (!feedback) {
         return res.status(404).json({
@@ -1180,7 +733,8 @@ router.delete(
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {
-      await Feedback.deleteOne({ _id: req.params.id, schoolId: req.user.schoolId });
+      const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+      await Feedback.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
       res.json({ success: true, message: 'Feedback deleted successfully' });
     } catch (error) {
       console.error('❌ Delete feedback error:', error);
@@ -1226,8 +780,17 @@ router.post(
   async (req, res) => {
     try {
       const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+      const { callerName, phoneNumber, dateTime, purpose, intent, keyNotes, summary, title } =
+        req.body;
       const callLogData = {
-        ...req.body,
+        callerName,
+        phoneNumber,
+        dateTime,
+        purpose,
+        intent,
+        keyNotes,
+        summary,
+        title,
         schoolId,
         loggedBy: req.user.id,
       };

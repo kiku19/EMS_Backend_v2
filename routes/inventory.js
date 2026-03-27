@@ -98,7 +98,7 @@ router.get('/assets', authenticate, checkPermission('inventory', 'view'), async 
         { assetTag: regex },
         { location: regex },
         { serialNumber: regex },
-        { assignedTo: regex },
+        { assignedToName: regex },
       ];
     }
 
@@ -106,6 +106,7 @@ router.get('/assets', authenticate, checkPermission('inventory', 'view'), async 
     const [assets, total] = await Promise.all([
       Asset.find(query)
         .populate('vendorId', 'name phone')
+        .populate('assignedTo', 'name email phone')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),
@@ -145,7 +146,9 @@ router.get('/assets/:id', authenticate, checkPermission('inventory', 'view'), as
     const schoolId = req.user.schoolId;
     const asset = await Asset.findOne(
       scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-    ).populate('vendorId', 'name phone email');
+    )
+      .populate('vendorId', 'name phone email')
+      .populate('assignedTo', 'name email phone');
 
     if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
     res.json(asset);
@@ -257,8 +260,16 @@ router.get(
       const purchaseDate = new Date(asset.purchaseDate);
       const now = new Date();
       const yearsElapsed = (now - purchaseDate) / (1000 * 60 * 60 * 24 * 365.25);
-      const currentValue = asset.purchasePrice * Math.pow(1 - rate / 100, yearsElapsed);
+
+      // Use the model's static method which supports both depreciation methods
+      const currentValue = Asset.calculateDepreciatedValue(asset);
       const totalDepreciation = asset.purchasePrice - currentValue;
+
+      // Persist the computed currentValue so reports stay fresh
+      if (asset.currentValue !== currentValue) {
+        asset.currentValue = currentValue;
+        await asset.save();
+      }
 
       res.json({
         assetId: asset._id,
@@ -266,8 +277,9 @@ router.get(
         purchasePrice: asset.purchasePrice,
         purchaseDate: asset.purchaseDate,
         depreciationRate: rate,
+        depreciationMethod: asset.depreciationMethod || 'DECLINING_BALANCE',
         yearsElapsed: Math.round(yearsElapsed * 100) / 100,
-        currentValue: Math.max(0, Math.round(currentValue * 100) / 100),
+        currentValue,
         totalDepreciation: Math.round(totalDepreciation * 100) / 100,
       });
     } catch (error) {
@@ -550,8 +562,8 @@ router.post(
         createdBy: req.user._id,
       });
 
-      // Update asset status if needed
-      if (data.status === 'IN_PROGRESS' || data.status === 'SCHEDULED') {
+      // Update asset status only when maintenance is actively in progress (not when just scheduled)
+      if (data.status === 'IN_PROGRESS') {
         await Asset.findOneAndUpdate(
           scopeBySchool(schoolId, { _id: data.assetId, isDeleted: { $ne: true } }),
           { status: 'UNDER_MAINTENANCE' }
@@ -844,9 +856,15 @@ router.put('/audits/:id', authenticate, checkPermission('inventory', 'edit'), as
     const data = updateAssetAuditSchema.parse(req.body);
     const schoolId = req.user.schoolId;
 
+    // Auto-set completedDate when audit is completed
+    const updatePayload = { ...data, updatedBy: req.user._id };
+    if (data.status === 'COMPLETED') {
+      updatePayload.completedDate = new Date();
+    }
+
     const audit = await AssetAudit.findOneAndUpdate(
       scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      { ...data, updatedBy: req.user._id },
+      updatePayload,
       { new: true, runValidators: true }
     ).populate('auditItems.assetId', 'name assetTag category');
 
@@ -888,13 +906,24 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user.schoolId;
-      const audit = await AssetAudit.findOneAndUpdate(
-        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        { isDeleted: true, updatedBy: req.user._id },
-        { new: true }
-      );
 
-      if (!audit) return res.status(404).json({ error: req.t('common:routes.auditNotFound') });
+      // Prevent deleting IN_PROGRESS audits
+      const existing = await AssetAudit.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      );
+      if (!existing) return res.status(404).json({ error: req.t('common:routes.auditNotFound') });
+      if (existing.status === 'IN_PROGRESS') {
+        return res
+          .status(400)
+          .json({
+            error: 'Cannot delete an audit that is in progress. Complete or cancel it first.',
+          });
+      }
+
+      existing.isDeleted = true;
+      existing.updatedBy = req.user._id;
+      await existing.save();
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -936,10 +965,58 @@ router.get('/reports', authenticate, checkPermission('inventory', 'view'), async
         Asset.aggregate([
           { $match: base },
           {
+            $addFields: {
+              _yearsElapsed: {
+                $cond: {
+                  if: {
+                    $and: [
+                      { $gt: ['$purchaseDate', null] },
+                      { $gt: ['$purchasePrice', 0] },
+                      { $gt: ['$depreciationRate', 0] },
+                    ],
+                  },
+                  then: {
+                    $divide: [
+                      { $subtract: [new Date(), '$purchaseDate'] },
+                      1000 * 60 * 60 * 24 * 365.25,
+                    ],
+                  },
+                  else: 0,
+                },
+              },
+            },
+          },
+          {
+            $addFields: {
+              _computedCurrentValue: {
+                $cond: {
+                  if: { $gt: ['$_yearsElapsed', 0] },
+                  then: {
+                    $max: [
+                      0,
+                      {
+                        $multiply: [
+                          '$purchasePrice',
+                          {
+                            $pow: [
+                              { $subtract: [1, { $divide: ['$depreciationRate', 100] }] },
+                              '$_yearsElapsed',
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  else: { $ifNull: ['$purchasePrice', 0] },
+                },
+              },
+            },
+          },
+          {
             $group: {
               _id: null,
               totalPurchaseValue: { $sum: { $ifNull: ['$purchasePrice', 0] } },
-              totalCurrentValue: { $sum: { $ifNull: ['$currentValue', 0] } },
+              totalCurrentValue: { $sum: '$_computedCurrentValue' },
               totalItems: { $sum: 1 },
             },
           },

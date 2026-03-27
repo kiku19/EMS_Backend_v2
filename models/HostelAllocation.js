@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const hostelAllocationSchema = new mongoose.Schema(
   {
@@ -6,6 +7,7 @@ const hostelAllocationSchema = new mongoose.Schema(
     hostelId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hostel', required: true },
     roomId: { type: mongoose.Schema.Types.ObjectId, ref: 'HostelRoom', required: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+    academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
 
     // Denormalized for display without populate
     studentName: { type: String, trim: true },

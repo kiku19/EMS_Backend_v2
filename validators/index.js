@@ -17,7 +17,7 @@ export {
 } from './zodHelpers.js';
 
 export { createStudentSchema, updateStudentSchema } from './studentSchema.js';
-export { createStaffSchema, updateStaffSchema } from './staffSchema.js';
+export { createStaffSchema, updateStaffSchema, teacherAssignmentSchema } from './staffSchema.js';
 export {
   createClassSchema,
   updateClassSchema,
@@ -48,6 +48,8 @@ export {
   studentFeePaymentSchema,
   updateDiscountSchema,
   defaultersQuerySchema,
+  createFeeTemplateSchema,
+  updateFeeTemplateSchema,
 } from './feeSchema.js';
 export {
   bulkPromotionSchema,
@@ -75,3 +77,19 @@ export { updateStaffIdConfigSchema, updateSchoolSettingsSchema } from './systemC
 export { changePasswordSchema } from './parentAuthSchema.js';
 export { hallTicketQuerySchema } from './hallTicketSchema.js';
 export { bulkAttendanceSchema, singleAttendanceSchema } from './attendanceSchema.js';
+export { singleStaffAttendanceSchema, bulkStaffAttendanceSchema } from './staffAttendanceSchema.js';
+export {
+  createVisitorSchema,
+  updateVisitorSchema,
+  checkOutVisitorSchema,
+  createGatePassSchema,
+  updateGatePassSchema,
+} from './frontDeskSchema.js';
+export {
+  createIntakeFormSchema,
+  updateIntakeFormSchema,
+  assignFormSchema,
+  reviewSubmissionSchema,
+  reviewEnhancedSchema,
+  requestEditSchema,
+} from './intakeFormSchema.js';

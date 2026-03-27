@@ -147,16 +147,18 @@ router.get('/:id/classes', authenticate, checkPermission('staff', 'view'), async
 
     // Batch student count aggregation for all classes at once
     const classObjectIds = allClasses.map((cls) => cls._id);
+    const studentCountMatch = {
+      classId: { $in: classObjectIds },
+      status: 'active',
+      isDeleted: { $ne: true },
+    };
+    if (req.user?.schoolId) {
+      studentCountMatch.schoolId = new mongoose.Types.ObjectId(String(req.user.schoolId));
+    }
     const studentCounts =
       classObjectIds.length > 0
         ? await Student.aggregate([
-            {
-              $match: {
-                classId: { $in: classObjectIds },
-                status: 'active',
-                isDeleted: { $ne: true },
-              },
-            },
+            { $match: studentCountMatch },
             { $group: { _id: '$classId', count: { $sum: 1 } } },
           ])
         : [];

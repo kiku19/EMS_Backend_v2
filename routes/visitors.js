@@ -3,17 +3,18 @@ import Visitor from '../models/Visitor.js';
 import { Student } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import { validateZod } from '../validators/zodHelpers.js';
+import {
+  createVisitorSchema,
+  updateVisitorSchema,
+  checkOutVisitorSchema,
+} from '../validators/frontDeskSchema.js';
 
 const router = express.Router();
 router.use(authenticate);
 
-// Middleware to attach Staff model to req.app.locals if not already there
-router.use((req, res, next) => {
-  if (!req.app.locals.Staff) {
-    req.app.locals.Staff = require('../database.js').Staff;
-  }
-  next();
-});
+const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.schoolId, extra);
 
 /**
  * GET /api/visitors
@@ -24,8 +25,8 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
   try {
     const { status, purpose, startDate, endDate, search } = req.query;
 
-    // Build query
-    const query = {};
+    // Build query scoped to school
+    const query = schoolQuery(req);
 
     // Status filter
     if (status === 'active') {
@@ -63,7 +64,7 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
 
     // Search filter
     if (search) {
-      const searchRegex = new RegExp(search, 'i');
+      const searchRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       query.$or = [
         { name: searchRegex },
         { phone: searchRegex },
@@ -73,13 +74,11 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
     }
 
     // Execute query with populate
-    const visitorsQuery = Visitor.find(query)
+    const visitors = await Visitor.find(query)
       .sort({ checkInTime: -1 })
       .populate('checkedInBy', 'name code')
       .populate('checkedOutBy', 'name code')
       .populate('studentId', 'name admissionId rollNo');
-
-    const visitors = await visitorsQuery;
 
     res.json({
       success: true,
@@ -87,7 +86,7 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
       count: visitors.length,
     });
   } catch (error) {
-    console.error('❌ Get visitors error:', error);
+    console.error('Get visitors error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -102,14 +101,14 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
  */
 router.get('/active', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
   try {
-    const visitors = await Visitor.getActiveVisitors();
+    const visitors = await Visitor.getActiveVisitors(req.user.schoolId);
     res.json({
       success: true,
       data: visitors,
       count: visitors.length,
     });
   } catch (error) {
-    console.error('❌ Get active visitors error:', error);
+    console.error('Get active visitors error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -124,14 +123,14 @@ router.get('/active', authenticate, checkPermission('front-office', 'view'), asy
  */
 router.get('/today', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
   try {
-    const visitors = await Visitor.getTodaysVisitors();
+    const visitors = await Visitor.getTodaysVisitors(req.user.schoolId);
     res.json({
       success: true,
       data: visitors,
       count: visitors.length,
     });
   } catch (error) {
-    console.error("❌ Get today's visitors error:", error);
+    console.error("Get today's visitors error:", error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -162,7 +161,7 @@ router.get('/search', authenticate, checkPermission('front-office', 'view'), asy
       count: visitors.length,
     });
   } catch (error) {
-    console.error('❌ Search visitors error:', error);
+    console.error('Search visitors error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -190,7 +189,7 @@ router.get(
         });
       }
 
-      const searchRegex = new RegExp(q.trim(), 'i');
+      const searchRegex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
       // Search in parent fields of students (scoped to school)
       const students = await Student.find({
@@ -224,7 +223,7 @@ router.get(
         count: parents.length,
       });
     } catch (error) {
-      console.error('❌ Search parents error:', error);
+      console.error('Search parents error:', error);
       res.status(500).json({
         success: false,
         error: error.message,
@@ -240,7 +239,7 @@ router.get(
  */
 router.get('/:id', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
   try {
-    const visitor = await Visitor.findById(req.params.id)
+    const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }))
       .populate('checkedInBy', 'name code phone')
       .populate('checkedOutBy', 'name code phone')
       .populate('studentId', 'name admissionId rollNo classId')
@@ -260,7 +259,7 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
       data: visitor,
     });
   } catch (error) {
-    console.error('❌ Get visitor error:', error);
+    console.error('Get visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -273,180 +272,175 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
  * POST /api/visitors
  * Create new visitor (check-in)
  */
-router.post('/', authenticate, checkPermission('front-office', 'create'), async (req, res) => {
-  try {
-    const {
-      name,
-      phone,
-      email,
-      photoUrl,
-      purpose,
-      whomToMeet,
-      department,
-      studentId,
-      gatePassRequired,
-      appointmentRequired,
-      admissionInquiry,
-      companyName,
-      deliveryPerson,
-      otherPurpose,
-      itemsDeclared,
-      notes,
-    } = req.body;
+router.post(
+  '/',
+  authenticate,
+  checkPermission('front-office', 'create'),
+  validateZod(createVisitorSchema),
+  async (req, res) => {
+    try {
+      const {
+        name,
+        phone,
+        email,
+        photoUrl,
+        purpose,
+        whomToMeet,
+        department,
+        studentId,
+        gatePassRequired,
+        appointmentRequired,
+        admissionInquiry,
+        companyName,
+        deliveryPerson,
+        otherPurpose,
+        itemsDeclared,
+        notes,
+      } = req.body;
 
-    // Validation
-    if (!name || !phone || !purpose) {
-      return res.status(400).json({
+      // Prepare visitor data — always set schoolId from authenticated user
+      const visitorData = {
+        schoolId: req.user.schoolId,
+        name,
+        phone,
+        email,
+        photoUrl,
+        purpose,
+        whomToMeet,
+        department,
+        checkedInBy: req.user.id,
+        notes,
+      };
+
+      // Add purpose-specific fields
+      if (purpose === 'PARENT_MEETING' && studentId) {
+        const student = await Student.findOne({ _id: studentId, schoolId: req.user.schoolId });
+        if (student) {
+          visitorData.studentId = studentId;
+          visitorData.studentName = student.name;
+          visitorData.parentMapping = true;
+        }
+      }
+
+      if (purpose === 'STUDENT_PICKUP_DROP_OFF' && studentId) {
+        const student = await Student.findOne({ _id: studentId, schoolId: req.user.schoolId });
+        if (student) {
+          visitorData.studentId = studentId;
+          visitorData.studentName = student.name;
+          visitorData.gatePassRequired = gatePassRequired || false;
+        }
+      }
+
+      if (purpose === 'OFFICIAL_BUSINESS' || purpose === 'VOLUNTEER_EVENT') {
+        visitorData.appointmentRequired = appointmentRequired || false;
+      }
+
+      if (purpose === 'SCHOOL_VISIT_INQUIRY') {
+        visitorData.admissionInquiry = admissionInquiry || false;
+      }
+
+      if (purpose === 'DELIVERY_VENDOR') {
+        visitorData.companyName = companyName;
+        visitorData.deliveryPerson = deliveryPerson || name;
+      }
+
+      if (purpose === 'OTHER') {
+        visitorData.otherPurpose = otherPurpose || '';
+      }
+
+      if (itemsDeclared) {
+        visitorData.itemsDeclared = itemsDeclared;
+      }
+
+      // Create visitor
+      const visitor = await Visitor.create(visitorData);
+
+      // Populate for response
+      await visitor.populate('checkedInBy', 'name code');
+      if (visitor.studentId) {
+        await visitor.populate('studentId', 'name admissionId rollNo');
+      }
+
+      res.status(201).json({
+        success: true,
+        data: visitor,
+        message: req.t('common:routes.visitorCheckedInSuccessfully'),
+      });
+    } catch (error) {
+      console.error('Create visitor error:', error);
+      res.status(500).json({
         success: false,
-        error: req.t('common:routes.missingRequiredFields'),
-        message: req.t('common:routes.namePhoneAndPurposeAreRequired'),
+        error: error.message,
+        message: req.t('common:routes.failedToCheckInVisitor'),
       });
     }
-
-    // Validate phone format (basic)
-    const phoneRegex = /^[0-9+\-\s()]{10,20}$/;
-    if (!phoneRegex.test(phone)) {
-      return res.status(400).json({
-        success: false,
-        error: req.t('common:routes.invalidPhoneNumberFormat'),
-      });
-    }
-
-    // Prepare visitor data
-    const visitorData = {
-      name,
-      phone,
-      email,
-      photoUrl,
-      purpose,
-      whomToMeet,
-      department,
-      checkedInBy: req.user.id,
-      notes,
-    };
-
-    // Add purpose-specific fields
-    if (purpose === 'PARENT_MEETING' && studentId) {
-      const student = await Student.findById(studentId);
-      if (student) {
-        visitorData.studentId = studentId;
-        visitorData.studentName = student.name;
-        visitorData.parentMapping = true;
-      }
-    }
-
-    if (purpose === 'STUDENT_PICKUP_DROP_OFF' && studentId) {
-      const student = await Student.findById(studentId);
-      if (student) {
-        visitorData.studentId = studentId;
-        visitorData.studentName = student.name;
-        visitorData.gatePassRequired = gatePassRequired || false;
-      }
-    }
-
-    if (purpose === 'OFFICIAL_BUSINESS' || purpose === 'VOLUNTEER_EVENT') {
-      visitorData.appointmentRequired = appointmentRequired || false;
-    }
-
-    if (purpose === 'SCHOOL_VISIT_INQUIRY') {
-      visitorData.admissionInquiry = admissionInquiry || false;
-    }
-
-    if (purpose === 'DELIVERY_VENDOR') {
-      visitorData.companyName = companyName;
-      visitorData.deliveryPerson = deliveryPerson || name;
-    }
-
-    if (purpose === 'OTHER') {
-      visitorData.otherPurpose = otherPurpose || '';
-    }
-
-    if (itemsDeclared) {
-      visitorData.itemsDeclared = itemsDeclared;
-    }
-
-    // Create visitor
-    const visitor = await Visitor.create(visitorData);
-
-    // Populate for response
-    await visitor.populate('checkedInBy', 'name code');
-    if (visitor.studentId) {
-      await visitor.populate('studentId', 'name admissionId rollNo');
-    }
-
-    res.status(201).json({
-      success: true,
-      data: visitor,
-      message: req.t('common:routes.visitorCheckedInSuccessfully'),
-    });
-  } catch (error) {
-    console.error('❌ Create visitor error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: req.t('common:routes.failedToCheckInVisitor'),
-    });
   }
-});
+);
 
 /**
  * PUT /api/visitors/:id
  * Update visitor
  */
-router.put('/:id', authenticate, checkPermission('front-office', 'edit'), async (req, res) => {
-  try {
-    const visitor = await Visitor.findById(req.params.id);
+router.put(
+  '/:id',
+  authenticate,
+  checkPermission('front-office', 'edit'),
+  validateZod(updateVisitorSchema),
+  async (req, res) => {
+    try {
+      const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }));
 
-    if (!visitor) {
-      return res.status(404).json({
+      if (!visitor) {
+        return res.status(404).json({
+          success: false,
+          error: req.t('common:routes.visitorNotFound'),
+        });
+      }
+
+      // Don't allow updating checked-out visitors
+      if (visitor.status === 'CHECKED_OUT') {
+        return res.status(400).json({
+          success: false,
+          error: req.t('common:routes.cannotUpdateCheckedOutVisitor'),
+        });
+      }
+
+      const { name, phone, email, photoUrl, whomToMeet, department, notes } = req.body;
+
+      // Update allowed fields
+      if (name) visitor.name = name;
+      if (phone) visitor.phone = phone;
+      if (email !== undefined) visitor.email = email;
+      if (photoUrl !== undefined) visitor.photoUrl = photoUrl;
+      if (whomToMeet) visitor.whomToMeet = whomToMeet;
+      if (department) visitor.department = department;
+      if (notes !== undefined) {
+        visitor.notes = notes;
+      }
+
+      await visitor.save();
+
+      // Populate for response
+      await visitor.populate('checkedInBy', 'name code');
+      if (visitor.studentId) {
+        await visitor.populate('studentId', 'name admissionId rollNo');
+      }
+
+      res.json({
+        success: true,
+        data: visitor,
+        message: req.t('common:routes.visitorUpdatedSuccessfully'),
+      });
+    } catch (error) {
+      console.error('Update visitor error:', error);
+      res.status(500).json({
         success: false,
-        error: req.t('common:routes.visitorNotFound'),
+        error: error.message,
+        message: req.t('common:routes.failedToUpdateVisitor'),
       });
     }
-
-    // Don't allow updating checked-out visitors
-    if (visitor.status === 'CHECKED_OUT') {
-      return res.status(400).json({
-        success: false,
-        error: req.t('common:routes.cannotUpdateCheckedOutVisitor'),
-      });
-    }
-
-    const { name, phone, email, photoUrl, whomToMeet, department, notes } = req.body;
-
-    // Update allowed fields
-    if (name) visitor.name = name;
-    if (phone) visitor.phone = phone;
-    if (email !== undefined) visitor.email = email;
-    if (photoUrl !== undefined) visitor.photoUrl = photoUrl;
-    if (whomToMeet) visitor.whomToMeet = whomToMeet;
-    if (department) visitor.department = department;
-    if (notes !== undefined) {
-      visitor.notes = notes;
-    }
-
-    await visitor.save();
-
-    // Populate for response
-    await visitor.populate('checkedInBy', 'name code');
-    if (visitor.studentId) {
-      await visitor.populate('studentId', 'name admissionId rollNo');
-    }
-
-    res.json({
-      success: true,
-      data: visitor,
-      message: req.t('common:routes.visitorUpdatedSuccessfully'),
-    });
-  } catch (error) {
-    console.error('❌ Update visitor error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      message: req.t('common:routes.failedToUpdateVisitor'),
-    });
   }
-});
+);
 
 /**
  * POST /api/visitors/:id/check-out
@@ -456,9 +450,10 @@ router.post(
   '/:id/check-out',
   authenticate,
   checkPermission('front-office', 'edit'),
+  validateZod(checkOutVisitorSchema),
   async (req, res) => {
     try {
-      const visitor = await Visitor.findById(req.params.id);
+      const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }));
 
       if (!visitor) {
         return res.status(404).json({
@@ -492,7 +487,7 @@ router.post(
         message: req.t('common:routes.visitorCheckedOutSuccessfully'),
       });
     } catch (error) {
-      console.error('❌ Check-out visitor error:', error);
+      console.error('Check-out visitor error:', error);
       res.status(500).json({
         success: false,
         error: error.message,
@@ -508,7 +503,7 @@ router.post(
  */
 router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), async (req, res) => {
   try {
-    const visitor = await Visitor.findById(req.params.id);
+    const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }));
 
     if (!visitor) {
       return res.status(404).json({
@@ -517,14 +512,14 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
       });
     }
 
-    await Visitor.deleteOne({ _id: req.params.id });
+    await Visitor.deleteOne({ _id: req.params.id, schoolId: req.user.schoolId });
 
     res.json({
       success: true,
       message: req.t('common:routes.visitorDeletedSuccessfully'),
     });
   } catch (error) {
-    console.error('❌ Delete visitor error:', error);
+    console.error('Delete visitor error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -536,7 +531,6 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
 /**
  * GET /api/visitors/:id/badge
  * Generate visitor badge (PDF)
- * TODO: Implement PDF generation
  */
 router.get(
   '/:id/badge',
@@ -544,7 +538,7 @@ router.get(
   checkPermission('front-office', 'view'),
   async (req, res) => {
     try {
-      const visitor = await Visitor.findById(req.params.id).populate(
+      const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id })).populate(
         'studentId',
         'name admissionId'
       );
@@ -556,8 +550,6 @@ router.get(
         });
       }
 
-      // TODO: Generate PDF badge
-      // For now, return visitor data for badge generation
       res.json({
         success: true,
         data: {
@@ -573,7 +565,7 @@ router.get(
         message: req.t('common:routes.badgeDataRetrievedPdfGenerationToBeImplemented'),
       });
     } catch (error) {
-      console.error('❌ Generate badge error:', error);
+      console.error('Generate badge error:', error);
       res.status(500).json({
         success: false,
         error: error.message,

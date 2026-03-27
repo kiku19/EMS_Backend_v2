@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const resultSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     examId: { type: mongoose.Schema.Types.ObjectId, ref: 'Exam', required: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
@@ -30,7 +30,7 @@ const resultSchema = new mongoose.Schema(
     percentage: { type: Number, default: 0 },
     grade: String,
     rank: Number,
-    status: { type: String, enum: ['pending', 'passed', 'failed', 'promoted'] }, // No default - always compute from marks
+    status: { type: String, enum: ['pending', 'passed', 'failed', 'promoted', 'absent'] }, // No default - always compute from marks
     isPublished: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date },

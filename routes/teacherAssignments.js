@@ -3,9 +3,15 @@ import express from 'express';
 import { Staff, Class, Timetable } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import { validateZod } from '../validators/zodHelpers.js';
+import { teacherAssignmentSchema } from '../validators/staffSchema.js';
 
 const router = express.Router();
 router.use(authenticate);
+
+const schoolQuery = (req, extra = {}) =>
+  buildSchoolScopedQuery(req.user?.schoolId, { isDeleted: { $ne: true }, ...extra });
 
 // Get available teachers for a specific class, subject, day, and period
 // IMPORTANT: This route must come BEFORE /:teacherId to avoid route conflicts
@@ -24,22 +30,24 @@ router.get(
         });
       }
 
-      // Verify class exists
-      const targetClass = await Class.findById(classId);
+      // Verify class exists within this school
+      const targetClass = await Class.findOne(schoolQuery(req, { _id: classId }));
       if (!targetClass) {
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
-      // Find all teachers who have this subject-class assignment
-      const qualifiedTeachers = await Staff.find({
-        status: 'active',
-        teacherAssignments: {
-          $elemMatch: {
-            subject: subject,
-            classes: classId,
+      // Find all teachers who have this subject-class assignment within this school
+      const qualifiedTeachers = await Staff.find(
+        schoolQuery(req, {
+          status: 'active',
+          teacherAssignments: {
+            $elemMatch: {
+              subject: subject,
+              classes: classId,
+            },
           },
-        },
-      }).select('_id name code department teacherAssignments');
+        })
+      ).select('_id name code department teacherAssignments');
 
       // If day and period are provided, filter out teachers with conflicts
       let availableTeachers = qualifiedTeachers;
@@ -47,8 +55,8 @@ router.get(
       if (day && period !== undefined) {
         const periodIndex = parseInt(period);
 
-        // Get all timetables for the academic year
-        const allTimetables = await Timetable.find({ academicYear }).populate(
+        // Get all timetables for the academic year within this school
+        const allTimetables = await Timetable.find(schoolQuery(req, { academicYear })).populate(
           'classId',
           'name section'
         );
@@ -145,7 +153,7 @@ router.get('/:teacherId', authenticate, checkPermission('staff', 'view'), async 
   try {
     const { teacherId } = req.params;
 
-    const staff = await Staff.findById(teacherId).populate(
+    const staff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
       'teacherAssignments.classes',
       'name section'
     );
@@ -165,126 +173,124 @@ router.get('/:teacherId', authenticate, checkPermission('staff', 'view'), async 
 });
 
 // Create a new teacher assignment
-router.post('/', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
-  try {
-    const { teacherId, subject, classIds } = req.body;
+router.post(
+  '/',
+  authenticate,
+  checkPermission('staff', 'edit'),
+  validateZod(teacherAssignmentSchema),
+  async (req, res) => {
+    try {
+      const { teacherId, subject, classIds } = req.body;
 
-    // Validate input
-    if (!teacherId || !subject || !classIds || !Array.isArray(classIds)) {
-      return res.status(400).json({
-        error: 'teacherId, subject, and classIds (array) are required',
-      });
-    }
-
-    // Verify teacher exists
-    const staff = await Staff.findById(teacherId);
-    if (!staff) {
-      return res.status(404).json({ error: 'Teacher not found' });
-    }
-
-    // Verify all classes exist
-    const classes = await Class.find({ _id: { $in: classIds } });
-    if (classes.length !== classIds.length) {
-      return res.status(400).json({ error: 'One or more classes not found' });
-    }
-
-    // Check if assignment already exists for this subject
-    const existingAssignment = staff.teacherAssignments.find((a) => a.subject === subject);
-
-    if (existingAssignment) {
-      // Add new classes to existing assignment (avoid duplicates)
-      const existingClassIds = existingAssignment.classes.map((c) => c.toString());
-      const newClassIds = classIds.filter((id) => !existingClassIds.includes(id.toString()));
-
-      if (newClassIds.length > 0) {
-        existingAssignment.classes.push(...newClassIds);
-        await staff.save();
+      // Verify teacher exists within this school
+      const staff = await Staff.findOne(schoolQuery(req, { _id: teacherId }));
+      if (!staff) {
+        return res.status(404).json({ error: 'Teacher not found' });
       }
 
-      const updatedStaff = await Staff.findById(teacherId).populate(
+      // Verify all classes exist within this school
+      const classes = await Class.find(schoolQuery(req, { _id: { $in: classIds } }));
+      if (classes.length !== classIds.length) {
+        return res.status(400).json({ error: 'One or more classes not found' });
+      }
+
+      // Check if assignment already exists for this subject
+      const existingAssignment = staff.teacherAssignments.find((a) => a.subject === subject);
+
+      if (existingAssignment) {
+        // Add new classes to existing assignment (avoid duplicates)
+        const existingClassIds = existingAssignment.classes.map((c) => c.toString());
+        const newClassIds = classIds.filter((id) => !existingClassIds.includes(id.toString()));
+
+        if (newClassIds.length > 0) {
+          existingAssignment.classes.push(...newClassIds);
+          await staff.save();
+        }
+
+        const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
+          'teacherAssignments.classes',
+          'name section'
+        );
+
+        return res.json({
+          success: true,
+          assignment: updatedStaff.teacherAssignments.find((a) => a.subject === subject),
+        });
+      }
+
+      // Create new assignment
+      const newAssignment = {
+        subject,
+        classes: classIds,
+        createdAt: new Date(),
+      };
+
+      staff.teacherAssignments.push(newAssignment);
+      await staff.save();
+
+      const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
         'teacherAssignments.classes',
         'name section'
       );
 
-      return res.json({
+      res.status(201).json({
         success: true,
-        assignment: updatedStaff.teacherAssignments.find((a) => a.subject === subject),
+        assignment: updatedStaff.teacherAssignments[updatedStaff.teacherAssignments.length - 1],
       });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    // Create new assignment
-    const newAssignment = {
-      subject,
-      classes: classIds,
-      createdAt: new Date(),
-    };
-
-    staff.teacherAssignments.push(newAssignment);
-    await staff.save();
-
-    const updatedStaff = await Staff.findById(teacherId).populate(
-      'teacherAssignments.classes',
-      'name section'
-    );
-
-    res.status(201).json({
-      success: true,
-      assignment: updatedStaff.teacherAssignments[updatedStaff.teacherAssignments.length - 1],
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Update a teacher assignment
-router.put('/:id', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { teacherId, subject, classIds } = req.body;
+router.put(
+  '/:id',
+  authenticate,
+  checkPermission('staff', 'edit'),
+  validateZod(teacherAssignmentSchema),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { teacherId, subject, classIds } = req.body;
 
-    // Validate input
-    if (!teacherId || !subject || !classIds || !Array.isArray(classIds)) {
-      return res.status(400).json({
-        error: 'teacherId, subject, and classIds (array) are required',
+      // Verify teacher exists within this school
+      const staff = await Staff.findOne(schoolQuery(req, { _id: teacherId }));
+      if (!staff) {
+        return res.status(404).json({ error: 'Teacher not found' });
+      }
+
+      // Verify all classes exist within this school
+      const classes = await Class.find(schoolQuery(req, { _id: { $in: classIds } }));
+      if (classes.length !== classIds.length) {
+        return res.status(400).json({ error: 'One or more classes not found' });
+      }
+
+      // Find and update the assignment
+      const assignment = staff.teacherAssignments.id(id);
+      if (!assignment) {
+        return res.status(404).json({ error: 'Assignment not found' });
+      }
+
+      assignment.subject = subject;
+      assignment.classes = classIds;
+
+      await staff.save();
+
+      const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
+        'teacherAssignments.classes',
+        'name section'
+      );
+
+      res.json({
+        success: true,
+        assignment: updatedStaff.teacherAssignments.id(id),
       });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    // Verify teacher exists
-    const staff = await Staff.findById(teacherId);
-    if (!staff) {
-      return res.status(404).json({ error: 'Teacher not found' });
-    }
-
-    // Verify all classes exist
-    const classes = await Class.find({ _id: { $in: classIds } });
-    if (classes.length !== classIds.length) {
-      return res.status(400).json({ error: 'One or more classes not found' });
-    }
-
-    // Find and update the assignment
-    const assignment = staff.teacherAssignments.id(id);
-    if (!assignment) {
-      return res.status(404).json({ error: 'Assignment not found' });
-    }
-
-    assignment.subject = subject;
-    assignment.classes = classIds;
-
-    await staff.save();
-
-    const updatedStaff = await Staff.findById(teacherId).populate(
-      'teacherAssignments.classes',
-      'name section'
-    );
-
-    res.json({
-      success: true,
-      assignment: updatedStaff.teacherAssignments.id(id),
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Delete a teacher assignment
 router.delete('/:id', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
@@ -296,8 +302,8 @@ router.delete('/:id', authenticate, checkPermission('staff', 'edit'), async (req
       return res.status(400).json({ error: 'teacherId query parameter is required' });
     }
 
-    // Verify teacher exists
-    const staff = await Staff.findById(teacherId);
+    // Verify teacher exists within this school
+    const staff = await Staff.findOne(schoolQuery(req, { _id: teacherId }));
     if (!staff) {
       return res.status(404).json({ error: 'Teacher not found' });
     }

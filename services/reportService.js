@@ -44,7 +44,7 @@ export async function getClassResultsSummary(schoolId, { classId, examId, academ
         pipeline: [{ $project: { name: 1, section: 1 } }],
       },
     },
-    { $unwind: { path: '$class', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$class', preserveNullAndEmptyArrays: true } },
     {
       $group: {
         _id: '$classId',
@@ -236,7 +236,7 @@ export async function getOutstandingDues(schoolId, { academicYear, classId }) {
   if (academicYear) match.academicYear = academicYear;
   if (classId) match.classId = toObjectId(classId);
 
-  return StudentFeeStructure.find(match)
+  const results = await StudentFeeStructure.find(match)
     .populate({
       path: 'studentId',
       select: 'name admissionId rollNo status',
@@ -247,6 +247,9 @@ export async function getOutstandingDues(schoolId, { academicYear, classId }) {
       'studentId classId academicYear totalFee totalPaid totalBalance overallStatus lastPaymentDate'
     )
     .sort({ totalBalance: -1 });
+
+  // Filter out records where the student was deleted (populate returns null)
+  return results.filter((r) => r.studentId != null);
 }
 
 /**
@@ -266,7 +269,7 @@ export async function getFeeHeadWiseCollection(schoolId, { academicYear, startDa
 
   return FeePayment.aggregate([
     { $match: match },
-    { $unwind: { path: '$feeHeads', preserveNullAndEmpty: false } },
+    { $unwind: { path: '$feeHeads', preserveNullAndEmptyArrays: false } },
     {
       $group: {
         _id: { $ifNull: ['$feeHeads.name', 'Unknown'] },
@@ -317,7 +320,7 @@ export async function getConcessionReport(schoolId, { academicYear }) {
   };
   if (academicYear) match.academicYear = academicYear;
 
-  return StudentFeeStructure.find(match)
+  const results = await StudentFeeStructure.find(match)
     .populate({
       path: 'studentId',
       select: 'name admissionId rollNo',
@@ -328,6 +331,9 @@ export async function getConcessionReport(schoolId, { academicYear }) {
       'studentId classId academicYear totalFee discountApplied discountReason totalPaid totalBalance'
     )
     .sort({ discountApplied: -1 });
+
+  // Filter out records where the student was deleted (populate returns null)
+  return results.filter((r) => r.studentId != null);
 }
 
 // ─── ATTENDANCE REPORTS ──────────────────────────────────────────────────────
@@ -368,7 +374,7 @@ export async function getStudentAttendanceReport(
         pipeline: [{ $project: { name: 1, rollNo: 1, admissionId: 1, classId: 1 } }],
       },
     },
-    { $unwind: { path: '$student', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$student', preserveNullAndEmptyArrays: true } },
     {
       $lookup: {
         from: 'classes',
@@ -378,7 +384,7 @@ export async function getStudentAttendanceReport(
         pipeline: [{ $project: { name: 1, section: 1 } }],
       },
     },
-    { $unwind: { path: '$class', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$class', preserveNullAndEmptyArrays: true } },
     { $sort: { 'student.rollNo': 1 } },
   ]);
 
@@ -430,7 +436,7 @@ export async function getClasswiseAttendanceSummary(schoolId, { startDate, endDa
         pipeline: [{ $project: { name: 1, section: 1 } }],
       },
     },
-    { $unwind: { path: '$class', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$class', preserveNullAndEmptyArrays: true } },
     { $sort: { 'class.name': 1, 'class.section': 1 } },
   ]);
 
@@ -576,7 +582,7 @@ export async function getStaffAttendanceSummary(schoolId, { startDate, endDate, 
         pipeline: [{ $project: { name: 1, designation: 1, department: 1 } }],
       },
     },
-    { $unwind: { path: '$staff', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$staff', preserveNullAndEmptyArrays: true } },
   ]);
 
   let result = records.map((r) => ({
@@ -602,10 +608,10 @@ export async function getStaffAttendanceSummary(schoolId, { startDate, endDate, 
 
 /**
  * Payroll summary grouped by month/year for a school.
- * PayrollRecord has no schoolId — we join through Staff to filter by school.
+ * Scoped by schoolId on PayrollRecord first, then joins Staff for metadata.
  */
 export async function getPayrollSummary(schoolId, { month, year }) {
-  const match = {};
+  const match = { schoolId: toObjectId(schoolId) };
   if (month) match.month = month;
   if (year) match.year = year;
 
@@ -620,7 +626,6 @@ export async function getPayrollSummary(schoolId, { month, year }) {
         pipeline: [
           {
             $match: {
-              schoolId: toObjectId(schoolId),
               isDeleted: { $ne: true },
             },
           },
@@ -628,7 +633,7 @@ export async function getPayrollSummary(schoolId, { month, year }) {
         ],
       },
     },
-    // Inner join: only keep records where staff belongs to this school
+    // Inner join: only keep records where staff still exists and is not deleted
     { $match: { 'staff.0': { $exists: true } } },
     { $unwind: '$staff' },
     {
@@ -733,7 +738,7 @@ export async function getStudentStrength(schoolId, { academicYear }) {
         pipeline: [{ $project: { name: 1, section: 1, strengthLimit: 1 } }],
       },
     },
-    { $unwind: { path: '$class', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$class', preserveNullAndEmptyArrays: true } },
     { $sort: { 'class.name': 1, 'class.section': 1 } },
   ]);
 

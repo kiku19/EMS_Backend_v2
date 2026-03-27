@@ -14,6 +14,7 @@ import {
   parseAcademicYear,
 } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
+import { checkPermission } from '../../middleware/auth/permissions.js';
 
 const router = express.Router();
 
@@ -165,6 +166,23 @@ const schoolSettingsSchema = z
         showRemarks: z.boolean().optional(),
         useGradePoints: z.boolean().optional(),
         passingGrade: z.string().max(5).optional(),
+      })
+      .optional(),
+    attendanceRules: z
+      .object({
+        defaulterThreshold: z.number().int().min(0).max(100).optional(),
+        lockTime: z
+          .string()
+          .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+          .optional(),
+        allowEdit: z.boolean().optional(),
+        editWindow: z
+          .number()
+          .int()
+          .refine((v) => [12, 24, 48].includes(v), { message: 'Must be 12, 24, or 48' })
+          .optional(),
+        notifyAbsent: z.boolean().optional(),
+        notifyDefaulter: z.boolean().optional(),
       })
       .optional(),
   })
@@ -349,6 +367,81 @@ router.get('/exam-config', authenticate, async (req, res) => {
   }
 });
 
+// ─── Attendance Rules ────────────────────────────────────────────────────
+
+const DEFAULT_ATTENDANCE_RULES = {
+  defaulterThreshold: 75,
+  lockTime: '16:00',
+  allowEdit: true,
+  editWindow: 24,
+  notifyAbsent: true,
+  notifyDefaulter: true,
+};
+
+// Get attendance rules
+router.get('/attendance-rules', authenticate, async (req, res) => {
+  try {
+    const settings = await ensureSchoolSettings(req.user?.schoolId);
+    const rules = settings.attendanceRules || {};
+    res.json({
+      defaulterThreshold: rules.defaulterThreshold ?? DEFAULT_ATTENDANCE_RULES.defaulterThreshold,
+      lockTime: rules.lockTime ?? DEFAULT_ATTENDANCE_RULES.lockTime,
+      allowEdit: rules.allowEdit ?? DEFAULT_ATTENDANCE_RULES.allowEdit,
+      editWindow: rules.editWindow ?? DEFAULT_ATTENDANCE_RULES.editWindow,
+      notifyAbsent: rules.notifyAbsent ?? DEFAULT_ATTENDANCE_RULES.notifyAbsent,
+      notifyDefaulter: rules.notifyDefaulter ?? DEFAULT_ATTENDANCE_RULES.notifyDefaulter,
+    });
+  } catch (error) {
+    console.error('Error fetching attendance rules:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance rules' });
+  }
+});
+
+// Update attendance rules
+const attendanceRulesSchema = z
+  .object({
+    defaulterThreshold: z.number().int().min(0).max(100).optional(),
+    lockTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+      .optional(),
+    allowEdit: z.boolean().optional(),
+    editWindow: z
+      .number()
+      .int()
+      .refine((v) => [12, 24, 48].includes(v), { message: 'Must be 12, 24, or 48' })
+      .optional(),
+    notifyAbsent: z.boolean().optional(),
+    notifyDefaulter: z.boolean().optional(),
+  })
+  .strict();
+
+router.put(
+  '/attendance-rules',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const parsed = attendanceRulesSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+      }
+
+      const settings = await ensureSchoolSettings(req.user?.schoolId);
+      const current = settings.attendanceRules || {};
+      const updated = { ...current, ...parsed.data };
+
+      await SchoolSettings.updateOne({ _id: settings._id }, { $set: { attendanceRules: updated } });
+
+      const refreshed = await SchoolSettings.findById(settings._id).lean();
+      res.json(refreshed.attendanceRules || updated);
+    } catch (error) {
+      console.error('Error updating attendance rules:', error);
+      res.status(500).json({ error: 'Failed to update attendance rules' });
+    }
+  }
+);
+
 // Get board config presets
 router.get('/board-config/presets', authenticate, async (req, res) => {
   try {
@@ -359,8 +452,8 @@ router.get('/board-config/presets', authenticate, async (req, res) => {
   }
 });
 
-// Update school settings
-router.put('/school', authenticate, async (req, res) => {
+// Update school settings (admin/settings-edit only)
+router.put('/school', authenticate, checkPermission('settings', 'edit'), async (req, res) => {
   try {
     const parsed = schoolSettingsSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -369,9 +462,9 @@ router.put('/school', authenticate, async (req, res) => {
     let settings = await findSchoolSettings(req);
     const updates = { ...parsed.data };
 
-    if (updates.academicYear) {
-      updates.currentSession = updates.academicYear;
-    }
+    // NOTE: academicYear updates must go through PUT /academic-year which has
+    // dedicated Zod validation (academicYearSchema).  The schoolSettingsSchema
+    // uses .strict() so any stray academicYear key is already rejected above.
 
     if (updates.name && !updates.schoolName) {
       updates.schoolName = updates.name;
@@ -387,8 +480,22 @@ router.put('/school', authenticate, async (req, res) => {
         ...updates,
       });
     } else {
-      Object.assign(settings, updates);
-      await settings.save();
+      // Use dot-notation $set for nested objects so partial updates don't
+      // overwrite siblings (e.g. sending { examDefaults: { maxMarks: 50 } }
+      // should not erase examDefaults.passingMarks).
+      const flatUpdates = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          for (const [nestedKey, nestedVal] of Object.entries(value)) {
+            flatUpdates[`${key}.${nestedKey}`] = nestedVal;
+          }
+        } else {
+          flatUpdates[key] = value;
+        }
+      }
+
+      await SchoolSettings.updateOne({ _id: settings._id }, { $set: flatUpdates });
+      settings = await SchoolSettings.findById(settings._id);
     }
 
     res.json(settings);
@@ -413,37 +520,45 @@ router.get('/academic-year', authenticate, async (req, res) => {
   }
 });
 
-router.put('/academic-year', authenticate, async (req, res) => {
-  try {
-    const parsed = academicYearSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((e) => ({ field: e.path.join('.'), message: e.message })),
+router.put(
+  '/academic-year',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const parsed = academicYearSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          details: parsed.error.issues.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        });
+      }
+
+      const { academicYear, academicYearStart, academicYearEnd } = parsed.data;
+      const settings = await ensureSchoolSettings(req.user?.schoolId);
+      const { startYear, endYear } = parseAcademicYear(academicYear);
+
+      settings.academicYear = academicYear;
+      settings.currentSession = academicYear;
+      settings.academicYearStart = academicYearStart || `${startYear}-04-01`;
+      settings.academicYearEnd = academicYearEnd || `${endYear}-03-31`;
+
+      await settings.save();
+
+      res.json({
+        academicYear: settings.academicYear,
+        academicYearStart: settings.academicYearStart,
+        academicYearEnd: settings.academicYearEnd,
       });
+    } catch (error) {
+      console.error('Error updating academic year settings:', error);
+      res.status(500).json({ error: 'Failed to update academic year settings' });
     }
-
-    const { academicYear, academicYearStart, academicYearEnd } = parsed.data;
-    const settings = await ensureSchoolSettings(req.user?.schoolId);
-    const { startYear, endYear } = parseAcademicYear(academicYear);
-
-    settings.academicYear = academicYear;
-    settings.currentSession = academicYear;
-    settings.academicYearStart = academicYearStart || `${startYear}-04-01`;
-    settings.academicYearEnd = academicYearEnd || `${endYear}-03-31`;
-
-    await settings.save();
-
-    res.json({
-      academicYear: settings.academicYear,
-      academicYearStart: settings.academicYearStart,
-      academicYearEnd: settings.academicYearEnd,
-    });
-  } catch (error) {
-    console.error('Error updating academic year settings:', error);
-    res.status(500).json({ error: 'Failed to update academic year settings' });
   }
-});
+);
 
 // Preview the impact of switching academic year before committing the change
 router.get('/academic-year/transition-preview', authenticate, async (req, res) => {
@@ -565,33 +680,38 @@ router.get('/onboarding-status', authenticate, async (req, res) => {
 });
 
 // Update onboarding step progress flag (for steps that can't be auto-detected)
-router.put('/onboarding-progress', authenticate, async (req, res) => {
-  try {
-    const { step, done = true } = req.body;
-    const validSteps = [
-      'schoolProfile',
-      'academicYear',
-      'classes',
-      'feeHeads',
-      'students',
-      'staff',
-      'notifications',
-    ];
-    if (!step || !validSteps.includes(step)) {
-      return res.status(400).json({ error: `step must be one of: ${validSteps.join(', ')}` });
+router.put(
+  '/onboarding-progress',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const { step, done = true } = req.body;
+      const validSteps = [
+        'schoolProfile',
+        'academicYear',
+        'classes',
+        'feeHeads',
+        'students',
+        'staff',
+        'notifications',
+      ];
+      if (!step || !validSteps.includes(step)) {
+        return res.status(400).json({ error: `step must be one of: ${validSteps.join(', ')}` });
+      }
+
+      const settings = await ensureSchoolSettings(req.user?.schoolId);
+      if (!settings.onboardingProgress) settings.onboardingProgress = {};
+      settings.onboardingProgress[step] = done;
+      settings.markModified('onboardingProgress');
+      await settings.save();
+
+      res.json({ ok: true, step, done });
+    } catch (error) {
+      console.error('Error updating onboarding progress:', error);
+      res.status(500).json({ error: 'Failed to update onboarding progress' });
     }
-
-    const settings = await ensureSchoolSettings(req.user?.schoolId);
-    if (!settings.onboardingProgress) settings.onboardingProgress = {};
-    settings.onboardingProgress[step] = done;
-    settings.markModified('onboardingProgress');
-    await settings.save();
-
-    res.json({ ok: true, step, done });
-  } catch (error) {
-    console.error('Error updating onboarding progress:', error);
-    res.status(500).json({ error: 'Failed to update onboarding progress' });
   }
-});
+);
 
 export default router;

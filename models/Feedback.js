@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const feedbackSchema = new mongoose.Schema(
   {
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     name: { type: String, required: true },
     phoneNumber: String,
     date: { type: String, default: () => new Date().toISOString().split('T')[0] },

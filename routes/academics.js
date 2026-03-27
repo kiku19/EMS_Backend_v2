@@ -263,9 +263,9 @@ async function computeAndSaveRanks(examId, classId, schoolId) {
   let currentRank = 1;
 
   for (let i = 0; i < allResults.length; i++) {
-    // Dense ranking: same percentage gets same rank
+    // Dense ranking: same percentage gets same rank, next unique value gets rank+1 (no gaps)
     if (i > 0 && allResults[i].percentage < allResults[i - 1].percentage) {
-      currentRank = i + 1;
+      currentRank++;
     }
 
     rankOps.push({
@@ -702,9 +702,13 @@ router.put(
       if (term !== undefined) updateData.term = term;
       if (duration !== undefined) updateData.duration = duration;
 
-      // Issue #17: Validate date range
-      const resolvedStartDate = startDate !== undefined ? startDate : undefined;
-      const resolvedEndDate = endDate !== undefined ? endDate : undefined;
+      // Issue #17: Validate date range (including partial updates against existing values)
+      const existingExamForDates = await Exam.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+      );
+      const resolvedStartDate =
+        startDate !== undefined ? startDate : existingExamForDates?.startDate;
+      const resolvedEndDate = endDate !== undefined ? endDate : existingExamForDates?.endDate;
       if (
         resolvedStartDate &&
         resolvedEndDate &&
@@ -854,9 +858,9 @@ router.post(
         ];
 
         if (studentIds.length > 0) {
-          const parents = await Parent.find({ 'children.studentId': { $in: studentIds } }).select(
-            '_id'
-          );
+          const parents = await Parent.find(
+            scopeBySchool(req.user?.schoolId, { 'children.studentId': { $in: studentIds } })
+          ).select('_id');
           for (const parent of parents) {
             sendNotification(
               parent._id,
@@ -883,6 +887,56 @@ router.post(
       }
 
       dispatchWebhookEvent(req.user?.schoolId, 'exam.published', {
+        id: exam._id,
+        name: exam.name,
+        classId: exam.classId,
+        academicYear: exam.academicYear,
+      }).catch(() => {});
+
+      res.json(exam);
+    } catch (error) {
+      res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+    }
+  }
+);
+
+// Unpublish exam results — allows retracting a published exam
+router.put(
+  '/exams/:id/unpublish',
+  authenticate,
+  checkPermission('academics', 'publish'),
+  async (req, res) => {
+    try {
+      // Only allow unpublishing exams that are currently published
+      const exam = await Exam.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, {
+          _id: req.params.id,
+          isPublished: true,
+          isDeleted: { $ne: true },
+        }),
+        { status: 'completed', isPublished: false, publishedAt: null },
+        { new: true }
+      );
+      if (!exam) {
+        return res.status(404).json({ error: 'Published exam not found' });
+      }
+
+      // Also unpublish all Result documents for this exam
+      await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: exam._id }), {
+        $set: { isPublished: false },
+      });
+
+      // Emit socket event for real-time update
+      const io = req.app.get('io');
+      emitEvent(io, EVENTS.RESULTS_PUBLISHED, {
+        schoolId: exam.schoolId?.toString(),
+        classId: exam.classId?.toString(),
+        examId: exam._id.toString(),
+        examName: exam.name,
+        unpublished: true,
+      });
+
+      dispatchWebhookEvent(req.user?.schoolId, 'exam.unpublished', {
         id: exam._id,
         name: exam.name,
         classId: exam.classId,
@@ -1156,7 +1210,16 @@ router.post(
         return {
           updateOne: {
             filter: { _id: result._id },
-            update: { $set: { percentage, grade, status, maxMarks: examMaxMarks } },
+            update: {
+              $set: {
+                percentage,
+                grade,
+                status,
+                maxMarks: examMaxMarks,
+                totalMarksObtained: marksObtained,
+                totalMaxMarks: examMaxMarks,
+              },
+            },
           },
         };
       });
@@ -1214,24 +1277,8 @@ router.get('/subjects', authenticate, checkPermission('academics', 'view'), asyn
       );
     }
 
-    const defaultSubjects = [
-      'Mathematics',
-      'English',
-      'Science',
-      'Social Studies',
-      'Hindi',
-      'Physics',
-      'Chemistry',
-      'Biology',
-      'Computer Science',
-      'History',
-      'Geography',
-      'Economics',
-      'Accountancy',
-      'Business Studies',
-    ];
-
-    res.json(defaultSubjects.map((name, index) => ({ id: index.toString(), name })));
+    // Return empty array when no subjects configured — avoid hardcoded defaults in multi-tenant system
+    res.json([]);
   } catch (error) {
     res.status(500).json({ error: 'An internal error occurred. Please try again.' });
   }

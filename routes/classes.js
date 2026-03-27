@@ -308,6 +308,7 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
           classTeacherName: cls.classTeacherId?.name,
           studentCount,
           academicYear: cls.academicYear,
+          strengthLimit: cls.strengthLimit,
         };
       })
     );
@@ -325,7 +326,7 @@ router.post(
   validateZod(createClassSchema),
   async (req, res) => {
     try {
-      const { name, section, classTeacherId, subjects, academicYear } = req.body;
+      const { name, section, classTeacherId, subjects, academicYear, strengthLimit } = req.body;
       const schoolId = await resolveRequestSchoolId(req);
       if (!schoolId) {
         return res.status(400).json({ error: 'School context is required' });
@@ -341,6 +342,7 @@ router.post(
         subjects,
         academicYear,
         schoolId,
+        ...(strengthLimit && { strengthLimit }),
       });
       await classDoc.save();
 
@@ -626,6 +628,7 @@ router.get('/:id', authenticate, async (req, res) => {
       classTeacherName: classDoc.classTeacherId?.name,
       studentCount,
       academicYear: classDoc.academicYear,
+      strengthLimit: classDoc.strengthLimit,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -639,7 +642,7 @@ router.put(
   validateZod(updateClassSchema),
   async (req, res) => {
     try {
-      const { name, section, classTeacherId, subjects, academicYear } = req.body;
+      const { name, section, classTeacherId, subjects, academicYear, strengthLimit } = req.body;
       const validation = await ensureTeacherAvailable(
         classTeacherId,
         req.params.id,
@@ -658,9 +661,17 @@ router.put(
 
       const oldTeacherId = scopedCheck.classTeacherId;
 
+      const updateData = { name, section, classTeacherId, subjects, academicYear };
+      if (strengthLimit) {
+        if (strengthLimit.current != null)
+          updateData['strengthLimit.current'] = strengthLimit.current;
+        if (strengthLimit.default != null)
+          updateData['strengthLimit.default'] = strengthLimit.default;
+      }
+
       const classDoc = await Class.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        { name, section, classTeacherId, subjects, academicYear },
+        updateData,
         { new: true }
       );
 
@@ -721,19 +732,40 @@ router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async 
     const schoolId = req.user?.schoolId;
     const classId = req.params.id;
 
-    // Soft-delete cascading related documents
+    // Soft-delete cascading related documents (standardized to soft-delete)
     const now = new Date();
     const softDelete = { $set: { isDeleted: true, deletedAt: now } };
     await Promise.all([
-      Timetable.deleteMany(scopeBySchool(schoolId, { classId })),
-      Exam.updateMany(scopeBySchool(schoolId, { classId }), softDelete),
-      Result.updateMany(scopeBySchool(schoolId, { classId }), softDelete),
-      Attendance.deleteMany(scopeBySchool(schoolId, { classId })),
-      StudentFeeStructure.deleteMany(scopeBySchool(schoolId, { classId })),
-      ClassAnnouncement.deleteMany(scopeBySchool(schoolId, { classId })),
-      ChapterProgress.deleteMany(scopeBySchool(schoolId, { classId })),
-      ClassRating.deleteMany(scopeBySchool(schoolId, { classId })),
-      Homework.deleteMany(scopeBySchool(schoolId, { classId })),
+      Timetable.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
+      Exam.updateMany(scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }), softDelete),
+      Result.updateMany(scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }), softDelete),
+      Attendance.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
+      StudentFeeStructure.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
+      ClassAnnouncement.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
+      ChapterProgress.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
+      ClassRating.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
+      Homework.updateMany(
+        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
+        softDelete
+      ),
     ]);
 
     // Remove this class's periods from all teacher timetables

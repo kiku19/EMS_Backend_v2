@@ -20,7 +20,6 @@ const modulePermissionSchema = new mongoose.Schema(
         'settings',
         'front-desk',
         'intake-forms',
-        'communication',
       ],
     },
     view: { type: Boolean, default: false },

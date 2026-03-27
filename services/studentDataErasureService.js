@@ -15,6 +15,8 @@ import ConsentRecord from '../models/ConsentRecord.js';
 import ChapterProgress from '../models/ChapterProgress.js';
 import ClassAnnouncement from '../models/ClassAnnouncement.js';
 import GatePass from '../models/GatePass.js';
+import HostelAllocation from '../models/HostelAllocation.js';
+import HostelRoom from '../models/HostelRoom.js';
 import Homework from '../models/Homework.js';
 import Notification from '../models/Notification.js';
 import NotificationPreference from '../models/NotificationPreference.js';
@@ -211,6 +213,30 @@ export async function permanentlyDeleteStudentData(studentId) {
       entityType: 'Student',
       entityId: normalizedStudentId,
     })
+  );
+
+  // Hostel cleanup: vacate active allocations and decrement room occupancy
+  const activeAllocations = await HostelAllocation.find({
+    studentId: normalizedStudentId,
+    status: 'active',
+  }).lean();
+
+  if (activeAllocations.length > 0) {
+    // Decrement occupiedBeds for each room
+    for (const alloc of activeAllocations) {
+      await HostelRoom.updateOne(
+        { _id: alloc.roomId, occupiedBeds: { $gt: 0 } },
+        { $inc: { occupiedBeds: -1 } }
+      );
+    }
+  }
+
+  // Mark all allocations as vacated (active or otherwise) and delete
+  deletedRecords.hostelAllocationsVacated = getModifiedCount(
+    await HostelAllocation.updateMany(
+      { studentId: normalizedStudentId, status: 'active' },
+      { $set: { status: 'vacated', endDate: new Date() } }
+    )
   );
 
   deletedRecords.students = getDeletedCount(await Student.deleteOne({ _id: normalizedStudentId }));

@@ -1,14 +1,17 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import Reminder from '../models/Reminder.js';
 import ReminderTemplate from '../models/ReminderTemplate.js';
 import ReminderLog from '../models/ReminderLog.js';
 import { scheduleJob, cancelJobs } from '../config/agenda.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireAdmin } from '../middleware/auth.js';
+import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { createLogger } from '../utils/logger.js';
 
 const router = express.Router();
 const logger = createLogger('Reminders');
 router.use(authenticate);
+router.use(requireAdmin);
 
 // POST /api/reminders - Create reminder
 router.post('/', async (req, res) => {
@@ -40,6 +43,7 @@ router.post('/', async (req, res) => {
       frequency,
       isActive: true,
       createdBy: user.id,
+      schoolId: user.schoolId,
       nextExecutionAt: new Date(startDate),
     });
 
@@ -74,7 +78,7 @@ router.get('/', async (req, res) => {
   try {
     const { type, isActive, page = 1, limit = 20 } = req.query;
 
-    const query = {};
+    const query = buildSchoolScopedQuery(req.user.schoolId, {});
     if (type) query.type = type;
     if (isActive !== undefined) query.isActive = isActive === 'true';
 
@@ -103,7 +107,9 @@ router.get('/', async (req, res) => {
 // GET /api/reminders/:id - Get reminder details
 router.get('/:id', async (req, res) => {
   try {
-    const reminder = await Reminder.findById(req.params.id)
+    const reminder = await Reminder.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    )
       .populate('createdBy', 'name')
       .populate('templateId', 'name message')
       .lean();
@@ -128,7 +134,9 @@ router.get('/:id', async (req, res) => {
 // PUT /api/reminders/:id - Update reminder
 router.put('/:id', async (req, res) => {
   try {
-    const reminder = await Reminder.findById(req.params.id);
+    const reminder = await Reminder.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
 
     if (!reminder) {
       return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
@@ -159,7 +167,9 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/reminders/:id - Delete reminder
 router.delete('/:id', async (req, res) => {
   try {
-    const reminder = await Reminder.findById(req.params.id);
+    const reminder = await Reminder.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
 
     if (!reminder) {
       return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
@@ -184,7 +194,9 @@ router.delete('/:id', async (req, res) => {
 // POST /api/reminders/:id/toggle - Toggle active/inactive
 router.post('/:id/toggle', async (req, res) => {
   try {
-    const reminder = await Reminder.findById(req.params.id);
+    const reminder = await Reminder.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
 
     if (!reminder) {
       return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
@@ -218,7 +230,9 @@ router.post('/:id/toggle', async (req, res) => {
 // POST /api/reminders/:id/duplicate - Duplicate reminder
 router.post('/:id/duplicate', async (req, res) => {
   try {
-    const reminder = await Reminder.findById(req.params.id);
+    const reminder = await Reminder.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
 
     if (!reminder) {
       return res.status(404).json({ error: req.t('common:routes.reminderNotFound') });
@@ -238,6 +252,7 @@ router.post('/:id/duplicate', async (req, res) => {
       frequency: reminder.frequency,
       isActive: false, // Start as inactive
       createdBy: req.user.id,
+      schoolId: req.user.schoolId,
       nextExecutionAt: null,
     });
 
@@ -255,7 +270,7 @@ router.post('/:id/duplicate', async (req, res) => {
 router.get('/templates/all', async (req, res) => {
   try {
     const { type } = req.query;
-    const query = {};
+    const query = buildSchoolScopedQuery(req.user.schoolId, {});
     if (type) query.type = type;
 
     const templates = await ReminderTemplate.find(query)
@@ -285,6 +300,7 @@ router.post('/templates', async (req, res) => {
       defaultChannels,
       isDefault: isDefault || false,
       createdBy: user.id,
+      schoolId: user.schoolId,
       category,
       description,
     });
@@ -301,7 +317,9 @@ router.post('/templates', async (req, res) => {
 // PUT /api/reminders/templates/:id - Update template
 router.put('/templates/:id', async (req, res) => {
   try {
-    const template = await ReminderTemplate.findById(req.params.id);
+    const template = await ReminderTemplate.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
 
     if (!template) {
       return res.status(404).json({ error: req.t('common:routes.templateNotFound') });
@@ -331,7 +349,16 @@ router.put('/templates/:id', async (req, res) => {
 // DELETE /api/reminders/templates/:id - Delete template
 router.delete('/templates/:id', async (req, res) => {
   try {
-    await ReminderTemplate.findByIdAndDelete(req.params.id);
+    const template = await ReminderTemplate.findOneAndDelete(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
+    if (!template) {
+      return res
+        .status(404)
+        .json({
+          error: req.t('common:routes.templateNotFound', { defaultValue: 'Template not found' }),
+        });
+    }
     res.json({ message: req.t('common:routes.templateDeletedSuccessfully') });
   } catch (error) {
     console.error('Error deleting template:', error);
@@ -357,11 +384,10 @@ router.get('/sms-delivery-stats', async (req, res) => {
 
     const matchStage = {};
     if (schoolId) {
-      // ReminderLog links to Reminder which links to schoolId — filter via reminder lookup
-      const reminderFilter = { schoolId };
-      if (reminderId) reminderFilter._id = reminderId;
-      const reminderIds = await Reminder.find(reminderFilter).distinct('_id');
-      matchStage.reminderId = { $in: reminderIds };
+      matchStage.schoolId = new mongoose.Types.ObjectId(schoolId);
+    }
+    if (reminderId) {
+      matchStage.reminderId = new mongoose.Types.ObjectId(reminderId);
     }
 
     if (from || to) {

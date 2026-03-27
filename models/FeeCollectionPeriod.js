@@ -8,7 +8,7 @@ const feeCollectionPeriodSchema = new mongoose.Schema(
 
     collectionInterval: {
       type: String,
-      enum: ['monthly', 'quarterly', 'term-wise', 'yearly'],
+      enum: ['monthly', 'quarterly', 'term', 'yearly'],
       default: 'yearly',
     },
 

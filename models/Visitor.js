@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const visitorSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     // Basic Information
     // Support both old (name, phone) and new (visitorName, phoneNumber) field names
     name: {
@@ -233,8 +233,10 @@ visitorSchema.methods.checkOut = function (checkedOutBy, notes = '') {
 };
 
 // Static method to get active visitors
-visitorSchema.statics.getActiveVisitors = function () {
-  return this.find({ status: 'ACTIVE' })
+visitorSchema.statics.getActiveVisitors = function (schoolId) {
+  const query = { status: 'ACTIVE' };
+  if (schoolId) query.schoolId = schoolId;
+  return this.find(query)
     .sort({ checkInTime: -1 })
     .populate('checkedInBy', 'name code')
     .populate('studentId', 'name admissionId rollNo classId')
@@ -242,16 +244,19 @@ visitorSchema.statics.getActiveVisitors = function () {
 };
 
 // Static method to get today's visitors
-visitorSchema.statics.getTodaysVisitors = function () {
+visitorSchema.statics.getTodaysVisitors = function (schoolId) {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 
   const endOfDay = new Date();
   endOfDay.setHours(23, 59, 59, 999);
 
-  return this.find({
+  const query = {
     checkInTime: { $gte: startOfDay, $lte: endOfDay },
-  })
+  };
+  if (schoolId) query.schoolId = schoolId;
+
+  return this.find(query)
     .sort({ checkInTime: -1 })
     .populate('checkedInBy', 'name code')
     .populate('studentId', 'name admissionId rollNo classId');

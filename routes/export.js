@@ -24,7 +24,8 @@ import {
   annualReportExportSchema,
   complianceChecklistExportSchema,
 } from '../validators/exportSchema.js';
-import { sendExport } from '../services/exportService.js';
+import { sendExport, sendStreamedExport } from '../services/exportService.js';
+import { featureGate } from '../middleware/featureGate.js';
 import {
   getFeeCollectionSummary,
   getOutstandingDues,
@@ -53,6 +54,9 @@ const formatDateSafe = (dateStr) => {
   return `${parts[2]}/${parts[1]}/${parts[0]}`;
 };
 router.use(authenticate);
+
+// Export routes require the advancedReports feature (Growth+ plan), matching report routes
+router.use(featureGate('advancedReports'));
 
 function toOid(id) {
   return new mongoose.Types.ObjectId(String(id));
@@ -98,38 +102,37 @@ router.get(
       if (classId) query.classId = toOid(classId);
       if (status) query.status = status;
 
-      const students = await Student.find(query).populate('classId', 'name section').lean();
-
       const selectedCols = columns
         ? STUDENT_COLS.filter((c) => columns.split(',').includes(c.key))
         : STUDENT_COLS;
 
-      const rows = students.map((s) => ({
-        admissionId: s.admissionId || s.admissionNo || '',
-        name: s.name || '',
-        class: s.classId
-          ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
-          : '',
-        rollNo: s.rollNo || '',
-        gender: s.gender || '',
-        dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString() : '',
-        phone: s.phone || '',
-        email: s.email || '',
-        parentName: s.parentName || s.fatherName || s.guardianName || '',
-        parentPhone: s.parentPhone || s.fatherPhone || '',
-        address: [s.address, s.city, s.state].filter(Boolean).join(', '),
-        status: s.status || '',
-        admissionDate: s.admissionDate ? new Date(s.admissionDate).toLocaleDateString() : '',
-        bloodGroup: s.bloodGroup || '',
-      }));
+      const cursor = Student.find(query).populate('classId', 'name section').lean().cursor();
 
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `students_${today()}`,
         title: 'Student List',
         sheetName: 'Students',
         headers: selectedCols,
-        rows,
+        cursor,
+        transform: (s) => ({
+          admissionId: s.admissionId || s.admissionNo || '',
+          name: s.name || '',
+          class: s.classId
+            ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
+            : '',
+          rollNo: s.rollNo || '',
+          gender: s.gender || '',
+          dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString() : '',
+          phone: s.phone || '',
+          email: s.email || '',
+          parentName: s.parentName || s.fatherName || s.guardianName || '',
+          parentPhone: s.parentPhone || s.fatherPhone || '',
+          address: [s.address, s.city, s.state].filter(Boolean).join(', '),
+          status: s.status || '',
+          admissionDate: s.admissionDate ? new Date(s.admissionDate).toLocaleDateString() : '',
+          bloodGroup: s.bloodGroup || '',
+        }),
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -166,33 +169,32 @@ router.get(
       if (status) query.status = status;
       if (department) query.department = department;
 
-      const staffList = await Staff.find(query, '-password').lean();
-
       const selectedCols = columns
         ? STAFF_COLS.filter((c) => columns.split(',').includes(c.key))
         : STAFF_COLS;
 
-      const rows = staffList.map((s) => ({
-        code: s.code || '',
-        name: s.name || '',
-        role: Array.isArray(s.role) ? s.role.join(', ') : s.role || '',
-        department: s.department || '',
-        designation: s.designation || '',
-        phone: s.phone || '',
-        email: s.email || '',
-        gender: s.gender || '',
-        joinDate: s.joinDate ? new Date(s.joinDate).toLocaleDateString() : '',
-        status: s.status || '',
-        salary: s.salary || 0,
-      }));
+      const cursor = Staff.find(query, '-password').lean().cursor();
 
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `staff_${today()}`,
         title: 'Staff List',
         sheetName: 'Staff',
         headers: selectedCols,
-        rows,
+        cursor,
+        transform: (s) => ({
+          code: s.code || '',
+          name: s.name || '',
+          role: Array.isArray(s.role) ? s.role.join(', ') : s.role || '',
+          department: s.department || '',
+          designation: s.designation || '',
+          phone: s.phone || '',
+          email: s.email || '',
+          gender: s.gender || '',
+          joinDate: s.joinDate ? new Date(s.joinDate).toLocaleDateString() : '',
+          status: s.status || '',
+          salary: s.salary || 0,
+        }),
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -802,11 +804,13 @@ router.get(
       const query = schoolScope(schoolId, { isDeleted: { $ne: true }, status: 'active' });
       if (academicYear) query.academicYear = academicYear;
 
-      const students = await Student.find(query).populate('classId', 'name section').lean();
+      // Stream through students with cursor to avoid loading all into memory
+      const cursor = Student.find(query).populate('classId', 'name section').lean().cursor();
 
-      // Group by class
+      // Group by class (classMap is bounded by number of classes, not students)
       const classMap = {};
-      for (const s of students) {
+      let s;
+      while ((s = await cursor.next())) {
         const key = s.classId
           ? `${s.classId.name}${s.classId.section ? ' ' + s.classId.section : ''}`
           : 'Unassigned';
@@ -875,40 +879,41 @@ router.get(
       if (academicYear) query.academicYear = academicYear;
       if (classId) query.classId = toOid(classId);
 
-      const students = await Student.find(query).populate('classId', 'name section').lean();
+      const cursor = Student.find(query).populate('classId', 'name section').lean().cursor();
+      let cbseRowIdx = 0;
 
-      const rows = students.map((s, idx) => {
-        const father = (s.parents || []).find(
-          (p) => (p.relationship || '').toLowerCase() === 'father'
-        );
-        const mother = (s.parents || []).find(
-          (p) => (p.relationship || '').toLowerCase() === 'mother'
-        );
-        return {
-          srNo: idx + 1,
-          admissionId: s.admissionId || '',
-          name: s.name || '',
-          dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
-          gender: s.gender || '',
-          category: s.category || 'General',
-          aadhaar: s.aadhaarNumber || '',
-          fatherName: father?.name || s.parentName || '',
-          motherName: mother?.name || '',
-          class: s.classId
-            ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
-            : '',
-          religion: s.religion || '',
-          nationality: s.nationality || 'Indian',
-        };
-      });
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `cbse_students_${today()}`,
         title: 'CBSE Affiliation — Student Data',
         sheetName: 'CBSE Students',
         headers: CBSE_COLS,
-        rows,
+        cursor,
+        transform: (s) => {
+          cbseRowIdx++;
+          const father = (s.parents || []).find(
+            (p) => (p.relationship || '').toLowerCase() === 'father'
+          );
+          const mother = (s.parents || []).find(
+            (p) => (p.relationship || '').toLowerCase() === 'mother'
+          );
+          return {
+            srNo: cbseRowIdx,
+            admissionId: s.admissionId || '',
+            name: s.name || '',
+            dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
+            gender: s.gender || '',
+            category: s.category || 'General',
+            aadhaar: s.aadhaarNumber || '',
+            fatherName: father?.name || s.parentName || '',
+            motherName: mother?.name || '',
+            class: s.classId
+              ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
+              : '',
+            religion: s.religion || '',
+            nationality: s.nationality || 'Indian',
+          };
+        },
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -946,32 +951,35 @@ router.get(
       if (academicYear) query.academicYear = academicYear;
       if (classId) query.classId = toOid(classId);
 
-      const students = await Student.find(query).populate('classId', 'name section').lean();
+      const cursor = Student.find(query).populate('classId', 'name section').lean().cursor();
+      let icseRowIdx = 0;
 
-      const rows = students.map((s, idx) => ({
-        srNo: idx + 1,
-        admissionId: s.admissionId || '',
-        name: s.name || '',
-        dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
-        gender: (s.gender || '').charAt(0).toUpperCase() || '',
-        category: s.category || 'General',
-        aadhaar: s.aadhaarNumber || '',
-        guardianName: s.parentName || s.parents?.[0]?.name || '',
-        class: s.classId
-          ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
-          : '',
-        motherTongue: s.motherTongue || '',
-        religion: s.religion || '',
-        previousSchool: s.previousSchool || '',
-      }));
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `icse_students_${today()}`,
         title: 'ICSE Portal — Student Data',
         sheetName: 'ICSE Students',
         headers: ICSE_COLS,
-        rows,
+        cursor,
+        transform: (s) => {
+          icseRowIdx++;
+          return {
+            srNo: icseRowIdx,
+            admissionId: s.admissionId || '',
+            name: s.name || '',
+            dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
+            gender: (s.gender || '').charAt(0).toUpperCase() || '',
+            category: s.category || 'General',
+            aadhaar: s.aadhaarNumber || '',
+            guardianName: s.parentName || s.parents?.[0]?.name || '',
+            class: s.classId
+              ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
+              : '',
+            motherTongue: s.motherTongue || '',
+            religion: s.religion || '',
+            previousSchool: s.previousSchool || '',
+          };
+        },
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -1009,32 +1017,35 @@ router.get(
       if (academicYear) query.academicYear = academicYear;
       if (classId) query.classId = toOid(classId);
 
-      const students = await Student.find(query).populate('classId', 'name section').lean();
+      const cursor = Student.find(query).populate('classId', 'name section').lean().cursor();
+      let sbRowIdx = 0;
 
-      const rows = students.map((s, idx) => ({
-        srNo: idx + 1,
-        admissionId: s.admissionId || '',
-        name: s.name || '',
-        dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
-        gender: s.gender || '',
-        category: s.category || 'General',
-        aadhaar: s.aadhaarNumber || '',
-        parentName: s.parentName || s.parents?.[0]?.name || '',
-        class: s.classId
-          ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
-          : '',
-        religion: s.religion || '',
-        motherTongue: s.motherTongue || '',
-        address: [s.address, s.city, s.state, s.zipCode].filter(Boolean).join(', '),
-      }));
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `state_board_students_${today()}`,
         title: 'State Board — Student Register',
         sheetName: 'Student Register',
         headers: STATE_BOARD_COLS,
-        rows,
+        cursor,
+        transform: (s) => {
+          sbRowIdx++;
+          return {
+            srNo: sbRowIdx,
+            admissionId: s.admissionId || '',
+            name: s.name || '',
+            dob: s.dateOfBirth ? formatDateSafe(s.dateOfBirth) : '',
+            gender: s.gender || '',
+            category: s.category || 'General',
+            aadhaar: s.aadhaarNumber || '',
+            parentName: s.parentName || s.parents?.[0]?.name || '',
+            class: s.classId
+              ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
+              : '',
+            religion: s.religion || '',
+            motherTongue: s.motherTongue || '',
+            address: [s.address, s.city, s.state, s.zipCode].filter(Boolean).join(', '),
+          };
+        },
       });
     } catch (err) {
       res.status(500).json({ error: err.message });

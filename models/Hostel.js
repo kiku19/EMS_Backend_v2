@@ -32,5 +32,9 @@ const hostelSchema = new mongoose.Schema(
 
 hostelSchema.index({ schoolId: 1, isActive: 1 });
 hostelSchema.index({ schoolId: 1, type: 1 });
+hostelSchema.index(
+  { schoolId: 1, name: 1 },
+  { unique: true, partialFilterExpression: { isActive: true } }
+);
 
 export default mongoose.model('Hostel', hostelSchema);

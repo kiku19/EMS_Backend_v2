@@ -161,13 +161,19 @@ import { sendAnnouncementSMS } from '../services/smsService.js';
 import { sendAnnouncementWhatsApp } from '../services/whatsappService.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { emitNotificationToUser } from '../utils/socketEmitter.js';
+import Staff from '../models/Staff.js';
+import Student from '../models/Student.js';
+import Parent from '../models/Parent.js';
+import pushNotificationService from '../services/pushNotificationService.js';
 
 const router = express.Router();
 router.use(authenticate);
 
 const getUserModel = (user) => {
   const normalizedRole = String(user?.role || '').toLowerCase();
-  return normalizedRole === 'parent' ? 'Student' : 'Staff';
+  if (normalizedRole === 'parent') return 'Parent';
+  if (normalizedRole === 'student') return 'Student';
+  return 'Staff';
 };
 
 const getPreferenceRole = (user) => {
@@ -206,6 +212,7 @@ router.get('/', async (req, res) => {
     const unreadCount = await Notification.getUnreadCount(user.id, query.userModel);
 
     res.json({
+      data: notifications,
       notifications,
       unreadCount,
     });
@@ -402,6 +409,24 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// DELETE /api/notifications/clear-all - Clear all notifications for the user
+router.delete('/clear-all', async (req, res) => {
+  try {
+    const user = req.user;
+    const userModel = getUserModel(user);
+
+    await Notification.deleteMany({
+      userId: user.id,
+      userModel,
+    });
+
+    res.json({ message: 'All notifications cleared' });
+  } catch (error) {
+    console.error('Error clearing notifications:', error);
+    res.status(500).json({ error: 'Failed to clear notifications' });
+  }
+});
+
 // GET /api/notification-preferences - Get user preferences
 router.get('/preferences/me', async (req, res) => {
   try {
@@ -483,6 +508,191 @@ router.post('/preferences/reset', async (req, res) => {
   }
 });
 
+/**
+ * Calculate the Date when quiet hours end, so queued notifications can be delivered.
+ * Uses the user's configured timezone to determine the correct UTC time.
+ * @param {Object} quietHours - { enabled, startTime, endTime, timezone }
+ * @returns {Date} The next time quiet hours end (as UTC Date)
+ */
+function getQuietHoursEndTime(quietHours) {
+  const tz = quietHours.timezone || 'Asia/Kolkata';
+  const [endH, endM] = (quietHours.endTime || '08:00').split(':').map(Number);
+
+  // Get current time in the user's timezone
+  let currentTimeInTz;
+  try {
+    currentTimeInTz = new Date().toLocaleTimeString('en-GB', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    currentTimeInTz = new Date().toTimeString().slice(0, 5);
+  }
+
+  // Build candidate: today's endTime in the user's timezone
+  // We construct an ISO string using the user's timezone date
+  let dateInTz;
+  try {
+    dateInTz = new Date().toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
+  } catch {
+    dateInTz = new Date().toISOString().slice(0, 10);
+  }
+
+  // Create candidate date string and parse it
+  const candidateStr = `${dateInTz}T${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}:00`;
+
+  // Calculate UTC offset for the timezone to convert candidate to UTC
+  const now = new Date();
+  const candidate = new Date(candidateStr);
+
+  // Use a simpler approach: calculate offset between server and target timezone
+  const tzOffset = getTimezoneOffsetMs(tz);
+  candidate.setTime(candidate.getTime() - tzOffset);
+
+  // If the candidate is in the past, move to tomorrow
+  if (candidate <= now) {
+    candidate.setDate(candidate.getDate() + 1);
+  }
+
+  return candidate;
+}
+
+/**
+ * Get the UTC offset in milliseconds for a given IANA timezone.
+ */
+function getTimezoneOffsetMs(tz) {
+  try {
+    const now = new Date();
+    // Get the timezone offset by comparing formatted dates
+    const utcStr = now.toLocaleString('en-US', { timeZone: 'UTC' });
+    const tzStr = now.toLocaleString('en-US', { timeZone: tz });
+    return new Date(tzStr).getTime() - new Date(utcStr).getTime();
+  } catch {
+    // Fallback: assume server timezone offset
+    return -new Date().getTimezoneOffset() * 60 * 1000;
+  }
+}
+
+/**
+ * Process notifications that were queued during quiet hours.
+ * Called by the Agenda job 'process queued notifications'.
+ */
+export async function processQueuedNotifications() {
+  const now = new Date();
+
+  // Find notifications with scheduledFor <= now that still have pending non-inapp channels
+  const queued = await Notification.find({
+    scheduledFor: { $lte: now, $ne: null },
+    'channels.status': 'pending',
+    'channels.type': { $ne: 'inapp' },
+  }).limit(100);
+
+  let processed = 0;
+
+  for (const notification of queued) {
+    try {
+      // Get user details
+      let userEmail, userPhone, userName;
+      if (notification.userModel === 'Staff') {
+        const staff = await Staff.findById(notification.userId);
+        userEmail = staff?.email;
+        userPhone = staff?.phone;
+        userName = staff?.name;
+      } else if (notification.userModel === 'Parent') {
+        const parent = await Parent.findById(notification.userId);
+        userEmail = parent?.email;
+        userPhone = parent?.phone;
+        userName = parent?.name;
+      } else {
+        const student = await Student.findById(notification.userId);
+        userEmail = student?.email;
+        userPhone = student?.phone;
+        userName = student?.name;
+      }
+
+      // Send via each pending channel
+      for (const channel of notification.channels) {
+        if (channel.type === 'inapp' || channel.status !== 'pending') continue;
+
+        try {
+          if (channel.type === 'email' && userEmail) {
+            await sendAnnouncementEmail(
+              { title: notification.title, content: notification.message },
+              { email: userEmail, name: userName }
+            );
+            channel.status = 'sent';
+            channel.sentAt = new Date();
+          } else if (channel.type === 'sms' && userPhone) {
+            await sendAnnouncementSMS(userPhone, notification.title, notification.message);
+            channel.status = 'sent';
+            channel.sentAt = new Date();
+          } else if (channel.type === 'whatsapp' && userPhone) {
+            await sendAnnouncementWhatsApp(userPhone, 'notification', {
+              title: notification.title,
+              message: notification.message,
+            });
+            channel.status = 'sent';
+            channel.sentAt = new Date();
+          }
+        } catch (channelErr) {
+          console.error(
+            `[QueuedNotif] Failed to send ${channel.type} for ${notification._id}:`,
+            channelErr.message
+          );
+          channel.status = 'failed';
+          channel.error = channelErr.message;
+        }
+      }
+
+      // Clear scheduledFor so it's not picked up again
+      notification.scheduledFor = null;
+      await notification.save();
+      processed++;
+    } catch (err) {
+      console.error(
+        `[QueuedNotif] Error processing notification ${notification._id}:`,
+        err.message
+      );
+    }
+  }
+
+  return { processed, total: queued.length };
+}
+
+/**
+ * Cleanup old notifications to prevent unbounded growth.
+ * - Deletes read notifications older than 90 days
+ * - Deletes ALL notifications older than 180 days
+ * Called by the Agenda job 'cleanup old notifications'.
+ */
+export async function cleanupOldNotifications() {
+  const now = new Date();
+
+  const ninetyDaysAgo = new Date(now);
+  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+  const oneEightyDaysAgo = new Date(now);
+  oneEightyDaysAgo.setDate(oneEightyDaysAgo.getDate() - 180);
+
+  // Delete read notifications older than 90 days
+  const readResult = await Notification.deleteMany({
+    read: true,
+    createdAt: { $lt: ninetyDaysAgo },
+  });
+
+  // Delete ALL notifications older than 180 days (even unread)
+  const allResult = await Notification.deleteMany({
+    createdAt: { $lt: oneEightyDaysAgo },
+  });
+
+  return {
+    readDeleted: readResult.deletedCount,
+    allDeleted: allResult.deletedCount,
+  };
+}
+
 // Helper function to send notification (used by other modules)
 export async function sendNotification(userId, userModel, type, title, message, options = {}) {
   try {
@@ -536,56 +746,77 @@ export async function sendNotification(userId, userModel, type, title, message, 
       ...(options.actionUrl && { actionUrl: options.actionUrl }),
     };
 
-    import('../services/pushNotificationService.js')
-      .then(({ default: pushService }) => {
-        if (userModel === 'Staff') {
-          pushService
-            .sendToUser(userId.toString(), title, message, pushData)
-            .catch((err) => console.error('[Push] sendToUser failed:', err.message));
-        } else if (userModel === 'Parent') {
-          pushService
-            .sendToParent(userId.toString(), title, message, pushData)
-            .catch((err) => console.error('[Push] sendToParent failed:', err.message));
-        }
-      })
-      .catch((err) => console.error('[Push] import pushNotificationService failed:', err.message));
+    try {
+      if (userModel === 'Staff') {
+        pushNotificationService
+          .sendToUser(userId.toString(), title, message, pushData)
+          .catch((err) => console.error('[Push] sendToUser failed:', err.message));
+      } else if (userModel === 'Parent') {
+        pushNotificationService
+          .sendToParent(userId.toString(), title, message, pushData)
+          .catch((err) => console.error('[Push] sendToParent failed:', err.message));
+      }
+    } catch (err) {
+      console.error('[Push] pushNotificationService failed:', err.message);
+    }
 
     // Send via channels (respect quiet hours)
     if (pref && pref.isQuietHours() && options.priority !== 'urgent') {
-      // Queue for later or skip
+      // Queue for delivery after quiet hours end
+      const scheduledFor = getQuietHoursEndTime(pref.quietHours);
+      notification.scheduledFor = scheduledFor;
+      // Mark non-inapp channels as queued
+      notification.channels = notification.channels.map((ch) =>
+        ch.type !== 'inapp' ? { ...(ch.toObject?.() || ch), status: 'pending' } : ch
+      );
+      await notification.save();
     } else {
-      // Send immediately
+      // Send immediately — get user details once
+      let userEmail, userPhone, userName;
+      if (userModel === 'Staff') {
+        const staff = await Staff.findById(userId);
+        userEmail = staff?.email;
+        userPhone = staff?.phone;
+        userName = staff?.name;
+      } else if (userModel === 'Parent') {
+        const parent = await Parent.findById(userId);
+        userEmail = parent?.email;
+        userPhone = parent?.phone;
+        userName = parent?.name;
+      } else {
+        const student = await Student.findById(userId);
+        userEmail = student?.email;
+        userPhone = student?.phone;
+        userName = student?.name;
+      }
+
       for (const channel of channels) {
         if (channel === 'inapp') continue;
 
-        // Get user details
-        let userEmail, userPhone, userName;
-        if (userModel === 'Staff') {
-          const staff = await import('../models/Staff.js').then((m) => m.default.findById(userId));
-          userEmail = staff?.email;
-          userPhone = staff?.phone;
-          userName = staff?.name;
-        } else {
-          const student = await import('../models/Student.js').then((m) =>
-            m.default.findById(userId)
-          );
-          userEmail = student?.email;
-          userPhone = student?.phone;
-          userName = student?.name;
-        }
-
-        // Send via channel
-        if (channel === 'email' && userEmail) {
-          await sendAnnouncementEmail(
-            { title, content: message },
-            { email: userEmail, name: userName }
-          );
-        } else if (channel === 'sms' && userPhone) {
-          await sendAnnouncementSMS(userPhone, title, message);
-        } else if (channel === 'whatsapp' && userPhone) {
-          await sendAnnouncementWhatsApp(userPhone, 'notification', { title, message });
+        const channelEntry = notification.channels.find((ch) => ch.type === channel);
+        try {
+          if (channel === 'email' && userEmail) {
+            await sendAnnouncementEmail(
+              { title, content: message },
+              { email: userEmail, name: userName }
+            );
+          } else if (channel === 'sms' && userPhone) {
+            await sendAnnouncementSMS(userPhone, title, message);
+          } else if (channel === 'whatsapp' && userPhone) {
+            await sendAnnouncementWhatsApp(userPhone, 'notification', { title, message });
+          }
+          if (channelEntry) {
+            channelEntry.status = 'sent';
+            channelEntry.sentAt = new Date();
+          }
+        } catch (channelErr) {
+          if (channelEntry) {
+            channelEntry.status = 'failed';
+            channelEntry.error = channelErr.message;
+          }
         }
       }
+      await notification.save();
     }
 
     return notification;

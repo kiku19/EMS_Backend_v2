@@ -1,9 +1,12 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import PTMSession from '../models/PTMSession.js';
+import { sendNotification } from './notifications.js';
+import { Parent, Student } from '../database.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -71,30 +74,65 @@ async function checkSessionConflict(
   return null;
 }
 
+// ─── Status Transition Map ───────────────────────────────────────────────────
+// Valid PTM session status transitions: scheduled → ongoing → completed
+// Cancellation is allowed from scheduled or ongoing (not from completed).
+// No backward transitions.
+const VALID_STATUS_TRANSITIONS = {
+  scheduled: ['ongoing', 'cancelled'],
+  ongoing: ['completed', 'cancelled'],
+  completed: [], // terminal state
+  cancelled: [], // terminal state
+};
+
+function validateStatusTransition(currentStatus, newStatus) {
+  if (currentStatus === newStatus) return null; // no-op is fine
+  const allowed = VALID_STATUS_TRANSITIONS[currentStatus];
+  if (!allowed || !allowed.includes(newStatus)) {
+    return `Cannot transition PTM session from "${currentStatus}" to "${newStatus}". Allowed transitions from "${currentStatus}": ${allowed?.length ? allowed.join(', ') : 'none (terminal state)'}`;
+  }
+  return null;
+}
+
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
-const createSessionSchema = z
-  .object({
-    title: z.string().min(2).max(200),
-    description: z.string().max(1000).optional().default(''),
-    sessionDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date' }),
-    startTime: z.string().regex(/^\d{2}:\d{2}$/, 'startTime must be HH:MM'),
-    endTime: z.string().regex(/^\d{2}:\d{2}$/, 'endTime must be HH:MM'),
-    slotDuration: z.number().int().min(5).max(120).optional().default(15),
-    classId: z.string().length(24, 'Invalid classId'),
-    staffId: z.string().length(24, 'Invalid staffId'),
-    venue: z.string().max(300).optional().default(''),
-    status: z
-      .enum(['scheduled', 'ongoing', 'completed', 'cancelled'])
-      .optional()
-      .default('scheduled'),
-  })
-  .refine((data) => data.startTime < data.endTime, {
+const createSessionBaseSchema = z.object({
+  title: z.string().min(2).max(200),
+  description: z.string().max(1000).optional().default(''),
+  sessionDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Invalid date' }),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'startTime must be HH:MM'),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'endTime must be HH:MM'),
+  slotDuration: z.number().int().min(5).max(120).optional().default(15),
+  classId: z.string().length(24, 'Invalid classId'),
+  staffId: z.string().length(24, 'Invalid staffId'),
+  venue: z.string().max(300).optional().default(''),
+  status: z
+    .enum(['scheduled', 'ongoing', 'completed', 'cancelled'])
+    .optional()
+    .default('scheduled'),
+});
+
+const createSessionSchema = createSessionBaseSchema.refine(
+  (data) => data.startTime < data.endTime,
+  {
     message: 'startTime must be before endTime',
     path: ['endTime'],
-  });
+  }
+);
 
-const updateSessionSchema = createSessionSchema.partial();
+const updateSessionSchema = createSessionBaseSchema.partial().refine(
+  (data) => {
+    // Only validate time ordering when both times are provided
+    if (data.startTime && data.endTime) {
+      return data.startTime < data.endTime;
+    }
+    return true;
+  },
+  {
+    message: 'startTime must be before endTime',
+    path: ['endTime'],
+  }
+);
 
 const addSlotSchema = z.object({
   studentId: z.string().length(24, 'Invalid studentId'),
@@ -197,6 +235,43 @@ router.post('/', authenticate, checkPermission('ptm', 'create'), async (req, res
       .populate('classId', 'name section')
       .populate('staffId', 'name role');
 
+    // Notify parents of students in this class about the scheduled PTM
+    try {
+      const className = populated.classId
+        ? `${populated.classId.name}${populated.classId.section ? ' ' + populated.classId.section : ''}`
+        : 'your class';
+      const dateStr = new Date(data.sessionDate).toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+      const students = await Student.find({
+        classId: data.classId,
+        schoolId,
+        isDeleted: { $ne: true },
+      }).select('_id');
+      const studentIds = students.map((s) => s._id);
+      if (studentIds.length > 0) {
+        const parents = await Parent.find({ 'children.studentId': { $in: studentIds } }).select(
+          '_id'
+        );
+        for (const parent of parents) {
+          sendNotification(
+            parent._id,
+            'Parent',
+            'ptm',
+            'PTM Session Scheduled',
+            `A Parent-Teacher Meeting for ${className} has been scheduled on ${dateStr} (${data.startTime}–${data.endTime}).`,
+            { relatedId: session._id, relatedType: 'PTMSession' }
+          ).catch((err) =>
+            console.error('[PTM] Notification error (parent scheduled):', err.message)
+          );
+        }
+      }
+    } catch (notifErr) {
+      console.error('[PTM] Failed to send schedule notifications:', notifErr.message);
+    }
+
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
     console.error('❌ POST /ptm error:', error);
@@ -246,30 +321,49 @@ router.put('/:id', authenticate, checkPermission('ptm', 'edit'), async (req, res
     const update = { ...parsed.data };
     if (update.sessionDate) update.sessionDate = new Date(update.sessionDate);
 
-    // If time/date/staff/class changed, check for conflicts
-    if (
+    // Fetch existing session when we need to validate status transitions or conflicts
+    const needsExisting =
+      update.status ||
       update.sessionDate ||
       update.startTime ||
       update.endTime ||
       update.staffId ||
-      update.classId
-    ) {
-      const existing = await PTMSession.findOne(
+      update.classId;
+
+    let existing;
+    if (needsExisting) {
+      existing = await PTMSession.findOne(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
-      if (existing) {
-        const conflict = await checkSessionConflict(
-          req.user?.schoolId,
-          update.sessionDate || existing.sessionDate,
-          update.startTime || existing.startTime,
-          update.endTime || existing.endTime,
-          update.staffId || existing.staffId,
-          update.classId || existing.classId,
-          existing._id
-        );
-        if (conflict) {
-          return res.status(409).json({ success: false, message: conflict });
-        }
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'PTM session not found' });
+      }
+    }
+
+    // Validate status transition
+    if (update.status && existing) {
+      const transitionError = validateStatusTransition(existing.status, update.status);
+      if (transitionError) {
+        return res.status(400).json({ success: false, message: transitionError });
+      }
+    }
+
+    // If time/date/staff/class changed, check for conflicts
+    if (
+      existing &&
+      (update.sessionDate || update.startTime || update.endTime || update.staffId || update.classId)
+    ) {
+      const conflict = await checkSessionConflict(
+        req.user?.schoolId,
+        update.sessionDate || existing.sessionDate,
+        update.startTime || existing.startTime,
+        update.endTime || existing.endTime,
+        update.staffId || existing.staffId,
+        update.classId || existing.classId,
+        existing._id
+      );
+      if (conflict) {
+        return res.status(409).json({ success: false, message: conflict });
       }
     }
 
@@ -282,6 +376,36 @@ router.put('/:id', authenticate, checkPermission('ptm', 'edit'), async (req, res
       .populate('staffId', 'name role');
 
     if (!session) return res.status(404).json({ success: false, message: 'PTM session not found' });
+
+    // Notify booked parents when a session is cancelled
+    if (update.status === 'cancelled') {
+      try {
+        const bookedSlots = session.slots?.filter((s) => s.status === 'booked') || [];
+        const bookedStudentIds = bookedSlots.map((s) => s.studentId);
+        if (bookedStudentIds.length > 0) {
+          const className = session.classId
+            ? `${session.classId.name}${session.classId.section ? ' ' + session.classId.section : ''}`
+            : '';
+          const parents = await Parent.find({
+            'children.studentId': { $in: bookedStudentIds },
+          }).select('_id');
+          for (const parent of parents) {
+            sendNotification(
+              parent._id,
+              'Parent',
+              'ptm',
+              'PTM Session Cancelled',
+              `The PTM session "${session.title}"${className ? ` for ${className}` : ''} has been cancelled.`,
+              { relatedId: session._id, relatedType: 'PTMSession' }
+            ).catch((err) =>
+              console.error('[PTM] Notification error (parent cancelled):', err.message)
+            );
+          }
+        }
+      } catch (notifErr) {
+        console.error('[PTM] Failed to send cancellation notifications:', notifErr.message);
+      }
+    }
 
     res.json({ success: true, data: session });
   } catch (error) {
@@ -306,6 +430,31 @@ router.delete('/:id', authenticate, checkPermission('ptm', 'delete'), async (req
 
     if (!session) return res.status(404).json({ success: false, message: 'PTM session not found' });
 
+    // Notify booked parents about the cancellation
+    try {
+      const bookedSlots = session.slots?.filter((s) => s.status === 'booked') || [];
+      const bookedStudentIds = bookedSlots.map((s) => s.studentId);
+      if (bookedStudentIds.length > 0) {
+        const parents = await Parent.find({
+          'children.studentId': { $in: bookedStudentIds },
+        }).select('_id');
+        for (const parent of parents) {
+          sendNotification(
+            parent._id,
+            'Parent',
+            'ptm',
+            'PTM Session Cancelled',
+            `The PTM session "${session.title}" has been cancelled.`,
+            { relatedId: session._id, relatedType: 'PTMSession' }
+          ).catch((err) =>
+            console.error('[PTM] Notification error (parent delete-cancelled):', err.message)
+          );
+        }
+      }
+    } catch (notifErr) {
+      console.error('[PTM] Failed to send delete cancellation notifications:', notifErr.message);
+    }
+
     res.json({ success: true, message: 'PTM session cancelled successfully' });
   } catch (error) {
     console.error('❌ DELETE /ptm/:id error:', error);
@@ -320,6 +469,10 @@ router.delete('/:id', authenticate, checkPermission('ptm', 'delete'), async (req
 /**
  * POST /api/ptm/:id/slots
  * Add a slot booking to a PTM session
+ *
+ * Uses a MongoDB transaction to prevent the race condition where two
+ * concurrent requests both pass the conflict check and book the same
+ * time slot. The transaction ensures the read-check-write is atomic.
  */
 router.post('/:id/slots', authenticate, checkPermission('ptm', 'create'), async (req, res) => {
   try {
@@ -330,63 +483,107 @@ router.post('/:id/slots', authenticate, checkPermission('ptm', 'create'), async 
         .json({ success: false, message: 'Validation failed', errors: parsed.error.errors });
     }
 
-    const session = await PTMSession.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-    );
-    if (!session) return res.status(404).json({ success: false, message: 'PTM session not found' });
+    const mongoSession = await mongoose.startSession();
+    let result;
+    try {
+      await mongoSession.withTransaction(async () => {
+        const session = await PTMSession.findOne(
+          scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+        ).session(mongoSession);
+        if (!session) {
+          throw Object.assign(new Error('PTM session not found'), { statusCode: 404 });
+        }
 
-    // Check for duplicate student booking in this PTM session
-    const existingStudentBooking = session.slots.find(
-      (s) => s.status !== 'cancelled' && String(s.studentId) === String(parsed.data.studentId)
-    );
-    if (existingStudentBooking) {
-      return res.status(409).json({
-        success: false,
-        message: `This student already has a booking for this PTM session at ${existingStudentBooking.scheduledTime}`,
+        // Check for duplicate student booking in this PTM session
+        const existingStudentBooking = session.slots.find(
+          (s) => s.status !== 'cancelled' && String(s.studentId) === String(parsed.data.studentId)
+        );
+        if (existingStudentBooking) {
+          throw Object.assign(
+            new Error(
+              `This student already has a booking for this PTM session at ${existingStudentBooking.scheduledTime}`
+            ),
+            { statusCode: 409 }
+          );
+        }
+
+        // Check that slot time falls within session time range
+        const newStart = timeToMinutes(parsed.data.scheduledTime);
+        const newEnd = newStart + (session.slotDuration || 15);
+        const sessionStart = timeToMinutes(session.startTime);
+        const sessionEnd = timeToMinutes(session.endTime);
+        if (newStart < sessionStart || newEnd > sessionEnd) {
+          throw Object.assign(
+            new Error(
+              `Slot time must fall within session hours (${session.startTime}–${session.endTime})`
+            ),
+            { statusCode: 400 }
+          );
+        }
+
+        // Check for overlapping slot (accounts for slotDuration)
+        const timeConflict = session.slots.find((s) => {
+          if (s.status === 'cancelled') return false;
+          const slotStart = timeToMinutes(s.scheduledTime);
+          const slotEnd = slotStart + (session.slotDuration || 15);
+          return newStart < slotEnd && slotStart < newEnd;
+        });
+        if (timeConflict) {
+          throw Object.assign(
+            new Error(
+              `Time slot overlaps with existing booking at ${timeConflict.scheduledTime} (${session.slotDuration} min slots)`
+            ),
+            { statusCode: 409 }
+          );
+        }
+
+        session.slots.push(parsed.data);
+        await session.save({ session: mongoSession });
+
+        await session.populate('slots.studentId', 'name admissionNo rollNo');
+        result = session.slots[session.slots.length - 1];
       });
+    } finally {
+      await mongoSession.endSession();
     }
 
-    // Check that slot time falls within session time range
-    const newStart = timeToMinutes(parsed.data.scheduledTime);
-    const newEnd = newStart + (session.slotDuration || 15);
-    const sessionStart = timeToMinutes(session.startTime);
-    const sessionEnd = timeToMinutes(session.endTime);
-    if (newStart < sessionStart || newEnd > sessionEnd) {
-      return res.status(400).json({
-        success: false,
-        message: `Slot time must fall within session hours (${session.startTime}–${session.endTime})`,
-      });
+    // Notify the teacher about the new slot booking (fire-and-forget)
+    try {
+      const ptmDoc = await PTMSession.findById(req.params.id).select('staffId title').lean();
+      if (ptmDoc?.staffId) {
+        const studentName = result?.studentId?.name || parsed.data.parentName;
+        sendNotification(
+          ptmDoc.staffId,
+          'Staff',
+          'ptm',
+          'New PTM Slot Booked',
+          `${studentName} has booked a PTM slot at ${parsed.data.scheduledTime} for "${ptmDoc.title}".`,
+          { relatedId: ptmDoc._id, relatedType: 'PTMSession' }
+        ).catch((err) =>
+          console.error('[PTM] Notification error (teacher slot booked):', err.message)
+        );
+      }
+    } catch (notifErr) {
+      console.error('[PTM] Failed to send slot booking notification:', notifErr.message);
     }
 
-    // Check for overlapping slot (accounts for slotDuration)
-    const timeConflict = session.slots.find((s) => {
-      if (s.status === 'cancelled') return false;
-      const slotStart = timeToMinutes(s.scheduledTime);
-      const slotEnd = slotStart + (session.slotDuration || 15);
-      return newStart < slotEnd && slotStart < newEnd;
-    });
-    if (timeConflict) {
-      return res.status(409).json({
-        success: false,
-        message: `Time slot overlaps with existing booking at ${timeConflict.scheduledTime} (${session.slotDuration} min slots)`,
-      });
-    }
-
-    session.slots.push(parsed.data);
-    await session.save();
-
-    await session.populate('slots.studentId', 'name admissionNo rollNo');
-
-    res.status(201).json({ success: true, data: session.slots[session.slots.length - 1] });
+    res.status(201).json({ success: true, data: result });
   } catch (error) {
-    console.error('❌ POST /ptm/:id/slots error:', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    console.error('POST /ptm/:id/slots error:', error);
     res.status(500).json({ success: false, message: 'Failed to add slot', error: error.message });
   }
 });
 
 /**
  * PUT /api/ptm/:sessionId/slots/:slotId
- * Update a slot (status, notes)
+ * Update a slot (status, notes, scheduledTime)
+ *
+ * When scheduledTime is changed, uses a MongoDB transaction to make the
+ * conflict check and update atomic — preventing the race condition where
+ * two concurrent reschedules both pass the overlap check.
  */
 router.put(
   '/:sessionId/slots/:slotId',
@@ -401,53 +598,85 @@ router.put(
           .json({ success: false, message: 'Validation failed', errors: parsed.error.errors });
       }
 
-      // If scheduledTime is being changed, check for overlap before updating
-      if (parsed.data.scheduledTime) {
-        const session = await PTMSession.findOne(
-          scopeBySchool(req.user?.schoolId, { _id: req.params.sessionId, isDeleted: { $ne: true } })
-        );
+      // If scheduledTime is NOT being changed, no conflict check needed — do a simple update
+      if (!parsed.data.scheduledTime) {
+        const updateFields = {};
+        for (const [key, val] of Object.entries(parsed.data)) {
+          updateFields[`slots.$.${key}`] = val;
+        }
+
+        const session = await PTMSession.findOneAndUpdate(
+          scopeBySchool(req.user?.schoolId, {
+            _id: req.params.sessionId,
+            'slots._id': req.params.slotId,
+            isDeleted: { $ne: true },
+          }),
+          { $set: updateFields },
+          { new: true }
+        ).populate('slots.studentId', 'name admissionNo rollNo');
+
         if (!session)
           return res.status(404).json({ success: false, message: 'Session or slot not found' });
 
-        const newStart = timeToMinutes(parsed.data.scheduledTime);
-        const newEnd = newStart + (session.slotDuration || 15);
-        const timeConflict = session.slots.find((s) => {
-          if (String(s._id) === req.params.slotId) return false; // skip self
-          if (s.status === 'cancelled') return false;
-          const slotStart = timeToMinutes(s.scheduledTime);
-          const slotEnd = slotStart + (session.slotDuration || 15);
-          return newStart < slotEnd && slotStart < newEnd;
-        });
-        if (timeConflict) {
-          return res.status(409).json({
-            success: false,
-            message: `Time slot overlaps with existing booking at ${timeConflict.scheduledTime} (${session.slotDuration} min slots)`,
+        const updatedSlot = session.slots.id(req.params.slotId);
+        return res.json({ success: true, data: updatedSlot });
+      }
+
+      // scheduledTime IS being changed — use a transaction to make
+      // the conflict check and update atomic
+      const mongoSession = await mongoose.startSession();
+      let updatedSlot;
+      try {
+        await mongoSession.withTransaction(async () => {
+          const session = await PTMSession.findOne(
+            scopeBySchool(req.user?.schoolId, {
+              _id: req.params.sessionId,
+              isDeleted: { $ne: true },
+            })
+          ).session(mongoSession);
+
+          if (!session || !session.slots.id(req.params.slotId)) {
+            throw Object.assign(new Error('Session or slot not found'), { statusCode: 404 });
+          }
+
+          const newStart = timeToMinutes(parsed.data.scheduledTime);
+          const newEnd = newStart + (session.slotDuration || 15);
+          const timeConflict = session.slots.find((s) => {
+            if (String(s._id) === req.params.slotId) return false; // skip self
+            if (s.status === 'cancelled') return false;
+            const slotStart = timeToMinutes(s.scheduledTime);
+            const slotEnd = slotStart + (session.slotDuration || 15);
+            return newStart < slotEnd && slotStart < newEnd;
           });
-        }
+          if (timeConflict) {
+            throw Object.assign(
+              new Error(
+                `Time slot overlaps with existing booking at ${timeConflict.scheduledTime} (${session.slotDuration} min slots)`
+              ),
+              { statusCode: 409 }
+            );
+          }
+
+          // Apply all updates to the slot
+          const slot = session.slots.id(req.params.slotId);
+          for (const [key, val] of Object.entries(parsed.data)) {
+            slot[key] = val;
+          }
+          await session.save({ session: mongoSession });
+
+          await session.populate('slots.studentId', 'name admissionNo rollNo');
+          updatedSlot = session.slots.id(req.params.slotId);
+        });
+      } finally {
+        await mongoSession.endSession();
       }
 
-      const updateFields = {};
-      for (const [key, val] of Object.entries(parsed.data)) {
-        updateFields[`slots.$.${key}`] = val;
-      }
-
-      const session = await PTMSession.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, {
-          _id: req.params.sessionId,
-          'slots._id': req.params.slotId,
-          isDeleted: { $ne: true },
-        }),
-        { $set: updateFields },
-        { new: true }
-      ).populate('slots.studentId', 'name admissionNo rollNo');
-
-      if (!session)
-        return res.status(404).json({ success: false, message: 'Session or slot not found' });
-
-      const updatedSlot = session.slots.id(req.params.slotId);
       res.json({ success: true, data: updatedSlot });
     } catch (error) {
-      console.error('❌ PUT /ptm/:sessionId/slots/:slotId error:', error);
+      if (error.statusCode) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      console.error('PUT /ptm/:sessionId/slots/:slotId error:', error);
       res
         .status(500)
         .json({ success: false, message: 'Failed to update slot', error: error.message });

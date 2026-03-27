@@ -156,12 +156,14 @@ export async function canMessageUser(senderId, senderType, receiverId, receiverT
 }
 
 // Middleware for REST API routes
-export async function checkChatPermission(permission) {
+export function checkChatPermission(permission) {
   return async (req, res, next) => {
     try {
-      const { userId, userType } = req.query || req.body;
+      // Read identity from authenticated user (req.user), NOT from request body
+      const userId = req.user?.id;
+      const userType = req.user?.role === 'student' ? 'student' : 'staff';
 
-      if (!userId || !userType) {
+      if (!userId) {
         return res.status(401).json({ error: req.t('auth:errors.authRequired') });
       }
 

@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const substitutionSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     date: { type: String, required: true }, // YYYY-MM-DD format
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
     period: { type: String, required: true }, // Period number (1-8)

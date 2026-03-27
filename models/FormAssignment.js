@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const formAssignmentSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     formId: { type: mongoose.Schema.Types.ObjectId, ref: 'IntakeForm', required: true },
     assignedToEmail: String,
     assignedToPhone: String,

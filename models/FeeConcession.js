@@ -54,4 +54,6 @@ const feeConcessionSchema = new mongoose.Schema(
 
 feeConcessionSchema.index({ schoolId: 1, academicYear: 1, isActive: 1 });
 
-export default mongoose.model('FeeConsession', feeConcessionSchema);
+// Register with corrected spelling; explicit collection name for backward compatibility
+const FeeConcession = mongoose.model('FeeConcession', feeConcessionSchema, 'feeconsessions');
+export default FeeConcession;

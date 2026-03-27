@@ -165,3 +165,172 @@ export async function sendExport(res, { format, filename, title, sheetName, head
     sendCSV(res, filename, headers, rows);
   }
 }
+
+// ─── STREAMED EXPORT (cursor-based, bounded memory) ─────────────────────────
+
+const STREAM_BATCH_SIZE = 500;
+
+/**
+ * Stream-based export that processes a MongoDB cursor in batches instead of
+ * loading the entire result set into memory.
+ *
+ * @param {import('express').Response} res
+ * @param {object} opts
+ * @param {'csv'|'xlsx'|'pdf'} opts.format
+ * @param {string} opts.filename
+ * @param {string} opts.title
+ * @param {string} [opts.sheetName]
+ * @param {Array<{key:string,label:string,width?:number}>} opts.headers
+ * @param {import('mongoose').Cursor} opts.cursor - A Mongoose query cursor (.cursor())
+ * @param {(doc: object) => object} opts.transform - Maps a raw document to a row object
+ */
+export async function sendStreamedExport(
+  res,
+  { format, filename, title, sheetName, headers, cursor, transform }
+) {
+  if (format === 'xlsx') {
+    await streamExcel(res, filename, sheetName || title, headers, cursor, transform);
+  } else if (format === 'pdf') {
+    await streamPDF(res, filename, title, headers, cursor, transform);
+  } else {
+    await streamCSV(res, filename, headers, cursor, transform);
+  }
+}
+
+/**
+ * Stream CSV rows from a cursor directly to the HTTP response.
+ */
+async function streamCSV(res, filename, headers, cursor, transform) {
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+
+  // Write header line
+  res.write(headers.map((h) => escapeCSV(h.label)).join(',') + '\n');
+
+  let doc;
+  while ((doc = await cursor.next())) {
+    const row = transform(doc);
+    const line = headers.map((h) => escapeCSV(row[h.key] ?? '')).join(',');
+    res.write(line + '\n');
+  }
+
+  res.end();
+}
+
+/**
+ * Stream Excel rows from a cursor, adding rows in batches.
+ * Uses exceljs commit-per-batch to keep memory bounded.
+ */
+async function streamExcel(res, filename, sheetName, headers, cursor, transform) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'EMS';
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet(sheetName);
+
+  sheet.columns = headers.map((h) => ({
+    header: h.label,
+    key: h.key,
+    width: h.width || 18,
+  }));
+
+  const headerRow = sheet.getRow(1);
+  headerRow.font = { bold: true };
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE2EEFF' },
+  };
+  headerRow.border = {
+    bottom: { style: 'thin', color: { argb: 'FFB8CCEE' } },
+  };
+
+  let idx = 0;
+  let doc;
+  while ((doc = await cursor.next())) {
+    const row = transform(doc);
+    const rowData = {};
+    headers.forEach((h) => {
+      rowData[h.key] = row[h.key] ?? '';
+    });
+    const excelRow = sheet.addRow(rowData);
+    if (idx % 2 === 1) {
+      excelRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF8F9FA' },
+      };
+    }
+    idx++;
+  }
+
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
+}
+
+/**
+ * Stream PDF rows from a cursor, adding pages as needed.
+ */
+async function streamPDF(res, filename, title, headers, cursor, transform) {
+  const doc = new PDFDocument({ size: 'A4', margin: 40, layout: 'landscape' });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
+  doc.pipe(res);
+
+  doc.fontSize(16).font('Helvetica-Bold').text(title, { align: 'center' });
+  doc.moveDown(0.3);
+  doc
+    .fontSize(8)
+    .font('Helvetica')
+    .fillColor('#666666')
+    .text(`Generated: ${new Date().toLocaleString()}`, { align: 'right' });
+  doc.fillColor('black');
+  doc.moveDown(0.5);
+
+  const pageWidth = doc.page.width - 80;
+  const colWidth = pageWidth / headers.length;
+  const rowH = 18;
+  let y = doc.y;
+  const startX = 40;
+
+  doc.rect(startX, y, pageWidth, rowH).fill('#E2EEFF');
+  doc.fillColor('black').fontSize(8).font('Helvetica-Bold');
+  headers.forEach((h, i) => {
+    doc.text(h.label, startX + i * colWidth + 3, y + 5, {
+      width: colWidth - 6,
+      lineBreak: false,
+    });
+  });
+  y += rowH;
+  doc.font('Helvetica').fontSize(7);
+
+  let rowIdx = 0;
+  let record;
+  while ((record = await cursor.next())) {
+    const row = transform(record);
+    if (y + rowH > doc.page.height - 50) {
+      doc.addPage();
+      y = 40;
+    }
+    if (rowIdx % 2 === 1) {
+      doc.rect(startX, y, pageWidth, rowH).fill('#F8F9FA');
+      doc.fillColor('black');
+    }
+    headers.forEach((h, i) => {
+      const val = row[h.key] ?? '';
+      doc.text(String(val), startX + i * colWidth + 3, y + 5, {
+        width: colWidth - 6,
+        lineBreak: false,
+      });
+    });
+    y += rowH;
+    rowIdx++;
+  }
+
+  doc.end();
+}

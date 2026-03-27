@@ -31,11 +31,14 @@ async function resolveRequestSchoolId(req) {
 const canEditTeacherTimetable = async (req, res, next) => {
   try {
     const { teacherId } = req.params;
-    const userId = req.user?.id;
+    const userId = req.user?.userId || req.user?.id;
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
 
-    // Fetch user permissions from database
+    // Fetch user permissions from database, scoped by school for multi-tenancy
     const { UserPermission } = await import('../database.js');
-    const userPermission = await UserPermission.findOne({ userId });
+    const permQuery = { userId };
+    if (schoolId) permQuery.schoolId = schoolId;
+    const userPermission = await UserPermission.findOne(permQuery);
 
     // If user is admin, allow
     if (userPermission && userPermission.role === 'admin') {
@@ -43,8 +46,12 @@ const canEditTeacherTimetable = async (req, res, next) => {
       return next();
     }
 
+    // Check if logged-in user is the same staff member as teacherId
+    // req.user.userId is the Staff _id (from JWT), teacherId is also a Staff _id
+    const isSelf = String(userId) === String(teacherId);
+
     // If user is trying to edit their own timetable, deny
-    if (String(userId) === String(teacherId)) {
+    if (isSelf) {
       return res.status(403).json({
         success: false,
         type: 'PermissionError',
@@ -82,11 +89,14 @@ const canEditTeacherTimetable = async (req, res, next) => {
 const canViewTeacherTimetable = async (req, res, next) => {
   try {
     const { teacherId } = req.params;
-    const userId = req.user?.id;
+    const userId = req.user?.userId || req.user?.id;
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
 
-    // Fetch user permissions from database
+    // Fetch user permissions from database, scoped by school for multi-tenancy
     const { UserPermission } = await import('../database.js');
-    const userPermission = await UserPermission.findOne({ userId });
+    const permQuery = { userId };
+    if (schoolId) permQuery.schoolId = schoolId;
+    const userPermission = await UserPermission.findOne(permQuery);
 
     // If user is admin, allow
     if (userPermission && userPermission.role === 'admin') {
@@ -95,6 +105,7 @@ const canViewTeacherTimetable = async (req, res, next) => {
     }
 
     // If user is viewing their own timetable, allow
+    // req.user.userId is the Staff _id (from JWT), teacherId is also a Staff _id
     if (String(userId) === String(teacherId)) {
       req.userPermissions = userPermission;
       return next();
@@ -296,7 +307,9 @@ router.put(
 
       // If classId is provided, validate class exists and teacher qualification
       if (classId) {
-        const classDoc = await Class.findOne({ _id: classId, isDeleted: { $ne: true } });
+        const classDoc = await Class.findOne(
+          scopeBySchool(schoolId, { _id: classId, isDeleted: { $ne: true } })
+        );
         if (!classDoc) {
           return res.status(404).json({
             success: false,
@@ -446,7 +459,9 @@ router.post(
       }
 
       // Validate new class exists
-      const newClass = await Class.findOne({ _id: newClassId, isDeleted: { $ne: true } });
+      const newClass = await Class.findOne(
+        scopeBySchool(schoolId, { _id: newClassId, isDeleted: { $ne: true } })
+      );
       if (!newClass) {
         return res.status(404).json({
           success: false,
@@ -456,7 +471,9 @@ router.post(
 
       // Validate old class exists if provided
       if (oldClassId) {
-        const oldClass = await Class.findOne({ _id: oldClassId, isDeleted: { $ne: true } });
+        const oldClass = await Class.findOne(
+          scopeBySchool(schoolId, { _id: oldClassId, isDeleted: { $ne: true } })
+        );
         if (!oldClass) {
           return res.status(404).json({
             success: false,

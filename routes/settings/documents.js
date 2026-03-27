@@ -1,6 +1,7 @@
 import express from 'express';
 import { SchoolSettings } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
+import { checkPermission } from '../../middleware/auth/permissions.js';
 import Reminder from '../../models/Reminder.js';
 import { ensureSchoolSettings } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
@@ -77,103 +78,125 @@ router.get('/document-config', authenticate, async (req, res) => {
 });
 
 // Create document configuration
-router.post('/document-config', authenticate, async (req, res) => {
-  try {
-    const { DocumentConfig } = await import('../../database.js');
-    // Only allow known fields — prevent injection of _id, createdAt, etc.
-    const {
-      documentName,
-      isRequired,
-      uploadType,
-      allowedFormats,
-      maxFileSize,
-      displayOrder,
-      description,
-    } = req.body;
-    const config = await DocumentConfig.create({
-      documentName,
-      isRequired,
-      uploadType,
-      allowedFormats,
-      maxFileSize,
-      displayOrder,
-      description,
-      schoolId: req.user.schoolId,
-    });
-    res.json(config);
-  } catch (error) {
-    console.error('Error creating document config:', error);
-    res.status(500).json({ error: 'Failed to create document configuration' });
+router.post(
+  '/document-config',
+  authenticate,
+  checkPermission('settings', 'create'),
+  async (req, res) => {
+    try {
+      const { DocumentConfig } = await import('../../database.js');
+      // Only allow known fields — prevent injection of _id, createdAt, etc.
+      const {
+        documentName,
+        isRequired,
+        uploadType,
+        allowedFormats,
+        maxFileSize,
+        displayOrder,
+        description,
+      } = req.body;
+      const config = await DocumentConfig.create({
+        documentName,
+        isRequired,
+        uploadType,
+        allowedFormats,
+        maxFileSize,
+        displayOrder,
+        description,
+        schoolId: req.user.schoolId,
+      });
+      res.json(config);
+    } catch (error) {
+      console.error('Error creating document config:', error);
+      res.status(500).json({ error: 'Failed to create document configuration' });
+    }
   }
-});
+);
 
 // Update document configuration
-router.put('/document-config/:id', authenticate, async (req, res) => {
-  try {
-    const { DocumentConfig } = await import('../../database.js');
-    const { schoolId: _ignored, ...updateData } = req.body; // never allow schoolId override from body
-    const config = await DocumentConfig.findOneAndUpdate(
-      schoolQuery(req, { _id: req.params.id }),
-      updateData,
-      { new: true, runValidators: true }
-    );
+router.put(
+  '/document-config/:id',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const { DocumentConfig } = await import('../../database.js');
+      const { schoolId: _ignored, ...updateData } = req.body; // never allow schoolId override from body
+      const config = await DocumentConfig.findOneAndUpdate(
+        schoolQuery(req, { _id: req.params.id }),
+        updateData,
+        { new: true, runValidators: true }
+      );
 
-    if (!config) {
-      return res.status(404).json({ error: 'Document configuration not found' });
+      if (!config) {
+        return res.status(404).json({ error: 'Document configuration not found' });
+      }
+
+      res.json(config);
+    } catch (error) {
+      console.error('Error updating document config:', error);
+      res.status(500).json({ error: 'Failed to update document configuration' });
     }
-
-    res.json(config);
-  } catch (error) {
-    console.error('Error updating document config:', error);
-    res.status(500).json({ error: 'Failed to update document configuration' });
   }
-});
+);
 
 // Delete document configuration
-router.delete('/document-config/:id', authenticate, async (req, res) => {
-  try {
-    const { DocumentConfig } = await import('../../database.js');
-    const config = await DocumentConfig.findOneAndDelete(schoolQuery(req, { _id: req.params.id }));
+router.delete(
+  '/document-config/:id',
+  authenticate,
+  checkPermission('settings', 'delete'),
+  async (req, res) => {
+    try {
+      const { DocumentConfig } = await import('../../database.js');
+      const config = await DocumentConfig.findOneAndDelete(
+        schoolQuery(req, { _id: req.params.id })
+      );
 
-    if (!config) {
-      return res.status(404).json({ error: 'Document configuration not found' });
+      if (!config) {
+        return res.status(404).json({ error: 'Document configuration not found' });
+      }
+
+      res.json({ success: true, message: 'Document configuration deleted' });
+    } catch (error) {
+      console.error('Error deleting document config:', error);
+      res.status(500).json({ error: 'Failed to delete document configuration' });
     }
-
-    res.json({ success: true, message: 'Document configuration deleted' });
-  } catch (error) {
-    console.error('Error deleting document config:', error);
-    res.status(500).json({ error: 'Failed to delete document configuration' });
   }
-});
+);
 
 // Get next TC serial number(s) and increment counter atomically
-router.post('/next-tc-number', authenticate, async (req, res) => {
-  try {
-    const count = Math.max(1, parseInt(req.body.count) || 1);
+router.post(
+  '/next-tc-number',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const count = Math.max(1, parseInt(req.body.count) || 1);
 
-    // Ensure settings exist before atomic increment
-    await ensureSchoolSettings(req.user?.schoolId);
+      // Ensure settings exist before atomic increment
+      await ensureSchoolSettings(req.user?.schoolId);
 
-    // Atomically increment and return pre-update document
-    const before = await SchoolSettings.findOneAndUpdate(
-      buildSchoolScopedQuery(req.user?.schoolId),
-      { $inc: { 'tc.currentNumber': count } },
-      { new: false }
-    );
+      // Atomically increment and return pre-update document
+      const before = await SchoolSettings.findOneAndUpdate(
+        buildSchoolScopedQuery(req.user?.schoolId),
+        { $inc: { 'tc.currentNumber': count } },
+        { new: false }
+      );
 
-    const prefix = before?.tc?.prefix || 'TC';
-    const startNum = before?.tc?.currentNumber ?? 1;
+      const prefix = before?.tc?.prefix || 'TC';
+      const startNum = before?.tc?.currentNumber ?? 1;
 
-    const numbers = Array.from(
-      { length: count },
-      (_, i) => `${prefix}${String(startNum + i).padStart(4, '0')}`
-    );
+      const numbers = Array.from(
+        { length: count },
+        (_, i) => `${prefix}${String(startNum + i).padStart(4, '0')}`
+      );
 
-    res.json({ numbers });
-  } catch (error) {
-    console.error('Error generating TC number:', error);
-    res.status(500).json({ error: 'Failed to generate TC number' });
+      res.json({ numbers });
+    } catch (error) {
+      console.error('Error generating TC number:', error);
+      res.status(500).json({ error: 'Failed to generate TC number' });
+    }
   }
-});
+);
 
 export default router;

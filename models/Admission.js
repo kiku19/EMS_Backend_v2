@@ -16,7 +16,7 @@ const documentItemSchema = new mongoose.Schema(
 
 const admissionSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     studentName: { type: String, required: true },
     dateOfBirth: String,
     parentName: String,
