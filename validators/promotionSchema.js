@@ -69,3 +69,40 @@ export const newAcademicYearSchema = z
     copyFeeTemplates: z.boolean().optional().default(false),
   })
   .strip();
+
+// Per-student decision within a class mapping (simplified — toClassId comes from the mapping)
+const classMappingStudentDecision = z.object({
+  studentId: objectId,
+  decision: z.enum(['promoted', 'detained', 'transferred', 'graduated'], {
+    errorMap: () => ({
+      message: 'Decision must be one of: promoted, detained, transferred, graduated',
+    }),
+  }),
+});
+
+// Single class mapping in the multi-class promotion
+const classMappingSchema = z
+  .object({
+    fromClassId: objectId,
+    toClassId: objectId.optional(),
+    graduate: z.boolean().optional().default(false),
+    studentDecisions: z
+      .array(classMappingStudentDecision)
+      .min(1, 'At least one student decision per class is required'),
+  })
+  .refine((m) => m.graduate || m.toClassId, {
+    message: 'Either toClassId or graduate:true must be provided for each class mapping',
+    path: ['toClassId'],
+  });
+
+// Execute multi-class year-end promotion (all classes at once)
+export const multiClassPromotionSchema = z
+  .object({
+    fromAcademicYear: academicYear,
+    toAcademicYear: academicYear,
+    classMappings: z.array(classMappingSchema).min(1, 'At least one class mapping is required'),
+    generateRollNumbers: z.boolean().optional().default(false),
+    skipFeeCheck: z.boolean().optional().default(false),
+    skipAttendanceCheck: z.boolean().optional().default(false),
+  })
+  .strip();

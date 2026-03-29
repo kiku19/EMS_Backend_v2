@@ -34,6 +34,20 @@ const promotionRecordSchema = new mongoose.Schema(
     rollbackBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
     rollbackReason: String,
     studentSnapshots: [studentSnapshotSchema],
+    // Class-wise mapping info for multi-class promotions (optional for single-class)
+    classMappings: [
+      {
+        fromClassId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+        fromClassName: String,
+        toClassId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+        toClassName: String,
+        graduate: { type: Boolean, default: false },
+        studentCount: { type: Number, default: 0 },
+        promotedCount: { type: Number, default: 0 },
+        detainedCount: { type: Number, default: 0 },
+        graduatedCount: { type: Number, default: 0 },
+      },
+    ],
     summary: {
       totalStudents: { type: Number, default: 0 },
       promoted: { type: Number, default: 0 },

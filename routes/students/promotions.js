@@ -95,9 +95,15 @@ router.post(
             }
 
             if (!skipAttendanceCheck) {
-              const attendance = await Attendance.find(
-                scopeBySchool(schoolId, { studentId: student._id })
-              );
+              // Scope attendance to the source class's academic year
+              const attYearStr = fromClass.academicYear || CURRENT_ACADEMIC_YEAR;
+              const [attYearStart] = attYearStr.split('-');
+              const attYearNum = parseInt(attYearStart, 10);
+              const attQuery = scopeBySchool(schoolId, { studentId: student._id });
+              if (!isNaN(attYearNum)) {
+                attQuery.date = { $gte: `${attYearNum}-04-01`, $lte: `${attYearNum + 1}-03-31` };
+              }
+              const attendance = await Attendance.find(attQuery);
               const present = attendance.filter(
                 (a) => a.status === 'present' || a.status === 'late'
               ).length;
@@ -242,16 +248,21 @@ router.post(
 
       // Fee check
       if (!skipFeeCheck && student.feeStatus === 'pending') {
-        return res
-          .status(400)
-          .json({
-            error: req.t('common:routes.studentHasPendingFeesUseSkipfeecheckTrueToOverride'),
-          });
+        return res.status(400).json({
+          error: req.t('common:routes.studentHasPendingFeesUseSkipfeecheckTrueToOverride'),
+        });
       }
 
-      // Attendance check
+      // Attendance check (scoped to student's current academic year)
       if (!skipAttendanceCheck) {
-        const attendance = await Attendance.find(scopeBySchool(schoolId, { studentId: id }));
+        const attYearStr = fromClass?.academicYear || CURRENT_ACADEMIC_YEAR;
+        const [attYearStart] = attYearStr.split('-');
+        const attYearNum = parseInt(attYearStart, 10);
+        const attQuery = scopeBySchool(schoolId, { studentId: id });
+        if (!isNaN(attYearNum)) {
+          attQuery.date = { $gte: `${attYearNum}-04-01`, $lte: `${attYearNum + 1}-03-31` };
+        }
+        const attendance = await Attendance.find(attQuery);
         const present = attendance.filter(
           (a) => a.status === 'present' || a.status === 'late'
         ).length;

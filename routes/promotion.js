@@ -11,9 +11,17 @@ import {
   rollbackPromotionSchema,
   newAcademicYearSchema,
   promotionRulesSchema,
+  multiClassPromotionSchema,
 } from '../validators/index.js';
-import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import {
+  CURRENT_ACADEMIC_YEAR,
+  getNextAcademicYear,
+  getAcademicYearDateRange,
+  suggestNextClassName,
+} from '../utils/constants.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
+import { checkClassCapacity } from '../utils/classCapacity.js';
+import { initializeFeeStructure } from './students/helpers.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -44,11 +52,19 @@ router.get('/preview', authenticate, checkPermission('students', 'view'), async 
       .sort({ rollNo: 1, name: 1 })
       .lean();
 
-    // Fetch attendance percentages in bulk
+    // Fetch attendance percentages in bulk, scoped to academic year
     const studentIds = students.map((s) => s._id);
-    const attendanceRecords = await Attendance.find(
-      scopeBySchool(schoolId, { studentId: { $in: studentIds } })
-    ).lean();
+    const attQuery = scopeBySchool(schoolId, { studentId: { $in: studentIds } });
+
+    // Scope attendance to the class's academic year date range
+    const classAcademicYear = academicYear || cls.academicYear || CURRENT_ACADEMIC_YEAR;
+    const [yearStartStr] = classAcademicYear.split('-');
+    const yearStartNum = parseInt(yearStartStr, 10);
+    if (!isNaN(yearStartNum)) {
+      attQuery.date = { $gte: `${yearStartNum}-04-01`, $lte: `${yearStartNum + 1}-03-31` };
+    }
+
+    const attendanceRecords = await Attendance.find(attQuery).lean();
 
     const attendanceMap = {};
     for (const rec of attendanceRecords) {
@@ -73,6 +89,16 @@ router.get('/preview', authenticate, checkPermission('students', 'view'), async 
         (feeRequirement === 'full' && s.feeStatus !== 'paid') ||
         (feeRequirement === 'partial' && s.feeStatus === 'pending');
 
+      const blocked = attBlocked || feeBlocked;
+      let blockedReason = null;
+      if (attBlocked && feeBlocked) {
+        blockedReason = `Low attendance (${attendancePercent}% < ${minAttendancePercent}% required) and fee status: ${s.feeStatus}`;
+      } else if (attBlocked) {
+        blockedReason = `Low attendance (${attendancePercent}% < ${minAttendancePercent}% required)`;
+      } else if (feeBlocked) {
+        blockedReason = `Fee status: ${s.feeStatus} (requirement: ${feeRequirement})`;
+      }
+
       return {
         studentId: s._id,
         name: s.name,
@@ -80,7 +106,9 @@ router.get('/preview', authenticate, checkPermission('students', 'view'), async 
         rollNo: s.rollNo,
         feeStatus: s.feeStatus,
         attendancePercent,
-        suggestedDecision: attBlocked || feeBlocked ? 'detained' : 'promoted',
+        blocked,
+        blockedReason,
+        suggestedDecision: blocked ? 'detained' : 'promoted',
       };
     });
 
@@ -119,10 +147,28 @@ router.post(
       const snapshots = [];
       const errors = [];
 
-      // Pre-load target classes for roll number generation
+      // Pre-load target classes for capacity check and roll number generation
       const targetClassIds = [
         ...new Set(studentDecisions.filter((d) => d.toClassId).map((d) => d.toClassId)),
       ];
+
+      // Check capacity for each target class before proceeding
+      for (const cid of targetClassIds) {
+        const cap = await checkClassCapacity(cid, schoolId);
+        const studentsGoingHere = studentDecisions.filter(
+          (d) => d.toClassId === cid && d.decision === 'promoted'
+        ).length;
+        if (cap && cap.available < studentsGoingHere) {
+          return res.status(400).json({
+            error: `Target class capacity exceeded: would have ${cap.currentCount + studentsGoingHere}/${cap.capacity} students`,
+            classId: cid,
+            className: cap.classData
+              ? `${cap.classData.name}${cap.classData.section ? '-' + cap.classData.section : ''}`
+              : cid,
+          });
+        }
+      }
+
       const rollCounters = {}; // classId -> next roll number
       if (generateRollNumbers) {
         for (const cid of targetClassIds) {
@@ -185,6 +231,12 @@ router.post(
             await StudentFeeStructure.deleteOne(
               scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
             );
+            // Initialize new fee structure for the promoted class/year
+            try {
+              await initializeFeeStructure(student);
+            } catch (feeErr) {
+              console.error(`Fee structure init failed for student ${student._id}:`, feeErr);
+            }
             summary.promoted++;
           } else if (d.decision === 'detained') {
             // Keep same class, just update academic year
@@ -201,6 +253,15 @@ router.post(
             await StudentFeeStructure.deleteOne(
               scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
             );
+            // Initialize new fee structure for the detained student's class/year
+            try {
+              await initializeFeeStructure(student);
+            } catch (feeErr) {
+              console.error(
+                `Fee structure init failed for detained student ${student._id}:`,
+                feeErr
+              );
+            }
             summary.detained++;
           } else if (d.decision === 'transferred') {
             student.status = 'transferred';
@@ -542,6 +603,422 @@ router.put(
     } catch (error) {
       console.error('Error saving promotion rules:', error);
       res.status(500).json({ error: 'Failed to save promotion rules' });
+    }
+  }
+);
+
+// ─── GET /promotions/check-year?academicYear= ─────────────────────────────
+// Quick check whether classes exist for a given academic year
+router.get('/check-year', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const { academicYear } = req.query;
+
+    if (!academicYear)
+      return res.status(400).json({ error: 'academicYear query param is required' });
+
+    const classCount = await Class.countDocuments(
+      scopeBySchool(schoolId, { academicYear, isDeleted: { $ne: true } })
+    );
+
+    res.json({ exists: classCount > 0, classCount, academicYear });
+  } catch (error) {
+    console.error('Error checking academic year:', error);
+    res.status(500).json({ error: 'Failed to check academic year' });
+  }
+});
+
+// ─── GET /promotions/preview-all?academicYear= ────────────────────────────
+// Returns ALL classes in the given academic year with auto-suggested target class,
+// student counts, and per-class eligibility summary for the year-end wizard
+router.get('/preview-all', authenticate, checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+    const toAcademicYear = req.query.toAcademicYear || getNextAcademicYear(academicYear);
+
+    // Load all classes for the academic year
+    const classes = await Class.find(
+      scopeBySchool(schoolId, { academicYear, isDeleted: { $ne: true } })
+    )
+      .sort({ name: 1, section: 1 })
+      .lean();
+
+    if (classes.length === 0) {
+      return res.json({ classMappings: [], academicYear, toAcademicYear });
+    }
+
+    // Load target year classes for matching
+    const targetClasses = await Class.find(
+      scopeBySchool(schoolId, { academicYear: toAcademicYear, isDeleted: { $ne: true } })
+    ).lean();
+
+    // Load promotion rules
+    const rules = await PromotionRule.findOne(scopeBySchool(schoolId, {})).lean();
+    const minAttendancePercent = rules?.minAttendancePercent ?? 75;
+    const feeRequirement = rules?.feeRequirement ?? 'none';
+
+    // Get attendance date range for current academic year
+    const dateRange = getAcademicYearDateRange(academicYear);
+
+    // Build class mappings
+    const classMappings = [];
+
+    for (const cls of classes) {
+      // Count active students
+      const studentCount = await Student.countDocuments(
+        scopeBySchool(schoolId, {
+          classId: cls._id,
+          status: 'active',
+          isDeleted: { $ne: true },
+        })
+      );
+
+      // Auto-suggest target class
+      const { nextName, isGraduating } = suggestNextClassName(cls.name);
+
+      let suggestedTargetClass = null;
+      if (!isGraduating && nextName) {
+        // Find matching target class in the target year (same section preferred)
+        suggestedTargetClass =
+          targetClasses.find((tc) => tc.name === nextName && tc.section === cls.section) ||
+          targetClasses.find((tc) => tc.name === nextName) ||
+          null;
+      }
+
+      // Get per-class eligibility summary (lightweight — count blocked vs eligible)
+      let eligibleCount = studentCount;
+      let blockedCount = 0;
+
+      if (studentCount > 0 && (feeRequirement !== 'none' || minAttendancePercent > 0)) {
+        const students = await Student.find(
+          scopeBySchool(schoolId, {
+            classId: cls._id,
+            status: 'active',
+            isDeleted: { $ne: true },
+          })
+        )
+          .select('_id feeStatus')
+          .lean();
+
+        // Fee-blocked count
+        if (feeRequirement !== 'none') {
+          const feeBlockedStudents = students.filter((s) =>
+            feeRequirement === 'full' ? s.feeStatus !== 'paid' : s.feeStatus === 'pending'
+          );
+          blockedCount = feeBlockedStudents.length;
+        }
+
+        // Attendance-blocked count (bulk query)
+        if (minAttendancePercent > 0 && dateRange) {
+          const studentIds = students.map((s) => s._id);
+          const attRecords = await Attendance.find(
+            scopeBySchool(schoolId, {
+              studentId: { $in: studentIds },
+              date: { $gte: dateRange.startDate, $lte: dateRange.endDate },
+            })
+          ).lean();
+
+          const attMap = {};
+          for (const rec of attRecords) {
+            const sid = rec.studentId.toString();
+            if (!attMap[sid]) attMap[sid] = { present: 0, total: 0 };
+            attMap[sid].total++;
+            if (rec.status === 'present' || rec.status === 'late') attMap[sid].present++;
+          }
+
+          let attBlocked = 0;
+          for (const s of students) {
+            const att = attMap[s._id.toString()];
+            if (att && att.total > 0) {
+              const pct = Math.round((att.present / att.total) * 100);
+              if (pct < minAttendancePercent) attBlocked++;
+            }
+          }
+          // Use max of fee-blocked and att-blocked (some students may be blocked by both)
+          blockedCount = Math.max(blockedCount, attBlocked);
+        }
+
+        eligibleCount = studentCount - blockedCount;
+      }
+
+      // Check target class capacity
+      let targetCapacity = null;
+      if (suggestedTargetClass) {
+        const cap = await checkClassCapacity(suggestedTargetClass._id, schoolId);
+        targetCapacity = cap
+          ? { current: cap.currentCount, max: cap.capacity, available: cap.available }
+          : null;
+      }
+
+      classMappings.push({
+        fromClassId: cls._id,
+        fromClassName: cls.name,
+        fromSection: cls.section,
+        studentCount,
+        eligibleCount,
+        blockedCount,
+        isGraduating,
+        suggestedTargetClassId: suggestedTargetClass?._id || null,
+        suggestedTargetClassName: suggestedTargetClass
+          ? `${suggestedTargetClass.name}${suggestedTargetClass.section ? ' (' + suggestedTargetClass.section + ')' : ''}`
+          : null,
+        targetClassExists: !!suggestedTargetClass,
+        targetCapacity,
+      });
+    }
+
+    // Also return all target year classes for manual override dropdown
+    const targetClassOptions = targetClasses.map((tc) => ({
+      _id: tc._id,
+      name: tc.name,
+      section: tc.section,
+      label: `${tc.name}${tc.section ? ' (' + tc.section + ')' : ''}`,
+    }));
+
+    res.json({
+      classMappings,
+      academicYear,
+      toAcademicYear,
+      targetYearExists: targetClasses.length > 0,
+      targetClassOptions,
+      rules: { minAttendancePercent, feeRequirement },
+    });
+  } catch (error) {
+    console.error('Error fetching preview-all:', error);
+    res.status(500).json({ error: 'Failed to fetch promotion preview for all classes' });
+  }
+});
+
+// ─── POST /promotions/execute-all ──────────────────────────────────────────
+// Multi-class year-end promotion — promotes students across all mapped classes
+// in a single operation with one PromotionRecord for rollback
+router.post(
+  '/execute-all',
+  authenticate,
+  checkPermission('students', 'edit'),
+  validateZod(multiClassPromotionSchema),
+  async (req, res) => {
+    try {
+      const schoolId = req.user?.schoolId;
+      const normalizedSchoolId = extractSchoolId(schoolId);
+      const {
+        fromAcademicYear,
+        toAcademicYear,
+        classMappings: mappings,
+        generateRollNumbers,
+      } = req.body;
+
+      const summary = {
+        totalStudents: 0,
+        promoted: 0,
+        detained: 0,
+        transferred: 0,
+        graduated: 0,
+        errors: 0,
+      };
+      const allSnapshots = [];
+      const allErrors = [];
+      const recordClassMappings = [];
+
+      // Pre-validate: check capacity for all target classes
+      for (const mapping of mappings) {
+        if (mapping.graduate || !mapping.toClassId) continue;
+        const promotedCount = mapping.studentDecisions.filter(
+          (d) => d.decision === 'promoted'
+        ).length;
+        if (promotedCount > 0) {
+          const cap = await checkClassCapacity(mapping.toClassId, schoolId);
+          if (cap && cap.available < promotedCount) {
+            const cls = await Class.findById(mapping.toClassId).select('name section').lean();
+            return res.status(400).json({
+              error: `Target class ${cls ? cls.name + (cls.section ? '-' + cls.section : '') : mapping.toClassId} capacity exceeded: would have ${cap.currentCount + promotedCount}/${cap.capacity}`,
+              classId: mapping.toClassId,
+            });
+          }
+        }
+      }
+
+      // Process each class mapping
+      for (const mapping of mappings) {
+        const { fromClassId, toClassId, graduate = false, studentDecisions } = mapping;
+
+        const fromClass = await Class.findOne(
+          scopeBySchool(schoolId, { _id: fromClassId, isDeleted: { $ne: true } })
+        ).lean();
+        const toClass = toClassId
+          ? await Class.findOne(
+              scopeBySchool(schoolId, { _id: toClassId, isDeleted: { $ne: true } })
+            ).lean()
+          : null;
+
+        const classMappingRecord = {
+          fromClassId,
+          fromClassName: fromClass
+            ? `${fromClass.name}${fromClass.section ? '-' + fromClass.section : ''}`
+            : 'Unknown',
+          toClassId: toClassId || null,
+          toClassName: graduate
+            ? 'Graduated'
+            : toClass
+              ? `${toClass.name}${toClass.section ? '-' + toClass.section : ''}`
+              : 'Unknown',
+          graduate,
+          studentCount: studentDecisions.length,
+          promotedCount: 0,
+          detainedCount: 0,
+          graduatedCount: 0,
+        };
+
+        // Roll number counter for this target class
+        let rollCounter = null;
+        if (generateRollNumbers && toClassId) {
+          const maxRollStudent = await Student.findOne(
+            scopeBySchool(schoolId, { classId: toClassId, isDeleted: { $ne: true } })
+          )
+            .sort({ rollNo: -1 })
+            .lean();
+          rollCounter = (maxRollStudent?.rollNo || 0) + 1;
+        }
+
+        for (const d of studentDecisions) {
+          summary.totalStudents++;
+
+          try {
+            const student = await Student.findOne(
+              scopeBySchool(schoolId, { _id: d.studentId, isDeleted: { $ne: true } })
+            );
+            if (!student) {
+              allErrors.push({
+                studentId: d.studentId,
+                classId: fromClassId,
+                error: 'Student not found',
+              });
+              summary.errors++;
+              continue;
+            }
+
+            // Snapshot before changes
+            const snapshot = {
+              studentId: student._id,
+              studentName: student.name,
+              admissionId: student.admissionId,
+              rollNo: student.rollNo,
+              fromClassId: student.classId,
+              fromAcademicYear: student.academicYear,
+              previousStatus: student.status,
+              previousFeeStatus: student.feeStatus,
+              decision: d.decision,
+              toClassId: null,
+              newRollNo: null,
+            };
+
+            const oldAcademicYear = student.academicYear || fromAcademicYear;
+            const decision = graduate ? 'graduated' : d.decision;
+
+            if (decision === 'promoted' && toClassId) {
+              let newRollNo = null;
+              if (generateRollNumbers && rollCounter !== null) {
+                newRollNo = rollCounter++;
+              }
+              snapshot.toClassId = toClassId;
+              snapshot.newRollNo = newRollNo;
+
+              student.classId = toClassId;
+              student.academicYear = toAcademicYear;
+              student.feeStatus = 'pending';
+              student.feeDetails = {
+                totalFee: 0,
+                paidAmount: 0,
+                balanceAmount: 0,
+                discountApplied: 0,
+                lastPaymentDate: null,
+              };
+              if (newRollNo) student.rollNo = newRollNo;
+              await student.save();
+              await StudentFeeStructure.deleteOne(
+                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
+              );
+              try {
+                await initializeFeeStructure(student);
+              } catch (e) {
+                console.error(`Fee init failed for ${student._id}:`, e);
+              }
+              summary.promoted++;
+              classMappingRecord.promotedCount++;
+            } else if (decision === 'detained') {
+              student.academicYear = toAcademicYear;
+              student.feeStatus = 'pending';
+              student.feeDetails = {
+                totalFee: 0,
+                paidAmount: 0,
+                balanceAmount: 0,
+                discountApplied: 0,
+                lastPaymentDate: null,
+              };
+              await student.save();
+              await StudentFeeStructure.deleteOne(
+                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
+              );
+              try {
+                await initializeFeeStructure(student);
+              } catch (e) {
+                console.error(`Fee init failed for detained ${student._id}:`, e);
+              }
+              summary.detained++;
+              classMappingRecord.detainedCount++;
+            } else if (decision === 'transferred') {
+              student.status = 'transferred';
+              student.academicYear = toAcademicYear;
+              await student.save();
+              summary.transferred++;
+            } else if (decision === 'graduated') {
+              student.status = 'graduated';
+              student.academicYear = toAcademicYear;
+              await student.save();
+              summary.graduated++;
+              classMappingRecord.graduatedCount++;
+            }
+
+            allSnapshots.push(snapshot);
+          } catch (err) {
+            allErrors.push({ studentId: d.studentId, classId: fromClassId, error: err.message });
+            summary.errors++;
+          }
+        }
+
+        recordClassMappings.push(classMappingRecord);
+      }
+
+      // Create single PromotionRecord for the entire year-end operation
+      const record = await PromotionRecord.create({
+        schoolId: normalizedSchoolId,
+        fromAcademicYear,
+        toAcademicYear,
+        promotedBy: req.user?.id,
+        studentSnapshots: allSnapshots,
+        classMappings: recordClassMappings,
+        summary,
+      });
+
+      await ActivityLog.create({
+        schoolId: normalizedSchoolId,
+        activityType: 'bulk_promotion',
+        description: `Year-end promotion: ${summary.promoted} promoted, ${summary.detained} detained, ${summary.graduated} graduated across ${mappings.length} classes`,
+        performedBy: req.user?.id,
+        details: { fromAcademicYear, toAcademicYear, summary, promotionRecordId: record._id },
+      });
+
+      res.json({
+        success: true,
+        summary,
+        classMappings: recordClassMappings,
+        errors: allErrors,
+        promotionRecordId: record._id,
+      });
+    } catch (error) {
+      console.error('Error executing multi-class promotion:', error);
+      res.status(500).json({ error: 'Multi-class promotion failed' });
     }
   }
 );

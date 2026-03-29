@@ -56,6 +56,7 @@ export {
   rollbackPromotionSchema,
   newAcademicYearSchema,
   promotionRulesSchema,
+  multiClassPromotionSchema,
 } from './promotionSchema.js';
 export {
   createSchoolGroupSchema,
