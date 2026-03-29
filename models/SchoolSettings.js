@@ -131,12 +131,13 @@ const schoolSettingsSchema = new mongoose.Schema(
       currentNumber: { type: Number, default: 1 },
     },
 
-    // Subjects Configuration
+    // Subjects Configuration (master directory — synced to Class documents)
     subjects: [
       {
         name: { type: String, required: true },
         code: { type: String },
         description: { type: String },
+        assignedClasses: [{ type: Number }], // class numbers 1-12
       },
     ],
 

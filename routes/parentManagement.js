@@ -8,6 +8,7 @@ import {
 } from '../utils/parentAccountHelper.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
+import { escapeRegex } from './students/helpers.js';
 
 const router = express.Router();
 
@@ -35,7 +36,7 @@ router.get('/', async (req, res) => {
     const query = getParentQuery(req);
 
     if (search) {
-      const searchRegex = new RegExp(search, 'i');
+      const searchRegex = new RegExp(escapeRegex(search), 'i');
       query.$or = [{ name: searchRegex }, { phone: searchRegex }, { email: searchRegex }];
     }
 
@@ -114,12 +115,10 @@ router.get('/:id', async (req, res) => {
       .lean();
 
     if (!parent) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
-        });
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
+      });
     }
 
     const childrenDetails = await Promise.all(
@@ -154,12 +153,10 @@ router.get('/:id', async (req, res) => {
     });
   } catch (error) {
     console.error('Get parent error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToFetchParent') },
-      });
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: req.t('common:routes.failedToFetchParent') },
+    });
   }
 });
 
@@ -168,12 +165,10 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
   try {
     const parent = await Parent.findOne(getParentQuery(req, { _id: req.params.id }));
     if (!parent) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
-        });
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
+      });
     }
 
     if (parent.children.length === 0) {
@@ -245,12 +240,10 @@ router.put('/:id/status', async (req, res) => {
     ).select('-password -fcmTokens -firebaseUid');
 
     if (!parent) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
-        });
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: req.t('common:routes.parentNotFound') },
+      });
     }
 
     res.json({ success: true, message: `Parent account ${status}`, data: parent });

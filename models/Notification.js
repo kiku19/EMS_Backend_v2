@@ -35,6 +35,7 @@ const notificationSchema = new mongoose.Schema(
         'announcement',
         'remarks',
         'class_teacher',
+        'intake_form',
       ],
       required: true,
     },

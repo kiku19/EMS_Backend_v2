@@ -19,7 +19,7 @@ import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
 import expensesRoutes from './routes/expenses.js';
 import announcementRoutes from './routes/announcements.js';
-import emailCampaignsRoutes from './routes/emailCampaigns.js';
+// import emailCampaignsRoutes from './routes/emailCampaigns.js'; // Commented out — using announcements instead
 import trackingRoutes from './routes/tracking.js';
 import reminderRoutes from './routes/reminders.js';
 import notificationRoutes from './routes/notifications.js';
@@ -34,6 +34,7 @@ import validationRoutes from './routes/validation.js';
 import timetableRoutes from './routes/timetable.js';
 import substitutionRoutes from './routes/substitutions.js';
 import substitutionAlertsRoutes from './routes/substitutionAlerts.js';
+import timetableCleanupRoutes from './routes/timetableCleanup.js';
 import dataCleanupRoutes from './routes/dataCleanup.js';
 import seedDummyDataRoutes from './routes/seedDummyData.js';
 import demoRoutes from './routes/demo.js';
@@ -111,7 +112,7 @@ import ptmRoutes from './routes/ptm.js';
 import searchRoutes from './routes/search.js';
 import gdprRoutes from './routes/gdpr.js';
 import archivalRoutes from './routes/archival.js';
-import inventoryRoutes from './routes/inventory.js';
+// import inventoryRoutes from './routes/inventory.js'; // Commented out — not needed for launch
 import tallyRoutes from './routes/tally.js';
 import googleClassroomRoutes from './routes/googleClassroom.js';
 import npsRoutes from './routes/nps.js';
@@ -519,6 +520,7 @@ v1Router.use('/teacher-assignments', teacherAssignmentsRoutes);
 v1Router.use('/teacher-timetable', teacherTimetableRoutes);
 v1Router.use('/teacher-leaves', teacherLeavesRoutes);
 v1Router.use('/timetable', timetableRoutes);
+v1Router.use('/timetable-cleanup', timetableCleanupRoutes);
 v1Router.use('/substitutions', substitutionRoutes);
 v1Router.use('/substitution-alerts', substitutionAlertsRoutes);
 
@@ -533,7 +535,7 @@ v1Router.use('/fee-structure', feeStructureRoutes);
 // ─── Communication & Messaging ───────────────────────────────────────────────
 v1Router.use('/messages', messageRoutes);
 v1Router.use('/announcements', announcementRoutes);
-v1Router.use('/email-campaigns', emailCampaignsRoutes);
+// v1Router.use('/email-campaigns', emailCampaignsRoutes); // Commented out — using announcements instead
 v1Router.use('/notifications', notificationRoutes);
 v1Router.use('/push-notifications', pushNotificationsRoutes);
 v1Router.use('/calls', callRoutes);
@@ -579,7 +581,7 @@ v1Router.use('/bulk-ops', bulkOpsRoutes);
 // ─── Extra Modules ───────────────────────────────────────────────────────────
 v1Router.use('/library', libraryRoutes);
 v1Router.use('/transport', transportRoutes);
-v1Router.use('/inventory', inventoryRoutes);
+// v1Router.use('/inventory', inventoryRoutes); // Commented out — not needed for launch
 v1Router.use('/hostel', hostelRoutes);
 
 // ─── Integrations ────────────────────────────────────────────────────────────

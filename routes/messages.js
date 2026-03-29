@@ -109,12 +109,12 @@ router.get('/conversations', authenticate, async (req, res) => {
     // Batch fetch all participants at once
     const [staffList, studentList, presenceList] = await Promise.all([
       staffIds.length
-        ? Staff.find({ _id: { $in: staffIds } })
+        ? Staff.find({ _id: { $in: staffIds }, schoolId: req.user?.schoolId })
             .select('name photo role')
             .lean()
         : Promise.resolve([]),
       studentIds.length
-        ? Student.find({ _id: { $in: studentIds } })
+        ? Student.find({ _id: { $in: studentIds }, schoolId: req.user?.schoolId })
             .select('name photo role')
             .lean()
         : Promise.resolve([]),

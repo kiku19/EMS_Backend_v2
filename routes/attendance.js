@@ -548,40 +548,45 @@ router.get(
 
 // IMPORTANT: /:classId/:date must be registered BEFORE /:studentId to avoid
 // the single-param route shadowing two-param requests.
-router.get('/:classId/:date', authenticate, async (req, res) => {
-  try {
-    const { classId, date } = req.params;
-    const resolved = await resolveClassId(classId, req.user?.schoolId);
+router.get(
+  '/:classId/:date',
+  authenticate,
+  checkPermission('students', 'view'),
+  async (req, res) => {
+    try {
+      const { classId, date } = req.params;
+      const resolved = await resolveClassId(classId, req.user?.schoolId);
 
-    if (!resolved) {
-      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-    }
-
-    const schoolId = await resolveRequestSchoolId(req);
-    const attendance = await Attendance.find(
-      scopeBySchool(schoolId, { classId: resolved.classId, date })
-    ).populate({
-      path: 'studentId',
-      select: 'name rollNo admissionId',
-      match: { isDeleted: { $ne: true } },
-    });
-
-    // Return same shape as GET /class/:classId/:date for consistency
-    const attendanceObj = {};
-    attendance.forEach((record) => {
-      if (record.studentId) {
-        attendanceObj[record.studentId._id.toString()] = {
-          status: record.status,
-          markedBy: record.markedBy,
-        };
+      if (!resolved) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
-    });
 
-    res.json(attendanceObj);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      const schoolId = await resolveRequestSchoolId(req);
+      const attendance = await Attendance.find(
+        scopeBySchool(schoolId, { classId: resolved.classId, date })
+      ).populate({
+        path: 'studentId',
+        select: 'name rollNo admissionId',
+        match: { isDeleted: { $ne: true } },
+      });
+
+      // Return same shape as GET /class/:classId/:date for consistency
+      const attendanceObj = {};
+      attendance.forEach((record) => {
+        if (record.studentId) {
+          attendanceObj[record.studentId._id.toString()] = {
+            status: record.status,
+            markedBy: record.markedBy,
+          };
+        }
+      });
+
+      res.json(attendanceObj);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
 router.get('/:studentId', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {

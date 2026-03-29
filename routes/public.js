@@ -2,9 +2,13 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { FormAssignment, FormSubmission, IntakeForm } from '../database.js';
+import Staff from '../models/Staff.js';
 import crypto from 'crypto';
 import { createLogger } from '../utils/logger.js';
 import { optionalPhone, optionalEmail } from '../validators/zodHelpers.js';
+import { sendNotification } from './notifications.js';
+import { sendIntakeFormSubmittedEmail } from '../services/emailService.js';
+import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
 const router = express.Router();
 const logger = createLogger('Public');
@@ -244,6 +248,76 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
     // Update assignment status
     assignment.status = 'submitted';
     await assignment.save();
+
+    // --- Notification: Notify school admins of new submission (fire-and-forget) ---
+    const formDoc = populatedAssignment.formId;
+    const submittedBy = submission.submittedByEmail || submission.submittedByPhone || 'Unknown';
+    const schoolId = assignment.schoolId;
+
+    // Find admin staff for this school to notify
+    (async () => {
+      try {
+        const admins = await Staff.find({
+          schoolId,
+          role: { $in: ['Admin', 'admin', 'Principal', 'principal'] },
+          status: { $ne: 'inactive' },
+        })
+          .select('_id name email')
+          .lean();
+
+        for (const admin of admins) {
+          // In-app notification via sendNotification
+          sendNotification(
+            admin._id,
+            'Staff',
+            'intake_form',
+            'New Form Submission',
+            `A new ${formDoc.formType || 'intake'} form "${formDoc.formName}" has been submitted by ${submittedBy}.`,
+            {
+              schoolId,
+              relatedId: submission._id,
+              relatedType: 'FormSubmission',
+              actionUrl: `/intake-forms/submissions/${submission._id}`,
+              actionType: 'navigate',
+              priority: 'normal',
+            }
+          ).catch((err) =>
+            console.error('[IntakeForm] Failed to send admin notification:', err.message)
+          );
+
+          // Email notification
+          if (admin.email) {
+            sendIntakeFormSubmittedEmail({
+              adminEmail: admin.email,
+              adminName: admin.name || 'Admin',
+              formName: formDoc.formName,
+              formType: formDoc.formType || 'student',
+              submittedBy,
+              submissionId: submission._id.toString(),
+              schoolName: process.env.SCHOOL_NAME,
+            }).catch((err) =>
+              console.error(
+                `[IntakeForm] Failed to send submission email to ${admin.email}:`,
+                err.message
+              )
+            );
+          }
+        }
+
+        // Emit socket event for real-time dashboard updates
+        const io = req.app.get('io');
+        emitEvent(io, EVENTS.INTAKE_FORM_SUBMITTED, {
+          schoolId: schoolId?.toString(),
+          submissionId: submission._id.toString(),
+          formName: formDoc.formName,
+          formType: formDoc.formType,
+          submittedByEmail: submission.submittedByEmail || undefined,
+          submittedByPhone: submission.submittedByPhone || undefined,
+        });
+      } catch (notifErr) {
+        logger.error({ err: notifErr }, 'Failed to send form submission notifications');
+      }
+    })();
 
     res.status(201).json({
       success: true,

@@ -699,8 +699,24 @@ export async function sendNotification(userId, userModel, type, title, message, 
     // Get user preferences
     const pref = await NotificationPreference.findOne({ userId, userModel });
 
+    // Resolve schoolId: prefer explicit option, then look up from user document
+    let schoolId = options.schoolId;
+    if (!schoolId) {
+      try {
+        let userDoc;
+        if (userModel === 'Staff') userDoc = await Staff.findById(userId).select('schoolId').lean();
+        else if (userModel === 'Parent')
+          userDoc = await Parent.findById(userId).select('schoolId').lean();
+        else userDoc = await Student.findById(userId).select('schoolId').lean();
+        schoolId = userDoc?.schoolId;
+      } catch {
+        /* best-effort */
+      }
+    }
+
     // Create in-app notification
     const notification = new Notification({
+      ...(schoolId && { schoolId }),
       userId,
       userModel,
       type,

@@ -125,7 +125,6 @@ export const updateProcurementSchema = createProcurementSchema.partial();
 export const createAssetCategorySchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).optional(),
-  depreciationRate: z.number().min(0).max(100).optional(),
 });
 
 export const updateAssetCategorySchema = createAssetCategorySchema.partial();

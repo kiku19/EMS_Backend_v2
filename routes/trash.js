@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { Student, Staff, Class } from '../database.js';
 import TrashItem from '../models/TrashItem.js';
+import { escapeRegex } from './students/helpers.js';
 import { permanentlyDeleteStudentData } from '../services/studentDataErasureService.js';
 
 const router = express.Router();
@@ -28,7 +29,7 @@ router.get('/', authenticate, checkPermission('settings', 'view'), async (req, r
 
     // Search filter
     if (search) {
-      const searchRegex = new RegExp(search, 'i');
+      const searchRegex = new RegExp(escapeRegex(search), 'i');
       query.itemName = searchRegex;
     }
 

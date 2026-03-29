@@ -63,6 +63,8 @@ export const studentFeePaymentSchema = z
       .min(1, 'Payment amount must be at least 1')
       .max(10000000, 'Payment amount seems too large'),
     feeHeadPayments: z.array(feeHeadPaymentSchema).optional(),
+    paymentMode: paymentModeEnum.default('cash'),
+    remarks: optionalString(500),
     academicYear: academicYear.optional(),
   })
   .strip();

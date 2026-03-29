@@ -558,4 +558,218 @@ export const sendWeeklyBusinessMetricsReport = async (schoolSummaries) => {
   });
 };
 
+/**
+ * Send intake form assignment email to a parent/recipient.
+ * Notifies them that a form has been assigned and includes the link to fill it out.
+ * @param {Object} params
+ * @param {string} params.recipientEmail - Recipient email address
+ * @param {string} params.formName - Name of the intake form
+ * @param {string} params.formType - Type of form (student/staff)
+ * @param {string} params.accessToken - Unique access token for the form link
+ * @param {Date} params.expiresAt - Expiration date for the form link
+ * @param {string} [params.schoolName] - School name for branding
+ * @param {string} [params.lang='en'] - Locale code
+ */
+export const sendIntakeFormAssignedEmail = async ({
+  recipientEmail,
+  formName,
+  formType,
+  accessToken,
+  expiresAt,
+  schoolName,
+  lang = 'en',
+}) => {
+  const s = getEmailStrings(lang);
+  const school = schoolName || process.env.SCHOOL_NAME || s.common.schoolManagement;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const formUrl = `${frontendUrl}/public/form/${accessToken}`;
+  const expiryDate = new Date(expiresAt).toLocaleDateString('en-IN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:0;background:#f4f4f4;">
+      <div style="max-width:600px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+        <div style="background:#4a90e2;padding:28px 24px;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:22px;">New Form Assigned</h1>
+          <p style="color:#dbeafe;margin:6px 0 0;font-size:14px;">${school}</p>
+        </div>
+        <div style="padding:28px 24px;">
+          <p>Dear Parent/Guardian,</p>
+          <p>${school} has assigned an ${formType} intake form for you to complete.</p>
+          <div style="background:#f0f9ff;border-left:4px solid #4a90e2;padding:12px 16px;margin:16px 0;border-radius:4px;">
+            <p style="margin:0;font-size:14px;color:#1e40af;"><strong>Form:</strong> ${formName}</p>
+            <p style="margin:4px 0 0;font-size:14px;color:#1e40af;"><strong>Type:</strong> ${formType.charAt(0).toUpperCase() + formType.slice(1)} Intake</p>
+            <p style="margin:4px 0 0;font-size:14px;color:#1e40af;"><strong>Deadline:</strong> ${expiryDate}</p>
+          </div>
+          <p>Please click the button below to fill out and submit the form before the deadline.</p>
+          <div style="text-align:center;margin:24px 0;">
+            <a href="${formUrl}" style="display:inline-block;padding:12px 28px;background:#4a90e2;color:#fff;text-decoration:none;border-radius:5px;font-size:15px;font-weight:600;">Fill Out Form</a>
+          </div>
+          <p style="font-size:13px;color:#666;">If the button doesn't work, copy and paste this link into your browser:<br><a href="${formUrl}" style="color:#4a90e2;word-break:break-all;">${formUrl}</a></p>
+          <p style="font-size:13px;color:#999;">This link expires on ${expiryDate}.</p>
+        </div>
+        <div style="padding:16px 24px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee;">
+          <p>&copy; ${new Date().getFullYear()} ${school}. ${s.common.rights}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  return await sendEmail({
+    to: recipientEmail,
+    subject: `Action Required: ${formName} - ${school}`,
+    html,
+  });
+};
+
+/**
+ * Send notification email to school admins when a form is submitted.
+ * @param {Object} params
+ * @param {string} params.adminEmail - Admin email address
+ * @param {string} params.adminName - Admin name
+ * @param {string} params.formName - Name of the intake form
+ * @param {string} params.formType - Type of form (student/staff)
+ * @param {string} params.submittedBy - Email or phone of submitter
+ * @param {string} params.submissionId - ID of the submission
+ * @param {string} [params.schoolName] - School name for branding
+ * @param {string} [params.lang='en'] - Locale code
+ */
+export const sendIntakeFormSubmittedEmail = async ({
+  adminEmail,
+  adminName,
+  formName,
+  formType,
+  submittedBy,
+  submissionId,
+  schoolName,
+  lang = 'en',
+}) => {
+  const s = getEmailStrings(lang);
+  const school = schoolName || process.env.SCHOOL_NAME || s.common.schoolManagement;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const reviewUrl = `${frontendUrl}/intake-forms/submissions/${submissionId}`;
+  const submittedAt = new Date().toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:0;background:#f4f4f4;">
+      <div style="max-width:600px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+        <div style="background:#22c55e;padding:28px 24px;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:22px;">New Form Submission</h1>
+          <p style="color:#dcfce7;margin:6px 0 0;font-size:14px;">${school}</p>
+        </div>
+        <div style="padding:28px 24px;">
+          <p>Hi ${adminName},</p>
+          <p>A new intake form has been submitted and is awaiting your review.</p>
+          <div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:12px 16px;margin:16px 0;border-radius:4px;">
+            <p style="margin:0;font-size:14px;color:#15803d;"><strong>Form:</strong> ${formName}</p>
+            <p style="margin:4px 0 0;font-size:14px;color:#15803d;"><strong>Type:</strong> ${formType.charAt(0).toUpperCase() + formType.slice(1)} Intake</p>
+            <p style="margin:4px 0 0;font-size:14px;color:#15803d;"><strong>Submitted by:</strong> ${submittedBy}</p>
+            <p style="margin:4px 0 0;font-size:14px;color:#15803d;"><strong>Submitted at:</strong> ${submittedAt}</p>
+          </div>
+          <p>Please review the submission and approve or request revisions.</p>
+          <div style="text-align:center;margin:24px 0;">
+            <a href="${reviewUrl}" style="display:inline-block;padding:12px 28px;background:#22c55e;color:#fff;text-decoration:none;border-radius:5px;font-size:15px;font-weight:600;">Review Submission</a>
+          </div>
+        </div>
+        <div style="padding:16px 24px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee;">
+          <p>&copy; ${new Date().getFullYear()} ${school}. ${s.common.rights}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  return await sendEmail({
+    to: adminEmail,
+    subject: `New ${formType} intake form submitted - ${school}`,
+    html,
+  });
+};
+
+/**
+ * Send notification email to parent when school requests edits on their submission.
+ * @param {Object} params
+ * @param {string} params.recipientEmail - Parent/submitter email address
+ * @param {string} params.formName - Name of the intake form
+ * @param {string} params.editNotes - Notes from the reviewer about what needs to change
+ * @param {string} params.accessToken - Access token for the form link
+ * @param {string} [params.schoolName] - School name for branding
+ * @param {string} [params.lang='en'] - Locale code
+ */
+export const sendIntakeFormEditRequestEmail = async ({
+  recipientEmail,
+  formName,
+  editNotes,
+  accessToken,
+  schoolName,
+  lang = 'en',
+}) => {
+  const s = getEmailStrings(lang);
+  const school = schoolName || process.env.SCHOOL_NAME || s.common.schoolManagement;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const formUrl = `${frontendUrl}/public/form/${accessToken}`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:0;background:#f4f4f4;">
+      <div style="max-width:600px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+        <div style="background:#f59e0b;padding:28px 24px;text-align:center;">
+          <h1 style="color:#fff;margin:0;font-size:22px;">Revision Requested</h1>
+          <p style="color:#fef3c7;margin:6px 0 0;font-size:14px;">${school}</p>
+        </div>
+        <div style="padding:28px 24px;">
+          <p>Dear Parent/Guardian,</p>
+          <p>The school has reviewed your submission for <strong>${formName}</strong> and has requested some changes.</p>
+          <div style="background:#fff8e1;border-left:4px solid #f59e0b;padding:12px 16px;margin:16px 0;border-radius:4px;">
+            <p style="margin:0;font-size:14px;font-weight:600;color:#92400e;">Reviewer Notes:</p>
+            <p style="margin:8px 0 0;font-size:14px;color:#78350f;">${editNotes}</p>
+          </div>
+          <p>Please click the button below to update and resubmit the form.</p>
+          <div style="text-align:center;margin:24px 0;">
+            <a href="${formUrl}" style="display:inline-block;padding:12px 28px;background:#f59e0b;color:#fff;text-decoration:none;border-radius:5px;font-size:15px;font-weight:600;">Update Form</a>
+          </div>
+          <p style="font-size:13px;color:#666;">If the button doesn't work, copy and paste this link into your browser:<br><a href="${formUrl}" style="color:#f59e0b;word-break:break-all;">${formUrl}</a></p>
+        </div>
+        <div style="padding:16px 24px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee;">
+          <p>&copy; ${new Date().getFullYear()} ${school}. ${s.common.rights}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  return await sendEmail({
+    to: recipientEmail,
+    subject: `Action Required: Revisions needed for ${formName} - ${school}`,
+    html,
+  });
+};
+
 export { sendEmail, sendBulkEmails };

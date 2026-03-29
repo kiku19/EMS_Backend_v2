@@ -5,6 +5,7 @@ import TransportRoute from '../models/TransportRoute.js';
 import { Student } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
+import { escapeRegex } from './students/helpers.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -97,7 +98,7 @@ router.get('/vehicles', authenticate, checkPermission('transport', 'view'), asyn
 
     if (status) query.status = status;
     if (search) {
-      const regex = new RegExp(search, 'i');
+      const regex = new RegExp(escapeRegex(search), 'i');
       query.$or = [
         { registrationNumber: regex },
         { make: regex },
@@ -190,11 +191,9 @@ router.put(
           _id: { $ne: req.params.id },
         });
         if (conflict) {
-          return res
-            .status(409)
-            .json({
-              error: req.t('common:routes.anotherVehicleWithThisRegistrationNumberAlreadyExists'),
-            });
+          return res.status(409).json({
+            error: req.t('common:routes.anotherVehicleWithThisRegistrationNumberAlreadyExists'),
+          });
         }
       }
 
@@ -273,7 +272,7 @@ router.get('/routes', authenticate, checkPermission('transport', 'view'), async 
     if (status) query.status = status;
     if (academicYear) query.academicYear = academicYear;
     if (search) {
-      const regex = new RegExp(search, 'i');
+      const regex = new RegExp(escapeRegex(search), 'i');
       query.$or = [{ routeName: regex }, { routeNumber: regex }];
     }
 
@@ -310,11 +309,9 @@ router.post(
         isDeleted: { $ne: true },
       });
       if (existing) {
-        return res
-          .status(409)
-          .json({
-            error: req.t('common:routes.aRouteWithThisRouteNumberAlreadyExistsForTheAcademicYear'),
-          });
+        return res.status(409).json({
+          error: req.t('common:routes.aRouteWithThisRouteNumberAlreadyExistsForTheAcademicYear'),
+        });
       }
 
       const route = new TransportRoute({ ...data, schoolId: req.user.schoolId, students: [] });

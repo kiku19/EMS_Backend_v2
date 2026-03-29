@@ -659,7 +659,15 @@ router.post(
         return res.status(404).json({ error: 'Fee structure not found' });
       }
 
-      // Update individual fee heads
+      // Guard: payment cannot exceed the outstanding balance
+      const currentBalance = feeStructure.totalBalance || 0;
+      if (amount > currentBalance) {
+        return res.status(400).json({
+          error: `Payment amount (₹${amount}) exceeds outstanding balance (₹${currentBalance})`,
+        });
+      }
+
+      // Update individual fee heads — cap each at its own balance to prevent overpayment
       if (feeHeadPayments && Array.isArray(feeHeadPayments)) {
         for (const payment of feeHeadPayments) {
           const feeHeadIndex = feeStructure.feeHeads.findIndex(
@@ -667,7 +675,10 @@ router.post(
           );
 
           if (feeHeadIndex >= 0) {
-            feeStructure.feeHeads[feeHeadIndex].paidAmount += payment.amount;
+            const head = feeStructure.feeHeads[feeHeadIndex];
+            const headBalance = (head.amount || 0) - (head.paidAmount || 0);
+            const safePayment = Math.min(payment.amount, Math.max(0, headBalance));
+            feeStructure.feeHeads[feeHeadIndex].paidAmount += safePayment;
             const headResult = computeFeeHeadStatus(feeStructure.feeHeads[feeHeadIndex]);
             feeStructure.feeHeads[feeHeadIndex].balanceAmount = headResult.balanceAmount;
             feeStructure.feeHeads[feeHeadIndex].status = headResult.status;

@@ -162,6 +162,7 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
           $match: {
             studentId: { $in: studentIds },
             isPublished: true,
+            schoolId: req.user?.schoolId,
           },
         },
         { $sort: { createdAt: -1 } },
@@ -291,6 +292,9 @@ router.get('/:id', authenticate, checkPermission('students', 'view'), async (req
     res.json({
       id: student._id,
       ...student.toObject(),
+      // Normalize classId to a plain string so frontend template literals work correctly
+      // (toObject() spreads the populated object; this override ensures a string ID)
+      classId: student.classId?._id?.toString() || student.classId?.toString() || null,
       class: classInfo,
       className,
     });

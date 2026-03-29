@@ -304,12 +304,20 @@ const channelEnum = z.enum(['email', 'sms', 'whatsapp', 'inapp'], {
   invalid_type_error: 'Channel must be one of: email, sms, whatsapp, inapp',
 });
 
+// Validated channels array: non-empty, no duplicates
+const channelsArraySchema = z
+  .array(channelEnum)
+  .min(1, 'At least one channel is required')
+  .refine((arr) => new Set(arr).size === arr.length, {
+    message: 'Duplicate channels are not allowed',
+  });
+
 // Create announcement schema
 const createAnnouncementSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200, 'Title must be 200 characters or fewer'),
   content: z.string().min(1, 'Content is required'),
   recipients: z.array(recipientSchema).min(1, 'At least one recipient group is required'),
-  channels: z.array(channelEnum).min(1, 'At least one channel is required'),
+  channels: channelsArraySchema,
   attachments: z.array(attachmentSchema).optional().default([]),
   scheduledFor: z.string().datetime({ offset: true }).nullable().optional(),
 });
@@ -326,7 +334,7 @@ const updateAnnouncementSchema = z.object({
     .array(recipientSchema)
     .min(1, 'At least one recipient group is required')
     .optional(),
-  channels: z.array(channelEnum).min(1, 'At least one channel is required').optional(),
+  channels: channelsArraySchema.optional(),
   attachments: z.array(attachmentSchema).optional(),
   scheduledFor: z.string().datetime({ offset: true }).nullable().optional(),
 });
@@ -733,7 +741,12 @@ router.put('/:id', async (req, res) => {
     if (title) announcement.title = title;
     if (content) announcement.content = content;
     if (recipients) announcement.recipients = recipients;
-    if (channels) announcement.channels = channels;
+    if (channels) {
+      announcement.channels = channels.map((ch) => ({
+        type: ch,
+        status: 'pending',
+      }));
+    }
     if (attachments) announcement.attachments = attachments;
 
     // Update scheduled time

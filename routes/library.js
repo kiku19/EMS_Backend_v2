@@ -6,6 +6,7 @@ import BookCopy from '../models/BookCopy.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import { escapeRegex } from './students/helpers.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -105,7 +106,7 @@ router.get('/books', authenticate, checkPermission('library', 'view'), async (re
     else if (availability === 'unavailable') query.availableCopies = 0;
 
     if (search) {
-      const regex = new RegExp(search, 'i');
+      const regex = new RegExp(escapeRegex(search), 'i');
       query.$or = [{ title: regex }, { author: regex }, { isbn: regex }, { subject: regex }];
     }
 

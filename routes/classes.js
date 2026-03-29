@@ -512,7 +512,7 @@ router.put(
 
       const classDoc = await Class.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        { assignedSubjects },
+        { assignedSubjects, subjects: assignedSubjects },
         { new: true, runValidators: true }
       );
 
@@ -523,6 +523,7 @@ router.put(
       res.json({
         success: true,
         classId: classDoc._id,
+        subjects: classDoc.subjects,
         assignedSubjects: classDoc.assignedSubjects,
       });
     } catch (error) {

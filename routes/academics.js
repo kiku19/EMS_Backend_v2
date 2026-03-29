@@ -308,7 +308,11 @@ router.get(
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
-      const staff = await Staff.findById(req.params.staffId);
+      const staff = await Staff.findOne({
+        _id: req.params.staffId,
+        schoolId: req.user?.schoolId,
+        isDeleted: { $ne: true },
+      });
       if (!staff) {
         return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
       }
@@ -348,7 +352,7 @@ router.get(
       const classMap = new Map();
       for (const classId of classIds) {
         try {
-          const classDoc = await Class.findById(classId);
+          const classDoc = await Class.findOne({ _id: classId, schoolId: req.user?.schoolId });
           if (classDoc) {
             classMap.set(
               classId,
@@ -970,14 +974,24 @@ router.get(
           examId,
           isDeleted: { $ne: true },
         })
-      );
+      ).populate('studentId', 'name rollNo');
       if (results.length === 0 && resolvedClassId !== classId) {
         results = await Result.find(
           scopeBySchool(req.user?.schoolId, { classId, examId, isDeleted: { $ne: true } })
-        );
+        ).populate('studentId', 'name rollNo');
       }
 
-      res.json(results);
+      // Attach studentName for easy frontend consumption
+      const enriched = results.map((r) => {
+        const obj = r.toObject();
+        if (r.studentId && typeof r.studentId === 'object' && r.studentId.name) {
+          obj.studentName = r.studentId.name;
+          obj.studentRollNo = r.studentId.rollNo;
+        }
+        return obj;
+      });
+
+      res.json(enriched);
     } catch (error) {
       res.status(500).json({ error: 'An internal error occurred. Please try again.' });
     }
@@ -1031,7 +1045,11 @@ router.post(
       }
 
       // Fetch the exam to get maxMarks, passingMarks, and academicYear
-      const exam = await Exam.findById(examId);
+      const exam = await Exam.findOne({
+        _id: examId,
+        schoolId: req.user?.schoolId,
+        isDeleted: { $ne: true },
+      });
       if (!exam) {
         return res.status(404).json({ error: 'Exam not found' });
       }
@@ -1066,7 +1084,7 @@ router.post(
       const skippedStudents = [];
       if (resolvedClassId) {
         const classStudents = await Student.find(
-          { classId: resolvedClassId, isDeleted: { $ne: true } },
+          { classId: resolvedClassId, isDeleted: { $ne: true }, schoolId: resolvedSchoolId },
           '_id name'
         );
         const validStudentIds = new Set(classStudents.map((s) => s._id.toString()));
@@ -1237,6 +1255,195 @@ router.post(
     }
   }
 );
+
+// ────────────────────────────────────────────────────────────────
+// GET /exams/:id/results — Return all results for a specific exam
+// ────────────────────────────────────────────────────────────────
+router.get(
+  '/exams/:id/results',
+  authenticate,
+  checkPermission('academics', 'view'),
+  async (req, res) => {
+    try {
+      const schoolId = req.user?.schoolId;
+      const exam = await Exam.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      );
+      if (!exam) {
+        return res.status(404).json({ error: 'Exam not found' });
+      }
+
+      const results = await Result.find(
+        scopeBySchool(schoolId, { examId: req.params.id, isDeleted: { $ne: true } })
+      )
+        .populate('studentId', 'name rollNo admissionId')
+        .populate('classId', 'name section')
+        .sort({ rank: 1, percentage: -1 });
+
+      res.json(results);
+    } catch (error) {
+      console.error('Get exam results failed:', error);
+      res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+    }
+  }
+);
+
+// ────────────────────────────────────────────────────────────────
+// POST /results — Create a single result entry
+// ────────────────────────────────────────────────────────────────
+router.post('/results', authenticate, checkPermission('academics', 'edit'), async (req, res) => {
+  try {
+    const { examId, studentId, classId, marksObtained, maxMarks, remarks, academicYear } = req.body;
+
+    if (!examId || !studentId) {
+      return res.status(400).json({ error: 'examId and studentId are required' });
+    }
+
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
+
+    // Verify exam exists and belongs to this school
+    const exam = await Exam.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: examId, isDeleted: { $ne: true } })
+    );
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    // Verify student exists
+    const student = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    );
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    // Check for duplicate
+    const existing = await Result.findOne(
+      scopeBySchool(req.user?.schoolId, {
+        examId,
+        studentId,
+        isDeleted: { $ne: true },
+      })
+    );
+    if (existing) {
+      return res.status(409).json({ error: 'Result already exists for this student and exam' });
+    }
+
+    const examMaxMarks = maxMarks || exam.maxMarks || 100;
+    const examPassingMarks = exam.passingMarks || 35;
+    const marks = marksObtained || 0;
+
+    const rawPercentage = examMaxMarks > 0 ? (marks / examMaxMarks) * 100 : 0;
+    const percentage = Math.round(rawPercentage * 100) / 100;
+    const grade = computeGrade(percentage);
+    const status = marks >= examPassingMarks ? 'passed' : 'failed';
+
+    const resolvedAcademicYear = academicYear
+      ? await resolveAcademicYear(academicYear)
+      : exam.academicYear;
+
+    const result = new Result({
+      schoolId,
+      examId,
+      studentId,
+      classId: classId || student.classId || exam.classId,
+      academicYear: resolvedAcademicYear,
+      marksObtained: marks,
+      maxMarks: examMaxMarks,
+      totalMarksObtained: marks,
+      totalMaxMarks: examMaxMarks,
+      percentage,
+      grade,
+      status,
+      remarks,
+      enteredBy: req.user?._id || req.user?.id,
+      enteredAt: new Date(),
+      isPublished: exam.isPublished || false,
+    });
+
+    await result.save();
+
+    // Recompute ranks
+    const resultClassId = result.classId?.toString();
+    if (resultClassId) {
+      await computeAndSaveRanks(examId, resultClassId, schoolId);
+    }
+
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Create result failed:', error);
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'Result already exists for this student and exam' });
+    }
+    res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// PUT /results/:id — Update a single result entry
+// ────────────────────────────────────────────────────────────────
+router.put('/results/:id', authenticate, checkPermission('academics', 'edit'), async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
+
+    const result = await Result.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    );
+    if (!result) {
+      return res.status(404).json({ error: 'Result not found' });
+    }
+
+    const exam = await Exam.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: result.examId, isDeleted: { $ne: true } })
+    );
+
+    const { marksObtained, maxMarks, remarks, status: requestedStatus } = req.body;
+
+    const examMaxMarks = maxMarks || exam?.maxMarks || result.maxMarks || 100;
+    const examPassingMarks = exam?.passingMarks || 35;
+
+    if (marksObtained !== undefined) {
+      const marks = marksObtained;
+      const rawPercentage = examMaxMarks > 0 ? (marks / examMaxMarks) * 100 : 0;
+      const percentage = Math.round(rawPercentage * 100) / 100;
+      const grade = computeGrade(percentage);
+      const computedStatus =
+        requestedStatus === 'absent' ? 'absent' : marks >= examPassingMarks ? 'passed' : 'failed';
+
+      result.marksObtained = marks;
+      result.maxMarks = examMaxMarks;
+      result.totalMarksObtained = marks;
+      result.totalMaxMarks = examMaxMarks;
+      result.percentage = percentage;
+      result.grade = grade;
+      result.status = computedStatus;
+    }
+
+    if (requestedStatus === 'absent') {
+      result.status = 'absent';
+    }
+
+    if (remarks !== undefined) {
+      result.remarks = remarks;
+    }
+
+    result.enteredBy = req.user?._id || req.user?.id;
+    result.enteredAt = new Date();
+
+    await result.save();
+
+    // Recompute ranks
+    const resultClassId = result.classId?.toString();
+    if (resultClassId) {
+      await computeAndSaveRanks(result.examId.toString(), resultClassId, schoolId);
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Update result failed:', error);
+    res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+  }
+});
 
 router.get('/subjects', authenticate, checkPermission('academics', 'view'), async (req, res) => {
   try {

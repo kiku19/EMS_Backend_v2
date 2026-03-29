@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it, beforeEach } from 'vitest';
-import FeeConsession from '../models/FeeConsession.js';
+import FeeConsession from '../models/FeeConcession.js';
 import LateFeeRule from '../models/LateFeeRule.js';
 import FeeRule from '../models/FeeRule.js';
 import PaymentMethodConfig from '../models/PaymentMethodConfig.js';
@@ -502,13 +502,13 @@ describe('fee-settings routes', () => {
     it('GET /collection-period/:id returns a single config', async () => {
       const config = await FeeCollectionPeriod.create({
         academicYear: '2025-26',
-        collectionInterval: 'term-wise',
+        collectionInterval: 'term',
         schoolId: school._id,
       });
 
       const res = await request(app).get(`${PERIOD}/${config._id}`).set(headers).expect(200);
 
-      expect(res.body.collectionInterval).toBe('term-wise');
+      expect(res.body.collectionInterval).toBe('term');
     });
 
     it('GET /collection-period/:id returns 404 for non-existent id', async () => {

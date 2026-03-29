@@ -96,11 +96,12 @@ export function initializeChatHandlers(io) {
           return;
         }
 
-        // Store user info in socket
+        // Store user info in socket (including schoolId for multi-tenancy)
         socket.userId = userId;
         socket.userType = userType;
         socket.userModel =
           userType === 'staff' ? 'Staff' : userType === 'parent' ? 'Parent' : 'Student';
+        socket.schoolId = user.schoolId ? user.schoolId.toString() : decoded.schoolId || null;
 
         // Add to active users
         activeUsers.set(userId, socket.id);
@@ -277,16 +278,19 @@ export function initializeChatHandlers(io) {
         // NOTE: We don't check canMessageUser here anymore since we gave basic permissions to all staff
         // They can message anyone as long as they have SEND_MESSAGE permission
 
-        // Find or create conversation
+        // Find or create conversation (scoped by schoolId for multi-tenancy)
         let conversation;
         if (conversationId) {
-          conversation = await Conversation.findById(conversationId);
+          const convQuery = { _id: conversationId };
+          if (socket.schoolId) convQuery.schoolId = socket.schoolId;
+          conversation = await Conversation.findOne(convQuery);
         } else if (receiverId) {
           conversation = await Conversation.findOrCreate(
             socket.userId,
             socket.userModel,
             receiverId,
-            receiverModel
+            receiverModel,
+            socket.schoolId
           );
         }
 
@@ -311,7 +315,7 @@ export function initializeChatHandlers(io) {
           }
         }
 
-        // Create message
+        // Create message (always include schoolId for multi-tenancy)
         const messageData = {
           conversationId: conversation._id,
           senderId: socket.userId,
@@ -330,6 +334,7 @@ export function initializeChatHandlers(io) {
           duration: duration || 0,
           waveform: waveform || [],
           status: 'sent',
+          ...(socket.schoolId && { schoolId: socket.schoolId }),
           ...(clientMessageId && { clientMessageId }),
         };
 

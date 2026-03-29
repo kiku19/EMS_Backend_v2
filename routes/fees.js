@@ -881,4 +881,53 @@ router.put(
   }
 );
 
+// Update refund (only pending refunds can be edited)
+router.put('/refunds/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
+  try {
+    const refund = await FeeRefund.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    if (refund.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending refunds can be updated' });
+    }
+
+    const { amount, reason, refundMode, remarks } = req.body;
+    if (amount !== undefined) refund.amount = amount;
+    if (reason !== undefined) refund.reason = reason;
+    if (refundMode !== undefined) refund.refundMode = refundMode;
+    if (remarks !== undefined) refund.remarks = remarks;
+
+    await refund.save();
+
+    const populated = await FeeRefund.findById(refund._id)
+      .populate('studentId', 'name admissionId')
+      .populate('classId', 'name section');
+
+    res.json(populated);
+  } catch (error) {
+    logger.error({ err: error }, 'Error updating refund');
+    res.status(500).json({ error: 'Failed to update refund' });
+  }
+});
+
+// Delete refund (only pending refunds can be deleted)
+router.delete('/refunds/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
+  try {
+    const refund = await FeeRefund.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    if (refund.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending refunds can be deleted' });
+    }
+
+    await FeeRefund.findByIdAndDelete(refund._id);
+    res.json({ message: 'Refund deleted successfully' });
+  } catch (error) {
+    logger.error({ err: error }, 'Error deleting refund');
+    res.status(500).json({ error: 'Failed to delete refund' });
+  }
+});
+
 export default router;

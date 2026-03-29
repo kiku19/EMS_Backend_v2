@@ -109,84 +109,82 @@ const academicYearSchema = z.object({
 const hexColorRegex = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const domainRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
-const schoolSettingsSchema = z
-  .object({
-    name: z.string().trim().min(1).max(200).optional(),
-    schoolName: z.string().trim().min(1).max(200).optional(),
-    address: z.string().max(500).optional(),
-    phone: z.string().max(20).optional(),
-    email: z.string().email().or(z.literal('')).optional(),
-    website: z.string().url().or(z.literal('')).optional(),
-    logo: z.string().optional(),
-    primaryColor: z
-      .string()
-      .regex(hexColorRegex, 'Must be a valid hex color (e.g. #0d9488)')
-      .optional(),
-    secondaryColor: z
-      .string()
-      .regex(hexColorRegex, 'Must be a valid hex color (e.g. #134e4a)')
-      .optional(),
-    customDomain: z
-      .string()
-      .refine((v) => v === '' || domainRegex.test(v), {
-        message: 'Must be a valid domain (e.g. school.example.com)',
+const schoolSettingsSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  schoolName: z.string().trim().min(1).max(200).optional(),
+  address: z.string().max(500).optional(),
+  phone: z.string().max(20).optional(),
+  email: z.string().email().or(z.literal('')).optional(),
+  website: z.string().url().or(z.literal('')).optional(),
+  logo: z.string().optional(),
+  primaryColor: z
+    .string()
+    .regex(hexColorRegex, 'Must be a valid hex color (e.g. #0d9488)')
+    .optional(),
+  secondaryColor: z
+    .string()
+    .regex(hexColorRegex, 'Must be a valid hex color (e.g. #134e4a)')
+    .optional(),
+  customDomain: z
+    .string()
+    .refine((v) => v === '' || domainRegex.test(v), {
+      message: 'Must be a valid domain (e.g. school.example.com)',
+    })
+    .optional(),
+  udiseNo: z.string().max(20).optional(),
+  affiliationNo: z.string().max(50).optional(),
+  boardOfEducation: z.string().max(100).optional(),
+  principalSignature: z.string().optional(),
+  correspondentSignature: z.string().optional(),
+  examDefaults: z
+    .object({
+      maxMarks: z.number().int().min(1).max(1000).optional(),
+      passingMarks: z.number().int().min(0).max(1000).optional(),
+      duration: z.number().int().min(1).max(600).optional(),
+      weightage: z.number().int().min(0).max(100).optional(),
+      defaultTerm: z.string().max(50).optional(),
+    })
+    .optional(),
+  gradingScale: z
+    .array(
+      z.object({
+        minPercentage: z.number().min(0).max(100),
+        grade: z.string().trim().min(1).max(10),
+        color: z.string().regex(hexColorRegex).or(z.literal('')).optional(),
       })
-      .optional(),
-    udiseNo: z.string().max(20).optional(),
-    affiliationNo: z.string().max(50).optional(),
-    boardOfEducation: z.string().max(100).optional(),
-    principalSignature: z.string().optional(),
-    correspondentSignature: z.string().optional(),
-    examDefaults: z
-      .object({
-        maxMarks: z.number().int().min(1).max(1000).optional(),
-        passingMarks: z.number().int().min(0).max(1000).optional(),
-        duration: z.number().int().min(1).max(600).optional(),
-        weightage: z.number().int().min(0).max(100).optional(),
-        defaultTerm: z.string().max(50).optional(),
-      })
-      .optional(),
-    gradingScale: z
-      .array(
-        z.object({
-          minPercentage: z.number().min(0).max(100),
-          grade: z.string().trim().min(1).max(10),
-          color: z.string().regex(hexColorRegex).or(z.literal('')).optional(),
-        })
-      )
-      .optional(),
-    reportCardFormat: z
-      .object({
-        boardType: z.enum(['CBSE', 'ICSE', 'StateBoard', 'IB', 'IGCSE', 'Custom']).optional(),
-        customTitle: z.string().max(100).optional(),
-        showGrade: z.boolean().optional(),
-        showMarks: z.boolean().optional(),
-        showRank: z.boolean().optional(),
-        showAttendance: z.boolean().optional(),
-        showRemarks: z.boolean().optional(),
-        useGradePoints: z.boolean().optional(),
-        passingGrade: z.string().max(5).optional(),
-      })
-      .optional(),
-    attendanceRules: z
-      .object({
-        defaulterThreshold: z.number().int().min(0).max(100).optional(),
-        lockTime: z
-          .string()
-          .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
-          .optional(),
-        allowEdit: z.boolean().optional(),
-        editWindow: z
-          .number()
-          .int()
-          .refine((v) => [12, 24, 48].includes(v), { message: 'Must be 12, 24, or 48' })
-          .optional(),
-        notifyAbsent: z.boolean().optional(),
-        notifyDefaulter: z.boolean().optional(),
-      })
-      .optional(),
-  })
-  .strict();
+    )
+    .optional(),
+  reportCardFormat: z
+    .object({
+      boardType: z.enum(['CBSE', 'ICSE', 'StateBoard', 'IB', 'IGCSE', 'Custom']).optional(),
+      customTitle: z.string().max(100).optional(),
+      showGrade: z.boolean().optional(),
+      showMarks: z.boolean().optional(),
+      showRank: z.boolean().optional(),
+      showAttendance: z.boolean().optional(),
+      showRemarks: z.boolean().optional(),
+      useGradePoints: z.boolean().optional(),
+      passingGrade: z.string().max(5).optional(),
+    })
+    .optional(),
+  attendanceRules: z
+    .object({
+      defaulterThreshold: z.number().int().min(0).max(100).optional(),
+      lockTime: z
+        .string()
+        .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+        .optional(),
+      allowEdit: z.boolean().optional(),
+      editWindow: z
+        .number()
+        .int()
+        .refine((v) => [12, 24, 48].includes(v), { message: 'Must be 12, 24, or 48' })
+        .optional(),
+      notifyAbsent: z.boolean().optional(),
+      notifyDefaulter: z.boolean().optional(),
+    })
+    .optional(),
+});
 
 const DEFAULT_GRADING_SCALE = [
   { minPercentage: 90, grade: 'A+', color: '#16a34a' },
@@ -463,8 +461,8 @@ router.put('/school', authenticate, checkPermission('settings', 'edit'), async (
     const updates = { ...parsed.data };
 
     // NOTE: academicYear updates must go through PUT /academic-year which has
-    // dedicated Zod validation (academicYearSchema).  The schoolSettingsSchema
-    // uses .strict() so any stray academicYear key is already rejected above.
+    // dedicated Zod validation (academicYearSchema).  Unknown keys are stripped
+    // by Zod's default behavior, so stray academicYear keys are safely ignored.
 
     if (updates.name && !updates.schoolName) {
       updates.schoolName = updates.name;

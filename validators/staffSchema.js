@@ -85,10 +85,20 @@ export const createStaffSchema = z
 
     // Personal Details
     dob: dateString.nullish().or(z.literal('')),
-    gender: genderEnum.nullish().or(z.literal('')),
+    gender: genderEnum
+      .nullish()
+      .or(z.literal(''))
+      .transform((v) => v || undefined),
     fatherName: optionalString(100),
-    bloodGroup: bloodGroupEnum.nullish().or(z.literal('')),
-    maritalStatus: z.enum(['Single', 'Married', 'Divorced', 'Widowed']).nullish().or(z.literal('')),
+    bloodGroup: bloodGroupEnum
+      .nullish()
+      .or(z.literal(''))
+      .transform((v) => v || undefined),
+    maritalStatus: z
+      .enum(['Single', 'Married', 'Divorced', 'Widowed'])
+      .nullish()
+      .or(z.literal(''))
+      .transform((v) => v || undefined),
     employmentType: optionalString(50),
     nationality: optionalString(50),
 

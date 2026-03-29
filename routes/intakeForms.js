@@ -25,6 +25,11 @@ import {
 } from '../services/phoneValidation.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { ensureDefaultSchool } from '../utils/schoolContext.js';
+import {
+  sendIntakeFormAssignedEmail,
+  sendIntakeFormEditRequestEmail,
+} from '../services/emailService.js';
+import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 
@@ -463,6 +468,38 @@ router.post(
         assignments.push(assignment);
       }
 
+      // --- Notification: Send email to each assigned recipient (fire-and-forget) ---
+      const schoolName = process.env.SCHOOL_NAME || 'School';
+      for (const assignment of assignments) {
+        const recipientEmail = assignment.assignedToEmail;
+        if (recipientEmail) {
+          sendIntakeFormAssignedEmail({
+            recipientEmail,
+            formName: form.formName,
+            formType: form.formType,
+            accessToken: assignment.accessToken,
+            expiresAt: assignment.expiresAt,
+            schoolName,
+          }).catch((err) =>
+            console.error(
+              `[IntakeForm] Failed to send assignment email to ${recipientEmail}:`,
+              err.message
+            )
+          );
+        }
+
+        // Emit socket event for real-time dashboard updates
+        const io = req.app.get('io');
+        emitEvent(io, EVENTS.INTAKE_FORM_ASSIGNED, {
+          schoolId: req.user.schoolId,
+          assignmentId: assignment._id.toString(),
+          formName: form.formName,
+          formType: form.formType,
+          assignedToEmail: assignment.assignedToEmail || undefined,
+          assignedToPhone: assignment.assignedToPhone || undefined,
+        });
+      }
+
       res.status(201).json({
         assignments,
         count: assignments.length,
@@ -561,6 +598,19 @@ router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
     // Populate references
     await assignment.populate('formId', 'formName formType');
     await assignment.populate('assignedBy', 'name code');
+
+    // --- Notification: Re-send email on resend (fire-and-forget) ---
+    if (assignment.assignedToEmail) {
+      const formDoc = await IntakeForm.findById(assignment.formId?._id || assignment.formId);
+      sendIntakeFormAssignedEmail({
+        recipientEmail: assignment.assignedToEmail,
+        formName: formDoc?.formName || 'Intake Form',
+        formType: formDoc?.formType || 'student',
+        accessToken: assignment.accessToken,
+        expiresAt: assignment.expiresAt,
+        schoolName: process.env.SCHOOL_NAME,
+      }).catch((err) => console.error(`[IntakeForm] Failed to send resend email:`, err.message));
+    }
 
     res.json(assignment);
   } catch (error) {
@@ -890,9 +940,30 @@ router.post(
       // Get assignment to send notification
       const assignment = await FormAssignment.findById(submission.assignmentId);
 
-      // TODO: Send notification to parent about edit request
-      if (assignment) {
-        // Implement email/SMS sending logic here
+      // Send email notification to parent about edit request
+      if (assignment && assignment.assignedToEmail) {
+        const formDoc = await IntakeForm.findById(submission.formId)
+          .select('formName formType')
+          .lean();
+        sendIntakeFormEditRequestEmail({
+          recipientEmail: assignment.assignedToEmail,
+          formName: formDoc?.formName || 'Intake Form',
+          editNotes: notes,
+          accessToken: assignment.accessToken,
+          schoolName: process.env.SCHOOL_NAME,
+        }).catch((err) =>
+          console.error(`[IntakeForm] Failed to send edit request email:`, err.message)
+        );
+
+        // Emit socket event for real-time updates
+        const io = req.app.get('io');
+        emitEvent(io, EVENTS.INTAKE_FORM_ASSIGNED, {
+          schoolId: req.user.schoolId,
+          assignmentId: assignment._id.toString(),
+          formName: formDoc?.formName,
+          formType: formDoc?.formType,
+          assignedToEmail: assignment.assignedToEmail,
+        });
       }
 
       // Populate for response

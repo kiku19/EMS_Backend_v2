@@ -113,6 +113,74 @@ router.post(
   }
 );
 
+// Bulk update document configurations — must be before /:id to prevent Express matching "bulk" as an :id
+router.put(
+  '/document-config/bulk',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const { DocumentConfig } = await import('../../database.js');
+      const { configs } = req.body;
+
+      if (!Array.isArray(configs) || configs.length === 0) {
+        return res.status(400).json({ error: 'configs array is required and must not be empty' });
+      }
+
+      // Cap at 50 to prevent abuse
+      if (configs.length > 50) {
+        return res.status(400).json({ error: 'Maximum 50 configurations can be updated at once' });
+      }
+
+      const results = [];
+      const errors = [];
+
+      for (const configData of configs) {
+        if (!configData._id) {
+          errors.push({ error: 'Missing _id', data: configData });
+          continue;
+        }
+
+        const {
+          _id,
+          schoolId: _ignored,
+          createdAt: _ca,
+          updatedAt: _ua,
+          __v: _v,
+          ...updateData
+        } = configData;
+
+        try {
+          const updated = await DocumentConfig.findOneAndUpdate(
+            schoolQuery(req, { _id }),
+            updateData,
+            { new: true, runValidators: true }
+          );
+
+          if (updated) {
+            results.push(updated);
+          } else {
+            errors.push({ error: 'Not found', _id });
+          }
+        } catch (updateError) {
+          errors.push({ error: updateError.message, _id });
+        }
+      }
+
+      res.json({
+        success: true,
+        updated: results.length,
+        failed: errors.length,
+        results,
+        ...(errors.length > 0 ? { errors } : {}),
+      });
+    } catch (error) {
+      console.error('Error bulk updating document configs:', error);
+      res.status(500).json({ error: 'Failed to bulk update document configurations' });
+    }
+  }
+);
+
 // Update document configuration
 router.put(
   '/document-config/:id',

@@ -10,6 +10,8 @@ import emailDomainRouter from './settings/emailDomain.js';
 import dataResidencyRouter from './settings/dataResidency.js';
 import communicationRouter from './settings/communication.js';
 import admissionFormConfigRouter from './settings/admissionFormConfig.js';
+import admissionAndRollConfigRouter from './settings/admissionAndRollConfig.js';
+import payrollRouter from './settings/payroll.js';
 
 const router = express.Router();
 
@@ -24,5 +26,7 @@ router.use('/', emailDomainRouter);
 router.use('/', dataResidencyRouter);
 router.use('/', communicationRouter);
 router.use('/', admissionFormConfigRouter);
+router.use('/', admissionAndRollConfigRouter);
+router.use('/', payrollRouter);
 
 export default router;

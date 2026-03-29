@@ -15,6 +15,16 @@ export const createRemarkSchema = z.object({
   sentToParent: z.boolean().optional().default(false),
 });
 
+export const updateRemarkSchema = z.object({
+  title: z.string().min(1, 'Title is required').max(200, 'Title too long'),
+  description: z.string().min(1, 'Description is required').max(2000, 'Description too long'),
+  category: z
+    .enum(['academic', 'behavioral', 'achievement', 'attendance', 'health', 'general'])
+    .optional()
+    .default('general'),
+  sentToParent: z.boolean().optional().default(false),
+});
+
 export const sendReminderSchema = z.object({
   type: z.enum(['fee', 'attendance'], { required_error: 'Reminder type is required' }),
   message: z.string().max(500, 'Message too long').optional(),
@@ -155,13 +165,14 @@ export async function initializeFeeStructure(student) {
   const existingFeeStructure = await StudentFeeStructure.findOne({
     studentId: student._id,
     academicYear,
+    schoolId: student.schoolId,
   });
 
   if (existingFeeStructure) {
     return;
   }
 
-  const classInfo = await Class.findById(student.classId);
+  const classInfo = await Class.findOne({ _id: student.classId, schoolId: student.schoolId });
   if (!classInfo) {
     return;
   }

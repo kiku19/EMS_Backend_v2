@@ -346,6 +346,45 @@ router.put('/templates/:id', async (req, res) => {
   }
 });
 
+// PUT /api/reminders/templates/:id/default - Set template as default
+router.put('/templates/:id/default', async (req, res) => {
+  try {
+    const template = await ReminderTemplate.findOne(
+      buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
+    );
+
+    if (!template) {
+      return res.status(404).json({
+        error: req.t('common:routes.templateNotFound', { defaultValue: 'Template not found' }),
+      });
+    }
+
+    // Unset isDefault on all other templates of the same type within this school
+    await ReminderTemplate.updateMany(
+      buildSchoolScopedQuery(req.user.schoolId, {
+        type: template.type,
+        _id: { $ne: template._id },
+      }),
+      { $set: { isDefault: false } }
+    );
+
+    // Set this template as default
+    template.isDefault = true;
+    await template.save();
+
+    res.json(template);
+  } catch (error) {
+    console.error('Error setting default template:', error);
+    res
+      .status(500)
+      .json({
+        error: req.t('common:routes.failedToUpdateTemplate', {
+          defaultValue: 'Failed to update template',
+        }),
+      });
+  }
+});
+
 // DELETE /api/reminders/templates/:id - Delete template
 router.delete('/templates/:id', async (req, res) => {
   try {
@@ -353,11 +392,9 @@ router.delete('/templates/:id', async (req, res) => {
       buildSchoolScopedQuery(req.user.schoolId, { _id: req.params.id })
     );
     if (!template) {
-      return res
-        .status(404)
-        .json({
-          error: req.t('common:routes.templateNotFound', { defaultValue: 'Template not found' }),
-        });
+      return res.status(404).json({
+        error: req.t('common:routes.templateNotFound', { defaultValue: 'Template not found' }),
+      });
     }
     res.json({ message: req.t('common:routes.templateDeletedSuccessfully') });
   } catch (error) {

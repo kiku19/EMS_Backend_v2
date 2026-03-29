@@ -291,7 +291,7 @@ router.get(
           academicYear,
         })
       )
-        .populate('examId', 'name type startDate')
+        .populate('examId', 'name type startDate subjectName subject')
         .sort({ createdAt: -1 })
         .lean();
 
@@ -377,7 +377,7 @@ router.get(
           academicYear,
         })
       )
-        .populate('examId', 'name type startDate')
+        .populate('examId', 'name type startDate subjectName subject')
         .sort({ createdAt: 1 }) // ascending for trend chart
         .lean();
 
@@ -429,7 +429,7 @@ router.get(
           academicYear,
         })
       )
-        .populate('examId', 'name type startDate')
+        .populate('examId', 'name type startDate subjectName subject')
         .sort({ createdAt: -1 })
         .lean();
 
@@ -539,6 +539,134 @@ router.get(
     } catch (error) {
       console.error('Error fetching report card:', error);
       res.status(500).json({ error: 'Failed to fetch report card' });
+    }
+  }
+);
+
+// POST /academic-performance/recalculate/:studentId
+// Recalculate grades, percentages, and ranks for a student's results
+router.post(
+  '/recalculate/:studentId',
+  authenticate,
+  checkPermission('academics', 'edit'),
+  async (req, res) => {
+    try {
+      const { studentId } = req.params;
+      const schoolId = req.user?.schoolId;
+      const academicYear = req.body.academicYear || req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+
+      // Verify student exists and belongs to this school
+      const student = await Student.findOne(
+        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+      ).lean();
+      if (!student) {
+        return res.status(404).json({ error: 'Student not found' });
+      }
+
+      // Find all results for this student in the given academic year
+      const results = await Result.find(
+        scopeBySchool(schoolId, {
+          studentId,
+          isDeleted: { $ne: true },
+          academicYear,
+        })
+      ).populate('examId', 'maxMarks passingMarks');
+
+      if (results.length === 0) {
+        return res.json({ message: 'No results to recalculate', count: 0 });
+      }
+
+      const bulkOps = [];
+      // Track unique exam+class pairs for rank recalculation
+      const examClassPairs = new Set();
+
+      for (const result of results) {
+        const maxMarks = result.examId?.maxMarks || result.maxMarks || 100;
+        const passingMarks = result.examId?.passingMarks || 35;
+        const marksObtained = result.marksObtained || 0;
+
+        const rawPercentage = maxMarks > 0 ? (marksObtained / maxMarks) * 100 : 0;
+        const percentage = Math.round(rawPercentage * 100) / 100;
+
+        // Grade calculation (same logic as academics.js computeGrade)
+        let grade;
+        if (percentage >= 90) grade = 'A+';
+        else if (percentage >= 80) grade = 'A';
+        else if (percentage >= 70) grade = 'B+';
+        else if (percentage >= 60) grade = 'B';
+        else if (percentage >= 50) grade = 'C';
+        else if (percentage >= 40) grade = 'D';
+        else grade = 'F';
+
+        const status = marksObtained >= passingMarks ? 'passed' : 'failed';
+
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: result._id },
+            update: {
+              $set: {
+                percentage,
+                grade,
+                status,
+                maxMarks,
+                totalMaxMarks: maxMarks,
+                totalMarksObtained: marksObtained,
+              },
+            },
+          },
+        });
+
+        // Collect exam+class for rank recomputation
+        const examId = result.examId?._id || result.examId;
+        const classId = result.classId;
+        if (examId && classId) {
+          examClassPairs.add(`${examId}::${classId}`);
+        }
+      }
+
+      if (bulkOps.length > 0) {
+        await Result.bulkWrite(bulkOps);
+      }
+
+      // Recompute ranks for each affected exam+class
+      const normalizedSchoolId = scopeBySchool(schoolId, {}).schoolId;
+      for (const pair of examClassPairs) {
+        const [examId, classId] = pair.split('::');
+        // Inline rank computation
+        const allResults = await Result.find({
+          examId,
+          classId,
+          schoolId: normalizedSchoolId,
+          isDeleted: { $ne: true },
+        }).sort({ percentage: -1 });
+
+        const rankOps = [];
+        let currentRank = 1;
+        for (let i = 0; i < allResults.length; i++) {
+          if (i > 0 && allResults[i].percentage < allResults[i - 1].percentage) {
+            currentRank++;
+          }
+          rankOps.push({
+            updateOne: {
+              filter: { _id: allResults[i]._id },
+              update: { $set: { rank: currentRank } },
+            },
+          });
+        }
+        if (rankOps.length > 0) {
+          await Result.bulkWrite(rankOps);
+        }
+      }
+
+      res.json({
+        message: 'Results recalculated successfully',
+        count: results.length,
+        studentId,
+        academicYear,
+      });
+    } catch (error) {
+      console.error('Error recalculating student performance:', error);
+      res.status(500).json({ error: 'Failed to recalculate performance' });
     }
   }
 );

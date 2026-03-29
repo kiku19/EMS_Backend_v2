@@ -93,3 +93,4 @@ export {
   reviewEnhancedSchema,
   requestEditSchema,
 } from './intakeFormSchema.js';
+export { createSubjectSchema, updateSubjectSchema } from './settingsSubjectSchema.js';

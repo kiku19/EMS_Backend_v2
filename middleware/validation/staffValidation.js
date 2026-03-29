@@ -79,8 +79,15 @@ export const staffProfileUpdateSchema = z
     email: optionalEmail,
     whatsappNumber: optionalPhone,
     isWhatsapp: z.boolean().optional(),
-    bloodGroup: bloodGroupEnum.nullish().or(z.literal('')),
-    maritalStatus: z.enum(['Single', 'Married', 'Divorced', 'Widowed']).nullish().or(z.literal('')),
+    bloodGroup: bloodGroupEnum
+      .nullish()
+      .or(z.literal(''))
+      .transform((v) => v || undefined),
+    maritalStatus: z
+      .enum(['Single', 'Married', 'Divorced', 'Widowed'])
+      .nullish()
+      .or(z.literal(''))
+      .transform((v) => v || undefined),
     address: optionalString(200),
     emergencyContacts: z.array(emergencyContactSchema).max(5).nullable().optional(),
     qualification: optionalString(200),

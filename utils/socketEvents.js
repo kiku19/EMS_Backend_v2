@@ -52,6 +52,10 @@ export const EVENTS = {
   // Timetable
   TIMETABLE_UPDATED: 'timetable_updated',
 
+  // Intake Forms
+  INTAKE_FORM_ASSIGNED: 'intake_form_assigned',
+  INTAKE_FORM_SUBMITTED: 'intake_form_submitted',
+
   // Notifications
   NOTIFICATION_NEW: 'notification:new',
 };
@@ -235,6 +239,22 @@ const EVENT_SCHEMAS = {
   [EVENTS.TIMETABLE_UPDATED]: z.object({
     classId: z.string().optional(),
     academicYear: z.string().optional(),
+  }),
+
+  [EVENTS.INTAKE_FORM_ASSIGNED]: z.object({
+    assignmentId: z.string(),
+    formName: z.string().optional(),
+    formType: z.string().optional(),
+    assignedToEmail: z.string().optional(),
+    assignedToPhone: z.string().optional(),
+  }),
+
+  [EVENTS.INTAKE_FORM_SUBMITTED]: z.object({
+    submissionId: z.string(),
+    formName: z.string().optional(),
+    formType: z.string().optional(),
+    submittedByEmail: z.string().optional(),
+    submittedByPhone: z.string().optional(),
   }),
 
   [EVENTS.NOTIFICATION_NEW]: z.object({

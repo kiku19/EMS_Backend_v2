@@ -182,6 +182,79 @@
 
 /**
  * @swagger
+ * /students/{id}/remarks/{remarkId}:
+ *   put:
+ *     summary: Update a remark
+ *     tags: [Students, Remarks]
+ *     parameters:
+ *       - $ref: '#/components/parameters/IdParam'
+ *       - in: path
+ *         name: remarkId
+ *         required: true
+ *         schema:
+ *           $ref: '#/components/schemas/ObjectId'
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title, description]
+ *             properties:
+ *               title: { type: string, minLength: 1, maxLength: 200 }
+ *               description: { type: string, minLength: 1, maxLength: 2000 }
+ *               category: { type: string }
+ *               sentToParent: { type: boolean }
+ *     responses:
+ *       200:
+ *         description: Remark updated
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *   delete:
+ *     summary: Soft-delete a remark
+ *     tags: [Students, Remarks]
+ *     parameters:
+ *       - $ref: '#/components/parameters/IdParam'
+ *       - in: path
+ *         name: remarkId
+ *         required: true
+ *         schema:
+ *           $ref: '#/components/schemas/ObjectId'
+ *     responses:
+ *       200:
+ *         description: Remark deleted
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ */
+
+/**
+ * @swagger
+ * /students/{id}/remarks/{remarkId}/resend:
+ *   post:
+ *     summary: Resend a remark notification to parent
+ *     tags: [Students, Remarks]
+ *     parameters:
+ *       - $ref: '#/components/parameters/IdParam'
+ *       - in: path
+ *         name: remarkId
+ *         required: true
+ *         schema:
+ *           $ref: '#/components/schemas/ObjectId'
+ *     responses:
+ *       200:
+ *         description: Remark resent to parent
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ */
+
+/**
+ * @swagger
  * /students/{id}/documents:
  *   post:
  *     summary: Attach a document to a student profile

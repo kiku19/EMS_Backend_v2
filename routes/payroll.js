@@ -11,6 +11,7 @@ import StaffAttendance from '../models/StaffAttendance.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission, requireAdmin } from '../middleware/permissions.js';
 import { sanitizeQueryStr, sanitizeQueryId } from '../middleware/validation.js';
+import { escapeRegex } from './students/helpers.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import {
   bulkPaySchema,
@@ -223,7 +224,7 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
     }
     if (employeeId) query.employeeId = employeeId;
     if (search) {
-      query.employeeId = new RegExp(search, 'i');
+      query.employeeId = new RegExp(escapeRegex(search), 'i');
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -281,7 +282,7 @@ router.post(
 
       // Fetch staff data
       const staffFromDB = await Staff.find(
-        { _id: { $in: validIds } },
+        { _id: { $in: validIds }, schoolId: req.user?.schoolId },
         'name salary employmentType _id code status'
       );
 
@@ -496,7 +497,7 @@ router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), a
 
     // FIXED: Fetch staff data from database with salary field
     const staffFromDB = await Staff.find(
-      { _id: { $in: validIds } },
+      { _id: { $in: validIds }, schoolId: req.user?.schoolId },
       'name salary employmentType _id code'
     );
 

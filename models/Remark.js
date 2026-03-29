@@ -25,6 +25,9 @@ const remarkSchema = new mongoose.Schema(
     sentToParent: { type: Boolean, default: false },
     sentDate: { type: Date },
 
+    // Soft delete
+    isDeleted: { type: Boolean, default: false },
+
     // Timestamps
     date: { type: Date, default: Date.now },
   },

@@ -45,7 +45,10 @@ router.post(
         });
       }
 
-      const classExists = await Class.findById(req.body.classId);
+      const classExists = await Class.findOne({
+        _id: req.body.classId,
+        schoolId: req.user?.schoolId,
+      });
       if (!classExists) {
         return res.status(400).json({
           error: req.t('common:routes.classDoesNotExist'),
@@ -156,10 +159,10 @@ router.post(
       }
 
       // Re-fetch to get decrypted PII fields (pre-save encrypts in-place)
-      const populatedStudent = await Student.findById(student._id).populate(
-        'classId',
-        'name section'
-      );
+      const populatedStudent = await Student.findOne({
+        _id: student._id,
+        schoolId: req.user?.schoolId,
+      }).populate('classId', 'name section');
 
       try {
         await createOrUpdateParentAccount(populatedStudent);
@@ -382,6 +385,7 @@ router.put(
           await StudentFeeStructure.deleteMany({
             studentId: student._id,
             academicYear: resolvedYear,
+            schoolId: req.user?.schoolId,
           });
           await initializeFeeStructure(student);
         }
