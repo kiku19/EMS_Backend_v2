@@ -13,7 +13,8 @@ const createSubstitutionSchema = z.object({
   absentTeacherId: z.string().optional().nullable(),
   substituteTeacherId: z.string().min(1, 'Substitute teacher ID is required'),
   reason: z.string().optional(),
-  type: z.enum(['manual', 'auto', 'emergency']).default('manual'),
+  // AUDIT-7: Match Mongoose enum exactly: ['auto', 'manual']
+  type: z.enum(['auto', 'manual']).default('manual'),
   notes: z.string().optional(),
 });
 
@@ -27,8 +28,10 @@ const updateSubstitutionSchema = z.object({
   absentTeacherId: z.string().optional().nullable(),
   substituteTeacherId: z.string().optional(),
   reason: z.string().optional(),
-  type: z.enum(['manual', 'auto', 'emergency']).optional(),
-  status: z.enum(['confirmed', 'pending', 'cancelled', 'completed']).optional(),
+  // AUDIT-7: Match Mongoose enum exactly: ['auto', 'manual']
+  type: z.enum(['auto', 'manual']).optional(),
+  // AUDIT-7: Match Mongoose enum exactly: ['pending', 'confirmed', 'completed', 'declined']
+  status: z.enum(['pending', 'confirmed', 'completed', 'declined']).optional(),
   notes: z.string().optional(),
 });
 
@@ -106,6 +109,71 @@ router.get('/my-alerts', authenticate, async (req, res) => {
 });
 
 /**
+ * AUDIT-42: /date/:date and /teacher/:teacherId MUST be defined BEFORE /:id
+ * to prevent Express route shadowing (/:id would match "date" and "teacher" as IDs).
+ */
+
+/**
+ * GET /api/substitutions/date/:date
+ * Get all substitutions for a specific date
+ */
+router.get('/date/:date', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { date } = req.params;
+
+    const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, { date }))
+      .populate('classId', 'name section')
+      .populate('absentTeacherId', 'name role')
+      .populate('substituteTeacherId', 'name role')
+      .sort({ period: 1 });
+
+    res.json(substitutions);
+  } catch (error) {
+    console.error('Error fetching substitutions by date:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/substitutions/teacher/:teacherId
+ * Get all substitutions for a teacher (either as absent or substitute)
+ */
+router.get(
+  '/teacher/:teacherId',
+  authenticate,
+  checkPermission('classes', 'view'),
+  async (req, res) => {
+    try {
+      const { teacherId } = req.params;
+      const { startDate, endDate } = req.query;
+
+      // Build query - teacher is either absent or substitute
+      const query = {
+        $or: [{ absentTeacherId: teacherId }, { substituteTeacherId: teacherId }],
+      };
+
+      // Add date range if provided
+      if (startDate || endDate) {
+        query.date = {};
+        if (startDate) query.date.$gte = startDate;
+        if (endDate) query.date.$lte = endDate;
+      }
+
+      const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, query))
+        .populate('classId', 'name section')
+        .populate('absentTeacherId', 'name role')
+        .populate('substituteTeacherId', 'name role')
+        .sort({ date: -1, period: 1 });
+
+      res.json(substitutions);
+    } catch (error) {
+      console.error('Error fetching teacher substitutions:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+/**
  * GET /api/substitutions/:id
  * Get a single substitution by ID
  */
@@ -178,6 +246,27 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
         .json({ error: 'Substitution already exists for this date, class, and period' });
     }
 
+    // AUDIT-41: Check for substitute teacher conflict (double-booking)
+    const teacherConflict = await Substitution.findOne(
+      scopeBySchool(schoolId, {
+        date: data.date,
+        period: data.period,
+        substituteTeacherId: data.substituteTeacherId,
+        status: { $nin: ['declined'] },
+      })
+    );
+    if (teacherConflict) {
+      return res.status(409).json({
+        error: 'Substitute teacher is already assigned to another class for this date and period',
+        conflictingSubstitution: {
+          id: teacherConflict._id,
+          classId: teacherConflict.classId,
+          date: teacherConflict.date,
+          period: teacherConflict.period,
+        },
+      });
+    }
+
     const substitution = new Substitution({
       ...data,
       absentTeacherId: data.absentTeacherId || null,
@@ -219,25 +308,31 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
       return res.status(404).json({ error: 'Substitution not found' });
     }
 
-    // Validate class if being updated
+    // AUDIT-5: Validate class with schoolId scoping
     if (data.classId) {
-      const classData = await Class.findById(data.classId);
+      const classData = await Class.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: data.classId })
+      );
       if (!classData) {
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
     }
 
-    // Validate absent teacher if being updated
+    // AUDIT-5: Validate absent teacher with schoolId scoping
     if (data.absentTeacherId) {
-      const absentTeacher = await Staff.findById(data.absentTeacherId);
+      const absentTeacher = await Staff.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: data.absentTeacherId })
+      );
       if (!absentTeacher) {
         return res.status(404).json({ error: 'Absent teacher not found' });
       }
     }
 
-    // Validate substitute teacher if being updated
+    // AUDIT-5: Validate substitute teacher with schoolId scoping
     if (data.substituteTeacherId) {
-      const substituteTeacher = await Staff.findById(data.substituteTeacherId);
+      const substituteTeacher = await Staff.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: data.substituteTeacherId })
+      );
       if (!substituteTeacher) {
         return res.status(404).json({ error: 'Substitute teacher not found' });
       }
@@ -326,65 +421,5 @@ router.patch('/:id/respond', authenticate, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-/**
- * GET /api/substitutions/date/:date
- * Get all substitutions for a specific date
- */
-router.get('/date/:date', authenticate, checkPermission('classes', 'view'), async (req, res) => {
-  try {
-    const { date } = req.params;
-
-    const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, { date }))
-      .populate('classId', 'name section')
-      .populate('absentTeacherId', 'name role')
-      .populate('substituteTeacherId', 'name role')
-      .sort({ period: 1 });
-
-    res.json(substitutions);
-  } catch (error) {
-    console.error('Error fetching substitutions by date:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * GET /api/substitutions/teacher/:teacherId
- * Get all substitutions for a teacher (either as absent or substitute)
- */
-router.get(
-  '/teacher/:teacherId',
-  authenticate,
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { teacherId } = req.params;
-      const { startDate, endDate } = req.query;
-
-      // Build query - teacher is either absent or substitute
-      const query = {
-        $or: [{ absentTeacherId: teacherId }, { substituteTeacherId: teacherId }],
-      };
-
-      // Add date range if provided
-      if (startDate || endDate) {
-        query.date = {};
-        if (startDate) query.date.$gte = startDate;
-        if (endDate) query.date.$lte = endDate;
-      }
-
-      const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, query))
-        .populate('classId', 'name section')
-        .populate('absentTeacherId', 'name role')
-        .populate('substituteTeacherId', 'name role')
-        .sort({ date: -1, period: 1 });
-
-      res.json(substitutions);
-    } catch (error) {
-      console.error('Error fetching teacher substitutions:', error);
-      res.status(500).json({ error: error.message });
-    }
-  }
-);
 
 export default router;

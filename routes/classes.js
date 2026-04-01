@@ -295,23 +295,34 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
       .populate('classTeacherId', 'name')
       .sort({ name: 1, section: 1 });
 
-    const formatted = await Promise.all(
-      classes.map(async (cls) => {
-        const studentCount = await countActiveStudents(cls._id, req.user?.schoolId);
-
-        return {
-          id: cls._id.toString(),
-          name: cls.name,
-          section: cls.section,
-          subjects: cls.subjects,
-          classTeacherId: cls.classTeacherId?._id?.toString(),
-          classTeacherName: cls.classTeacherId?.name,
-          studentCount,
-          academicYear: cls.academicYear,
-          strengthLimit: cls.strengthLimit,
-        };
-      })
+    // AUDIT-65: Bulk-fetch student counts instead of N+1 individual queries
+    const classIds = classes.map((cls) => cls._id);
+    const studentCountAgg = await Student.aggregate([
+      {
+        $match: {
+          classId: { $in: classIds },
+          status: 'active',
+          isDeleted: { $ne: true },
+          ...(req.user?.schoolId ? { schoolId: extractSchoolId(req.user.schoolId) } : {}),
+        },
+      },
+      { $group: { _id: '$classId', count: { $sum: 1 } } },
+    ]);
+    const studentCountMap = new Map(
+      studentCountAgg.map((item) => [item._id.toString(), item.count])
     );
+
+    const formatted = classes.map((cls) => ({
+      id: cls._id.toString(),
+      name: cls.name,
+      section: cls.section,
+      subjects: cls.subjects,
+      classTeacherId: cls.classTeacherId?._id?.toString(),
+      classTeacherName: cls.classTeacherId?.name,
+      studentCount: studentCountMap.get(cls._id.toString()) || 0,
+      academicYear: cls.academicYear,
+      strengthLimit: cls.strengthLimit,
+    }));
 
     res.json(formatted);
   } catch (error) {
@@ -448,7 +459,8 @@ router.put(
   }
 );
 
-router.get('/:id/settings', authenticate, async (req, res) => {
+// AUDIT-36: Added permission check
+router.get('/:id/settings', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
     const classDoc = await Class.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -533,7 +545,8 @@ router.put(
   }
 );
 
-router.get('/:id/students', authenticate, async (req, res) => {
+// AUDIT-36: Added permission check
+router.get('/:id/students', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
     if (!resolved) {
@@ -605,7 +618,8 @@ router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), as
   }
 });
 
-router.get('/:id', authenticate, async (req, res) => {
+// AUDIT-36: Added permission check
+router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
     if (!resolved) {

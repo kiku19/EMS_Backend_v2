@@ -243,16 +243,26 @@ router.get(
         if (dateRange) query.date = dateRange;
       }
 
+      // AUDIT-66: Add pagination support
+      const skip = parseInt(req.query.skip) || 0;
+      const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+      const total = await Attendance.countDocuments(query);
+
       const attendance = await Attendance.find(query)
         .populate({
           path: 'studentId',
           select: 'name rollNo admissionId',
           match: { isDeleted: { $ne: true } },
         })
-        .sort({ date: -1 });
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(limit);
 
       // Filter out records where student was deleted (populate returns null)
-      res.json(attendance.filter((r) => r.studentId != null));
+      const filtered = attendance.filter((r) => r.studentId != null);
+      res.set('X-Total-Count', String(total));
+      res.set('X-Has-More', String(skip + attendance.length < total));
+      res.json(filtered);
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -608,7 +618,12 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
       if (dateRange) query.date = dateRange;
     }
 
-    const attendance = await Attendance.find(query).sort({ date: -1 });
+    // AUDIT-66: Add pagination support
+    const skip = parseInt(req.query.skip) || 0;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const total = await Attendance.countDocuments(query);
+
+    const attendance = await Attendance.find(query).sort({ date: -1 }).skip(skip).limit(limit);
     const attendanceObj = {};
 
     attendance.forEach((record) => {
@@ -619,6 +634,8 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
       };
     });
 
+    res.set('X-Total-Count', String(total));
+    res.set('X-Has-More', String(skip + attendance.length < total));
     res.json(attendanceObj);
   } catch (error) {
     res.status(500).json({ error: error.message });

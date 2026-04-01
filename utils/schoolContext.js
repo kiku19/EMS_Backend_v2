@@ -70,7 +70,10 @@ export function extractSchoolId(value) {
 export function buildSchoolScopedQuery(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
   if (!normalizedSchoolId) {
-    return { ...query };
+    throw new Error(
+      'schoolId is required for school-scoped queries. ' +
+        'Ensure req.user.schoolId is set via authentication middleware.'
+    );
   }
 
   return {
