@@ -3,7 +3,7 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const chapterProgressSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
     subjectId: { type: mongoose.Schema.Types.ObjectId }, // Legacy field, no Subject model exists — use subjectName instead
     subjectName: { type: String, required: true },

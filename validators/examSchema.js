@@ -3,7 +3,29 @@ import { objectId, optionalObjectId, academicYear, optionalString } from './zodH
 
 const timeString = z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format');
 
-const examTypeEnum = z.enum(['unit_test', 'quiz', 'midterm', 'final']).nullish().or(z.literal(''));
+// Subject entry within an Exam (mirrors Mongoose subdocument)
+const examSubjectSchema = z.object({
+  subjectId: optionalObjectId,
+  subjectName: z.string().max(100).optional(),
+  date: z.coerce.date().optional(),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format').optional(),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format').optional(),
+  maxMarks: z.number().min(1).max(1000).default(100),
+  passingMarks: z.number().min(0).max(1000).default(35),
+});
+
+const examTypeEnum = z.enum([
+  'unit_test',
+  'quiz',
+  'midterm',
+  'final',
+  'quarterly',
+  'half_yearly',
+  'annual',
+  'practice',
+  'class_test',
+  'assignment',
+]).nullish().or(z.literal(''));
 const gradingTypeEnum = z.enum(['numerical', 'grades', 'cgpa']);
 const termEnum = z.enum(['term_1', 'term_2', 'term_3', 'final']).nullish().or(z.literal(''));
 
@@ -60,6 +82,7 @@ export const createExamSchema = z
       .max(600, 'Duration cannot exceed 600 minutes')
       .nullable()
       .optional(),
+    subjects: z.array(examSubjectSchema).optional(),
   })
   .strip()
   .refine((data) => data.passingMarks <= data.maxMarks, {
@@ -108,6 +131,7 @@ export const updateExamSchema = z
       .max(600, 'Duration cannot exceed 600 minutes')
       .nullable()
       .optional(),
+    subjects: z.array(examSubjectSchema).optional(),
   })
   .strip()
   .refine(
@@ -211,7 +235,15 @@ export const createExamScheduleSchema = z
     entries: z.array(examScheduleEntrySchema).nullable().optional(),
     createdBy: optionalObjectId,
   })
-  .strip();
+  .strip()
+  .refine((data) => data.endDate >= data.startDate, {
+    message: 'End date must be on or after start date',
+    path: ['endDate'],
+  })
+  .refine((data) => data.defaultPassingMarks <= data.defaultMaxMarks, {
+    message: 'Default passing marks cannot exceed default maximum marks',
+    path: ['defaultPassingMarks'],
+  });
 
 // ─── UPDATE EXAM SCHEDULE (all fields optional) ───────────────────
 export const updateExamScheduleSchema = z
@@ -237,4 +269,28 @@ export const updateExamScheduleSchema = z
     defaultPassingMarks: z.number().min(0, 'Default passing marks cannot be negative').optional(),
     entries: z.array(examScheduleEntrySchema).nullable().optional(),
   })
-  .strip();
+  .strip()
+  .refine(
+    (data) => {
+      if (data.startDate && data.endDate) {
+        return data.endDate >= data.startDate;
+      }
+      return true;
+    },
+    {
+      message: 'End date must be on or after start date',
+      path: ['endDate'],
+    }
+  )
+  .refine(
+    (data) => {
+      if (data.defaultPassingMarks != null && data.defaultMaxMarks != null) {
+        return data.defaultPassingMarks <= data.defaultMaxMarks;
+      }
+      return true;
+    },
+    {
+      message: 'Default passing marks cannot exceed default maximum marks',
+      path: ['defaultPassingMarks'],
+    }
+  );

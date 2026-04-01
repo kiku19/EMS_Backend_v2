@@ -3,7 +3,7 @@ import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const classAnnouncementSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', index: true },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
     title: { type: String, required: true },
     description: { type: String, required: true },

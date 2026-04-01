@@ -290,12 +290,16 @@ class SubstitutionService {
         }
 
         // Create pending substitution (with schoolId for multi-tenancy)
+        // substituteTeacherId is required in the Substitution model, so we
+        // temporarily assign the absent teacher themselves as a placeholder.
+        // The status 'pending' signals that a real substitute still needs to
+        // be assigned.  Without this, Mongoose validation rejects the doc.
         const substitution = new Substitution({
           date,
           classId: slot.classId,
           period: String(slot.periodIndex + 1),
           absentTeacherId: teacherId,
-          substituteTeacherId: null, // To be assigned
+          substituteTeacherId: teacherId, // placeholder until a real substitute is assigned
           reason,
           type: 'auto',
           status: 'pending',

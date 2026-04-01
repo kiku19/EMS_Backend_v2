@@ -149,4 +149,30 @@ router.post(
   }
 );
 
+// ─── DELETE /cce/config ──────────────────────────────────────────────────────
+// Soft-delete CCE config for a school/year
+router.delete(
+  '/cce/config',
+  authenticate,
+  checkPermission('academics', 'manage'),
+  async (req, res) => {
+    try {
+      const schoolId = extractSchoolId(req.user.schoolId);
+      const academicYear = await resolveAcademicYear(req.query.academicYear, schoolId);
+      const config = await CCEConfig.findOne(
+        scope(schoolId, { academicYear, isDeleted: { $ne: true } })
+      );
+      if (!config) {
+        return res.status(404).json({ error: 'CCE config not found for this academic year' });
+      }
+      config.isDeleted = true;
+      config.deletedAt = new Date();
+      await config.save();
+      res.json({ message: 'CCE configuration deleted successfully' });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to delete CCE configuration' });
+    }
+  }
+);
+
 export default router;

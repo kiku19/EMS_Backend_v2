@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const conflictLogSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
     conflictType: {
       type: String,

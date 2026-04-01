@@ -37,7 +37,19 @@ export const createCCEConfigSchema = z
       .min(1, 'At least one assessment type is required'),
     coScholasticAreas: z.array(coScholasticAreaEntry).optional(),
   })
-  .strip();
+  .strip()
+  .refine(
+    (data) => {
+      const activeTypes = data.assessmentTypes.filter((t) => t.isActive !== false);
+      if (activeTypes.length === 0) return true;
+      const totalWeightage = activeTypes.reduce((sum, t) => sum + t.weightage, 0);
+      return totalWeightage === 100;
+    },
+    {
+      message: 'Active assessment type weightages must sum to 100%',
+      path: ['assessmentTypes'],
+    }
+  );
 
 export const updateCCEConfigSchema = z
   .object({
@@ -46,4 +58,17 @@ export const updateCCEConfigSchema = z
     assessmentTypes: z.array(assessmentTypeEntry).min(1).optional(),
     coScholasticAreas: z.array(coScholasticAreaEntry).optional(),
   })
-  .strip();
+  .strip()
+  .refine(
+    (data) => {
+      if (!data.assessmentTypes) return true;
+      const activeTypes = data.assessmentTypes.filter((t) => t.isActive !== false);
+      if (activeTypes.length === 0) return true;
+      const totalWeightage = activeTypes.reduce((sum, t) => sum + t.weightage, 0);
+      return totalWeightage === 100;
+    },
+    {
+      message: 'Active assessment type weightages must sum to 100%',
+      path: ['assessmentTypes'],
+    }
+  );
