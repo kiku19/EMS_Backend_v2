@@ -302,6 +302,13 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
+// TODO: Bug #50 — Auto-initializing the fee structure on GET causes a side-effect:
+// visiting a student profile changes their feeStatus from undefined/"not set" to "pending"
+// in the students list. This is because the auto-create below (lines ~360-372) calls
+// Student.findByIdAndUpdate to set feeStatus='pending'. Consider either:
+// 1) Not auto-creating fee structures on a read-only GET endpoint (move to POST/PUT), or
+// 2) Only setting feeStatus on the Student document when fee heads are explicitly assigned
+//    by an admin, not when auto-initialized from class defaults.
 // Get fee structure for a student (auto-initializes if missing)
 router.get(
   '/student/:studentId',

@@ -909,8 +909,7 @@ router.post(
               previousStatus: student.status,
               previousFeeStatus: student.feeStatus,
               decision: d.decision,
-              toClassId: null,
-              newRollNo: null,
+              // Don't set toClassId/newRollNo to null — Mongoose subdoc can't cast null to ObjectId
             };
 
             const oldAcademicYear = student.academicYear || fromAcademicYear;
@@ -991,13 +990,20 @@ router.post(
       }
 
       // Create single PromotionRecord for the entire year-end operation
+      // Clean classMappings to avoid Mongoose cast errors on null ObjectIds
+      const cleanedClassMappings = recordClassMappings.map((cm) => ({
+        ...cm,
+        fromClassId: cm.fromClassId || undefined,
+        toClassId: cm.toClassId || undefined, // remove null — Mongoose can't cast null to ObjectId in subdocs
+      }));
+
       const record = await PromotionRecord.create({
         schoolId: normalizedSchoolId,
         fromAcademicYear,
         toAcademicYear,
         promotedBy: req.user?.id,
         studentSnapshots: allSnapshots,
-        classMappings: recordClassMappings,
+        classMappings: cleanedClassMappings,
         summary,
       });
 
@@ -1017,8 +1023,8 @@ router.post(
         promotionRecordId: record._id,
       });
     } catch (error) {
-      console.error('Error executing multi-class promotion:', error);
-      res.status(500).json({ error: 'Multi-class promotion failed' });
+      console.error('Error executing multi-class promotion:', error?.message, error?.stack);
+      res.status(500).json({ error: error?.message || 'Multi-class promotion failed' });
     }
   }
 );
