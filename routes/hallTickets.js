@@ -2,6 +2,7 @@ import express from 'express';
 import PDFDocument from 'pdfkit';
 import { ExamSchedule, Student, SchoolSettings } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/permissions.js';
 import { validateZod } from '../middleware/validation.js';
 import { hallTicketQuerySchema } from '../validators/index.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
@@ -276,6 +277,7 @@ function drawHallTicket(doc, student, cls, schedule, schoolSettings, classEntrie
 router.get(
   '/schedule/:scheduleId',
   authenticate,
+  checkPermission('academics', 'view'),
   validateZod(hallTicketQuerySchema, 'query'),
   async (req, res) => {
     try {
@@ -350,6 +352,7 @@ router.get(
 router.get(
   '/schedule/:scheduleId/download',
   authenticate,
+  checkPermission('academics', 'view'),
   validateZod(hallTicketQuerySchema, 'query'),
   async (req, res) => {
     try {
@@ -423,7 +426,7 @@ router.get(
 
 // ─── GET /hall-tickets/schedule/:scheduleId/student/:studentId/download ───────
 // Single student hall ticket PDF download
-router.get('/schedule/:scheduleId/student/:studentId/download', authenticate, async (req, res) => {
+router.get('/schedule/:scheduleId/student/:studentId/download', authenticate, checkPermission('academics', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { scheduleId, studentId } = req.params;
