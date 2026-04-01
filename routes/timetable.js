@@ -864,18 +864,13 @@ router.put(
           schoolId: req.user?.schoolId,
         });
       } catch (syncError) {
-        console.error('Sync error (falling back to direct save):', syncError);
-        // Fallback: save class timetable directly
-        timetable.schedule[day][periodIndex] = {
-          subject: subject || '',
-          teacherId: teacherId || null,
-          room: room || '',
-          lastModified: new Date(),
-          modifiedBy: req.user?.id,
-        };
-        timetable.version += 1;
-        timetable.lastSyncedAt = new Date();
-        await timetable.save();
+        console.error('Timetable sync failed — NOT falling back to unsynchronized save:', syncError);
+        // Do NOT silently save only the class timetable. A partial save leaves the
+        // teacher timetable out-of-sync, which is worse than a visible error.
+        return res.status(500).json({
+          error: 'Timetable synchronization failed. The slot was not updated.',
+          details: syncError.message,
+        });
       }
 
       // Reload and populate for response

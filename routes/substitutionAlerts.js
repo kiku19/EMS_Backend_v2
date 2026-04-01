@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import substitutionService from '../services/substitutionService.js';
+import pushNotificationService from '../services/pushNotificationService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -200,7 +201,27 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
     await substitution.populate('absentTeacherId', 'name code');
     await substitution.populate('substituteTeacherId', 'name code');
 
-    // TODO: Send notification to substitute teacher (implement with push notifications)
+    // Send push notification to the substitute teacher
+    // TODO: Also send in-app notification via the Notification model
+    // TODO: Also send SMS notification for urgent same-day substitutions
+    try {
+      const className = substitution.classId
+        ? `${substitution.classId.name} ${substitution.classId.section}`.trim()
+        : 'a class';
+      await pushNotificationService.sendToUser(
+        substituteTeacherId,
+        'Substitution Assignment',
+        `You have been assigned as a substitute teacher for ${className} on ${substitution.date}, period ${substitution.period}.`,
+        {
+          type: 'substitution_assigned',
+          substitutionId: substitution._id.toString(),
+          date: substitution.date,
+        }
+      );
+    } catch (notifyError) {
+      // Log but don't fail the assignment if notification fails
+      console.error('Failed to send substitution assignment notification:', notifyError);
+    }
 
     res.json({
       success: true,
@@ -244,19 +265,33 @@ router.post('/:id/notify', authenticate, checkPermission('classes', 'edit'), asy
       });
     }
 
-    // TODO: Implement actual notification service
-    // For now, just log the notification
-
-    // Simulate notification sent
-    const notificationSent = true;
+    // Send notification via push notification service
+    // TODO: Support additional methods (SMS, email) based on the `method` param
+    // TODO: Create in-app Notification record for audit trail
+    const className = substitution.classId
+      ? `${substitution.classId.name} ${substitution.classId.section}`.trim()
+      : 'a class';
+    const notifyResult = await pushNotificationService.sendToUser(
+      substitution.substituteTeacherId._id,
+      'Substitution Reminder',
+      `Reminder: You are substituting for ${className} on ${substitution.date}, period ${substitution.period}.`,
+      {
+        type: 'substitution_reminder',
+        substitutionId: substitution._id.toString(),
+        date: substitution.date,
+      }
+    );
 
     res.json({
-      success: notificationSent,
-      message: `Notification sent to ${substitution.substituteTeacherId.name}`,
+      success: notifyResult.success !== false,
+      message: notifyResult.success !== false
+        ? `Notification sent to ${substitution.substituteTeacherId.name}`
+        : `Notification could not be sent: ${notifyResult.message || 'unknown error'}`,
       notification: {
         recipient: substitution.substituteTeacherId.name,
         method,
         sentAt: new Date(),
+        pushResult: notifyResult,
       },
     });
   } catch (error) {

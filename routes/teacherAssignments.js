@@ -13,6 +13,27 @@ router.use(authenticate);
 const schoolQuery = (req, extra = {}) =>
   buildSchoolScopedQuery(req.user?.schoolId, { isDeleted: { $ne: true }, ...extra });
 
+/**
+ * Helper: When a teacher is assigned to teach a subject in one or more classes,
+ * update each Class document to include the subject in its `assignedSubjects`
+ * array (using $addToSet so duplicates are avoided).
+ */
+async function _updateClassAssignedSubjects(req, classIds, subject) {
+  if (!classIds || classIds.length === 0 || !subject) return;
+  try {
+    await Class.updateMany(
+      buildSchoolScopedQuery(req.user?.schoolId, {
+        _id: { $in: classIds },
+        isDeleted: { $ne: true },
+      }),
+      { $addToSet: { assignedSubjects: subject } }
+    );
+  } catch (err) {
+    // Log but don't fail the assignment — the primary operation already succeeded
+    console.error('Failed to update Class assignedSubjects:', err);
+  }
+}
+
 // Get available teachers for a specific class, subject, day, and period
 // IMPORTANT: This route must come BEFORE /:teacherId to avoid route conflicts
 router.get(
@@ -207,6 +228,9 @@ router.post(
           await staff.save();
         }
 
+        // Update Class documents: ensure the subject is in each class's assignedSubjects
+        await _updateClassAssignedSubjects(req, classIds, subject);
+
         const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
           'teacherAssignments.classes',
           'name section'
@@ -227,6 +251,9 @@ router.post(
 
       staff.teacherAssignments.push(newAssignment);
       await staff.save();
+
+      // Update Class documents: ensure the subject is in each class's assignedSubjects
+      await _updateClassAssignedSubjects(req, classIds, subject);
 
       const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
         'teacherAssignments.classes',
@@ -276,6 +303,9 @@ router.put(
       assignment.classes = classIds;
 
       await staff.save();
+
+      // Update Class documents: ensure the subject is in each class's assignedSubjects
+      await _updateClassAssignedSubjects(req, classIds, subject);
 
       const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
         'teacherAssignments.classes',

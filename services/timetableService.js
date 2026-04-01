@@ -57,8 +57,11 @@ class TimetableService {
       throw new Error('Missing required parameters: sourceId, day, or periodIndex');
     }
 
-    // For now, proceed without transactions for compatibility with test environments
-    // In production with replica sets, transactions can be enabled
+    // WARNING: Transactions are disabled (session = null) for compatibility with
+    // non-replica-set environments. Without transactions, a failure mid-sync can
+    // leave class and teacher timetables out of sync. The caller MUST NOT silently
+    // fall back to a partial save — it should surface the error instead.
+    // TODO: Enable transactions when running with a replica set in production.
     const session = null;
 
     try {
