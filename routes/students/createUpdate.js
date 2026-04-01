@@ -367,6 +367,10 @@ router.put(
 
       try {
         if (classChanged || academicYearChanged) {
+          // TODO [AUDIT-15]: Migrate exam results (Result model) and attendance (Attendance model)
+          // when student changes class. Currently records still reference the old classId, making
+          // them invisible in new-class-scoped queries. See Attendance.classId and Result.classId.
+
           // Warn if there are unpaid fees before wiping the fee structure
           const unpaidFees = await StudentFeeStructure.find({
             schoolId: req.user?.schoolId,

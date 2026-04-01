@@ -54,4 +54,57 @@ classSchema.index(
   { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
 );
 
+/**
+ * Compute and persist the average attendance percentage for a class.
+ * Counts 'present' and 'late' as fully present, 'halfday' as 0.5 present.
+ * Updates the `averageAttendance` field on the Class document.
+ *
+ * @param {ObjectId|string} classId - The class to update
+ * @param {ObjectId|string} schoolId - School scope for multi-tenancy
+ * @returns {number} The computed average attendance percentage (0-100)
+ */
+classSchema.statics.updateAverageAttendance = async function updateAverageAttendance(
+  classId,
+  schoolId
+) {
+  // Lazy import to avoid circular dependency (Attendance -> Class -> Attendance)
+  const { default: Attendance } = await import('./Attendance.js');
+
+  const pipeline = [
+    {
+      $match: {
+        classId: new mongoose.Types.ObjectId(String(classId)),
+        schoolId: new mongoose.Types.ObjectId(String(schoolId)),
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalRecords: { $sum: 1 },
+        presentCount: {
+          $sum: {
+            $cond: [{ $in: ['$status', ['present', 'late']] }, 1, 0],
+          },
+        },
+        halfdayCount: {
+          $sum: {
+            $cond: [{ $eq: ['$status', 'halfday'] }, 1, 0],
+          },
+        },
+      },
+    },
+  ];
+
+  const [result] = await Attendance.aggregate(pipeline);
+
+  let averageAttendance = 0;
+  if (result && result.totalRecords > 0) {
+    const effectivePresent = result.presentCount + result.halfdayCount * 0.5;
+    averageAttendance = Math.round((effectivePresent / result.totalRecords) * 100);
+  }
+
+  await this.findByIdAndUpdate(classId, { averageAttendance });
+  return averageAttendance;
+};
+
 export default mongoose.model('Class', classSchema);
