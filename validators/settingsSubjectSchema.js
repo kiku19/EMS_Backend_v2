@@ -5,7 +5,7 @@ import { optionalString } from './zodHelpers.js';
 export const createSubjectSchema = z
   .object({
     name: z.string().min(1, 'Subject name is required').max(100).trim(),
-    code: z.string().min(1, 'Subject code is required').max(20).trim(),
+    code: z.string().max(20, 'Subject code must not exceed 20 characters').trim().optional(),
     description: optionalString(500),
     assignedClasses: z
       .array(
@@ -23,7 +23,7 @@ export const createSubjectSchema = z
 export const updateSubjectSchema = z
   .object({
     name: z.string().min(1, 'Subject name is required').max(100).trim().optional(),
-    code: z.string().min(1, 'Subject code is required').max(20).trim().optional(),
+    code: z.string().max(20, 'Subject code must not exceed 20 characters').trim().optional(),
     description: optionalString(500),
     assignedClasses: z.array(z.number().int().min(1).max(12)).optional(),
   })

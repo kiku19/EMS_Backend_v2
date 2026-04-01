@@ -50,6 +50,27 @@ const addClassSubjectSchema = z
   })
   .strip();
 
+const updateClassSubjectSchema = z
+  .object({
+    subjectName: z.string().min(1, 'Subject name is required').max(100).trim().optional(),
+    teacherId: objectId.optional(),
+    chapters: z
+      .array(
+        z.object({
+          chapterName: z.string().min(1).max(200).trim(),
+          chapterNumber: z.number().int().min(1),
+          status: z.enum(['not_started', 'in_progress', 'completed']).default('not_started'),
+          progressPercentage: z.number().min(0).max(100).default(0),
+          startDate: z.string().datetime().optional().nullable(),
+          completedDate: z.string().datetime().optional().nullable(),
+          topics: z.array(z.string().max(200).trim()).optional().default([]),
+        })
+      )
+      .optional(),
+    assignedStudents: z.array(objectId).optional(),
+  })
+  .strip();
+
 const createAnnouncementSchema = z
   .object({
     title: z.string().min(1, 'Title is required').max(200).trim(),
@@ -901,6 +922,14 @@ router.post(
       const { subjectName, subjectId, teacherId, chapters, assignedStudents } = req.body;
       const { academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
 
+      // Verify class belongs to this school BEFORE creating any documents
+      const classData = await Class.findOne(
+        scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
+      );
+      if (!classData) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      }
+
       const chapterProgress = await ChapterProgress.create({
         classId: id,
         schoolId: extractSchoolId(schoolId),
@@ -912,13 +941,8 @@ router.post(
         assignedStudents: assignedStudents || [],
       });
 
-      await chapterProgress.save();
-
       // Update class subjects list
-      const classData = await Class.findOne(
-        scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
-      );
-      if (classData && !classData.subjects.includes(subjectName)) {
+      if (!classData.subjects.includes(subjectName)) {
         classData.subjects.push(subjectName);
         await classData.save();
       }
@@ -937,6 +961,132 @@ router.post(
     } catch (error) {
       console.error('Error adding subject:', error);
       res.status(500).json({ error: 'Failed to add subject' });
+    }
+  }
+);
+
+// Update a subject (ChapterProgress) for a class
+router.put(
+  '/:id/subjects/:subjectProgressId',
+  authenticate,
+  checkPermission('classes', 'edit'),
+  validateZod(updateClassSubjectSchema),
+  async (req, res) => {
+    try {
+      const { id, subjectProgressId } = req.params;
+      const schoolId = req.user?.schoolId;
+
+      // Verify class belongs to this school
+      const classData = await Class.findOne(
+        scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
+      );
+      if (!classData) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      }
+
+      // Verify subject progress belongs to this class and school
+      const existing = await ChapterProgress.findOne(
+        scopeBySchool(schoolId, { _id: subjectProgressId, classId: id })
+      );
+      if (!existing) {
+        return res.status(404).json({ error: 'Subject progress not found for this class' });
+      }
+
+      const { subjectName, teacherId, chapters, assignedStudents } = req.body;
+      const oldSubjectName = existing.subjectName;
+
+      if (subjectName !== undefined) existing.subjectName = subjectName;
+      if (teacherId !== undefined) existing.teacherId = teacherId;
+      if (chapters !== undefined) existing.chapters = chapters;
+      if (assignedStudents !== undefined) existing.assignedStudents = assignedStudents;
+
+      if (existing.calculateOverallProgress) {
+        existing.calculateOverallProgress();
+      }
+      await existing.save();
+
+      // If subject name changed, update the class subjects list
+      if (subjectName && subjectName !== oldSubjectName) {
+        const idx = classData.subjects.indexOf(oldSubjectName);
+        if (idx !== -1) {
+          classData.subjects[idx] = subjectName;
+        } else if (!classData.subjects.includes(subjectName)) {
+          classData.subjects.push(subjectName);
+        }
+        await classData.save();
+      }
+
+      // Log activity
+      await ActivityLog.create({
+        classId: id,
+        schoolId: extractSchoolId(schoolId),
+        activityType: 'subject_updated',
+        description: `Subject ${existing.subjectName} updated`,
+        performedBy: req.user?.id,
+        details: { subjectProgressId, subjectName: existing.subjectName },
+      });
+
+      res.json(existing);
+    } catch (error) {
+      console.error('Error updating subject:', error);
+      res.status(500).json({ error: 'Failed to update subject' });
+    }
+  }
+);
+
+// Delete a subject (ChapterProgress) from a class
+router.delete(
+  '/:id/subjects/:subjectProgressId',
+  authenticate,
+  checkPermission('classes', 'delete'),
+  async (req, res) => {
+    try {
+      const { id, subjectProgressId } = req.params;
+      const schoolId = req.user?.schoolId;
+
+      // Verify class belongs to this school
+      const classData = await Class.findOne(
+        scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
+      );
+      if (!classData) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      }
+
+      // Verify subject progress belongs to this class and school
+      const existing = await ChapterProgress.findOne(
+        scopeBySchool(schoolId, { _id: subjectProgressId, classId: id })
+      );
+      if (!existing) {
+        return res.status(404).json({ error: 'Subject progress not found for this class' });
+      }
+
+      const deletedSubjectName = existing.subjectName;
+      await ChapterProgress.deleteOne({ _id: subjectProgressId });
+
+      // Check if any other ChapterProgress references this subject for the same class
+      const otherRefs = await ChapterProgress.countDocuments(
+        scopeBySchool(schoolId, { classId: id, subjectName: deletedSubjectName })
+      );
+      // If no other references remain, remove from class subjects list
+      if (otherRefs === 0) {
+        classData.subjects = classData.subjects.filter((s) => s !== deletedSubjectName);
+        await classData.save();
+      }
+
+      // Log activity
+      await ActivityLog.create({
+        classId: id,
+        schoolId: extractSchoolId(schoolId),
+        activityType: 'subject_removed',
+        description: `Subject ${deletedSubjectName} removed from class`,
+        performedBy: req.user?.id,
+        details: { subjectProgressId, subjectName: deletedSubjectName },
+      });
+
+      res.json({ success: true, message: `Subject "${deletedSubjectName}" removed from class` });
+    } catch (error) {
+      console.error('Error deleting subject:', error);
+      res.status(500).json({ error: 'Failed to delete subject' });
     }
   }
 );
