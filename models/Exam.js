@@ -31,7 +31,7 @@ const examSchema = new mongoose.Schema(
     maxMarks: { type: Number, default: 100 }, // Canonical field for maximum marks
     passingMarks: { type: Number, default: 35 },
     weightage: { type: Number, default: 10 },
-    gradingType: { type: String, default: 'numerical' }, // numerical, grades, cgpa
+    gradingType: { type: String, enum: ['numerical', 'grades', 'cgpa'], default: 'numerical' },
     instructions: { type: String },
     term: { type: String, enum: ['term_1', 'term_2', 'term_3', 'final'] },
     duration: { type: Number }, // Duration in minutes
@@ -46,7 +46,7 @@ const examSchema = new mongoose.Schema(
         passingMarks: { type: Number, default: 35 },
       },
     ],
-    status: { type: String, default: 'scheduled' }, // scheduled, ongoing, completed, results_published
+    status: { type: String, enum: ['scheduled', 'ongoing', 'completed', 'results_published'], default: 'scheduled' },
     isPublished: { type: Boolean, default: false },
     publishedAt: { type: Date },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },

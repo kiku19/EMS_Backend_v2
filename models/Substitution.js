@@ -25,6 +25,9 @@ const substitutionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-substitutionSchema.index({ schoolId: 1, date: 1, classId: 1, period: 1 });
+substitutionSchema.index(
+  { schoolId: 1, date: 1, classId: 1, period: 1 },
+  { unique: true }
+);
 
 export default mongoose.model('Substitution', substitutionSchema);

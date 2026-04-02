@@ -3,25 +3,33 @@ import mongoose from 'mongoose';
 // CBSE 9-point scholastic grading scale
 // A1: 91-100 (GP 10), A2: 81-90 (GP 9), B1: 71-80 (GP 8), B2: 61-70 (GP 7),
 // C1: 51-60 (GP 6), C2: 41-50 (GP 5), D: 33-40 (GP 4), E1/E2: <33 (Fail)
+// CBSE 9-point grading uses >= lower bound for each tier so fractional
+// percentages (e.g. 90.5) are never left unmapped.  The scale is searched
+// top-down; first match wins.
 export const CBSE_GRADE_SCALE = [
   { min: 91, max: 100, grade: 'A1', gradePoint: 10, isPassed: true },
-  { min: 81, max: 90, grade: 'A2', gradePoint: 9, isPassed: true },
-  { min: 71, max: 80, grade: 'B1', gradePoint: 8, isPassed: true },
-  { min: 61, max: 70, grade: 'B2', gradePoint: 7, isPassed: true },
-  { min: 51, max: 60, grade: 'C1', gradePoint: 6, isPassed: true },
-  { min: 41, max: 50, grade: 'C2', gradePoint: 5, isPassed: true },
-  { min: 33, max: 40, grade: 'D', gradePoint: 4, isPassed: true },
-  { min: 21, max: 32, grade: 'E1', gradePoint: 3, isPassed: false },
-  { min: 0, max: 20, grade: 'E2', gradePoint: 2, isPassed: false },
+  { min: 81, max: 100, grade: 'A2', gradePoint: 9, isPassed: true },
+  { min: 71, max: 100, grade: 'B1', gradePoint: 8, isPassed: true },
+  { min: 61, max: 100, grade: 'B2', gradePoint: 7, isPassed: true },
+  { min: 51, max: 100, grade: 'C1', gradePoint: 6, isPassed: true },
+  { min: 41, max: 100, grade: 'C2', gradePoint: 5, isPassed: true },
+  { min: 33, max: 100, grade: 'D', gradePoint: 4, isPassed: true },
+  { min: 21, max: 100, grade: 'E1', gradePoint: 3, isPassed: false },
+  { min: 0, max: 100, grade: 'E2', gradePoint: 2, isPassed: false },
 ];
 
 export function computeCBSEGrade(marks, maxMarks = 100) {
   if (marks == null || maxMarks == null || maxMarks === 0) return null;
   const pct = (marks / maxMarks) * 100;
-  return (
-    CBSE_GRADE_SCALE.find((s) => pct >= s.min && pct <= s.max) ||
-    CBSE_GRADE_SCALE[CBSE_GRADE_SCALE.length - 1]
-  );
+  // Use >= lower bound so fractional values like 90.5 map correctly.
+  // The scale is searched top-down: first match wins (A1 checked before A2).
+  for (const s of CBSE_GRADE_SCALE) {
+    if (pct >= s.min && pct <= s.max) {
+      return s;
+    }
+  }
+  // Fallback for any edge case (e.g. negative marks)
+  return CBSE_GRADE_SCALE[CBSE_GRADE_SCALE.length - 1];
 }
 
 export function computeCBSECGPA(scholasticGrades) {

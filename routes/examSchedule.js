@@ -11,6 +11,33 @@ import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 const router = express.Router();
 router.use(authenticate);
 
+/**
+ * Check for time overlaps between a new exam schedule and existing ones
+ * for the same classes in the same date range.
+ * @returns {Array} Array of conflict descriptions, empty if no conflicts
+ */
+async function checkScheduleConflicts(schoolId, classIds, startDate, endDate, excludeId = null) {
+  const conflictQuery = scopeBySchool(schoolId, {
+    isDeleted: { $ne: true },
+    status: { $ne: 'draft' }, // Only check confirmed/sent schedules
+    classIds: { $in: classIds },
+    startDate: { $lte: endDate },
+    endDate: { $gte: startDate },
+  });
+  if (excludeId) conflictQuery._id = { $ne: excludeId };
+
+  const overlapping = await ExamSchedule.find(conflictQuery)
+    .select('name startDate endDate classIds')
+    .lean();
+
+  return overlapping.map((s) => ({
+    scheduleId: s._id,
+    scheduleName: s.name,
+    startDate: s.startDate,
+    endDate: s.endDate,
+  }));
+}
+
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
   if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
@@ -211,6 +238,20 @@ router.post(
           .json({ error: 'An exam schedule with this name already exists for this academic year' });
       }
 
+      // Check for time overlaps with existing confirmed schedules
+      const conflicts = await checkScheduleConflicts(
+        schoolId,
+        req.body.classIds,
+        req.body.startDate,
+        req.body.endDate
+      );
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          error: 'Schedule overlaps with existing exam schedules for the same class(es)',
+          conflicts,
+        });
+      }
+
       const schedule = new ExamSchedule({
         ...req.body,
         schoolId,
@@ -312,7 +353,18 @@ router.put(
         return res.status(400).json({ error: 'Can only edit draft schedules' });
       }
 
-      Object.assign(schedule, req.body);
+      // Explicit field assignment to prevent overwriting protected fields
+      // (status, generatedExamIds, schoolId, createdBy, etc.)
+      const allowedFields = [
+        'name', 'type', 'classIds', 'startDate', 'endDate',
+        'sessionType', 'morningSlot', 'afternoonSlot',
+        'defaultMaxMarks', 'defaultPassingMarks', 'entries',
+      ];
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          schedule[field] = req.body[field];
+        }
+      }
       await schedule.save();
 
       const populated = await ExamSchedule.findById(schedule._id)
@@ -349,6 +401,21 @@ router.post(
 
       if (!schedule.entries || schedule.entries.length === 0) {
         return res.status(400).json({ error: 'Generate a timetable before confirming' });
+      }
+
+      // Check for time overlaps with existing confirmed schedules before confirming
+      const conflicts = await checkScheduleConflicts(
+        schoolId,
+        schedule.classIds.map((c) => c._id || c),
+        schedule.startDate,
+        schedule.endDate,
+        schedule._id // exclude self
+      );
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          error: 'Schedule overlaps with existing confirmed exam schedules for the same class(es)',
+          conflicts,
+        });
       }
 
       const generatedExamIds = [];
@@ -454,11 +521,13 @@ router.post(
 
       const studentIds = students.map((s) => s._id);
 
-      // Find parents linked to these students
+      // Find parents linked to these students (scoped by schoolId)
       if (studentIds.length > 0) {
-        const parents = await Parent.find({
-          'children.studentId': { $in: studentIds },
-        }).select('_id');
+        const parents = await Parent.find(
+          scopeBySchool(schoolId, {
+            'children.studentId': { $in: studentIds },
+          })
+        ).select('_id');
 
         // Send notifications in batches
         for (const parent of parents) {
