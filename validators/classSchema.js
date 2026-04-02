@@ -40,6 +40,7 @@ export const createClassSchema = z
           .max(200, 'Strength cannot exceed 200')
           .default(40),
       })
+      .strip()
       .optional(),
   })
   .strip();
@@ -76,6 +77,7 @@ export const updateClassSchema = z
           .max(200, 'Strength cannot exceed 200')
           .optional(),
       })
+      .strip()
       .optional(),
   })
   .strip();
@@ -139,10 +141,10 @@ export const studentPromoteSchema = z
     skipFeeCheck: z.boolean().optional().default(false),
     skipAttendanceCheck: z.boolean().optional().default(false),
   })
+  .strip()
   .refine((data) => data.targetClassId || data.graduate, {
     message: 'Either targetClassId or graduate:true must be provided',
-  })
-  .strip();
+  });
 
 // ─── YEAR-END BULK PROMOTION ──────────────────────────────────────
 export const yearEndPromotionSchema = z
