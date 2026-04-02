@@ -202,6 +202,26 @@ router.post(
       const schoolId = req.user?.schoolId;
       const { classId, academicYear, term, reportCards } = req.body;
 
+      // AUDIT-25: Validate each student belongs to the specified class
+      const studentIds = reportCards.map((card) => card.studentId);
+      const validStudents = await Student.find(
+        scopeBySchool(schoolId, {
+          _id: { $in: studentIds },
+          classId,
+          isDeleted: { $ne: true },
+        })
+      )
+        .select('_id')
+        .lean();
+      const validStudentIdSet = new Set(validStudents.map((s) => s._id.toString()));
+      const invalidStudents = studentIds.filter((id) => !validStudentIdSet.has(id.toString()));
+      if (invalidStudents.length > 0) {
+        return res.status(400).json({
+          error: `${invalidStudents.length} student(s) do not belong to the specified class`,
+          invalidStudentIds: invalidStudents,
+        });
+      }
+
       const ops = reportCards.map((card) => {
         const gradedScholastic = applyGrading(card.scholasticGrades);
         const cgpa = computeCBSECGPA(gradedScholastic);
@@ -265,6 +285,11 @@ router.put(
       );
       if (!existing) return res.status(404).json({ error: 'CBSE report card not found' });
 
+      // AUDIT-9: Reject modifications to published report cards
+      if (existing.isPublished) {
+        return res.status(400).json({ error: 'Cannot modify published report card' });
+      }
+
       const updates = { ...req.body };
       if (updates.scholasticGrades) {
         updates.scholasticGrades = applyGrading(updates.scholasticGrades);
@@ -275,8 +300,9 @@ router.put(
         );
       }
 
-      const updated = await CBSEReportCard.findByIdAndUpdate(
-        id,
+      // AUDIT-5: Use school-scoped query instead of findByIdAndUpdate
+      const updated = await CBSEReportCard.findOneAndUpdate(
+        scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } }),
         { $set: updates },
         { new: true, runValidators: true }
       );
@@ -343,6 +369,15 @@ router.delete('/:id', authenticate, checkPermission('students', 'edit'), async (
   try {
     const { id } = req.params;
     const schoolId = req.user?.schoolId;
+
+    // AUDIT-9: Check if published before allowing delete
+    const existingCard = await CBSEReportCard.findOne(
+      scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
+    );
+    if (!existingCard) return res.status(404).json({ error: 'CBSE report card not found' });
+    if (existingCard.isPublished) {
+      return res.status(400).json({ error: 'Cannot modify published report card' });
+    }
 
     const reportCard = await CBSEReportCard.findOneAndUpdate(
       scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } }),

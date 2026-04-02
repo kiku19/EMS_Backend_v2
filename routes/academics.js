@@ -183,6 +183,7 @@
  */
 
 import express from 'express';
+import { z } from 'zod';
 import { Class, Exam, Result, SchoolSettings, Staff, Student, Parent } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
@@ -198,6 +199,25 @@ import {
 } from '../utils/schoolContext.js';
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
+import { computeGrade } from '../utils/grading.js';
+
+// AUDIT-19: Zod validation schemas for single result endpoints
+const createResultSchema = z.object({
+  examId: z.string().min(1, 'examId is required'),
+  studentId: z.string().min(1, 'studentId is required'),
+  classId: z.string().optional(),
+  marksObtained: z.number().min(0, 'Marks cannot be negative').optional().default(0),
+  maxMarks: z.number().min(1, 'maxMarks must be at least 1').optional(),
+  remarks: z.string().optional(),
+  academicYear: z.string().optional(),
+});
+
+const updateResultSchema = z.object({
+  marksObtained: z.number().min(0, 'Marks cannot be negative').optional(),
+  maxMarks: z.number().min(1, 'maxMarks must be at least 1').optional(),
+  remarks: z.string().optional(),
+  status: z.enum(['passed', 'failed', 'absent', 'pending']).optional(),
+});
 
 const router = express.Router();
 router.use(authenticate);
@@ -214,30 +234,7 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
-/**
- * Issue #17/#21 Fix: Compute grade from percentage.
- * Uses the school's configured grading scale if provided, otherwise falls back to the
- * default Indian grading scale.
- * @param {number} percentage - The percentage score (0-100)
- * @param {Array|null} gradingScale - Optional array of { minPercentage, grade } sorted desc
- * @returns {string} Grade string
- */
-function computeGrade(percentage, gradingScale = null) {
-  if (gradingScale && gradingScale.length > 0) {
-    const sorted = [...gradingScale].sort((a, b) => b.minPercentage - a.minPercentage);
-    for (const entry of sorted) {
-      if (percentage >= entry.minPercentage) return entry.grade;
-    }
-    return sorted[sorted.length - 1].grade;
-  }
-  if (percentage >= 90) return 'A+';
-  if (percentage >= 80) return 'A';
-  if (percentage >= 70) return 'B+';
-  if (percentage >= 60) return 'B';
-  if (percentage >= 50) return 'C';
-  if (percentage >= 40) return 'D';
-  return 'F';
-}
+// AUDIT-11: computeGrade moved to ../utils/grading.js for centralized use
 
 /**
  * Issue #22 Fix: Compute and persist ranks for all results in an exam+class.
@@ -350,17 +347,16 @@ router.get(
         ),
       ];
       const classMap = new Map();
-      for (const classId of classIds) {
-        try {
-          const classDoc = await Class.findOne({ _id: classId, schoolId: req.user?.schoolId });
-          if (classDoc) {
-            classMap.set(
-              classId,
-              classDoc.section ? `${classDoc.name}-${classDoc.section}` : classDoc.name
-            );
-          }
-        } catch {
-          // Keep without className if lookup fails
+      // AUDIT-65: Bulk-fetch classes instead of N+1 individual queries
+      if (classIds.length > 0) {
+        const classDocs = await Class.find(
+          scopeBySchool(req.user?.schoolId, { _id: { $in: classIds } })
+        ).select('name section');
+        for (const classDoc of classDocs) {
+          classMap.set(
+            classDoc._id.toString(),
+            classDoc.section ? `${classDoc.name}-${classDoc.section}` : classDoc.name
+          );
         }
       }
 
@@ -380,6 +376,10 @@ router.get(
 router.get('/exams', authenticate, checkPermission('academics', 'view'), async (req, res) => {
   try {
     const { academicYear, classId, status } = req.query;
+    // AUDIT-66: Add pagination support
+    const skip = parseInt(req.query.skip) || 0;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
     const query = { isDeleted: { $ne: true } };
 
     if (academicYear) {
@@ -395,24 +395,25 @@ router.get('/exams', authenticate, checkPermission('academics', 'view'), async (
       query.status = status;
     }
 
-    const exams = await Exam.find(scopeBySchool(req.user?.schoolId, query)).sort({
-      startDate: -1,
-      createdAt: -1,
-    });
+    const scopedQuery = scopeBySchool(req.user?.schoolId, query);
+    const total = await Exam.countDocuments(scopedQuery);
+    const exams = await Exam.find(scopedQuery)
+      .sort({ startDate: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
     const classIds = [...new Set(exams.map((exam) => exam.classId).filter(Boolean))];
     const classMap = new Map();
 
-    for (const classIdValue of classIds) {
-      try {
-        const classDoc = await Class.findById(classIdValue);
-        if (classDoc) {
-          classMap.set(
-            classIdValue.toString(),
-            classDoc.section ? `${classDoc.name}-${classDoc.section}` : classDoc.name
-          );
-        }
-      } catch {
-        // Keep original classId if lookup fails.
+    // AUDIT-5/65: Bulk-fetch classes instead of N+1 individual queries
+    if (classIds.length > 0) {
+      const classDocs = await Class.find(
+        scopeBySchool(req.user?.schoolId, { _id: { $in: classIds } })
+      ).select('name section');
+      for (const classDoc of classDocs) {
+        classMap.set(
+          classDoc._id.toString(),
+          classDoc.section ? `${classDoc.name}-${classDoc.section}` : classDoc.name
+        );
       }
     }
 
@@ -422,6 +423,10 @@ router.get('/exams', authenticate, checkPermission('academics', 'view'), async (
       className: exam.classId ? classMap.get(exam.classId.toString()) : exam.classId,
     }));
 
+    // AUDIT-66: Return pagination metadata alongside results
+    // Return array directly for backward compatibility, with pagination headers
+    res.set('X-Total-Count', String(total));
+    res.set('X-Has-More', String(skip + exams.length < total));
     res.json(formattedExams);
   } catch (error) {
     res.status(500).json({ error: 'An internal error occurred. Please try again.' });
@@ -437,10 +442,13 @@ router.get('/exams/:id', authenticate, checkPermission('academics', 'view'), asy
       return res.status(404).json({ error: 'Exam not found' });
     }
 
+    // AUDIT-5: Use school-scoped query instead of findById
     let className = exam.classId;
     if (exam.classId) {
       try {
-        const classDoc = await Class.findById(exam.classId);
+        const classDoc = await Class.findOne(
+          scopeBySchool(req.user?.schoolId, { _id: exam.classId })
+        );
         if (classDoc) {
           className = classDoc.section ? `${classDoc.name}-${classDoc.section}` : classDoc.name;
         }
@@ -495,6 +503,13 @@ router.post(
         const resolved = await resolveClassId(classId, req.user?.schoolId);
         if (resolved) {
           resolvedClassId = resolved.classId;
+        }
+        // AUDIT-62: Validate classId exists in the database before creating an exam
+        const classExists = await Class.findOne(
+          scopeBySchool(req.user?.schoolId, { _id: resolvedClassId, isDeleted: { $ne: true } })
+        );
+        if (!classExists) {
+          return res.status(404).json({ error: 'Class not found. Cannot create exam for a non-existent class.' });
         }
       }
 
@@ -727,7 +742,9 @@ router.put(
           scopeBySchool(req.user?.schoolId, { _id: req.params.id })
         );
         if (existingExam && maxMarks !== existingExam.maxMarks) {
-          const resultsCount = await Result.countDocuments({ examId: req.params.id });
+          const resultsCount = await Result.countDocuments(
+            scopeBySchool(req.user?.schoolId, { examId: req.params.id })
+          );
           if (resultsCount > 0) {
             return res.status(400).json({
               error:
@@ -1293,11 +1310,13 @@ router.get(
 // ────────────────────────────────────────────────────────────────
 router.post('/results', authenticate, checkPermission('academics', 'edit'), async (req, res) => {
   try {
-    const { examId, studentId, classId, marksObtained, maxMarks, remarks, academicYear } = req.body;
-
-    if (!examId || !studentId) {
-      return res.status(400).json({ error: 'examId and studentId are required' });
+    // AUDIT-19: Zod validation for single result creation
+    const parseResult = createResultSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parseResult.error.errors });
     }
+    const { examId, studentId, classId, marksObtained, maxMarks, remarks, academicYear } =
+      parseResult.data;
 
     const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
 
@@ -1333,9 +1352,17 @@ router.post('/results', authenticate, checkPermission('academics', 'edit'), asyn
     const examPassingMarks = exam.passingMarks || 35;
     const marks = marksObtained || 0;
 
+    // AUDIT-63: Fetch school's custom grading scale for grade computation
+    const schoolSettingsForResult = schoolId
+      ? await SchoolSettings.findOne({ schoolId }).lean()
+      : null;
+    const schoolGradingScaleForResult = schoolSettingsForResult?.gradingScale?.length
+      ? schoolSettingsForResult.gradingScale
+      : null;
+
     const rawPercentage = examMaxMarks > 0 ? (marks / examMaxMarks) * 100 : 0;
     const percentage = Math.round(rawPercentage * 100) / 100;
-    const grade = computeGrade(percentage);
+    const grade = computeGrade(percentage, schoolGradingScaleForResult);
     const status = marks >= examPassingMarks ? 'passed' : 'failed';
 
     const resolvedAcademicYear = academicYear
@@ -1384,6 +1411,12 @@ router.post('/results', authenticate, checkPermission('academics', 'edit'), asyn
 // ────────────────────────────────────────────────────────────────
 router.put('/results/:id', authenticate, checkPermission('academics', 'edit'), async (req, res) => {
   try {
+    // AUDIT-19: Zod validation for single result update
+    const parseResult = updateResultSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parseResult.error.errors });
+    }
+
     const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
 
     const result = await Result.findOne(
@@ -1402,11 +1435,19 @@ router.put('/results/:id', authenticate, checkPermission('academics', 'edit'), a
     const examMaxMarks = maxMarks || exam?.maxMarks || result.maxMarks || 100;
     const examPassingMarks = exam?.passingMarks || 35;
 
+    // AUDIT-63: Fetch school's custom grading scale for grade computation
+    const schoolSettingsForUpdate = schoolId
+      ? await SchoolSettings.findOne({ schoolId }).lean()
+      : null;
+    const schoolGradingScaleForUpdate = schoolSettingsForUpdate?.gradingScale?.length
+      ? schoolSettingsForUpdate.gradingScale
+      : null;
+
     if (marksObtained !== undefined) {
       const marks = marksObtained;
       const rawPercentage = examMaxMarks > 0 ? (marks / examMaxMarks) * 100 : 0;
       const percentage = Math.round(rawPercentage * 100) / 100;
-      const grade = computeGrade(percentage);
+      const grade = computeGrade(percentage, schoolGradingScaleForUpdate);
       const computedStatus =
         requestedStatus === 'absent' ? 'absent' : marks >= examPassingMarks ? 'passed' : 'failed';
 
