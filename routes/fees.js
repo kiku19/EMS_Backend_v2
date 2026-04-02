@@ -210,7 +210,6 @@ const ONLINE_PAYMENT_MODES = ['online', 'card', 'upi', 'bank_transfer'];
 // Create a new payment
 router.post(
   '/payments',
-  authenticate,
   checkPermission('fees', 'create'),
   validateZod(createFeePaymentSchema),
   async (req, res) => {
@@ -456,7 +455,6 @@ router.get('/payments/:id', checkPermission('fees', 'view'), async (req, res) =>
 // Delete (cancel) a payment and reverse the student's fee balances
 router.delete(
   '/payments/:id',
-  authenticate,
   checkPermission('fees', 'delete'),
   async (req, res) => {
     try {
@@ -583,7 +581,7 @@ router.delete(
 
 // Update payment metadata (remarks, mode, transaction details — amount changes
 // require cancel + re-record to preserve the audit trail)
-router.put('/payments/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
+router.put('/payments/:id', checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const payment = await FeePayment.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
@@ -669,7 +667,6 @@ router.get('/refunds/:id', checkPermission('fees', 'view'), async (req, res) => 
 // Create refund request
 router.post(
   '/refunds',
-  authenticate,
   checkPermission('fees', 'create'),
   validateZod(createRefundSchema),
   async (req, res) => {
@@ -758,7 +755,6 @@ router.post(
 // Approve refund
 router.put(
   '/refunds/:id/approve',
-  authenticate,
   checkPermission('fees', 'edit'),
   async (req, res) => {
     try {
@@ -785,7 +781,6 @@ router.put(
 // Process refund
 router.put(
   '/refunds/:id/process',
-  authenticate,
   checkPermission('fees', 'edit'),
   async (req, res) => {
     try {
@@ -859,7 +854,6 @@ router.put(
 // Reject refund
 router.put(
   '/refunds/:id/reject',
-  authenticate,
   checkPermission('fees', 'edit'),
   async (req, res) => {
     try {
@@ -882,7 +876,7 @@ router.put(
 );
 
 // Update refund (only pending refunds can be edited)
-router.put('/refunds/:id', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
+router.put('/refunds/:id', checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const refund = await FeeRefund.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
@@ -912,7 +906,7 @@ router.put('/refunds/:id', authenticate, checkPermission('fees', 'edit'), async 
 });
 
 // Delete refund (only pending refunds can be deleted)
-router.delete('/refunds/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
+router.delete('/refunds/:id', checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const refund = await FeeRefund.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })

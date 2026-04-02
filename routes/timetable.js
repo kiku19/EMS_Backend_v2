@@ -326,7 +326,7 @@ async function resolveRequestSchoolId(req) {
  * Get all timetables for school
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
@@ -347,7 +347,6 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
  */
 router.post(
   '/generate-all',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(zodSchemas.generateAll),
   async (req, res) => {
@@ -709,7 +708,7 @@ router.post(
  * Get timetable for a class
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.get('/:classId', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:classId', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
@@ -735,7 +734,6 @@ router.get('/:classId', authenticate, checkPermission('classes', 'view'), async 
  */
 router.post(
   '/',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(zodSchemas.createTimetable),
   async (req, res) => {
@@ -802,7 +800,6 @@ router.post(
  */
 router.put(
   '/:classId/slot',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(zodSchemas.updateSlot),
   async (req, res) => {
@@ -900,7 +897,6 @@ router.put(
  */
 router.post(
   '/:classId/batch',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(zodSchemas.batchUpdateSlots),
   async (req, res) => {
@@ -993,7 +989,6 @@ router.post(
  */
 router.put(
   '/:classId/periods',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(zodSchemas.updatePeriods),
   async (req, res) => {
@@ -1040,7 +1035,6 @@ router.put(
  */
 router.put(
   '/:classId',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(zodSchemas.updateTimetable),
   async (req, res) => {
@@ -1159,7 +1153,7 @@ router.put(
  * Delete timetable
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.delete('/:classId', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
+router.delete('/:classId', checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;

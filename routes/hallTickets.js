@@ -276,7 +276,6 @@ function drawHallTicket(doc, student, cls, schedule, schoolSettings, classEntrie
 // List students eligible for hall tickets under an exam schedule
 router.get(
   '/schedule/:scheduleId',
-  authenticate,
   checkPermission('academics', 'view'),
   validateZod(hallTicketQuerySchema, 'query'),
   async (req, res) => {
@@ -351,7 +350,6 @@ router.get(
 // Bulk PDF download — one hall ticket per student (all classes in schedule)
 router.get(
   '/schedule/:scheduleId/download',
-  authenticate,
   checkPermission('academics', 'view'),
   validateZod(hallTicketQuerySchema, 'query'),
   async (req, res) => {
@@ -426,7 +424,7 @@ router.get(
 
 // ─── GET /hall-tickets/schedule/:scheduleId/student/:studentId/download ───────
 // Single student hall ticket PDF download
-router.get('/schedule/:scheduleId/student/:studentId/download', authenticate, checkPermission('academics', 'view'), async (req, res) => {
+router.get('/schedule/:scheduleId/student/:studentId/download', checkPermission('academics', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { scheduleId, studentId } = req.params;

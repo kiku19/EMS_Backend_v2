@@ -28,7 +28,7 @@ function getActor(req) {
 // GET /feature-flags
 // Returns the merged feature map for the authenticated school.
 // Used by the frontend to conditionally render premium features.
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const result = await getSchoolFeatures(req.user.schoolId);
     res.json(result);
@@ -43,7 +43,7 @@ router.get('/', authenticate, async (req, res) => {
 // All routes below require superAdmin role.
 
 // GET /feature-flags/admin/all
-router.get('/admin/all', authenticate, requireSuperAdmin, async (req, res) => {
+router.get('/admin/all', requireSuperAdmin, async (req, res) => {
   try {
     const flags = await listFlags();
     res.json({ flags });
@@ -53,7 +53,7 @@ router.get('/admin/all', authenticate, requireSuperAdmin, async (req, res) => {
 });
 
 // GET /feature-flags/admin/audit-logs?flagKey=&actorId=&limit=
-router.get('/admin/audit-logs', authenticate, requireSuperAdmin, async (req, res) => {
+router.get('/admin/audit-logs', requireSuperAdmin, async (req, res) => {
   try {
     const { flagKey, actorId, limit } = req.query;
     const logs = await listAuditLogs(
@@ -69,7 +69,6 @@ router.get('/admin/audit-logs', authenticate, requireSuperAdmin, async (req, res
 // POST /feature-flags/admin
 router.post(
   '/admin',
-  authenticate,
   requireSuperAdmin,
   validateZod(createFeatureFlagSchema),
   async (req, res) => {
@@ -88,7 +87,6 @@ router.post(
 // PUT /feature-flags/admin/:key
 router.put(
   '/admin/:key',
-  authenticate,
   requireSuperAdmin,
   validateZod(updateFeatureFlagSchema),
   async (req, res) => {
@@ -102,7 +100,7 @@ router.put(
 );
 
 // DELETE /feature-flags/admin/:key
-router.delete('/admin/:key', authenticate, requireSuperAdmin, async (req, res) => {
+router.delete('/admin/:key', requireSuperAdmin, async (req, res) => {
   try {
     await deleteFlag(req.params.key, getActor(req));
     res.json({ success: true });
@@ -114,7 +112,6 @@ router.delete('/admin/:key', authenticate, requireSuperAdmin, async (req, res) =
 // POST /feature-flags/admin/:key/override — add or update a per-school override
 router.post(
   '/admin/:key/override',
-  authenticate,
   requireSuperAdmin,
   validateZod(schoolOverrideSchema),
   async (req, res) => {
@@ -131,7 +128,6 @@ router.post(
 // DELETE /feature-flags/admin/:key/override/:schoolId — remove a per-school override
 router.delete(
   '/admin/:key/override/:schoolId',
-  authenticate,
   requireSuperAdmin,
   async (req, res) => {
     try {

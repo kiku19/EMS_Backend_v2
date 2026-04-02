@@ -91,7 +91,7 @@ function validateBody(schema) {
  * GET /transport/vehicles
  * List all vehicles for the school
  */
-router.get('/vehicles', authenticate, checkPermission('transport', 'view'), async (req, res) => {
+router.get('/vehicles', checkPermission('transport', 'view'), async (req, res) => {
   try {
     const { status, search } = req.query;
     const query = { schoolId: req.user.schoolId, isDeleted: { $ne: true } };
@@ -120,7 +120,6 @@ router.get('/vehicles', authenticate, checkPermission('transport', 'view'), asyn
  */
 router.post(
   '/vehicles',
-  authenticate,
   checkPermission('transport', 'create'),
   validateBody(createVehicleSchema),
   async (req, res) => {
@@ -153,7 +152,6 @@ router.post(
  */
 router.get(
   '/vehicles/:id',
-  authenticate,
   checkPermission('transport', 'view'),
   async (req, res) => {
     try {
@@ -176,7 +174,6 @@ router.get(
  */
 router.put(
   '/vehicles/:id',
-  authenticate,
   checkPermission('transport', 'edit'),
   validateBody(updateVehicleSchema),
   async (req, res) => {
@@ -216,7 +213,6 @@ router.put(
  */
 router.delete(
   '/vehicles/:id',
-  authenticate,
   checkPermission('transport', 'delete'),
   async (req, res) => {
     try {
@@ -237,7 +233,7 @@ router.delete(
  * PATCH /transport/vehicles/:id/gps
  * Update GPS location for a vehicle (called by GPS device/integration)
  */
-router.patch('/vehicles/:id/gps', authenticate, async (req, res) => {
+router.patch('/vehicles/:id/gps', async (req, res) => {
   try {
     const { lat, lng } = req.body;
     if (typeof lat !== 'number' || typeof lng !== 'number') {
@@ -264,7 +260,7 @@ router.patch('/vehicles/:id/gps', authenticate, async (req, res) => {
  * GET /transport/routes
  * List all transport routes for the school
  */
-router.get('/routes', authenticate, checkPermission('transport', 'view'), async (req, res) => {
+router.get('/routes', checkPermission('transport', 'view'), async (req, res) => {
   try {
     const { status, academicYear, search } = req.query;
     const query = { schoolId: req.user.schoolId, isDeleted: { $ne: true } };
@@ -295,7 +291,6 @@ router.get('/routes', authenticate, checkPermission('transport', 'view'), async 
  */
 router.post(
   '/routes',
-  authenticate,
   checkPermission('transport', 'create'),
   validateBody(createRouteSchema),
   async (req, res) => {
@@ -327,7 +322,7 @@ router.post(
  * GET /transport/routes/:id
  * Get transport route by ID (includes populated students)
  */
-router.get('/routes/:id', authenticate, checkPermission('transport', 'view'), async (req, res) => {
+router.get('/routes/:id', checkPermission('transport', 'view'), async (req, res) => {
   try {
     const route = await TransportRoute.findOne({
       _id: req.params.id,
@@ -353,7 +348,6 @@ router.get('/routes/:id', authenticate, checkPermission('transport', 'view'), as
  */
 router.put(
   '/routes/:id',
-  authenticate,
   checkPermission('transport', 'edit'),
   validateBody(updateRouteSchema),
   async (req, res) => {
@@ -404,7 +398,6 @@ router.put(
  */
 router.delete(
   '/routes/:id',
-  authenticate,
   checkPermission('transport', 'delete'),
   async (req, res) => {
     try {
@@ -429,7 +422,6 @@ router.delete(
  */
 router.post(
   '/routes/:id/students',
-  authenticate,
   checkPermission('transport', 'edit'),
   validateBody(assignStudentSchema),
   async (req, res) => {
@@ -488,7 +480,6 @@ router.post(
  */
 router.delete(
   '/routes/:routeId/students/:studentId',
-  authenticate,
   checkPermission('transport', 'edit'),
   async (req, res) => {
     try {
@@ -524,7 +515,6 @@ router.delete(
  */
 router.get(
   '/students/:studentId/route',
-  authenticate,
   checkPermission('transport', 'view'),
   async (req, res) => {
     try {
@@ -551,7 +541,7 @@ router.get(
  * GET /transport/reports
  * Route utilization: student count per route and per stop
  */
-router.get('/reports', authenticate, checkPermission('transport', 'view'), async (req, res) => {
+router.get('/reports', checkPermission('transport', 'view'), async (req, res) => {
   try {
     const { academicYear } = req.query;
     const query = { schoolId: req.user.schoolId, isDeleted: { $ne: true } };

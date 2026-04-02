@@ -95,3 +95,15 @@ export {
   requestEditSchema,
 } from './intakeFormSchema.js';
 export { createSubjectSchema, updateSubjectSchema } from './settingsSubjectSchema.js';
+export {
+  updatePeriodsSchema,
+  updateScheduleSchema,
+  updateSlotSchema,
+  autoGenerateSchema,
+} from './timetableSchema.js';
+export {
+  createSubstitutionSchema,
+  updateSubstitutionSchema,
+  bulkAssignSchema,
+  substitutionDateQuerySchema,
+} from './substitutionSchema.js';

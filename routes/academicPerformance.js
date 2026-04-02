@@ -16,7 +16,7 @@ function scopeBySchool(schoolId, query = {}) {
 
 // GET /academic-performance/dashboard
 // Returns school-wide aggregated performance stats for the dashboard
-router.get('/dashboard', authenticate, checkPermission('academics', 'view'), async (req, res) => {
+router.get('/dashboard', checkPermission('academics', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
@@ -140,7 +140,6 @@ router.get('/dashboard', authenticate, checkPermission('academics', 'view'), asy
 // Returns class-level performance detail with per-student breakdown
 router.get(
   '/class/:classId',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -270,7 +269,6 @@ router.get(
 // Returns computed analytics summary for a student
 router.get(
   '/student/:studentId',
-  authenticate,
   checkPermission('students', 'view'),
   async (req, res) => {
     try {
@@ -356,7 +354,6 @@ router.get(
 // Returns per-exam performance trend data for charting
 router.get(
   '/trends/:studentId',
-  authenticate,
   checkPermission('students', 'view'),
   async (req, res) => {
     try {
@@ -405,7 +402,6 @@ router.get(
 // Returns a structured report card: all results, attendance, and academic remarks
 router.get(
   '/report-card/:studentId',
-  authenticate,
   checkPermission('students', 'view'),
   async (req, res) => {
     try {
@@ -547,7 +543,6 @@ router.get(
 // Recalculate grades, percentages, and ranks for a student's results
 router.post(
   '/recalculate/:studentId',
-  authenticate,
   checkPermission('academics', 'edit'),
   async (req, res) => {
     try {

@@ -106,7 +106,6 @@ function scopeBySchool(schoolId, query = {}) {
 // Get classes with missing subjects
 router.get(
   '/missing-subjects',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -148,7 +147,6 @@ router.get(
 // Get academic performance for a class
 router.get(
   '/:id/academic-performance',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -223,7 +221,6 @@ router.get(
 // Recalculate academic performance
 router.post(
   '/:id/academic-performance/recalculate',
-  authenticate,
   checkPermission('classes', 'edit'),
   async (req, res) => {
     try {
@@ -277,7 +274,6 @@ router.post(
 // Get activity log for a class
 router.get(
   '/:id/activity-log',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -309,7 +305,6 @@ router.get(
 // Create activity log entry
 router.post(
   '/:id/activity-log',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(createActivityLogSchema),
   async (req, res) => {
@@ -348,7 +343,7 @@ router.post(
 // ============ CLASS RATING ENDPOINTS ============
 
 // Get class rating
-router.get('/:id/rating', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id/rating', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { id } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
@@ -379,7 +374,7 @@ router.get('/:id/rating', authenticate, checkPermission('classes', 'view'), asyn
 });
 
 // Recalculate class rating
-router.post('/:id/rating/recalculate', authenticate, async (req, res) => {
+router.post('/:id/rating/recalculate', async (req, res) => {
   try {
     const { id } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.body;
@@ -477,7 +472,6 @@ router.post('/:id/rating/recalculate', authenticate, async (req, res) => {
 // Get attendance analytics for a class
 router.get(
   '/:id/attendance-analytics',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -555,7 +549,6 @@ router.get(
 // Get chronic absentees
 router.get(
   '/:id/chronic-absentees',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -622,7 +615,6 @@ router.get(
 // Get today's status for a class
 router.get(
   '/:id/today-status',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -724,7 +716,6 @@ router.get(
 // Promote class to next grade
 router.post(
   '/:id/promote',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(promoteClassSchema),
   async (req, res) => {
@@ -881,7 +872,7 @@ router.post(
 // ============ CHAPTERS & SUBJECTS ENDPOINTS ============
 
 // Get chapters for a class
-router.get('/:id/subjects', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id/subjects', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { id } = req.params;
     const schoolId = req.user?.schoolId;
@@ -912,7 +903,6 @@ router.get('/:id/subjects', authenticate, checkPermission('classes', 'view'), as
 // Add chapter/subject to class
 router.post(
   '/:id/subjects',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(addClassSubjectSchema),
   async (req, res) => {
@@ -968,7 +958,6 @@ router.post(
 // Update a subject (ChapterProgress) for a class
 router.put(
   '/:id/subjects/:subjectProgressId',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(updateClassSubjectSchema),
   async (req, res) => {
@@ -1037,7 +1026,6 @@ router.put(
 // Delete a subject (ChapterProgress) from a class
 router.delete(
   '/:id/subjects/:subjectProgressId',
-  authenticate,
   checkPermission('classes', 'delete'),
   async (req, res) => {
     try {
@@ -1094,7 +1082,6 @@ router.delete(
 // Update chapter progress
 router.put(
   '/chapters/:chapterId',
-  authenticate,
   checkPermission('classes', 'edit'),
   async (req, res) => {
     try {
@@ -1137,7 +1124,6 @@ router.put(
 // Adjust class strength limit
 router.put(
   '/:id/strength-limit',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(updateStrengthLimitSchema),
   async (req, res) => {
@@ -1189,7 +1175,6 @@ router.put(
 // Send announcement to class
 router.post(
   '/:id/announcements',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(createAnnouncementSchema),
   async (req, res) => {
@@ -1255,7 +1240,6 @@ router.post(
 // Get announcements for class
 router.get(
   '/:id/announcements',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -1290,7 +1274,6 @@ router.get(
 // Get fees overview for class
 router.get(
   '/:id/fees-overview',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {

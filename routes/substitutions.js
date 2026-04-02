@@ -55,7 +55,7 @@ async function resolveRequestSchoolId(req) {
  * Get all substitutions
  * Query params: date (optional filter), classId (optional filter), status (optional filter)
  */
-router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { date, classId, status } = req.query;
 
@@ -84,7 +84,7 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
  * Returns substitutions where substituteTeacherId === current user and teacherResponse === 'pending'
  * IMPORTANT: This route MUST be defined before /:id to prevent route shadowing
  */
-router.get('/my-alerts', authenticate, async (req, res) => {
+router.get('/my-alerts', async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const staffId = req.user?.id || req.user?.userId;
@@ -117,7 +117,7 @@ router.get('/my-alerts', authenticate, async (req, res) => {
  * GET /api/substitutions/date/:date
  * Get all substitutions for a specific date
  */
-router.get('/date/:date', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/date/:date', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { date } = req.params;
 
@@ -140,7 +140,6 @@ router.get('/date/:date', authenticate, checkPermission('classes', 'view'), asyn
  */
 router.get(
   '/teacher/:teacherId',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -177,7 +176,7 @@ router.get(
  * GET /api/substitutions/:id
  * Get a single substitution by ID
  */
-router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const substitution = await Substitution.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
@@ -202,7 +201,7 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
  * Create new substitution
  * Body: { date, classId, period, absentTeacherId, substituteTeacherId, reason, type, notes }
  */
-router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.post('/', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const data = createSubstitutionSchema.parse(req.body);
 
@@ -296,7 +295,7 @@ router.post('/', authenticate, checkPermission('classes', 'edit'), async (req, r
  * Update substitution
  * Body: { date, classId, period, absentTeacherId, substituteTeacherId, reason, type, status, notes }
  */
-router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.put('/:id', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const data = updateSubstitutionSchema.parse(req.body);
 
@@ -361,7 +360,7 @@ router.put('/:id', authenticate, checkPermission('classes', 'edit'), async (req,
  * DELETE /api/substitutions/:id
  * Delete substitution
  */
-router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const substitution = await Substitution.findOneAndDelete(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
@@ -382,7 +381,7 @@ router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async 
  * Teacher accepts or declines their substitution assignment
  * Body: { response: 'accepted' | 'declined', reason? }
  */
-router.patch('/:id/respond', authenticate, async (req, res) => {
+router.patch('/:id/respond', async (req, res) => {
   try {
     const { response, reason } = req.body;
 

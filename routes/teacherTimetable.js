@@ -144,7 +144,7 @@ const canViewTeacherTimetable = async (req, res, next) => {
  * Get teacher timetable for a specific teacher
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res) => {
+router.get('/:teacherId', canViewTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
@@ -214,7 +214,7 @@ router.get('/:teacherId', authenticate, canViewTeacherTimetable, async (req, res
  * Create or initialize teacher timetable
  * Body: { academicYear, periods }
  */
-router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, res) => {
+router.post('/:teacherId', canEditTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR, periods = [] } = req.body;
@@ -280,7 +280,6 @@ router.post('/:teacherId', authenticate, canEditTeacherTimetable, async (req, re
  */
 router.put(
   '/:teacherId/slot',
-  authenticate,
   canEditTeacherTimetable,
   validateZod(zodSchemas.teacherUpdateSlot),
   async (req, res) => {
@@ -387,7 +386,7 @@ router.put(
  * Get all conflicts for a teacher
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async (req, res) => {
+router.get('/:teacherId/conflicts', canViewTeacherTimetable, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
@@ -432,7 +431,6 @@ router.get('/:teacherId/conflicts', authenticate, canViewTeacherTimetable, async
  */
 router.post(
   '/:teacherId/switch-class',
-  authenticate,
   canEditTeacherTimetable,
   validateZod(zodSchemas.switchClass),
   async (req, res) => {

@@ -21,7 +21,7 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
  * @desc    Register/update FCM push notification token for staff
  * @access  Private
  */
-router.post('/register-token', authenticate, async (req, res) => {
+router.post('/register-token', async (req, res) => {
   try {
     const { token, platform, appVersion, osVersion, deviceId } = req.body;
     const userId = req.user?.id; // From auth middleware
@@ -106,7 +106,7 @@ router.post('/register-token', authenticate, async (req, res) => {
  * @desc    Unregister push notification token
  * @access  Private
  */
-router.delete('/unregister-token', authenticate, async (req, res) => {
+router.delete('/unregister-token', async (req, res) => {
   try {
     const { token } = req.body;
     const userId = req.user?.id;
@@ -149,7 +149,7 @@ router.delete('/unregister-token', authenticate, async (req, res) => {
  * @desc    Get all tokens for current user
  * @access  Private
  */
-router.get('/my-tokens', authenticate, async (req, res) => {
+router.get('/my-tokens', async (req, res) => {
   try {
     const userId = req.user?.id;
 
@@ -184,7 +184,7 @@ router.get('/my-tokens', authenticate, async (req, res) => {
  * @desc    Send test notification to current user
  * @access  Private
  */
-router.post('/test', authenticate, async (req, res) => {
+router.post('/test', async (req, res) => {
   try {
     const userId = req.user?.id;
     const {
@@ -219,7 +219,7 @@ router.post('/test', authenticate, async (req, res) => {
  * @desc    Get VAPID public key for web push subscription
  * @access  Private
  */
-router.get('/vapid-public-key', authenticate, (req, res) => {
+router.get('/vapid-public-key', (req, res) => {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   if (!publicKey) {
     return res.status(503).json({ success: false, message: 'Web push not configured' });
@@ -232,7 +232,7 @@ router.get('/vapid-public-key', authenticate, (req, res) => {
  * @desc    Save a Web Push (VAPID) subscription
  * @access  Private
  */
-router.post('/web-subscribe', authenticate, async (req, res) => {
+router.post('/web-subscribe', async (req, res) => {
   try {
     const { endpoint, keys, expirationTime, userAgent } = req.body;
     const userId = req.user?.id;
@@ -275,7 +275,7 @@ router.post('/web-subscribe', authenticate, async (req, res) => {
  * @desc    Remove a Web Push subscription
  * @access  Private
  */
-router.delete('/web-unsubscribe', authenticate, async (req, res) => {
+router.delete('/web-unsubscribe', async (req, res) => {
   try {
     const { endpoint } = req.body;
     const userId = req.user?.id;

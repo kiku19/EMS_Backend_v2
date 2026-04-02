@@ -13,7 +13,7 @@ const router = express.Router();
 router.use(authenticate);
 
 // GET /referral/code — get (or create) this school's referral code
-router.get('/code', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/code', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const referral = await getOrCreateReferralCode(req.user.schoolId);
     res.json({ referralCode: referral.referralCode });
@@ -25,7 +25,7 @@ router.get('/code', authenticate, checkPermission('settings', 'view'), async (re
 });
 
 // GET /referral/stats — referral statistics for this school
-router.get('/stats', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const stats = await getReferralStats(req.user.schoolId);
     res.json(stats);
@@ -39,7 +39,6 @@ router.get('/stats', authenticate, checkPermission('settings', 'view'), async (r
 // POST /referral/apply — apply a referral code (called by the referred school)
 router.post(
   '/apply',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(applyReferralCodeSchema),
   async (req, res) => {

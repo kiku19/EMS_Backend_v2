@@ -39,7 +39,7 @@ function escapeRegex(str) {
 
 // ─── STATS ───────────────────────────────────────────────────────────────────
 
-router.get('/stats', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const base = scopeBySchool(schoolId, { isDeleted: { $ne: true } });
@@ -82,7 +82,7 @@ router.get('/stats', authenticate, checkPermission('inventory', 'view'), async (
 
 // ─── ASSETS ──────────────────────────────────────────────────────────────────
 
-router.get('/assets', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/assets', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { page = 1, limit = 50, search, category, status, condition } = req.query;
     const schoolId = req.user.schoolId;
@@ -121,7 +121,6 @@ router.get('/assets', authenticate, checkPermission('inventory', 'view'), async 
 
 router.get(
   '/assets/low-stock',
-  authenticate,
   checkPermission('inventory', 'view'),
   async (req, res) => {
     try {
@@ -141,7 +140,7 @@ router.get(
   }
 );
 
-router.get('/assets/:id', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/assets/:id', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const asset = await Asset.findOne(
@@ -157,7 +156,7 @@ router.get('/assets/:id', authenticate, checkPermission('inventory', 'view'), as
   }
 });
 
-router.post('/assets', authenticate, checkPermission('inventory', 'create'), async (req, res) => {
+router.post('/assets', checkPermission('inventory', 'create'), async (req, res) => {
   try {
     const data = createAssetSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -181,7 +180,7 @@ router.post('/assets', authenticate, checkPermission('inventory', 'create'), asy
   }
 });
 
-router.put('/assets/:id', authenticate, checkPermission('inventory', 'edit'), async (req, res) => {
+router.put('/assets/:id', checkPermission('inventory', 'edit'), async (req, res) => {
   try {
     const data = updateAssetSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -208,7 +207,6 @@ router.put('/assets/:id', authenticate, checkPermission('inventory', 'edit'), as
 
 router.put(
   '/assets/:id/assign',
-  authenticate,
   checkPermission('inventory', 'edit'),
   async (req, res) => {
     try {
@@ -238,7 +236,6 @@ router.put(
 
 router.get(
   '/assets/:id/depreciation',
-  authenticate,
   checkPermission('inventory', 'view'),
   async (req, res) => {
     try {
@@ -290,7 +287,6 @@ router.get(
 
 router.delete(
   '/assets/:id',
-  authenticate,
   checkPermission('inventory', 'delete'),
   async (req, res) => {
     try {
@@ -311,7 +307,7 @@ router.delete(
 
 // ─── ASSET CATEGORIES ─────────────────────────────────────────────────────────
 
-router.get('/categories', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/categories', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const categories = await AssetCategory.find(
@@ -325,7 +321,6 @@ router.get('/categories', authenticate, checkPermission('inventory', 'view'), as
 
 router.post(
   '/categories',
-  authenticate,
   checkPermission('inventory', 'create'),
   async (req, res) => {
     try {
@@ -360,7 +355,6 @@ router.post(
 
 router.put(
   '/categories/:id',
-  authenticate,
   checkPermission('inventory', 'edit'),
   async (req, res) => {
     try {
@@ -391,7 +385,6 @@ router.put(
 
 router.delete(
   '/categories/:id',
-  authenticate,
   checkPermission('inventory', 'delete'),
   async (req, res) => {
     try {
@@ -413,7 +406,7 @@ router.delete(
 
 // ─── VENDORS ─────────────────────────────────────────────────────────────────
 
-router.get('/vendors', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/vendors', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { search } = req.query;
     const schoolId = req.user.schoolId;
@@ -431,7 +424,7 @@ router.get('/vendors', authenticate, checkPermission('inventory', 'view'), async
   }
 });
 
-router.post('/vendors', authenticate, checkPermission('inventory', 'create'), async (req, res) => {
+router.post('/vendors', checkPermission('inventory', 'create'), async (req, res) => {
   try {
     const data = createVendorSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -455,7 +448,7 @@ router.post('/vendors', authenticate, checkPermission('inventory', 'create'), as
   }
 });
 
-router.put('/vendors/:id', authenticate, checkPermission('inventory', 'edit'), async (req, res) => {
+router.put('/vendors/:id', checkPermission('inventory', 'edit'), async (req, res) => {
   try {
     const data = updateVendorSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -482,7 +475,6 @@ router.put('/vendors/:id', authenticate, checkPermission('inventory', 'edit'), a
 
 router.delete(
   '/vendors/:id',
-  authenticate,
   checkPermission('inventory', 'delete'),
   async (req, res) => {
     try {
@@ -527,7 +519,7 @@ router.delete(
 
 // ─── MAINTENANCE LOGS ─────────────────────────────────────────────────────────
 
-router.get('/maintenance', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/maintenance', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { assetId, status } = req.query;
     const schoolId = req.user.schoolId;
@@ -549,7 +541,6 @@ router.get('/maintenance', authenticate, checkPermission('inventory', 'view'), a
 
 router.post(
   '/maintenance',
-  authenticate,
   checkPermission('inventory', 'create'),
   async (req, res) => {
     try {
@@ -586,7 +577,6 @@ router.post(
 
 router.put(
   '/maintenance/:id',
-  authenticate,
   checkPermission('inventory', 'edit'),
   async (req, res) => {
     try {
@@ -636,7 +626,6 @@ router.put(
 
 router.delete(
   '/maintenance/:id',
-  authenticate,
   checkPermission('inventory', 'delete'),
   async (req, res) => {
     try {
@@ -668,7 +657,7 @@ router.delete(
 
 // ─── PROCUREMENT ─────────────────────────────────────────────────────────────
 
-router.get('/procurement', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/procurement', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
     const schoolId = req.user.schoolId;
@@ -690,7 +679,6 @@ router.get('/procurement', authenticate, checkPermission('inventory', 'view'), a
 
 router.post(
   '/procurement',
-  authenticate,
   checkPermission('inventory', 'create'),
   async (req, res) => {
     try {
@@ -731,7 +719,6 @@ const PROCUREMENT_TRANSITIONS = {
 
 router.put(
   '/procurement/:id',
-  authenticate,
   checkPermission('inventory', 'edit'),
   async (req, res) => {
     try {
@@ -787,7 +774,6 @@ router.put(
 
 router.delete(
   '/procurement/:id',
-  authenticate,
   checkPermission('inventory', 'delete'),
   async (req, res) => {
     try {
@@ -809,7 +795,7 @@ router.delete(
 
 // ─── ASSET AUDITS ─────────────────────────────────────────────────────────────
 
-router.get('/audits', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/audits', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
     const schoolId = req.user.schoolId;
@@ -827,7 +813,7 @@ router.get('/audits', authenticate, checkPermission('inventory', 'view'), async 
   }
 });
 
-router.post('/audits', authenticate, checkPermission('inventory', 'create'), async (req, res) => {
+router.post('/audits', checkPermission('inventory', 'create'), async (req, res) => {
   try {
     const data = createAssetAuditSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -851,7 +837,7 @@ router.post('/audits', authenticate, checkPermission('inventory', 'create'), asy
   }
 });
 
-router.put('/audits/:id', authenticate, checkPermission('inventory', 'edit'), async (req, res) => {
+router.put('/audits/:id', checkPermission('inventory', 'edit'), async (req, res) => {
   try {
     const data = updateAssetAuditSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -901,7 +887,6 @@ router.put('/audits/:id', authenticate, checkPermission('inventory', 'edit'), as
 
 router.delete(
   '/audits/:id',
-  authenticate,
   checkPermission('inventory', 'delete'),
   async (req, res) => {
     try {
@@ -933,7 +918,7 @@ router.delete(
 
 // ─── REPORTS ─────────────────────────────────────────────────────────────────
 
-router.get('/reports', authenticate, checkPermission('inventory', 'view'), async (req, res) => {
+router.get('/reports', checkPermission('inventory', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const base = scopeBySchool(schoolId, { isDeleted: { $ne: true } });

@@ -21,7 +21,7 @@ async function resolveRequestSchoolId(req) {
 }
 
 // Get fee structure for a class (single object)
-router.get('/class/:classId', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/class/:classId', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { classId } = req.params;
     const resolvedAcademicYear = await resolveAcademicYear(
@@ -49,7 +49,7 @@ router.get('/class/:classId', authenticate, checkPermission('fees', 'view'), asy
 });
 
 // Create or update fee structure for a class (upsert)
-router.post('/', authenticate, checkPermission('fees', 'create'), async (req, res) => {
+router.post('/', checkPermission('fees', 'create'), async (req, res) => {
   try {
     const { classId, academicYear, templateId, feeHeads, collectionSchedule, totalAnnualFee } =
       req.body;
@@ -86,7 +86,6 @@ router.post('/', authenticate, checkPermission('fees', 'create'), async (req, re
 // Apply class fee structure to all students in the class
 router.post(
   '/apply-to-students',
-  authenticate,
   checkPermission('fees', 'edit'),
   async (req, res) => {
     try {

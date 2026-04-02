@@ -21,7 +21,7 @@ const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.school
  * Get all visitors with optional filters
  * Query params: status (active/all/today), purpose, startDate, endDate, search
  */
-router.get('/', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const { status, purpose, startDate, endDate, search } = req.query;
 
@@ -99,7 +99,7 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
  * GET /api/visitors/active
  * Get all active (checked-in) visitors
  */
-router.get('/active', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/active', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const visitors = await Visitor.getActiveVisitors(req.user.schoolId);
     res.json({
@@ -121,7 +121,7 @@ router.get('/active', authenticate, checkPermission('front-office', 'view'), asy
  * GET /api/visitors/today
  * Get today's visitors
  */
-router.get('/today', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/today', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const visitors = await Visitor.getTodaysVisitors(req.user.schoolId);
     res.json({
@@ -143,7 +143,7 @@ router.get('/today', authenticate, checkPermission('front-office', 'view'), asyn
  * GET /api/visitors/search?q=
  * Search visitors by name, phone, email, or whom to meet
  */
-router.get('/search', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/search', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const { q } = req.query;
 
@@ -176,7 +176,6 @@ router.get('/search', authenticate, checkPermission('front-office', 'view'), asy
  */
 router.get(
   '/parents/search',
-  authenticate,
   checkPermission('front-office', 'view'),
   async (req, res) => {
     try {
@@ -237,7 +236,7 @@ router.get(
  * GET /api/visitors/:id
  * Get single visitor by ID
  */
-router.get('/:id', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }))
       .populate('checkedInBy', 'name code phone')
@@ -274,7 +273,6 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
  */
 router.post(
   '/',
-  authenticate,
   checkPermission('front-office', 'create'),
   validateZod(createVisitorSchema),
   async (req, res) => {
@@ -383,7 +381,6 @@ router.post(
  */
 router.put(
   '/:id',
-  authenticate,
   checkPermission('front-office', 'edit'),
   validateZod(updateVisitorSchema),
   async (req, res) => {
@@ -448,7 +445,6 @@ router.put(
  */
 router.post(
   '/:id/check-out',
-  authenticate,
   checkPermission('front-office', 'edit'),
   validateZod(checkOutVisitorSchema),
   async (req, res) => {
@@ -501,7 +497,7 @@ router.post(
  * DELETE /api/visitors/:id
  * Delete visitor
  */
-router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res) => {
   try {
     const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }));
 
@@ -534,7 +530,6 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
  */
 router.get(
   '/:id/badge',
-  authenticate,
   checkPermission('front-office', 'view'),
   async (req, res) => {
     try {

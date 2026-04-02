@@ -39,7 +39,7 @@ async function resolveRequestSchoolId(req) {
 }
 
 // Get all attendance records (with pagination and date filter)
-router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(parseInt(req.query.limit) || 100, 500);
@@ -88,7 +88,7 @@ router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res)
 });
 
 // Get attendance for a specific date
-router.get('/date/:date', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/date/:date', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { date } = req.params;
     const attendance = await StaffAttendance.find(scopeBySchool(req.user?.schoolId, { date }))
@@ -104,7 +104,7 @@ router.get('/date/:date', authenticate, checkPermission('staff', 'view'), async 
 });
 
 // Get attendance for a staff member (with date range)
-router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/staff/:staffId', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { staffId } = req.params;
     const startDate = sanitizeQueryStr(req.query.startDate);
@@ -127,7 +127,7 @@ router.get('/staff/:staffId', authenticate, checkPermission('staff', 'view'), as
 });
 
 // Get today's attendance for a staff member (for mobile app)
-router.get('/staff/:staffId/today', authenticate, async (req, res) => {
+router.get('/staff/:staffId/today', async (req, res) => {
   try {
     const { staffId } = req.params;
 
@@ -181,7 +181,6 @@ router.get('/staff/:staffId/today', authenticate, async (req, res) => {
 // Mark attendance (admin/manual)
 router.post(
   '/',
-  authenticate,
   checkPermission('staff', 'edit'),
   validateZod(singleStaffAttendanceSchema),
   async (req, res) => {
@@ -272,7 +271,6 @@ router.post(
 // Bulk mark attendance
 router.post(
   '/bulk',
-  authenticate,
   checkPermission('staff', 'edit'),
   validateZod(bulkStaffAttendanceSchema),
   async (req, res) => {
@@ -322,7 +320,7 @@ router.post(
 );
 
 // Regularize attendance
-router.put('/:id/regularize', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
+router.put('/:id/regularize', checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { date, status, checkInTime, checkOutTime, reason } = req.body;
@@ -722,7 +720,7 @@ router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, async 
 });
 
 // Get pending leave applications
-router.get('/leave/pending', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/leave/pending', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const pendingLeaves = await StaffAttendance.find(
       scopeBySchool(req.user?.schoolId, {
@@ -742,7 +740,6 @@ router.get('/leave/pending', authenticate, checkPermission('staff', 'view'), asy
 // Approve/Reject leave
 router.put(
   '/leave/:id/approve',
-  authenticate,
   checkPermission('staff', 'edit'),
   async (req, res) => {
     try {
@@ -808,7 +805,6 @@ router.put(
 // Get staff attendance summary
 router.get(
   '/summary/:staffId',
-  authenticate,
   checkPermission('staff', 'view'),
   async (req, res) => {
     try {

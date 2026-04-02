@@ -19,7 +19,7 @@ const restoreBackupSchema = z.object({
 });
 
 // POST /backup/create — generate a full school data snapshot
-router.post('/create', authenticate, async (req, res) => {
+router.post('/create', async (req, res) => {
   const parsed = createBackupSchema.safeParse(req.body);
   if (!parsed.success) {
     return res
@@ -83,7 +83,7 @@ router.post('/create', authenticate, async (req, res) => {
 });
 
 // GET /backup/list — list backups for this school (no data payload)
-router.get('/list', authenticate, async (req, res) => {
+router.get('/list', async (req, res) => {
   const schoolId = req.user.schoolId;
   try {
     const backups = await BackupRecord.find({ schoolId })
@@ -101,7 +101,7 @@ router.get('/list', authenticate, async (req, res) => {
 });
 
 // GET /backup/:id/download — stream backup JSON as a file download
-router.get('/:id/download', authenticate, async (req, res) => {
+router.get('/:id/download', async (req, res) => {
   const schoolId = req.user.schoolId;
   try {
     const backup = await BackupRecord.findOne({ _id: req.params.id, schoolId }).lean();
@@ -121,7 +121,7 @@ router.get('/:id/download', authenticate, async (req, res) => {
 });
 
 // POST /backup/:id/restore — restore school data from a stored backup
-router.post('/:id/restore', authenticate, async (req, res) => {
+router.post('/:id/restore', async (req, res) => {
   const parsed = restoreBackupSchema.safeParse(req.body);
   if (!parsed.success) {
     return res
@@ -191,7 +191,7 @@ const backupScheduleSchema = z.object({
 });
 
 // GET /backup/schedule — get this school's backup schedule settings
-router.get('/schedule', authenticate, async (req, res) => {
+router.get('/schedule', async (req, res) => {
   const schoolId = req.user.schoolId;
   try {
     const settings = await SchoolSettings.findOne({ schoolId }).select('backupSchedule').lean();
@@ -203,7 +203,7 @@ router.get('/schedule', authenticate, async (req, res) => {
 });
 
 // PUT /backup/schedule — save backup schedule settings
-router.put('/schedule', authenticate, async (req, res) => {
+router.put('/schedule', async (req, res) => {
   const parsed = backupScheduleSchema.safeParse(req.body);
   if (!parsed.success) {
     return res
@@ -226,7 +226,7 @@ router.put('/schedule', authenticate, async (req, res) => {
 });
 
 // DELETE /backup/:id — remove a backup record
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   const schoolId = req.user.schoolId;
   try {
     const backup = await BackupRecord.findOneAndDelete({ _id: req.params.id, schoolId });

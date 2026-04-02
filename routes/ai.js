@@ -44,7 +44,7 @@ const upload = multer({
   },
 });
 
-router.get('/models', authenticate, (_req, res) => {
+router.get('/models', (_req, res) => {
   res.json(getAiModelsPayload());
 });
 
@@ -74,7 +74,6 @@ router.post('/chat', chatLimiter, authenticate, featureGate('aiAssistant'), asyn
 router.post(
   '/transcribe',
   transcriptionLimiter,
-  authenticate,
   featureGate('aiAssistant'),
   upload.single('audio'),
   async (req, res) => {

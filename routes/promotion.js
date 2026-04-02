@@ -34,7 +34,7 @@ function scopeBySchool(schoolId, query = {}) {
 
 // ─── GET /promotions/preview?classId=&academicYear= ─────────────────────────
 // Returns students for a class with their promotion readiness indicators
-router.get('/preview', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/preview', checkPermission('students', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { classId, academicYear } = req.query;
@@ -127,7 +127,6 @@ router.get('/preview', authenticate, checkPermission('students', 'view'), async 
 // Execute bulk promotion with per-student decisions; stores snapshot for rollback
 router.post(
   '/execute',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(bulkPromotionSchema),
   async (req, res) => {
@@ -313,7 +312,7 @@ router.post(
 
 // ─── GET /promotions/records ─────────────────────────────────────────────────
 // List promotion history for a school
-router.get('/records', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/records', checkPermission('students', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const records = await PromotionRecord.find(scopeBySchool(schoolId, {}))
@@ -333,7 +332,6 @@ router.get('/records', authenticate, checkPermission('students', 'view'), async 
 // Get a specific promotion record (full report with per-student decisions)
 router.get(
   '/records/:recordId',
-  authenticate,
   checkPermission('students', 'view'),
   async (req, res) => {
     try {
@@ -381,7 +379,6 @@ router.get(
 // Undo a bulk promotion by restoring each student's previous state
 router.post(
   '/rollback/:recordId',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(rollbackPromotionSchema),
   async (req, res) => {
@@ -469,7 +466,6 @@ router.post(
 // Create new academic year by copying class structure (and optionally fee templates)
 router.post(
   '/new-academic-year',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(newAcademicYearSchema),
   async (req, res) => {
@@ -566,7 +562,7 @@ router.post(
 
 // ─── GET /promotions/rules ───────────────────────────────────────────────────
 // Returns the school's configured promotion rules (or defaults if none saved yet)
-router.get('/rules', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/rules', checkPermission('students', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const rules = await PromotionRule.findOne(scopeBySchool(schoolId, {})).lean();
@@ -584,7 +580,6 @@ router.get('/rules', authenticate, checkPermission('students', 'view'), async (r
 // Save (upsert) the school's promotion rules
 router.put(
   '/rules',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(promotionRulesSchema),
   async (req, res) => {
@@ -612,7 +607,7 @@ router.put(
 
 // ─── GET /promotions/check-year?academicYear= ─────────────────────────────
 // Quick check whether classes exist for a given academic year
-router.get('/check-year', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/check-year', checkPermission('students', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { academicYear } = req.query;
@@ -634,7 +629,7 @@ router.get('/check-year', authenticate, checkPermission('students', 'view'), asy
 // ─── GET /promotions/preview-all?academicYear= ────────────────────────────
 // Returns ALL classes in the given academic year with auto-suggested target class,
 // student counts, and per-class eligibility summary for the year-end wizard
-router.get('/preview-all', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/preview-all', checkPermission('students', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
@@ -798,7 +793,6 @@ router.get('/preview-all', authenticate, checkPermission('students', 'view'), as
 // in a single operation with one PromotionRecord for rollback
 router.post(
   '/execute-all',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(multiClassPromotionSchema),
   async (req, res) => {

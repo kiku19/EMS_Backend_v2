@@ -312,7 +312,6 @@ async function resolveRequestSchoolId(req) {
 // Get fee structure for a student (auto-initializes if missing)
 router.get(
   '/student/:studentId',
-  authenticate,
   checkPermission('fees', 'view'),
   async (req, res) => {
     try {
@@ -423,7 +422,7 @@ router.get(
 );
 
 // Batch get fee structures for multiple students
-router.post('/batch', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.post('/batch', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { studentIds, academicYear } = req.body;
 
@@ -460,7 +459,7 @@ router.post('/batch', authenticate, checkPermission('fees', 'view'), async (req,
 });
 
 // Get all students with their fee structures
-router.get('/all', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/all', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const { academicYear, classId, status } = req.query;
     const resolvedYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
@@ -485,7 +484,6 @@ router.get('/all', authenticate, checkPermission('fees', 'view'), async (req, re
 // Initialize fee structure for a new student
 router.post(
   '/initialize/:studentId',
-  authenticate,
   checkPermission('fees', 'create'),
   async (req, res) => {
     try {
@@ -590,7 +588,6 @@ router.post(
 // Update discount for a student
 router.put(
   '/student/:studentId/discount',
-  authenticate,
   checkPermission('fees', 'edit'),
   validateZod(updateDiscountSchema),
   async (req, res) => {
@@ -648,7 +645,6 @@ router.put(
 // Record payment for a student
 router.post(
   '/student/:studentId/payment',
-  authenticate,
   checkPermission('fees', 'edit'),
   validateZod(studentFeePaymentSchema),
   async (req, res) => {
@@ -754,7 +750,7 @@ router.post(
 );
 
 // Get fee defaulters (paginated)
-router.get('/defaulters', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/defaulters', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const parsed = defaultersQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -817,7 +813,6 @@ router.get('/defaulters', authenticate, checkPermission('fees', 'view'), async (
 // Admin-only; returns a diff report of what was changed.
 router.post(
   '/reconcile/:studentId',
-  authenticate,
   checkPermission('fees', 'edit'),
   async (req, res) => {
     try {

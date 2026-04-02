@@ -362,7 +362,7 @@ async function regexSearchAnnouncements(q, schoolId, limit, skip) {
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  */
-router.get('/', authenticate, validateZod(searchQuerySchema, 'query'), async (req, res) => {
+router.get('/', validateZod(searchQuerySchema, 'query'), async (req, res) => {
   try {
     const { q, types, limit, page, academicYear } = req.query;
     const schoolId = req.user.schoolId;
@@ -450,7 +450,7 @@ router.get('/', authenticate, validateZod(searchQuerySchema, 'query'), async (re
 });
 
 // ─── Analytics: top queries for this school ───────────────────────────────────
-router.get('/analytics', authenticate, async (req, res) => {
+router.get('/analytics', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const days = Math.min(parseInt(req.query.days ?? '30', 10), 90);

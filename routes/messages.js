@@ -18,7 +18,7 @@ router.use(authenticate);
 const logger = createLogger('Messages');
 
 // Get unread count for a user — derived from session
-router.get('/unread-count', authenticate, async (req, res) => {
+router.get('/unread-count', async (req, res) => {
   try {
     const userId = req.user.id || req.user.userId;
     const schoolId = req.user.schoolId;
@@ -49,7 +49,7 @@ router.get('/unread-count', authenticate, async (req, res) => {
 });
 
 // Get user's chat permissions — derived from session
-router.get('/permissions', authenticate, async (req, res) => {
+router.get('/permissions', async (req, res) => {
   try {
     const userId = req.user.id || req.user.userId;
     const userType = req.user.userType || 'staff';
@@ -68,7 +68,7 @@ router.get('/permissions', authenticate, async (req, res) => {
 });
 
 // Get all conversations for a user — derived from session
-router.get('/conversations', authenticate, async (req, res) => {
+router.get('/conversations', async (req, res) => {
   try {
     const userId = req.user.id || req.user.userId;
     const userType = req.user.userType || 'staff';
@@ -170,7 +170,7 @@ router.get('/conversations', authenticate, async (req, res) => {
 });
 
 // Get messages for a conversation
-router.get('/conversations/:conversationId/messages', authenticate, async (req, res) => {
+router.get('/conversations/:conversationId/messages', async (req, res) => {
   try {
     const { conversationId } = req.params;
     const { limit = 50, before } = req.query;
@@ -243,7 +243,7 @@ router.get('/conversations/:conversationId/messages', authenticate, async (req, 
 });
 
 // Create or get conversation — caller identity derived from session
-router.post('/conversations', authenticate, async (req, res) => {
+router.post('/conversations', async (req, res) => {
   try {
     const user1Id = req.user.id || req.user.userId;
     const user1Type = req.user.userType || 'staff';
@@ -327,7 +327,7 @@ router.post('/conversations', authenticate, async (req, res) => {
 });
 
 // Send message (REST fallback) — sender identity derived from session
-router.post('/', authenticate, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const parsed = sendMessageSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -467,7 +467,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // Mark messages as read
-router.put('/read', authenticate, async (req, res) => {
+router.put('/read', async (req, res) => {
   try {
     const { conversationId } = req.body;
     const userId = req.user.id || req.user.userId;
@@ -504,7 +504,7 @@ router.put('/read', authenticate, async (req, res) => {
 });
 
 // Delete message
-router.delete('/:messageId', authenticate, async (req, res) => {
+router.delete('/:messageId', async (req, res) => {
   try {
     const { messageId } = req.params;
     const userId = req.user.id || req.user.userId;
@@ -537,7 +537,7 @@ router.delete('/:messageId', authenticate, async (req, res) => {
 });
 
 // Search messages — requires auth
-router.get('/search', authenticate, async (req, res) => {
+router.get('/search', async (req, res) => {
   try {
     const { query, limit = 20 } = req.query;
     const userId = req.user.id || req.user.userId;
@@ -601,7 +601,7 @@ router.get('/search', authenticate, async (req, res) => {
 });
 
 // Get online users — requires auth (MUST be before /presence/:userId to avoid route shadowing)
-router.get('/presence/online', authenticate, async (req, res) => {
+router.get('/presence/online', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const onlineUsers = await UserPresence.find({ status: 'online', schoolId })
@@ -616,7 +616,7 @@ router.get('/presence/online', authenticate, async (req, res) => {
 });
 
 // Get user presence — requires auth; only for users sharing a conversation
-router.get('/presence/:userId', authenticate, async (req, res) => {
+router.get('/presence/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const currentUserId = req.user.id || req.user.userId;
@@ -654,7 +654,7 @@ router.get('/presence/:userId', authenticate, async (req, res) => {
 // ============ ENHANCED MESSAGE ACTIONS ============
 
 // Edit message — requires auth
-router.put('/:messageId/edit', authenticate, async (req, res) => {
+router.put('/:messageId/edit', async (req, res) => {
   try {
     const parsed = editMessageSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -707,7 +707,7 @@ router.put('/:messageId/edit', authenticate, async (req, res) => {
 });
 
 // React to message — requires auth
-router.post('/:messageId/react', authenticate, async (req, res) => {
+router.post('/:messageId/react', async (req, res) => {
   try {
     const { messageId } = req.params;
     const userId = req.user.id || req.user.userId;
@@ -760,7 +760,7 @@ router.post('/:messageId/react', authenticate, async (req, res) => {
 });
 
 // Reply to message — requires auth
-router.post('/:messageId/reply', authenticate, async (req, res) => {
+router.post('/:messageId/reply', async (req, res) => {
   try {
     const { messageId } = req.params;
     const senderId = req.user.id || req.user.userId;
@@ -824,7 +824,7 @@ router.post('/:messageId/reply', authenticate, async (req, res) => {
 });
 
 // Forward message — requires auth
-router.post('/:messageId/forward', authenticate, async (req, res) => {
+router.post('/:messageId/forward', async (req, res) => {
   try {
     const { messageId } = req.params;
     const senderId = req.user.id || req.user.userId;
@@ -904,7 +904,7 @@ router.post('/:messageId/forward', authenticate, async (req, res) => {
 });
 
 // Pin/unpin message — requires auth
-router.post('/:messageId/pin', authenticate, async (req, res) => {
+router.post('/:messageId/pin', async (req, res) => {
   try {
     const { messageId } = req.params;
     const { pinned } = req.body;
@@ -970,7 +970,7 @@ router.post('/:messageId/pin', authenticate, async (req, res) => {
 });
 
 // Get pinned messages in conversation — requires auth
-router.get('/conversations/:conversationId/pinned-messages', authenticate, async (req, res) => {
+router.get('/conversations/:conversationId/pinned-messages', async (req, res) => {
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
@@ -998,7 +998,7 @@ router.get('/conversations/:conversationId/pinned-messages', authenticate, async
 });
 
 // Pin/unpin conversation — requires auth
-router.post('/conversations/:conversationId/pin', authenticate, async (req, res) => {
+router.post('/conversations/:conversationId/pin', async (req, res) => {
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
@@ -1039,7 +1039,7 @@ router.post('/conversations/:conversationId/pin', authenticate, async (req, res)
 });
 
 // Mute/unmute conversation — requires auth
-router.post('/conversations/:conversationId/mute', authenticate, async (req, res) => {
+router.post('/conversations/:conversationId/mute', async (req, res) => {
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
@@ -1080,7 +1080,7 @@ router.post('/conversations/:conversationId/mute', authenticate, async (req, res
 });
 
 // Delete conversation — requires auth
-router.delete('/conversations/:conversationId', authenticate, async (req, res) => {
+router.delete('/conversations/:conversationId', async (req, res) => {
   try {
     const { conversationId } = req.params;
     const userId = req.user.id || req.user.userId;
@@ -1125,7 +1125,7 @@ router.delete('/conversations/:conversationId', authenticate, async (req, res) =
 });
 
 // Get available contacts — requires auth
-router.get('/contacts', authenticate, async (req, res) => {
+router.get('/contacts', async (req, res) => {
   try {
     const { userType } = req.query;
     const schoolId = req.user.schoolId;

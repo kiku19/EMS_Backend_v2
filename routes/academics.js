@@ -280,7 +280,6 @@ async function computeAndSaveRanks(examId, classId, schoolId) {
 
 router.get(
   '/exams/class/:classId',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -301,7 +300,6 @@ router.get(
 
 router.get(
   '/exams/staff/:staffId',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -373,7 +371,7 @@ router.get(
   }
 );
 
-router.get('/exams', authenticate, checkPermission('academics', 'view'), async (req, res) => {
+router.get('/exams', checkPermission('academics', 'view'), async (req, res) => {
   try {
     const { academicYear, classId, status } = req.query;
     // AUDIT-66: Add pagination support
@@ -433,7 +431,7 @@ router.get('/exams', authenticate, checkPermission('academics', 'view'), async (
   }
 });
 
-router.get('/exams/:id', authenticate, checkPermission('academics', 'view'), async (req, res) => {
+router.get('/exams/:id', checkPermission('academics', 'view'), async (req, res) => {
   try {
     const exam = await Exam.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -469,7 +467,6 @@ router.get('/exams/:id', authenticate, checkPermission('academics', 'view'), asy
 
 router.post(
   '/exams',
-  authenticate,
   checkPermission('academics', 'create'),
   validateZod(createExamSchema),
   async (req, res) => {
@@ -551,7 +548,6 @@ router.post(
 
 router.post(
   '/exams/create-with-results',
-  authenticate,
   checkPermission('academics', 'create'),
   validateZod(createExamSchema),
   async (req, res) => {
@@ -671,7 +667,6 @@ router.post(
 
 router.put(
   '/exams/:id',
-  authenticate,
   checkPermission('academics', 'edit'),
   validateZod(updateExamSchema),
   async (req, res) => {
@@ -808,7 +803,6 @@ router.put(
 
 router.delete(
   '/exams/:id',
-  authenticate,
   checkPermission('academics', 'delete'),
   async (req, res) => {
     try {
@@ -835,7 +829,6 @@ router.delete(
 
 router.post(
   '/exams/:id/publish',
-  authenticate,
   checkPermission('academics', 'publish'),
   async (req, res) => {
     try {
@@ -924,7 +917,6 @@ router.post(
 // Unpublish exam results — allows retracting a published exam
 router.put(
   '/exams/:id/unpublish',
-  authenticate,
   checkPermission('academics', 'publish'),
   async (req, res) => {
     try {
@@ -973,7 +965,6 @@ router.put(
 
 router.get(
   '/results/class/:classId/exam/:examId',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -1017,7 +1008,6 @@ router.get(
 
 router.post(
   '/results/bulk',
-  authenticate,
   checkPermission('academics', 'edit'),
   validateZod(bulkResultsSchema),
   async (req, res) => {
@@ -1203,7 +1193,6 @@ router.post(
 // based on the exam's current maxMarks and passingMarks
 router.post(
   '/exams/:id/recalculate-results',
-  authenticate,
   checkPermission('academics', 'edit'),
   async (req, res) => {
     try {
@@ -1278,7 +1267,6 @@ router.post(
 // ────────────────────────────────────────────────────────────────
 router.get(
   '/exams/:id/results',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -1308,7 +1296,7 @@ router.get(
 // ────────────────────────────────────────────────────────────────
 // POST /results — Create a single result entry
 // ────────────────────────────────────────────────────────────────
-router.post('/results', authenticate, checkPermission('academics', 'edit'), async (req, res) => {
+router.post('/results', checkPermission('academics', 'edit'), async (req, res) => {
   try {
     // AUDIT-19: Zod validation for single result creation
     const parseResult = createResultSchema.safeParse(req.body);
@@ -1409,7 +1397,7 @@ router.post('/results', authenticate, checkPermission('academics', 'edit'), asyn
 // ────────────────────────────────────────────────────────────────
 // PUT /results/:id — Update a single result entry
 // ────────────────────────────────────────────────────────────────
-router.put('/results/:id', authenticate, checkPermission('academics', 'edit'), async (req, res) => {
+router.put('/results/:id', checkPermission('academics', 'edit'), async (req, res) => {
   try {
     // AUDIT-19: Zod validation for single result update
     const parseResult = updateResultSchema.safeParse(req.body);
@@ -1486,7 +1474,7 @@ router.put('/results/:id', authenticate, checkPermission('academics', 'edit'), a
   }
 });
 
-router.get('/subjects', authenticate, checkPermission('academics', 'view'), async (req, res) => {
+router.get('/subjects', checkPermission('academics', 'view'), async (req, res) => {
   try {
     const settings = await SchoolSettings.findOne(buildSchoolScopedQuery(req.user?.schoolId));
     if (settings?.subjects?.length) {

@@ -227,7 +227,7 @@ router.get('/check', async (req, res) => {
  * GET /auth/sso/config
  * Returns the school's SSO configuration (client secrets redacted).
  */
-router.get('/config', authenticate, async (req, res) => {
+router.get('/config', async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId).select('ssoConfig name code');
     if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
@@ -277,7 +277,7 @@ router.get('/config', authenticate, async (req, res) => {
  * PUT /auth/sso/config
  * Update school's SSO configuration.
  */
-router.put('/config', authenticate, validateZod(zodSchemas.updateSsoConfig), async (req, res) => {
+router.put('/config', validateZod(zodSchemas.updateSsoConfig), async (req, res) => {
   try {
     const {
       google,
@@ -395,7 +395,7 @@ router.put('/config', authenticate, validateZod(zodSchemas.updateSsoConfig), asy
  * The full token is never returned — only the last 4 characters are visible.
  * Use the regenerate-token endpoint to obtain the full token (shown only once).
  */
-router.get('/scim/token', authenticate, async (req, res) => {
+router.get('/scim/token', async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId).select('ssoConfig');
     if (!school) return res.status(404).json({ error: 'School not found' });
@@ -413,7 +413,7 @@ router.get('/scim/token', authenticate, async (req, res) => {
  * Generates a new cryptographically random SCIM bearer token, saves it, and returns it.
  * The token is only shown once — admins must copy it immediately.
  */
-router.post('/scim/regenerate-token', authenticate, async (req, res) => {
+router.post('/scim/regenerate-token', async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId);
     if (!school) return res.status(404).json({ error: 'School not found' });

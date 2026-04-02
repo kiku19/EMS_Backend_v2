@@ -265,7 +265,7 @@ const DATA_CATEGORIES = {
  * GET /api/data-cleanup/preview
  * Preview counts for all data categories
  */
-router.get('/preview', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
+router.get('/preview', checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const counts = {};
@@ -313,7 +313,6 @@ router.get('/preview', authenticate, checkPermission('classes', 'delete'), async
  */
 router.post(
   '/execute',
-  authenticate,
   checkPermission('classes', 'delete'),
   validateZod(executeCleanupSchema),
   async (req, res) => {
