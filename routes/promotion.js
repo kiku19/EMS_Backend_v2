@@ -210,6 +210,9 @@ router.post(
           const oldAcademicYear = student.academicYear || fromAcademicYear;
 
           if (d.decision === 'promoted') {
+            // TODO [AUDIT-15]: Attendance & Result records still reference the old classId after
+            // promotion. Archive or migrate them. See Attendance.classId and Result.classId.
+
             let newRollNo = d.newRollNo || null;
             if (generateRollNumbers && d.toClassId) {
               newRollNo = rollCounters[d.toClassId]++;
