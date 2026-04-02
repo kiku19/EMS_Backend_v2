@@ -200,7 +200,7 @@ router.post(
           })
         );
         if (existingByEmail) {
-          return res.status(400).json({
+          return res.status(409).json({
             error: `Email already used by ${existingByEmail.name} (${existingByEmail.code})`,
           });
         }
@@ -212,7 +212,7 @@ router.post(
           scopeBySchool(schoolId, { ...piiMatch('phone', phone), isDeleted: { $ne: true } })
         );
         if (existingByPhone) {
-          return res.status(400).json({
+          return res.status(409).json({
             error: `Phone number already used by ${existingByPhone.name} (${existingByPhone.code})`,
           });
         }

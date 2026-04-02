@@ -21,7 +21,7 @@ export const createClassSchema = z
     assignedSubjects: z
       .array(z.string().max(100, 'Subject name must not exceed 100 characters').trim())
       .default([]),
-    academicYear: academicYear.optional(),
+    academicYear: academicYear,
     classTag: optionalString(100),
     room: optionalString(50),
     block: optionalString(50),
