@@ -266,7 +266,7 @@ async function ensureTeacherAvailable(classTeacherId, currentClassId = null, sch
   return { teacher };
 }
 
-router.get('/public', authenticate, async (req, res) => {
+router.get('/public', async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const classes = await Class.find(scopeBySchool(schoolId, { isDeleted: { $ne: true } })).sort({
@@ -286,7 +286,7 @@ router.get('/public', authenticate, async (req, res) => {
   }
 });
 
-router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const baseQuery = req.query.teacherId ? { classTeacherId: req.query.teacherId } : {};
     baseQuery.isDeleted = { $ne: true };
@@ -332,7 +332,6 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
 
 router.post(
   '/',
-  authenticate,
   checkPermission('classes', 'create'),
   validateZod(createClassSchema),
   async (req, res) => {
@@ -377,7 +376,6 @@ router.post(
 
 router.put(
   '/:id/class-teacher',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(updateClassTeacherSchema),
   async (req, res) => {
@@ -460,7 +458,7 @@ router.put(
 );
 
 // AUDIT-36: Added permission check
-router.get('/:id/settings', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id/settings', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const classDoc = await Class.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -484,7 +482,6 @@ router.get('/:id/settings', authenticate, checkPermission('classes', 'view'), as
 
 router.put(
   '/:id/tag',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(updateClassTagSchema),
   async (req, res) => {
@@ -515,7 +512,6 @@ router.put(
 
 router.put(
   '/:id/subjects',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(updateClassSubjectsSchema),
   async (req, res) => {
@@ -546,7 +542,7 @@ router.put(
 );
 
 // AUDIT-36: Added permission check
-router.get('/:id/students', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id/students', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
     if (!resolved) {
@@ -583,7 +579,6 @@ router.get('/:id/students', authenticate, checkPermission('classes', 'view'), as
 
 router.get(
   '/:id/next-roll-number',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -596,7 +591,7 @@ router.get(
   }
 );
 
-router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id/capacity', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const result = await checkClassCapacity(req.params.id, req.user?.schoolId);
     if (!result) {
@@ -619,7 +614,7 @@ router.get('/:id/capacity', authenticate, checkPermission('classes', 'view'), as
 });
 
 // AUDIT-36: Added permission check
-router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
     if (!resolved) {
@@ -652,7 +647,6 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
 
 router.put(
   '/:id',
-  authenticate,
   checkPermission('classes', 'edit'),
   validateZod(updateClassSchema),
   async (req, res) => {
@@ -721,7 +715,7 @@ router.put(
   }
 );
 
-router.delete('/:id', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const scopedCheck = await Class.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })

@@ -43,7 +43,6 @@ function applyGrading(scholasticGrades) {
 // Returns all CBSE report cards for a student (optionally filtered by term/year)
 router.get(
   '/student/:studentId',
-  authenticate,
   checkPermission('students', 'view'),
   async (req, res) => {
     try {
@@ -92,7 +91,6 @@ router.get(
 // Returns report cards for all students in a class for a given term
 router.get(
   '/class/:classId',
-  authenticate,
   checkPermission('students', 'view'),
   async (req, res) => {
     try {
@@ -120,7 +118,7 @@ router.get(
 );
 
 // ─── GET /cbse-report-card/:id ────────────────────────────────────────────────
-router.get('/:id', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('students', 'view'), async (req, res) => {
   try {
     const { id } = req.params;
     const schoolId = req.user?.schoolId;
@@ -144,7 +142,6 @@ router.get('/:id', authenticate, checkPermission('students', 'view'), async (req
 // Create or overwrite a student's CBSE report card for a given term/year
 router.post(
   '/',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(createCBSEReportCardSchema),
   async (req, res) => {
@@ -194,7 +191,6 @@ router.post(
 // Upsert report cards for multiple students in a class at once
 router.post(
   '/bulk',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(bulkCBSEReportCardsSchema),
   async (req, res) => {
@@ -272,7 +268,6 @@ router.post(
 // ─── PUT /cbse-report-card/:id ────────────────────────────────────────────────
 router.put(
   '/:id',
-  authenticate,
   checkPermission('students', 'edit'),
   validateZod(updateCBSEReportCardSchema),
   async (req, res) => {
@@ -315,7 +310,7 @@ router.put(
 );
 
 // ─── POST /cbse-report-card/:id/publish ──────────────────────────────────────
-router.post('/:id/publish', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+router.post('/:id/publish', checkPermission('students', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const schoolId = req.user?.schoolId;
@@ -337,7 +332,6 @@ router.post('/:id/publish', authenticate, checkPermission('students', 'edit'), a
 // Bulk publish all report cards for a class/term
 router.post(
   '/class/:classId/publish',
-  authenticate,
   checkPermission('students', 'edit'),
   async (req, res) => {
     try {
@@ -365,7 +359,7 @@ router.post(
 );
 
 // ─── DELETE /cbse-report-card/:id ────────────────────────────────────────────
-router.delete('/:id', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+router.delete('/:id', checkPermission('students', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const schoolId = req.user?.schoolId;

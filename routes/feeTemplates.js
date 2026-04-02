@@ -26,7 +26,7 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
-router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     const ownTemplates = await FeeTemplate.find(scopeBySchool(schoolId)).sort({ name: 1 });
@@ -57,7 +57,7 @@ router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) 
   }
 });
 
-router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const template = await FeeTemplate.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
@@ -73,7 +73,6 @@ router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, re
 
 router.post(
   '/',
-  authenticate,
   checkPermission('fees', 'create'),
   validateZod(createFeeTemplateSchema),
   async (req, res) => {
@@ -112,7 +111,6 @@ router.post(
 
 router.put(
   '/:id',
-  authenticate,
   checkPermission('fees', 'edit'),
   validateZod(updateFeeTemplateSchema),
   async (req, res) => {
@@ -133,7 +131,7 @@ router.put(
   }
 );
 
-router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const template = await FeeTemplate.findOneAndDelete(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })

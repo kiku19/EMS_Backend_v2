@@ -108,7 +108,7 @@ function logsToCsv(logs) {
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // GET /audit-logs — paginated list (admin only)
-router.get('/', authenticate, requireAdmin, async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const parsed = listQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -143,7 +143,7 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
 
 // GET /audit-logs/export — CSV or JSON download (admin only)
 // Must be before /:id to avoid route shadowing
-router.get('/export', authenticate, requireAdmin, async (req, res) => {
+router.get('/export', requireAdmin, async (req, res) => {
   try {
     const parsed = exportQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -182,7 +182,7 @@ router.get('/export', authenticate, requireAdmin, async (req, res) => {
 });
 
 // GET /audit-logs/:id — single log detail (admin only)
-router.get('/:id', authenticate, requireAdmin, async (req, res) => {
+router.get('/:id', requireAdmin, async (req, res) => {
   try {
     const log = await AuditTrail.findOne({
       _id: req.params.id,
@@ -201,7 +201,7 @@ router.get('/:id', authenticate, requireAdmin, async (req, res) => {
 });
 
 // POST /audit-logs/purge — manually trigger data retention purge (admin only)
-router.post('/purge', authenticate, requireAdmin, async (req, res) => {
+router.post('/purge', requireAdmin, async (req, res) => {
   try {
     const parsed = purgeBodySchema.safeParse(req.body);
     if (!parsed.success) {

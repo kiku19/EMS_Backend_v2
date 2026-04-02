@@ -188,8 +188,7 @@ async function resolveRequestSchoolId(req) {
 // instead of 20.
 router.get(
   '/today-snapshot',
-  authenticate,
-  checkPermission('students', 'view'),
+  checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
@@ -222,8 +221,7 @@ router.get(
 
 router.get(
   '/student/:studentId',
-  authenticate,
-  checkPermission('students', 'view'),
+  checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
       const { studentId } = req.params;
@@ -271,8 +269,7 @@ router.get(
 
 router.get(
   '/class/:classId/:date',
-  authenticate,
-  checkPermission('students', 'view'),
+  checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
       const { classId, date } = req.params;
@@ -373,10 +370,15 @@ async function markBulkAttendance(req, res) {
 
   const validStatuses = ['present', 'absent', 'late', 'leave', 'halfday'];
   const results = [];
+  const skipped = [];
 
   for (const record of attendance) {
     const { studentId, status } = record;
     if (!studentId || !status || !validStatuses.includes(status)) {
+      skipped.push({
+        studentId: studentId || 'missing',
+        reason: !studentId ? 'Missing studentId' : !status ? 'Missing status' : `Invalid status: ${status}`,
+      });
       continue;
     }
 
@@ -420,15 +422,15 @@ async function markBulkAttendance(req, res) {
 
   res.json({
     success: true,
-    message: `Attendance marked for ${results.length} students`,
+    message: `Attendance marked for ${results.length} students` + (skipped.length > 0 ? `, ${skipped.length} skipped` : ''),
     results,
+    ...(skipped.length > 0 && { skipped }),
   });
 }
 
 router.post(
   '/class',
-  authenticate,
-  checkPermission('students', 'edit'),
+  checkPermission('attendance', 'edit'),
   validateZod(bulkAttendanceSchema),
   async (req, res) => {
     try {
@@ -441,7 +443,6 @@ router.post(
 
 router.get(
   '/history/:classId',
-  authenticate,
   checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
@@ -485,8 +486,7 @@ router.get(
 
 router.get(
   '/report/:classId',
-  authenticate,
-  checkPermission('students', 'view'),
+  checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
       const { classId } = req.params;
@@ -560,8 +560,7 @@ router.get(
 // the single-param route shadowing two-param requests.
 router.get(
   '/:classId/:date',
-  authenticate,
-  checkPermission('students', 'view'),
+  checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
       const { classId, date } = req.params;
@@ -598,7 +597,7 @@ router.get(
   }
 );
 
-router.get('/:studentId', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/:studentId', checkPermission('attendance', 'view'), async (req, res) => {
   try {
     const { studentId } = req.params;
     const { startDate, endDate, academicYear } = req.query;
@@ -644,8 +643,7 @@ router.get('/:studentId', authenticate, checkPermission('students', 'view'), asy
 
 router.post(
   '/',
-  authenticate,
-  checkPermission('students', 'edit'),
+  checkPermission('attendance', 'edit'),
   validateZod(singleAttendanceSchema),
   async (req, res) => {
     try {
@@ -714,8 +712,7 @@ router.post(
 
 router.post(
   '/bulk',
-  authenticate,
-  checkPermission('students', 'edit'),
+  checkPermission('attendance', 'edit'),
   validateZod(bulkAttendanceSchema),
   async (req, res) => {
     try {
@@ -731,8 +728,7 @@ router.post(
 // Used by the "Notify Parents" button in the dashboard attendance page.
 router.post(
   '/notify-parents',
-  authenticate,
-  checkPermission('students', 'edit'),
+  checkPermission('attendance', 'edit'),
   async (req, res) => {
     try {
       const { classId, date } = req.body;

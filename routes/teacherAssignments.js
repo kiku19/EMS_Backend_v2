@@ -38,7 +38,6 @@ async function _updateClassAssignedSubjects(req, classIds, subject) {
 // IMPORTANT: This route must come BEFORE /:teacherId to avoid route conflicts
 router.get(
   '/available-teachers',
-  authenticate,
   checkPermission('staff', 'view'),
   async (req, res) => {
     try {
@@ -170,7 +169,7 @@ router.get(
 );
 
 // Get teacher assignments for a specific teacher
-router.get('/:teacherId', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/:teacherId', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const { teacherId } = req.params;
 
@@ -196,7 +195,6 @@ router.get('/:teacherId', authenticate, checkPermission('staff', 'view'), async 
 // Create a new teacher assignment
 router.post(
   '/',
-  authenticate,
   checkPermission('staff', 'edit'),
   validateZod(teacherAssignmentSchema),
   async (req, res) => {
@@ -273,7 +271,6 @@ router.post(
 // Update a teacher assignment
 router.put(
   '/:id',
-  authenticate,
   checkPermission('staff', 'edit'),
   validateZod(teacherAssignmentSchema),
   async (req, res) => {
@@ -323,7 +320,7 @@ router.put(
 );
 
 // Delete a teacher assignment
-router.delete('/:id', authenticate, checkPermission('staff', 'edit'), async (req, res) => {
+router.delete('/:id', checkPermission('staff', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { teacherId } = req.query;

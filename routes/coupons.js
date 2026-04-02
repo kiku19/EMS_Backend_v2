@@ -20,7 +20,7 @@ const router = express.Router();
 router.use(authenticate);
 
 // POST /coupons/validate - validate a coupon code (any authenticated user)
-router.post('/validate', authenticate, validateZod(validateCouponSchema), async (req, res) => {
+router.post('/validate', validateZod(validateCouponSchema), async (req, res) => {
   try {
     const { code, planKey, billingCycle } = req.body;
     const result = await validateCoupon({
@@ -40,7 +40,6 @@ router.post('/validate', authenticate, validateZod(validateCouponSchema), async 
 // GET /coupons - list coupons (admin only)
 router.get(
   '/',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(couponListQuerySchema, 'query'),
   async (req, res) => {
@@ -59,7 +58,6 @@ router.get(
 // POST /coupons - create coupon (admin only)
 router.post(
   '/',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(createCouponSchema),
   async (req, res) => {
@@ -77,7 +75,6 @@ router.post(
 // PUT /coupons/:id - update coupon (admin only)
 router.put(
   '/:id',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(updateCouponSchema),
   async (req, res) => {
@@ -93,7 +90,7 @@ router.put(
 );
 
 // DELETE /coupons/:id - delete coupon (admin only)
-router.delete('/:id', authenticate, checkPermission('settings', 'edit'), async (req, res) => {
+router.delete('/:id', checkPermission('settings', 'edit'), async (req, res) => {
   try {
     await deleteCoupon(req.params.id);
     res.json({ success: true });

@@ -75,7 +75,7 @@ function scope(schoolId, extra = {}) {
 
 // ─── GET /cce/config ──────────────────────────────────────────────────────────
 // Returns CCE config for the school/year; if none exists returns defaults
-router.get('/cce/config', authenticate, checkPermission('academics', 'view'), async (req, res) => {
+router.get('/cce/config', checkPermission('academics', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user.schoolId);
     const academicYear = await resolveAcademicYear(req.query.academicYear, schoolId);
@@ -102,7 +102,6 @@ router.get('/cce/config', authenticate, checkPermission('academics', 'view'), as
 // Upsert CCE config for a school/year
 router.put(
   '/cce/config',
-  authenticate,
   checkPermission('academics', 'manage'),
   validateZod(updateCCEConfigSchema),
   async (req, res) => {
@@ -125,7 +124,6 @@ router.put(
 // Create CCE config (fails if one already exists for this year)
 router.post(
   '/cce/config',
-  authenticate,
   checkPermission('academics', 'manage'),
   validateZod(createCCEConfigSchema),
   async (req, res) => {
@@ -153,7 +151,6 @@ router.post(
 // Soft-delete CCE config for a school/year
 router.delete(
   '/cce/config',
-  authenticate,
   checkPermission('academics', 'manage'),
   async (req, res) => {
     try {

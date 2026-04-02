@@ -8,7 +8,7 @@ import { resolveAcademicYear } from '../utils/academicYear.js';
 const router = express.Router();
 router.use(authenticate);
 
-router.get('/class/:classId/empty-slots', authenticate, async (req, res) => {
+router.get('/class/:classId/empty-slots', async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const emptySlots = await validationService.identifyEmptySlots(req.params.classId, academicYear);
@@ -29,7 +29,7 @@ router.get('/class/:classId/empty-slots', authenticate, async (req, res) => {
   }
 });
 
-router.get('/teacher/:teacherId/gaps', authenticate, async (req, res) => {
+router.get('/teacher/:teacherId/gaps', async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const gaps = await validationService.identifyTeacherScheduleGaps(
@@ -53,7 +53,7 @@ router.get('/teacher/:teacherId/gaps', authenticate, async (req, res) => {
   }
 });
 
-router.get('/class/:classId/report', authenticate, async (req, res) => {
+router.get('/class/:classId/report', async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateClassValidationReport(
@@ -71,7 +71,7 @@ router.get('/class/:classId/report', authenticate, async (req, res) => {
   }
 });
 
-router.get('/teacher/:teacherId/report', authenticate, async (req, res) => {
+router.get('/teacher/:teacherId/report', async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateTeacherValidationReport(
@@ -89,7 +89,7 @@ router.get('/teacher/:teacherId/report', authenticate, async (req, res) => {
   }
 });
 
-router.get('/classes/comprehensive', authenticate, async (req, res) => {
+router.get('/classes/comprehensive', async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateComprehensiveClassReport(academicYear);
@@ -104,7 +104,7 @@ router.get('/classes/comprehensive', authenticate, async (req, res) => {
   }
 });
 
-router.get('/teachers/comprehensive', authenticate, async (req, res) => {
+router.get('/teachers/comprehensive', async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateComprehensiveTeacherReport(academicYear);
@@ -119,7 +119,7 @@ router.get('/teachers/comprehensive', authenticate, async (req, res) => {
   }
 });
 
-router.get('/class-teachers/check-duplicates', authenticate, async (req, res) => {
+router.get('/class-teachers/check-duplicates', async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     const classesWithTeachers = await Class.find({
@@ -188,7 +188,7 @@ router.get('/class-teachers/check-duplicates', authenticate, async (req, res) =>
   }
 });
 
-router.get('/class-teachers/check-consistency', authenticate, async (req, res) => {
+router.get('/class-teachers/check-consistency', async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     const staffWithClassTeacher = await Staff.find({ schoolId, isClassTeacher: true });
@@ -264,7 +264,7 @@ router.get('/class-teachers/check-consistency', authenticate, async (req, res) =
   }
 });
 
-router.post('/class-teachers/fix-duplicates', authenticate, async (req, res) => {
+router.post('/class-teachers/fix-duplicates', async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     const classesWithTeachers = await Class.find({

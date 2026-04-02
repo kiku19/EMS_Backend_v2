@@ -15,7 +15,7 @@ router.use(authenticate);
  * List all trash items with optional filters
  * Query params: type (filter by itemType), search (search itemName)
  */
-router.get('/', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const { type, search } = req.query;
 
@@ -75,7 +75,7 @@ router.get('/', authenticate, checkPermission('settings', 'view'), async (req, r
  * GET /api/trash/stats
  * Get trash statistics by type and expiring items
  */
-router.get('/stats', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('settings', 'view'), async (req, res) => {
   try {
     // Calculate date 7 days from now
     const sevenDaysFromNow = new Date();
@@ -132,7 +132,6 @@ router.get('/stats', authenticate, checkPermission('settings', 'view'), async (r
  */
 router.post(
   '/:trashItemId/restore',
-  authenticate,
   checkPermission('settings', 'edit'),
   async (req, res) => {
     try {
@@ -228,7 +227,6 @@ router.post(
  */
 router.delete(
   '/:trashItemId',
-  authenticate,
   checkPermission('settings', 'delete'),
   async (req, res) => {
     try {
@@ -301,7 +299,6 @@ router.delete(
  */
 router.post(
   '/bulk-restore',
-  authenticate,
   checkPermission('settings', 'edit'),
   async (req, res) => {
     try {
@@ -410,7 +407,6 @@ router.post(
  */
 router.delete(
   '/bulk-delete',
-  authenticate,
   checkPermission('settings', 'delete'),
   async (req, res) => {
     try {

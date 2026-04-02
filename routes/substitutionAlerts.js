@@ -18,7 +18,7 @@ const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.school
  * Get all substitution alerts for a date
  * Query params: date (YYYY-MM-DD), academicYear
  */
-router.get('/', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { date = new Date().toISOString().split('T')[0], academicYear = CURRENT_ACADEMIC_YEAR } =
       req.query;
@@ -65,7 +65,6 @@ router.get('/', authenticate, checkPermission('classes', 'view'), async (req, re
  */
 router.get(
   '/available-teachers',
-  authenticate,
   checkPermission('classes', 'view'),
   async (req, res) => {
     try {
@@ -107,7 +106,7 @@ router.get(
  * Create substitution alerts from teacher absence
  * Body: { teacherId, date, reason }
  */
-router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.post('/from-absence', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { teacherId, date, reason = 'Absent' } = req.body;
 
@@ -159,7 +158,7 @@ router.post('/from-absence', authenticate, checkPermission('classes', 'edit'), a
  * Assign a substitute teacher to an alert
  * Body: { substituteTeacherId }
  */
-router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.post('/:id/assign', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { substituteTeacherId } = req.body;
@@ -242,7 +241,7 @@ router.post('/:id/assign', authenticate, checkPermission('classes', 'edit'), asy
  * POST /api/substitution-alerts/:id/notify
  * Send notification to substitute teacher
  */
-router.post('/:id/notify', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.post('/:id/notify', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const { method = 'push' } = req.body;
@@ -309,7 +308,7 @@ router.post('/:id/notify', authenticate, checkPermission('classes', 'edit'), asy
  * Get statistics for substitution alerts
  * Query params: startDate, endDate
  */
-router.get('/stats', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -368,7 +367,7 @@ router.get('/stats', authenticate, checkPermission('classes', 'view'), async (re
  * Bulk assign substitutes to multiple alerts
  * Body: { assignments: [{ substitutionId, substituteTeacherId }] }
  */
-router.post('/bulk-assign', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.post('/bulk-assign', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { assignments } = req.body;
 

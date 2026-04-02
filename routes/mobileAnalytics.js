@@ -75,7 +75,7 @@ const SCREEN_PATH_MAP = {
 
 // ─── POST /api/v1/mobile/analytics ───────────────────────────────────────────
 
-router.post('/', authenticate, (req, res) => {
+router.post('/', (req, res) => {
   const parsed = batchSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({

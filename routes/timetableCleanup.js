@@ -24,7 +24,7 @@ function scopeBySchool(schoolId, query = {}) {
  * GET /api/timetable-cleanup/preview
  * Preview what will be deleted before clearing
  */
-router.get('/preview', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
+router.get('/preview', checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     // Count timetable-related data for this school
@@ -91,7 +91,7 @@ router.get('/preview', authenticate, checkPermission('classes', 'delete'), async
  * Clear all timetable-related data
  * Body: { options: { timetables, teacherTimetables, staffAssignments, classTeachers, conflicts, substitutions } }
  */
-router.post('/execute', authenticate, checkPermission('classes', 'delete'), async (req, res) => {
+router.post('/execute', checkPermission('classes', 'delete'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const {
@@ -172,7 +172,6 @@ router.post('/execute', authenticate, checkPermission('classes', 'delete'), asyn
  */
 router.post(
   '/reset-staff/:staffId',
-  authenticate,
   checkPermission('classes', 'edit'),
   async (req, res) => {
     try {

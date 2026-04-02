@@ -119,7 +119,6 @@ async function getMonthlyAttendanceSummary(employeeId, schoolId, month, year) {
 // Get payroll dashboard KPIs
 router.get(
   '/dashboard/:month/:year',
-  authenticate,
   checkPermission('payroll', 'view'),
   async (req, res) => {
     try {
@@ -196,7 +195,7 @@ router.get(
 );
 
 // Get payroll records with filters
-router.get('/records', authenticate, checkPermission('payroll', 'view'), async (req, res) => {
+router.get('/records', checkPermission('payroll', 'view'), async (req, res) => {
   try {
     const {
       month,
@@ -256,7 +255,6 @@ router.get('/records', authenticate, checkPermission('payroll', 'view'), async (
 // Pre-run validation - Check before running payroll
 router.post(
   '/validate',
-  authenticate,
   requireAdmin,
   validateZod(validatePayrollSchema),
   async (req, res) => {
@@ -359,7 +357,7 @@ router.post(
 );
 
 // Temporary Fix: Set default salary for all staff
-router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
+router.post('/fix-salaries', requireAdmin, async (req, res) => {
   try {
     const { defaultSalary = 50000, defaultType = 'full_time' } = req.body;
 
@@ -423,7 +421,7 @@ router.post('/fix-salaries', authenticate, requireAdmin, async (req, res) => {
 });
 
 // Run payroll for a month - Admin only (CRITICAL)
-router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), async (req, res) => {
+router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res) => {
   try {
     const { month, year, employeeIds } = req.body;
 
@@ -880,7 +878,6 @@ router.post('/run', authenticate, requireAdmin, validateZod(runPayrollSchema), a
 // Mark salary as paid - Admin only
 router.put(
   '/records/:id/pay',
-  authenticate,
   requireAdmin,
   validateZod(markAsPaidSchema),
   async (req, res) => {
@@ -945,7 +942,6 @@ router.put(
 // Reverse payment - Admin only
 router.put(
   '/records/:id/reverse',
-  authenticate,
   requireAdmin,
   validateZod(reversePaymentSchema),
   async (req, res) => {
@@ -1017,7 +1013,6 @@ router.put(
 // Bulk pay salaries - Admin only
 router.post(
   '/records/bulk-pay',
-  authenticate,
   requireAdmin,
   validateZod(bulkPaySchema),
   async (req, res) => {
@@ -1108,7 +1103,7 @@ router.post(
 );
 
 // Update payroll record - Admin only
-router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
+router.put('/records/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { baseSalary, allowances, deductions, status, notes } = req.body;
@@ -1162,7 +1157,6 @@ router.put('/records/:id', authenticate, requireAdmin, async (req, res) => {
 // Export payroll records to CSV
 router.get(
   '/export/:month/:year',
-  authenticate,
   checkPermission('payroll', 'view'),
   async (req, res) => {
     try {
@@ -1254,7 +1248,7 @@ router.get(
 );
 
 // Get own payslips list (staff-facing, paginated)
-router.get('/my-payslips/summary', authenticate, async (req, res) => {
+router.get('/my-payslips/summary', async (req, res) => {
   try {
     const employeeId = req.user._id;
     const currentYear = new Date().getFullYear();
@@ -1295,7 +1289,7 @@ const PAYROLL_MONTH_NAMES = [
   'December',
 ];
 
-router.get('/my-payslips', authenticate, async (req, res) => {
+router.get('/my-payslips', async (req, res) => {
   try {
     const employeeId = req.user._id;
     const skip = parseInt(req.query.skip) || 0;
@@ -1336,7 +1330,7 @@ router.get('/my-payslips', authenticate, async (req, res) => {
 });
 
 // Get payslip - View permission or own payslip
-router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) => {
+router.get('/payslips/:employeeId/:month/:year', async (req, res) => {
   try {
     const { employeeId, month, year } = req.params;
 
@@ -1389,7 +1383,7 @@ router.get('/payslips/:employeeId/:month/:year', authenticate, async (req, res) 
 });
 
 // Get audit logs for payroll
-router.get('/audit-logs', authenticate, requireAdmin, async (req, res) => {
+router.get('/audit-logs', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     const month = parseInt(req.query.month);
@@ -1432,7 +1426,7 @@ router.get('/audit-logs', authenticate, requireAdmin, async (req, res) => {
 });
 
 // Salary adjustments - Admin or own adjustments
-router.get('/adjustments/:employeeId', authenticate, async (req, res) => {
+router.get('/adjustments/:employeeId', async (req, res) => {
   try {
     const { employeeId } = req.params;
     const adjustments = await SalaryAdjustment.find({
@@ -1447,7 +1441,7 @@ router.get('/adjustments/:employeeId', authenticate, async (req, res) => {
   }
 });
 
-router.post('/adjustments', authenticate, requireAdmin, async (req, res) => {
+router.post('/adjustments', requireAdmin, async (req, res) => {
   try {
     const adjustment = new SalaryAdjustment({ ...req.body, schoolId: req.user.schoolId });
     await adjustment.save();
@@ -1477,7 +1471,7 @@ router.post('/adjustments', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-router.delete('/adjustments/:id', authenticate, requireAdmin, async (req, res) => {
+router.delete('/adjustments/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const adjustment = await SalaryAdjustment.findOneAndUpdate(

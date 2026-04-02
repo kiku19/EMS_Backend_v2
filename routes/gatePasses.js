@@ -29,7 +29,7 @@ router.use(authenticate);
  * Get all gate passes with optional filters
  * Query params: status (active/all/today/pending), studentId, class, section, startDate, endDate
  */
-router.get('/', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const { status, studentId, class: className, section, startDate, endDate } = req.query;
 
@@ -116,7 +116,7 @@ router.get('/', authenticate, checkPermission('front-office', 'view'), async (re
  * GET /api/gate-passes/active
  * Get all active gate passes
  */
-router.get('/active', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/active', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePasses = await GatePass.find(
@@ -145,7 +145,7 @@ router.get('/active', authenticate, checkPermission('front-office', 'view'), asy
  * GET /api/gate-passes/today
  * Get today's gate passes
  */
-router.get('/today', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/today', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const startOfDay = new Date();
@@ -182,7 +182,6 @@ router.get('/today', authenticate, checkPermission('front-office', 'view'), asyn
  */
 router.get(
   '/student/:id',
-  authenticate,
   checkPermission('front-office', 'view'),
   async (req, res) => {
     try {
@@ -211,7 +210,7 @@ router.get(
  * GET /api/gate-passes/pending
  * Get gate passes pending approval
  */
-router.get('/pending', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/pending', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePasses = await GatePass.find(scopeBySchool(schoolId, { approvalStatus: 'PENDING' }))
@@ -237,7 +236,7 @@ router.get('/pending', authenticate, checkPermission('front-office', 'view'), as
  * GET /api/gate-passes/:id
  * Get single gate pass by ID
  */
-router.get('/:id', authenticate, checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('front-office', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }))
@@ -272,7 +271,6 @@ router.get('/:id', authenticate, checkPermission('front-office', 'view'), async 
  */
 router.post(
   '/',
-  authenticate,
   checkPermission('front-office', 'create'),
   validateZod(createGatePassSchema),
   async (req, res) => {
@@ -433,7 +431,6 @@ router.post(
  */
 router.put(
   '/:id',
-  authenticate,
   checkPermission('front-office', 'edit'),
   validateZod(updateGatePassSchema),
   async (req, res) => {
@@ -556,7 +553,6 @@ router.put(
  */
 router.post(
   '/:id/approve',
-  authenticate,
   checkPermission('front-office', 'approve'),
   async (req, res) => {
     try {
@@ -617,7 +613,6 @@ router.post(
  */
 router.post(
   '/:id/reject',
-  authenticate,
   checkPermission('front-office', 'approve'),
   async (req, res) => {
     try {
@@ -678,7 +673,6 @@ router.post(
  */
 router.post(
   '/:id/mark-used',
-  authenticate,
   checkPermission('front-office', 'edit'),
   async (req, res) => {
     try {
@@ -747,7 +741,6 @@ router.post(
  */
 router.post(
   '/:id/cancel',
-  authenticate,
   checkPermission('front-office', 'edit'),
   async (req, res) => {
     try {
@@ -806,7 +799,7 @@ router.post(
  * DELETE /api/gate-passes/:id
  * Delete gate pass (only if not used)
  */
-router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
@@ -849,7 +842,6 @@ router.delete('/:id', authenticate, checkPermission('front-office', 'delete'), a
  */
 router.get(
   '/:id/download',
-  authenticate,
   checkPermission('front-office', 'view'),
   async (req, res) => {
     try {

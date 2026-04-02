@@ -32,7 +32,7 @@ const schoolQuery = (req, extra = {}) =>
  * GET /api/class-settings/:id
  * Get class settings (tag and subjects)
  */
-router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -73,7 +73,7 @@ router.get('/:id', authenticate, checkPermission('classes', 'view'), async (req,
  * PUT /api/class-settings/:id/tag
  * Update class tag
  */
-router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.put('/:id/tag', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const parsed = updateTagSchema.parse(req.body);
@@ -117,7 +117,7 @@ router.put('/:id/tag', authenticate, checkPermission('classes', 'edit'), async (
  * PUT /api/class-settings/:id/subjects
  * Update assigned subjects for a class
  */
-router.put('/:id/subjects', authenticate, checkPermission('classes', 'edit'), async (req, res) => {
+router.put('/:id/subjects', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const parsed = updateSubjectsSchema.parse(req.body);

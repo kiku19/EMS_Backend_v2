@@ -60,7 +60,6 @@ function buildResponse(results) {
 // POST /bulk-ops/students/batch-create
 router.post(
   '/students/batch-create',
-  authenticate,
   checkPermission('students', 'create'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -169,7 +168,6 @@ router.post(
 // POST /bulk-ops/students/batch-update
 router.post(
   '/students/batch-update',
-  authenticate,
   checkPermission('students', 'update'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -252,7 +250,6 @@ router.post(
 // POST /bulk-ops/students/batch-delete
 router.post(
   '/students/batch-delete',
-  authenticate,
   checkPermission('students', 'delete'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -294,7 +291,6 @@ router.post(
 // POST /bulk-ops/staff/batch-update
 router.post(
   '/staff/batch-update',
-  authenticate,
   checkPermission('staff', 'update'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -370,7 +366,6 @@ router.post(
 // POST /bulk-ops/staff/batch-delete
 router.post(
   '/staff/batch-delete',
-  authenticate,
   checkPermission('staff', 'delete'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -413,7 +408,6 @@ router.post(
 // Upserts attendance records for multiple students on a given date.
 router.post(
   '/attendance/batch-create',
-  authenticate,
   checkPermission('attendance', 'create'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -492,7 +486,6 @@ router.post(
 // Upserts exam results for multiple students.
 router.post(
   '/results/batch-create',
-  authenticate,
   checkPermission('academics', 'create'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);

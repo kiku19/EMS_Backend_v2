@@ -12,7 +12,7 @@ router.use(authenticate);
 const logger = createLogger('Jobs');
 
 // GET /jobs/stats — summary counts by status
-router.get('/stats', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
@@ -74,7 +74,7 @@ router.get('/stats', authenticate, checkPermission('settings', 'view'), async (r
 });
 
 // GET /jobs — list import jobs + system jobs
-router.get('/', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
@@ -148,7 +148,6 @@ router.get('/', authenticate, checkPermission('settings', 'view'), async (req, r
 // GET /jobs/import/:jobId — import job detail
 router.get(
   '/import/:jobId',
-  authenticate,
   checkPermission('settings', 'view'),
   async (req, res) => {
     try {
@@ -174,7 +173,6 @@ router.get(
 // DELETE /jobs/import/:jobId — cancel a queued import job
 router.delete(
   '/import/:jobId',
-  authenticate,
   checkPermission('settings', 'delete'),
   async (req, res) => {
     try {

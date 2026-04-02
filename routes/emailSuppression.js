@@ -36,7 +36,7 @@ function validationError(res, errors) {
  * GET /api/v1/email-suppressions
  * List suppressed emails for this school (+ global suppressions).
  */
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { reason, isActive, page = '1', limit = '50' } = req.query;
 
@@ -70,7 +70,7 @@ router.get('/', authenticate, async (req, res) => {
  * POST /api/v1/email-suppressions
  * Manually add an email to the suppression list.
  */
-router.post('/', authenticate, async (req, res) => {
+router.post('/', async (req, res) => {
   const parsed = addSuppressionSchema.safeParse(req.body);
   if (!parsed.success) return validationError(res, parsed.error.errors);
 
@@ -102,7 +102,7 @@ router.post('/', authenticate, async (req, res) => {
  * POST /api/v1/email-suppressions/check
  * Check whether a given email is currently suppressed for this school.
  */
-router.post('/check', authenticate, async (req, res) => {
+router.post('/check', async (req, res) => {
   const parsed = z.object({ email: z.string().email() }).safeParse(req.body);
   if (!parsed.success) return validationError(res, parsed.error.errors);
 
@@ -126,7 +126,7 @@ router.post('/check', authenticate, async (req, res) => {
  * Release (deactivate) a suppression so the address can receive emails again.
  * Only school-scoped suppressions may be released; global ones require super-admin.
  */
-router.post('/:id/release', authenticate, async (req, res) => {
+router.post('/:id/release', async (req, res) => {
   const parsed = releaseSuppressionSchema.safeParse(req.body);
   if (!parsed.success) return validationError(res, parsed.error.errors);
 
@@ -162,7 +162,7 @@ router.post('/:id/release', authenticate, async (req, res) => {
  * DELETE /api/v1/email-suppressions/:id
  * Permanently remove a school-scoped suppression record.
  */
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const record = await EmailSuppression.findOneAndDelete({

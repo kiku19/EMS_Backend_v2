@@ -51,7 +51,7 @@ function generateAccessToken() {
 // ============================================================
 
 // GET /intake-forms - Get all intake forms with optional filters
-router.get('/intake-forms', authenticate, async (req, res) => {
+router.get('/intake-forms', async (req, res) => {
   try {
     const { type, status } = req.query;
 
@@ -74,7 +74,7 @@ router.get('/intake-forms', authenticate, async (req, res) => {
 });
 
 // GET /intake-forms/enrollment-funnel - Get admission-to-enrollment conversion funnel data
-router.get('/intake-forms/enrollment-funnel', authenticate, async (req, res) => {
+router.get('/intake-forms/enrollment-funnel', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     if (!schoolId) {
@@ -142,7 +142,7 @@ router.get('/intake-forms/enrollment-funnel', authenticate, async (req, res) => 
 });
 
 // GET /intake-forms/:id - Get a single intake form by ID
-router.get('/intake-forms/:id', authenticate, async (req, res) => {
+router.get('/intake-forms/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -172,7 +172,6 @@ router.get('/intake-forms/:id', authenticate, async (req, res) => {
 // POST /intake-forms - Create a new intake form
 router.post(
   '/intake-forms',
-  authenticate,
   validateZod(createIntakeFormSchema),
   async (req, res) => {
     try {
@@ -207,7 +206,6 @@ router.post(
 // PUT /intake-forms/:id - Update an intake form
 router.put(
   '/intake-forms/:id',
-  authenticate,
   validateZod(updateIntakeFormSchema),
   async (req, res) => {
     try {
@@ -250,7 +248,7 @@ router.put(
 );
 
 // DELETE /intake-forms/:id - Delete an intake form
-router.delete('/intake-forms/:id', authenticate, async (req, res) => {
+router.delete('/intake-forms/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -289,7 +287,7 @@ router.delete('/intake-forms/:id', authenticate, async (req, res) => {
 });
 
 // POST /intake-forms/:id/duplicate - Duplicate an intake form
-router.post('/intake-forms/:id/duplicate', authenticate, async (req, res) => {
+router.post('/intake-forms/:id/duplicate', async (req, res) => {
   try {
     const { id } = req.params;
     const { createdBy } = req.body;
@@ -336,7 +334,6 @@ router.post('/intake-forms/:id/duplicate', authenticate, async (req, res) => {
 // POST /intake-forms/:id/assign - Assign form to email/phone
 router.post(
   '/intake-forms/:id/assign',
-  authenticate,
   validateZod(assignFormSchema),
   async (req, res) => {
     try {
@@ -519,7 +516,7 @@ router.post(
 );
 
 // GET /form-assignments - Get all form assignments with optional filters
-router.get('/form-assignments', authenticate, async (req, res) => {
+router.get('/form-assignments', async (req, res) => {
   try {
     const { formId, status } = req.query;
 
@@ -543,7 +540,7 @@ router.get('/form-assignments', authenticate, async (req, res) => {
 });
 
 // GET /form-assignments/:id - Get a single form assignment by ID
-router.get('/form-assignments/:id', authenticate, async (req, res) => {
+router.get('/form-assignments/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -570,7 +567,7 @@ router.get('/form-assignments/:id', authenticate, async (req, res) => {
 });
 
 // PUT /form-assignments/:id/resend - Resend form assignment
-router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
+router.put('/form-assignments/:id/resend', async (req, res) => {
   try {
     const { id } = req.params;
     const { expiresInDays = 7 } = req.body;
@@ -623,7 +620,7 @@ router.put('/form-assignments/:id/resend', authenticate, async (req, res) => {
 });
 
 // DELETE /form-assignments/:id - Delete a form assignment
-router.delete('/form-assignments/:id', authenticate, async (req, res) => {
+router.delete('/form-assignments/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -659,7 +656,7 @@ router.delete('/form-assignments/:id', authenticate, async (req, res) => {
 // ============================================================
 
 // GET /form-submissions - Get all form submissions with optional filters
-router.get('/form-submissions', authenticate, async (req, res) => {
+router.get('/form-submissions', async (req, res) => {
   try {
     const { formId, reviewStatus } = req.query;
 
@@ -684,7 +681,7 @@ router.get('/form-submissions', authenticate, async (req, res) => {
 });
 
 // GET /form-submissions/:id - Get a single form submission by ID
-router.get('/form-submissions/:id', authenticate, async (req, res) => {
+router.get('/form-submissions/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -714,7 +711,6 @@ router.get('/form-submissions/:id', authenticate, async (req, res) => {
 // PUT /form-submissions/:id/review - Review a form submission
 router.put(
   '/form-submissions/:id/review',
-  authenticate,
   validateZod(reviewSubmissionSchema),
   async (req, res) => {
     try {
@@ -777,7 +773,7 @@ router.put(
 );
 
 // DELETE /form-submissions/:id - Delete a form submission
-router.delete('/form-submissions/:id', authenticate, async (req, res) => {
+router.delete('/form-submissions/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -811,7 +807,6 @@ router.delete('/form-submissions/:id', authenticate, async (req, res) => {
 // PUT /api/form-submissions/:id/review - Enhanced review endpoint with auto entity creation
 router.put(
   '/form-submissions/:id/review-enhanced',
-  authenticate,
   validateZod(reviewEnhancedSchema),
   async (req, res) => {
     try {
@@ -910,7 +905,6 @@ router.put(
 // POST /api/form-submissions/:id/request-edit - Request edits from parent
 router.post(
   '/form-submissions/:id/request-edit',
-  authenticate,
   validateZod(requestEditSchema),
   async (req, res) => {
     try {
@@ -987,7 +981,7 @@ router.post(
 );
 
 // GET /api/form-submissions/student/:studentId - Get student's submissions
-router.get('/form-submissions/student/:studentId', authenticate, async (req, res) => {
+router.get('/form-submissions/student/:studentId', async (req, res) => {
   try {
     const { studentId } = req.params;
 
@@ -1013,7 +1007,7 @@ router.get('/form-submissions/student/:studentId', authenticate, async (req, res
 });
 
 // GET /api/form-submissions/staff/:staffId - Get staff's submissions
-router.get('/form-submissions/staff/:staffId', authenticate, async (req, res) => {
+router.get('/form-submissions/staff/:staffId', async (req, res) => {
   try {
     const { staffId } = req.params;
 
@@ -1039,7 +1033,7 @@ router.get('/form-submissions/staff/:staffId', authenticate, async (req, res) =>
 });
 
 // PUT /api/form-assignments/:id/status - Update assignment status
-router.put('/form-assignments/:id/status', authenticate, async (req, res) => {
+router.put('/form-assignments/:id/status', async (req, res) => {
   try {
     const assignment = await FormAssignment.findOne({
       _id: req.params.id,

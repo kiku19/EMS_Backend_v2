@@ -64,7 +64,7 @@ const vacateSchema = z.object({
 /**
  * GET /api/v1/hostel/hostels
  */
-router.get('/hostels', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
+router.get('/hostels', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { type, search, page = 1, limit = 50 } = req.query;
@@ -98,7 +98,7 @@ router.get('/hostels', authenticate, checkPermission('hostel', 'view'), async (r
 /**
  * GET /api/v1/hostel/hostels/:id
  */
-router.get('/hostels/:id', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
+router.get('/hostels/:id', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const hostel = await Hostel.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
@@ -112,7 +112,7 @@ router.get('/hostels/:id', authenticate, checkPermission('hostel', 'view'), asyn
 /**
  * POST /api/v1/hostel/hostels
  */
-router.post('/hostels', authenticate, checkPermission('hostel', 'create'), async (req, res) => {
+router.post('/hostels', checkPermission('hostel', 'create'), async (req, res) => {
   try {
     const data = hostelSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -139,7 +139,7 @@ router.post('/hostels', authenticate, checkPermission('hostel', 'create'), async
 /**
  * PUT /api/v1/hostel/hostels/:id
  */
-router.put('/hostels/:id', authenticate, checkPermission('hostel', 'edit'), async (req, res) => {
+router.put('/hostels/:id', checkPermission('hostel', 'edit'), async (req, res) => {
   try {
     const data = hostelSchema.partial().parse(req.body);
     const schoolId = req.user.schoolId;
@@ -164,7 +164,6 @@ router.put('/hostels/:id', authenticate, checkPermission('hostel', 'edit'), asyn
  */
 router.delete(
   '/hostels/:id',
-  authenticate,
   checkPermission('hostel', 'delete'),
   async (req, res) => {
     try {
@@ -199,7 +198,7 @@ router.delete(
 /**
  * GET /api/v1/hostel/rooms
  */
-router.get('/rooms', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
+router.get('/rooms', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { hostelId, type, available, search, page = 1, limit = 50 } = req.query;
@@ -242,7 +241,7 @@ router.get('/rooms', authenticate, checkPermission('hostel', 'view'), async (req
 /**
  * GET /api/v1/hostel/rooms/:id
  */
-router.get('/rooms/:id', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
+router.get('/rooms/:id', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const room = await HostelRoom.findOne(
@@ -258,7 +257,7 @@ router.get('/rooms/:id', authenticate, checkPermission('hostel', 'view'), async 
 /**
  * POST /api/v1/hostel/rooms
  */
-router.post('/rooms', authenticate, checkPermission('hostel', 'create'), async (req, res) => {
+router.post('/rooms', checkPermission('hostel', 'create'), async (req, res) => {
   try {
     const data = roomSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -300,7 +299,7 @@ router.post('/rooms', authenticate, checkPermission('hostel', 'create'), async (
 /**
  * PUT /api/v1/hostel/rooms/:id
  */
-router.put('/rooms/:id', authenticate, checkPermission('hostel', 'edit'), async (req, res) => {
+router.put('/rooms/:id', checkPermission('hostel', 'edit'), async (req, res) => {
   try {
     const data = roomSchema.partial().omit({ hostelId: true }).parse(req.body);
     const schoolId = req.user.schoolId;
@@ -339,7 +338,7 @@ router.put('/rooms/:id', authenticate, checkPermission('hostel', 'edit'), async 
  * DELETE /api/v1/hostel/rooms/:id
  * Soft delete — only if no active allocations
  */
-router.delete('/rooms/:id', authenticate, checkPermission('hostel', 'delete'), async (req, res) => {
+router.delete('/rooms/:id', checkPermission('hostel', 'delete'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const room = await HostelRoom.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
@@ -370,7 +369,7 @@ router.delete('/rooms/:id', authenticate, checkPermission('hostel', 'delete'), a
 /**
  * GET /api/v1/hostel/allocations
  */
-router.get('/allocations', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
+router.get('/allocations', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const {
@@ -430,7 +429,6 @@ router.get('/allocations', authenticate, checkPermission('hostel', 'view'), asyn
  */
 router.get(
   '/allocations/:id',
-  authenticate,
   checkPermission('hostel', 'view'),
   async (req, res) => {
     try {
@@ -454,7 +452,7 @@ router.get(
  * POST /api/v1/hostel/allocations
  * Allocate a student to a room
  */
-router.post('/allocations', authenticate, checkPermission('hostel', 'create'), async (req, res) => {
+router.post('/allocations', checkPermission('hostel', 'create'), async (req, res) => {
   try {
     const data = allocationSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -544,7 +542,6 @@ router.post('/allocations', authenticate, checkPermission('hostel', 'create'), a
  */
 router.put(
   '/allocations/:id/vacate',
-  authenticate,
   checkPermission('hostel', 'edit'),
   async (req, res) => {
     try {
@@ -588,7 +585,6 @@ router.put(
  */
 router.get(
   '/students/:studentId/allocation',
-  authenticate,
   checkPermission('hostel', 'view'),
   async (req, res) => {
     try {
@@ -612,7 +608,7 @@ router.get(
 /**
  * GET /api/v1/hostel/stats
  */
-router.get('/stats', authenticate, checkPermission('hostel', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
 

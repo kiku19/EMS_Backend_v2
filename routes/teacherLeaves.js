@@ -19,7 +19,7 @@ function scopeBySchool(schoolId, query = {}) {
 }
 
 // Get all leaves for a teacher
-router.get('/teacher/:teacherId', authenticate, async (req, res) => {
+router.get('/teacher/:teacherId', async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { status, year, skip: skipStr, limit: limitStr } = req.query;
@@ -58,7 +58,7 @@ router.get('/teacher/:teacherId', authenticate, async (req, res) => {
 });
 
 // Get all pending leaves (for admin)
-router.get('/pending', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/pending', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const leaves = await TeacherLeave.find(scopeBySchool(req.user.schoolId, { status: 'pending' }))
       .populate('teacherId', 'name code email phone')
@@ -71,7 +71,7 @@ router.get('/pending', authenticate, checkPermission('staff', 'view'), async (re
 });
 
 // Get leave by ID
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const leave = await TeacherLeave.findOne(
       scopeBySchool(req.user.schoolId, { _id: req.params.id })
@@ -91,7 +91,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Apply for leave (teacher)
-router.post('/', authenticate, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const parsed = applyLeaveSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -147,7 +147,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // Approve/Reject leave (admin)
-router.put('/:id/status', authenticate, async (req, res) => {
+router.put('/:id/status', async (req, res) => {
   try {
     // Only admins and principals can approve/reject
     const userRole = req.user.role;
@@ -230,7 +230,7 @@ router.put('/:id/status', authenticate, async (req, res) => {
 });
 
 // Cancel leave (teacher - can only cancel own leave, or admin can cancel any)
-router.put('/:id/cancel', authenticate, async (req, res) => {
+router.put('/:id/cancel', async (req, res) => {
   try {
     const leave = await TeacherLeave.findOne(
       scopeBySchool(req.user.schoolId, { _id: req.params.id })
@@ -276,7 +276,7 @@ router.put('/:id/cancel', authenticate, async (req, res) => {
 });
 
 // Get leave statistics for a teacher
-router.get('/teacher/:teacherId/stats', authenticate, async (req, res) => {
+router.get('/teacher/:teacherId/stats', async (req, res) => {
   try {
     const { teacherId } = req.params;
     const year = parseInt(req.query.year) || new Date().getFullYear();

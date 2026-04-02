@@ -74,7 +74,7 @@ const customRoleCreateSchema = z.object({
 const customRoleUpdateSchema = customRoleCreateSchema.partial();
 
 // Get user's permissions
-router.get('/user/:userId', authenticate, async (req, res) => {
+router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const sid = req.user.schoolId;
@@ -113,7 +113,7 @@ router.get('/user/:userId', authenticate, async (req, res) => {
 });
 
 // Update user permissions (admin only)
-router.put('/user/:userId', authenticate, async (req, res) => {
+router.put('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { permissions, role, customPermissions } = req.body;
@@ -156,7 +156,7 @@ router.put('/user/:userId', authenticate, async (req, res) => {
 });
 
 // Create permission request
-router.post('/request', authenticate, async (req, res) => {
+router.post('/request', async (req, res) => {
   try {
     const { userId, userName, userEmail, module, permissions, reason } = req.body;
 
@@ -206,7 +206,7 @@ router.post('/request', authenticate, async (req, res) => {
 });
 
 // Get all permission requests (admin only)
-router.get('/requests', authenticate, async (req, res) => {
+router.get('/requests', async (req, res) => {
   try {
     const status = sanitizeQueryStr(req.query.status);
     const userId = sanitizeQueryId(req.query.userId);
@@ -233,7 +233,7 @@ router.get('/requests', authenticate, async (req, res) => {
 });
 
 // Get pending requests count (admin only)
-router.get('/requests/count/pending', authenticate, async (req, res) => {
+router.get('/requests/count/pending', async (req, res) => {
   try {
     // Verify admin
     const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: req.user.id }));
@@ -250,7 +250,7 @@ router.get('/requests/count/pending', authenticate, async (req, res) => {
 });
 
 // Approve/Reject permission request (admin only)
-router.put('/requests/:requestId', authenticate, async (req, res) => {
+router.put('/requests/:requestId', async (req, res) => {
   try {
     const { requestId } = req.params;
     const { status, reviewNotes } = req.body;
@@ -369,7 +369,7 @@ router.put('/requests/:requestId', authenticate, async (req, res) => {
 });
 
 // Get user's permission requests
-router.get('/user/:userId/requests', authenticate, async (req, res) => {
+router.get('/user/:userId/requests', async (req, res) => {
   try {
     const { userId } = req.params;
     const { status } = req.query;
@@ -391,7 +391,7 @@ router.get('/user/:userId/requests', authenticate, async (req, res) => {
 // ─── Custom Roles CRUD ────────────────────────────────────────────────────────
 
 // List all custom roles for the school
-router.get('/custom-roles', authenticate, async (req, res) => {
+router.get('/custom-roles', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const roles = await CustomRole.find({ schoolId }).sort({ createdAt: 1 });
@@ -403,7 +403,7 @@ router.get('/custom-roles', authenticate, async (req, res) => {
 });
 
 // Create a custom role
-router.post('/custom-roles', authenticate, async (req, res) => {
+router.post('/custom-roles', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const parsed = customRoleCreateSchema.safeParse(req.body);
@@ -440,7 +440,7 @@ router.post('/custom-roles', authenticate, async (req, res) => {
 });
 
 // Update a custom role
-router.put('/custom-roles/:id', authenticate, async (req, res) => {
+router.put('/custom-roles/:id', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { id } = req.params;
@@ -490,7 +490,7 @@ router.put('/custom-roles/:id', authenticate, async (req, res) => {
 });
 
 // Delete a custom role
-router.delete('/custom-roles/:id', authenticate, async (req, res) => {
+router.delete('/custom-roles/:id', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { id } = req.params;

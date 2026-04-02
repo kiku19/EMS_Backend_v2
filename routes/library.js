@@ -80,7 +80,7 @@ const reserveBookSchema = z.object({
  * GET /api/v1/library/books
  * List books with optional search/category/availability filters
  */
-router.get('/books', authenticate, checkPermission('library', 'view'), async (req, res) => {
+router.get('/books', checkPermission('library', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const {
@@ -128,7 +128,6 @@ router.get('/books', authenticate, checkPermission('library', 'view'), async (re
  */
 router.get(
   '/books/low-stock',
-  authenticate,
   checkPermission('library', 'view'),
   async (req, res) => {
     try {
@@ -148,7 +147,7 @@ router.get(
 /**
  * GET /api/v1/library/books/:id
  */
-router.get('/books/:id', authenticate, checkPermission('library', 'view'), async (req, res) => {
+router.get('/books/:id', checkPermission('library', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const book = await Book.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
@@ -162,7 +161,7 @@ router.get('/books/:id', authenticate, checkPermission('library', 'view'), async
 /**
  * POST /api/v1/library/books
  */
-router.post('/books', authenticate, checkPermission('library', 'create'), async (req, res) => {
+router.post('/books', checkPermission('library', 'create'), async (req, res) => {
   try {
     const data = bookSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -203,7 +202,7 @@ router.post('/books', authenticate, checkPermission('library', 'create'), async 
 /**
  * PUT /api/v1/library/books/:id
  */
-router.put('/books/:id', authenticate, checkPermission('library', 'edit'), async (req, res) => {
+router.put('/books/:id', checkPermission('library', 'edit'), async (req, res) => {
   try {
     const data = bookSchema.partial().parse(req.body);
     const schoolId = req.user.schoolId;
@@ -271,7 +270,6 @@ router.put('/books/:id', authenticate, checkPermission('library', 'edit'), async
  */
 router.delete(
   '/books/:id',
-  authenticate,
   checkPermission('library', 'delete'),
   async (req, res) => {
     try {
@@ -307,7 +305,7 @@ router.delete(
  * GET /api/v1/library/issues
  * List issued books with filters
  */
-router.get('/issues', authenticate, checkPermission('library', 'view'), async (req, res) => {
+router.get('/issues', checkPermission('library', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { status, studentId, bookId, overdue, page = 1, limit = 50 } = req.query;
@@ -360,7 +358,7 @@ router.get('/issues', authenticate, checkPermission('library', 'view'), async (r
  * POST /api/v1/library/issues
  * Issue a book to a student
  */
-router.post('/issues', authenticate, checkPermission('library', 'create'), async (req, res) => {
+router.post('/issues', checkPermission('library', 'create'), async (req, res) => {
   try {
     const { bookId, studentId, dueDate, notes } = issueBookSchema.parse(req.body);
     const schoolId = req.user.schoolId;
@@ -437,7 +435,6 @@ router.post('/issues', authenticate, checkPermission('library', 'create'), async
  */
 router.put(
   '/issues/:id/return',
-  authenticate,
   checkPermission('library', 'edit'),
   async (req, res) => {
     try {
@@ -502,7 +499,6 @@ router.put(
  */
 router.post(
   '/issues/reserve',
-  authenticate,
   checkPermission('library', 'create'),
   async (req, res) => {
     try {
@@ -559,7 +555,6 @@ router.post(
  */
 router.put(
   '/issues/:id/cancel',
-  authenticate,
   checkPermission('library', 'edit'),
   async (req, res) => {
     try {
@@ -589,7 +584,6 @@ router.put(
  */
 router.get(
   '/students/:studentId/history',
-  authenticate,
   checkPermission('library', 'view'),
   async (req, res) => {
     try {
@@ -613,7 +607,7 @@ router.get(
  * POST /api/v1/library/sync-overdue
  * Mark issued books past due date as overdue
  */
-router.post('/sync-overdue', authenticate, checkPermission('library', 'edit'), async (req, res) => {
+router.post('/sync-overdue', checkPermission('library', 'edit'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const result = await BookIssue.updateMany(
@@ -631,7 +625,7 @@ router.post('/sync-overdue', authenticate, checkPermission('library', 'edit'), a
 /**
  * GET /api/v1/library/stats
  */
-router.get('/stats', authenticate, checkPermission('library', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('library', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
 
@@ -698,7 +692,7 @@ router.get('/stats', authenticate, checkPermission('library', 'view'), async (re
  * GET /api/v1/library/reports
  * Most borrowed books, category-wise stats, overdue summary
  */
-router.get('/reports', authenticate, checkPermission('library', 'view'), async (req, res) => {
+router.get('/reports', checkPermission('library', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
 
@@ -777,7 +771,6 @@ router.get('/reports', authenticate, checkPermission('library', 'view'), async (
  */
 router.get(
   '/students/:studentId/card',
-  authenticate,
   checkPermission('library', 'view'),
   async (req, res) => {
     try {
@@ -835,7 +828,6 @@ router.get(
  */
 router.get(
   '/books/:id/copies',
-  authenticate,
   checkPermission('library', 'view'),
   async (req, res) => {
     try {
@@ -856,7 +848,6 @@ router.get(
  */
 router.post(
   '/books/:id/copies',
-  authenticate,
   checkPermission('library', 'create'),
   async (req, res) => {
     try {
@@ -916,7 +907,6 @@ router.post(
  */
 router.put(
   '/copies/:copyId',
-  authenticate,
   checkPermission('library', 'edit'),
   async (req, res) => {
     try {
@@ -948,7 +938,6 @@ router.put(
  */
 router.delete(
   '/copies/:copyId',
-  authenticate,
   checkPermission('library', 'delete'),
   async (req, res) => {
     try {

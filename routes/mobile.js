@@ -92,7 +92,7 @@ async function resolveRequestSchoolId(req) {
 // ============ TEACHER MOBILE API ============
 
 // Get teacher dashboard data
-router.get('/teacher/:teacherId/dashboard', authenticate, requireSelfOrAdmin, async (req, res) => {
+router.get('/teacher/:teacherId/dashboard', requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const today = new Date().toISOString().split('T')[0];
@@ -230,7 +230,7 @@ router.get('/teacher/:teacherId/dashboard', authenticate, requireSelfOrAdmin, as
 });
 
 // Get teacher's full timetable
-router.get('/teacher/:teacherId/timetable', authenticate, requireSelfOrAdmin, async (req, res) => {
+router.get('/teacher/:teacherId/timetable', requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const schoolId = req.user?.schoolId;
@@ -256,7 +256,6 @@ router.get('/teacher/:teacherId/timetable', authenticate, requireSelfOrAdmin, as
 // Mark teacher attendance (self)
 router.post(
   '/teacher/:teacherId/attendance',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -296,7 +295,6 @@ router.post(
 // Reset teacher attendance (dev/admin only)
 router.delete(
   '/teacher/:teacherId/attendance',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -336,7 +334,6 @@ router.delete(
 // Get class students for attendance (class teacher only)
 router.get(
   '/teacher/:teacherId/class-students',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -381,7 +378,6 @@ router.get(
 // Get class attendance for a date
 router.get(
   '/teacher/:teacherId/class-attendance/:date',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -414,7 +410,6 @@ router.get(
 // Mark class attendance (class teacher only)
 router.post(
   '/teacher/:teacherId/class-attendance',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -505,7 +500,6 @@ router.post(
 // Get class overview (for class teacher)
 router.get(
   '/teacher/:teacherId/class-overview',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -630,7 +624,6 @@ router.get(
 // Get announcements for teachers
 router.get(
   '/teacher/:teacherId/announcements',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -650,7 +643,7 @@ router.get(
 );
 
 // Get teacher leaves (mobile-specific endpoint)
-router.get('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async (req, res) => {
+router.get('/teacher/:teacherId/leaves', requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { status } = req.query;
@@ -674,7 +667,7 @@ router.get('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async
 });
 
 // Apply for leave (mobile-specific endpoint)
-router.post('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, async (req, res) => {
+router.post('/teacher/:teacherId/leaves', requireSelfOrAdmin, async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { leaveType, reason, startDate, endDate, days, attachments } = req.body;
@@ -728,7 +721,6 @@ router.post('/teacher/:teacherId/leaves', authenticate, requireSelfOrAdmin, asyn
 // Get student details (for mobile view)
 router.get(
   '/teacher/:teacherId/student/:studentId',
-  authenticate,
   requireSelfOrAdmin,
   async (req, res) => {
     try {
@@ -812,7 +804,7 @@ router.get(
  * - Returns only editable fields (no sensitive data like salary)
  * - Authentication required
  */
-router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
+router.get('/staff/:staffId/profile', async (req, res) => {
   try {
     const { staffId } = req.params;
 
@@ -865,7 +857,6 @@ router.get('/staff/:staffId/profile', authenticate, async (req, res) => {
  */
 router.put(
   '/staff/:staffId/profile',
-  authenticate,
   validateStaffProfileUpdate,
   async (req, res) => {
     try {
@@ -992,7 +983,7 @@ router.put(
  * - Overwrites existing photo
  * - Emits socket event for real-time updates
  */
-router.post('/staff/:staffId/photo', authenticate, async (req, res) => {
+router.post('/staff/:staffId/photo', async (req, res) => {
   try {
     const { staffId } = req.params;
 

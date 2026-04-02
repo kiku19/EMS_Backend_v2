@@ -80,7 +80,7 @@ function hasRole(user, roles) {
 }
 
 // GET /api/v1/dashboard/stats
-router.get('/stats', authenticate, checkPermission('dashboard', 'view'), async (req, res) => {
+router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
   try {
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {

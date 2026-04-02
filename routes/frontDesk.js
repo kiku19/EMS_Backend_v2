@@ -37,7 +37,7 @@ router.use((req, res, next) => {
  * GET /api/front-desk/admissions
  * Get all admissions with optional filters
  */
-router.get('/admissions', authenticate, checkPermission('front-desk', 'view'), async (req, res) => {
+router.get('/admissions', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const { status, source } = req.query;
     const schoolId = await resolveRequestSchoolId(req);
@@ -68,7 +68,6 @@ router.get('/admissions', authenticate, checkPermission('front-desk', 'view'), a
  */
 router.post(
   '/admissions',
-  authenticate,
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
@@ -130,7 +129,6 @@ router.post(
  */
 router.put(
   '/admissions/:id',
-  authenticate,
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
@@ -231,7 +229,6 @@ router.put(
  */
 router.delete(
   '/admissions/:id',
-  authenticate,
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {
@@ -255,7 +252,6 @@ router.delete(
  */
 router.post(
   '/admissions/:id/convert-to-student',
-  authenticate,
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
@@ -346,7 +342,6 @@ router.post(
  */
 router.get(
   '/admissions/:id/tracker',
-  authenticate,
   checkPermission('front-desk', 'view'),
   async (req, res) => {
     try {
@@ -456,7 +451,6 @@ router.get(
  */
 router.get(
   '/appointments',
-  authenticate,
   checkPermission('front-desk', 'view'),
   async (req, res) => {
     try {
@@ -488,7 +482,6 @@ router.get(
  */
 router.post(
   '/appointments',
-  authenticate,
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
@@ -532,7 +525,6 @@ router.post(
  */
 router.put(
   '/appointments/:id',
-  authenticate,
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
@@ -585,7 +577,6 @@ router.put(
  */
 router.delete(
   '/appointments/:id',
-  authenticate,
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {
@@ -609,7 +600,7 @@ router.delete(
  * GET /api/front-desk/feedbacks
  * Get all feedbacks with optional filters
  */
-router.get('/feedbacks', authenticate, checkPermission('front-desk', 'view'), async (req, res) => {
+router.get('/feedbacks', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
     const query = { schoolId: req.user.schoolId };
@@ -637,7 +628,6 @@ router.get('/feedbacks', authenticate, checkPermission('front-desk', 'view'), as
  */
 router.post(
   '/feedbacks',
-  authenticate,
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
@@ -677,7 +667,6 @@ router.post(
  */
 router.put(
   '/feedbacks/:id',
-  authenticate,
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
@@ -729,7 +718,6 @@ router.put(
  */
 router.delete(
   '/feedbacks/:id',
-  authenticate,
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {
@@ -753,7 +741,7 @@ router.delete(
  * GET /api/front-desk/call-logs
  * Get all call logs
  */
-router.get('/call-logs', authenticate, checkPermission('front-desk', 'view'), async (req, res) => {
+router.get('/call-logs', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
     const callLogs = await CallLog.find(scopeBySchool(schoolId)).sort({ dateTime: -1 });
@@ -775,7 +763,6 @@ router.get('/call-logs', authenticate, checkPermission('front-desk', 'view'), as
  */
 router.post(
   '/call-logs',
-  authenticate,
   checkPermission('front-desk', 'create'),
   async (req, res) => {
     try {
@@ -814,7 +801,6 @@ router.post(
  */
 router.put(
   '/call-logs/:id',
-  authenticate,
   checkPermission('front-desk', 'edit'),
   async (req, res) => {
     try {
@@ -865,7 +851,6 @@ router.put(
  */
 router.delete(
   '/call-logs/:id',
-  authenticate,
   checkPermission('front-desk', 'delete'),
   async (req, res) => {
     try {

@@ -65,7 +65,6 @@ const uploadLimiter = rateLimit({
 
 router.post(
   '/',
-  authenticate,
   uploadLimiter,
   upload.single('file'),
   planLimitGate('storageMb', (req) => (req.file ? req.file.size / (1024 * 1024) : 0)),

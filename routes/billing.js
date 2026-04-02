@@ -47,7 +47,7 @@ router.post('/razorpay-webhook', async (req, res) => {
 });
 router.use(authenticate);
 
-router.get('/summary', authenticate, checkPermission('settings', 'view'), async (req, res) => {
+router.get('/summary', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const summary = await getBillingSummary(req.user.schoolId);
     res.json(summary);
@@ -59,7 +59,7 @@ router.get('/summary', authenticate, checkPermission('settings', 'view'), async 
   }
 });
 
-router.put('/account', authenticate, checkPermission('settings', 'edit'), async (req, res) => {
+router.put('/account', checkPermission('settings', 'edit'), async (req, res) => {
   try {
     const summary = await updateBillingAccount(req.user.schoolId, req.body || {});
     res.json(summary);
@@ -73,7 +73,6 @@ router.put('/account', authenticate, checkPermission('settings', 'edit'), async 
 
 router.post(
   '/auto-renew',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(autoRenewSchema),
   async (req, res) => {
@@ -94,7 +93,6 @@ router.post(
 
 router.post(
   '/checkout',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(checkoutSchema),
   async (req, res) => {
@@ -127,7 +125,6 @@ router.post(
 
 router.post(
   '/cancel',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(cancelSubscriptionSchema),
   async (req, res) => {
@@ -152,7 +149,6 @@ router.post(
 
 router.post(
   '/downgrade',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(scheduleDowngradeSchema),
   async (req, res) => {
@@ -176,7 +172,6 @@ router.post(
 // GET /billing/invoices - paginated invoice list
 router.get(
   '/invoices',
-  authenticate,
   checkPermission('settings', 'view'),
   validateZod(invoiceListQuerySchema, 'query'),
   async (req, res) => {
@@ -195,7 +190,6 @@ router.get(
 // GET /billing/invoices/:invoiceNumber/pdf - download invoice PDF
 router.get(
   '/invoices/:invoiceNumber/pdf',
-  authenticate,
   checkPermission('settings', 'view'),
   async (req, res) => {
     try {
@@ -217,7 +211,6 @@ router.get(
 // POST /billing/invoices/:invoiceNumber/mark-paid - manually mark invoice as paid
 router.post(
   '/invoices/:invoiceNumber/mark-paid',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(markPaidSchema),
   async (req, res) => {

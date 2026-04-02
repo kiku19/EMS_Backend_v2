@@ -110,7 +110,7 @@ const TEMPLATES = {
 };
 
 // GET /bulk-import/template/:type — download CSV template
-router.get('/template/:type', authenticate, (req, res) => {
+router.get('/template/:type', (req, res) => {
   const { type } = req.params;
   const tpl = TEMPLATES[type];
   if (!tpl) {
@@ -217,7 +217,7 @@ async function finalizeImportJob(job, results) {
 }
 
 // GET /bulk-import/history — list import jobs for school
-router.get('/history', authenticate, async (req, res) => {
+router.get('/history', async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
@@ -240,7 +240,7 @@ router.get('/history', authenticate, async (req, res) => {
 });
 
 // GET /bulk-import/history/:jobId — get specific import job
-router.get('/history/:jobId', authenticate, async (req, res) => {
+router.get('/history/:jobId', async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
     const job = await ImportJob.findOne({ _id: req.params.jobId, schoolId }).lean();
@@ -254,7 +254,6 @@ router.get('/history/:jobId', authenticate, async (req, res) => {
 // POST /bulk-import/history/:jobId/rollback — rollback a completed import
 router.post(
   '/history/:jobId/rollback',
-  authenticate,
   checkPermission('students', 'delete'),
   async (req, res) => {
     try {
@@ -346,7 +345,6 @@ async function initializeStudentFeeStructure(student) {
 // POST /bulk-import/students[?dryRun=true]
 router.post(
   '/students',
-  authenticate,
   checkPermission('students', 'create'),
   upload.single('file'),
   async (req, res) => {
@@ -567,7 +565,6 @@ async function ensureUniqueUsername(baseUsername, schoolId) {
 // POST /bulk-import/staff[?dryRun=true]
 router.post(
   '/staff',
-  authenticate,
   checkPermission('staff', 'create'),
   upload.single('file'),
   async (req, res) => {
@@ -721,7 +718,6 @@ router.post(
 // POST /bulk-import/fees[?dryRun=true]
 router.post(
   '/fees',
-  authenticate,
   checkPermission('fees', 'create'),
   upload.single('file'),
   async (req, res) => {
@@ -899,7 +895,6 @@ router.post(
 // Body or query: classId (optional filter for lookup), examId not needed here
 router.post(
   '/attendance',
-  authenticate,
   checkPermission('attendance', 'create'),
   upload.single('file'),
   async (req, res) => {
@@ -1029,7 +1024,6 @@ router.post(
 // POST /bulk-import/results/:examId[?dryRun=true]
 router.post(
   '/results/:examId',
-  authenticate,
   checkPermission('academics', 'create'),
   upload.single('file'),
   async (req, res) => {
@@ -1175,7 +1169,6 @@ router.post(
 // POST /bulk-import/bulk-delete — bulk soft-delete students or staff
 router.post(
   '/bulk-delete',
-  authenticate,
   checkPermission('students', 'delete'),
   async (req, res) => {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -1220,7 +1213,7 @@ router.post(
 // ─── BULK SMS / NOTIFICATION ────────────────────────────────────
 
 // POST /bulk-import/bulk-notify — send SMS or push notification to multiple students/parents
-router.post('/bulk-notify', authenticate, checkPermission('students', 'read'), async (req, res) => {
+router.post('/bulk-notify', checkPermission('students', 'read'), async (req, res) => {
   const schoolId = extractSchoolId(req.user?.schoolId);
   if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 

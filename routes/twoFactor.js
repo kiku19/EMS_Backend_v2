@@ -234,7 +234,7 @@ async function addTrustedDevice(res, staff, userAgent) {
  * Generate a new TOTP secret and return QR code for enrollment.
  * Requires authentication. Does NOT yet enable 2FA — call /confirm after verifying.
  */
-router.get('/setup', authenticate, async (req, res) => {
+router.get('/setup', async (req, res) => {
   try {
     const staff = await Staff.findById(req.user.id);
     if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
@@ -272,7 +272,6 @@ router.get('/setup', authenticate, async (req, res) => {
  */
 router.post(
   '/confirm',
-  authenticate,
   validateZod(zodSchemas.twoFactorConfirmSetup),
   async (req, res) => {
     try {
@@ -318,7 +317,6 @@ router.post(
  */
 router.post(
   '/disable',
-  authenticate,
   validateZod(zodSchemas.twoFactorDisable),
   async (req, res) => {
     try {
@@ -352,7 +350,7 @@ router.post(
  * GET /auth/2fa/status
  * Returns the 2FA enrollment status for the current user.
  */
-router.get('/status', authenticate, async (req, res) => {
+router.get('/status', async (req, res) => {
   try {
     const staff = await Staff.findById(req.user.id).select('twoFactorEnabled twoFactorEnrolledAt');
     if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
@@ -372,7 +370,7 @@ router.get('/status', authenticate, async (req, res) => {
  * POST /auth/2fa/regenerate-backup-codes
  * Regenerate backup codes (requires authenticated 2FA session).
  */
-router.post('/regenerate-backup-codes', authenticate, async (req, res) => {
+router.post('/regenerate-backup-codes', async (req, res) => {
   try {
     const staff = await Staff.findById(req.user.id).select('+twoFactorBackupCodes');
     if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });

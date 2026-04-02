@@ -264,7 +264,7 @@ function scopeBySchool(schoolId, query = {}) {
 }
 
 // Get all homework for a teacher
-router.get('/teacher/:teacherId', authenticate, async (req, res) => {
+router.get('/teacher/:teacherId', async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { status, classId, sectionId, academicYear } = req.query;
@@ -293,7 +293,7 @@ router.get('/teacher/:teacherId', authenticate, async (req, res) => {
 });
 
 // Get all homework for a class (for students/parents)
-router.get('/class/:classId', authenticate, async (req, res) => {
+router.get('/class/:classId', async (req, res) => {
   try {
     const { classId } = req.params;
     const { status = 'active', sectionId, academicYear } = req.query;
@@ -315,7 +315,7 @@ router.get('/class/:classId', authenticate, async (req, res) => {
 });
 
 // Get all homework for the school (admin dashboard)
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { status, classId, teacherId, academicYear, page = 1, limit = 50 } = req.query;
 
@@ -355,7 +355,7 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // Get homework analytics (completion rate, late submissions)
-router.get('/analytics', authenticate, async (req, res) => {
+router.get('/analytics', async (req, res) => {
   try {
     const { teacherId, classId, academicYear } = req.query;
     const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
@@ -449,7 +449,7 @@ router.get('/analytics', authenticate, async (req, res) => {
 });
 
 // Get homework by ID
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const homework = await Homework.findOne(
       scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -471,7 +471,6 @@ router.get('/:id', authenticate, async (req, res) => {
 // Create homework (teacher)
 router.post(
   '/',
-  authenticate,
   checkPermission('homework', 'create'),
   validateZod(zodSchemas.createHomework),
   async (req, res) => {
@@ -598,7 +597,6 @@ router.post(
 // Update homework
 router.put(
   '/:id',
-  authenticate,
   checkPermission('homework', 'edit'),
   validateZod(zodSchemas.updateHomework),
   async (req, res) => {
@@ -647,7 +645,6 @@ router.put(
 // Submit homework (student — submitted by staff/admin on behalf of student)
 router.post(
   '/:id/submit',
-  authenticate,
   validateZod(zodSchemas.teacherSubmitHomework),
   async (req, res) => {
     try {
@@ -692,7 +689,7 @@ router.post(
 );
 
 // Grade homework submission (teacher)
-router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), async (req, res) => {
+router.post('/:id/grade', validateZod(zodSchemas.gradeHomework), async (req, res) => {
   try {
     const { studentId, marks, feedback } = req.body;
 
@@ -734,7 +731,7 @@ router.post('/:id/grade', authenticate, validateZod(zodSchemas.gradeHomework), a
 });
 
 // Delete homework (soft delete — preserves grading data)
-router.delete('/:id', authenticate, checkPermission('homework', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('homework', 'delete'), async (req, res) => {
   try {
     const homework = await Homework.findOneAndUpdate(
       scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),

@@ -180,7 +180,7 @@ const CALENDAR_TEMPLATES = {
 };
 
 // ─── GET /calendar/templates ─────────────────────────────────────────────────
-router.get('/calendar/templates', authenticate, async (req, res) => {
+router.get('/calendar/templates', async (req, res) => {
   try {
     const templates = Object.entries(CALENDAR_TEMPLATES).map(([id, t]) => ({
       id,
@@ -201,7 +201,6 @@ router.get('/calendar/templates', authenticate, async (req, res) => {
 // `year` = the April-start year (e.g., 2024 for the 2024-25 academic year).
 router.post(
   '/calendar/templates/:templateId/import',
-  authenticate,
   checkPermission('timetable', 'create'),
   async (req, res) => {
     try {
@@ -273,7 +272,7 @@ router.post(
 // Returns events of specified types that fall within the given date range.
 // `types` defaults to ['holiday'] for backward compatibility.
 // Also returns exam conflicts (scheduled exams from Exam model) when 'exam' is included.
-router.post('/calendar/conflict-check', authenticate, async (req, res) => {
+router.post('/calendar/conflict-check', async (req, res) => {
   try {
     const { startDate, endDate, types } = req.body;
 
@@ -346,7 +345,7 @@ router.post('/calendar/conflict-check', authenticate, async (req, res) => {
 // maintaining a minimum gap between suggestions.
 // Query params: startDate (YYYY-MM-DD), endDate (YYYY-MM-DD),
 //               examCount (default 3), gapDays (min working days between exams, default 7)
-router.get('/calendar/exam-suggestions', authenticate, async (req, res) => {
+router.get('/calendar/exam-suggestions', async (req, res) => {
   try {
     const { startDate, endDate, examCount = 3, gapDays = 7 } = req.query;
 
@@ -470,7 +469,7 @@ router.get('/calendar/exam-suggestions', authenticate, async (req, res) => {
 // ─── GET /calendar/working-days ──────────────────────────────────────────────
 // Calculates working days between startDate and endDate, excluding weekends and
 // holidays. Uses the school's workingDays config from SchoolSettings if available.
-router.get('/calendar/working-days', authenticate, async (req, res) => {
+router.get('/calendar/working-days', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -551,7 +550,7 @@ router.get('/calendar/working-days', authenticate, async (req, res) => {
 
 // ─── GET /calendar/events/export.ics ─────────────────────────────────────────
 // Exports school calendar events as an iCalendar (.ics) file.
-router.get('/calendar/events/export.ics', authenticate, async (req, res) => {
+router.get('/calendar/events/export.ics', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
@@ -614,7 +613,6 @@ router.get('/calendar/events/export.ics', authenticate, async (req, res) => {
 // Accepts optional query params: startDate, endDate (YYYY-MM-DD) to filter & expand recurring events
 router.get(
   '/calendar/events',
-  authenticate,
   checkPermission('timetable', 'view'),
   async (req, res) => {
     try {
@@ -667,7 +665,6 @@ router.get(
 // ─── POST /calendar/events ───────────────────────────────────────────────────
 router.post(
   '/calendar/events',
-  authenticate,
   checkPermission('timetable', 'create'),
   validateZod(zodSchemas.createCalendarEvent),
   async (req, res) => {
@@ -711,7 +708,6 @@ router.post(
 // ─── PUT /calendar/events/:id ────────────────────────────────────────────────
 router.put(
   '/calendar/events/:id',
-  authenticate,
   checkPermission('timetable', 'edit'),
   validateZod(zodSchemas.updateCalendarEvent),
   async (req, res) => {
@@ -740,7 +736,6 @@ router.put(
 // ─── DELETE /calendar/events/:id ─────────────────────────────────────────────
 router.delete(
   '/calendar/events/:id',
-  authenticate,
   checkPermission('timetable', 'delete'),
   async (req, res) => {
     try {

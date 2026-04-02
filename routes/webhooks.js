@@ -323,7 +323,7 @@ function generateSecret() {
 }
 
 // GET /api/v1/webhooks - list all webhooks for the school
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const webhooks = await Webhook.find(scope)
@@ -338,7 +338,7 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // POST /api/v1/webhooks - create a webhook
-router.post('/', authenticate, async (req, res) => {
+router.post('/', async (req, res) => {
   const parsed = webhookCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -367,12 +367,12 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // GET /api/v1/webhooks/events - list supported event types
-router.get('/events', authenticate, (req, res) => {
+router.get('/events', (req, res) => {
   res.json(WEBHOOK_EVENTS_LIST);
 });
 
 // GET /api/v1/webhooks/:id - get a single webhook
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const webhook = await Webhook.findOne({ _id: req.params.id, ...scope })
@@ -390,7 +390,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // PUT /api/v1/webhooks/:id - update a webhook
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', async (req, res) => {
   const parsed = webhookUpdateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -420,7 +420,7 @@ router.put('/:id', authenticate, async (req, res) => {
 });
 
 // DELETE /api/v1/webhooks/:id - delete a webhook
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const webhook = await Webhook.findOneAndDelete({ _id: req.params.id, ...scope });
@@ -440,7 +440,7 @@ router.delete('/:id', authenticate, async (req, res) => {
 });
 
 // POST /api/v1/webhooks/:id/test - send a test delivery
-router.post('/:id/test', authenticate, async (req, res) => {
+router.post('/:id/test', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const webhook = await Webhook.findOne({ _id: req.params.id, ...scope });
@@ -461,7 +461,7 @@ router.post('/:id/test', authenticate, async (req, res) => {
 });
 
 // GET /api/v1/webhooks/:id/logs - get delivery logs for a webhook
-router.get('/:id/logs', authenticate, async (req, res) => {
+router.get('/:id/logs', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     // Verify webhook belongs to school
@@ -489,7 +489,7 @@ router.get('/:id/logs', authenticate, async (req, res) => {
 });
 
 // GET /api/v1/webhooks/:id/dead-letter - get dead letter queue
-router.get('/:id/dead-letter', authenticate, async (req, res) => {
+router.get('/:id/dead-letter', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const webhook = await Webhook.findOne({ _id: req.params.id, ...scope })
@@ -508,7 +508,7 @@ router.get('/:id/dead-letter', authenticate, async (req, res) => {
 });
 
 // DELETE /api/v1/webhooks/:id/dead-letter - clear dead letter queue
-router.delete('/:id/dead-letter', authenticate, async (req, res) => {
+router.delete('/:id/dead-letter', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const webhook = await Webhook.findOneAndUpdate(

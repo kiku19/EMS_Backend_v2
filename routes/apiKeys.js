@@ -282,7 +282,7 @@ const apiKeyUpdateSchema = z.object({
 const SAFE_FIELDS = '-keyHash -previousKeyHash';
 
 // GET /api/v1/api-keys — list all API keys for the school
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const keys = await ApiKey.find(scope).select(SAFE_FIELDS).sort({ createdAt: -1 }).lean();
@@ -294,12 +294,12 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // GET /api/v1/api-keys/scopes — list available scopes
-router.get('/scopes', authenticate, (req, res) => {
+router.get('/scopes', (req, res) => {
   res.json(API_KEY_SCOPES);
 });
 
 // GET /api/v1/api-keys/:id — get a single API key
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const key = await ApiKey.findOne({ _id: req.params.id, ...scope })
@@ -318,7 +318,7 @@ router.get('/:id', authenticate, async (req, res) => {
 
 // POST /api/v1/api-keys — create an API key
 // The raw key is returned ONCE in the response — it is not stored.
-router.post('/', authenticate, async (req, res) => {
+router.post('/', async (req, res) => {
   const parsed = apiKeyCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -357,7 +357,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // PUT /api/v1/api-keys/:id — update name, scopes, rateLimitPerHour, expiresAt, isActive
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', async (req, res) => {
   const parsed = apiKeyUpdateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -394,7 +394,7 @@ router.put('/:id', authenticate, async (req, res) => {
 
 // POST /api/v1/api-keys/:id/rotate — rotate the key
 // Old key stays valid for 24 hours (grace period) after rotation.
-router.post('/:id/rotate', authenticate, async (req, res) => {
+router.post('/:id/rotate', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const existing = await ApiKey.findOne({ _id: req.params.id, ...scope });
@@ -432,7 +432,7 @@ router.post('/:id/rotate', authenticate, async (req, res) => {
 });
 
 // POST /api/v1/api-keys/:id/revoke — revoke immediately (no grace period)
-router.post('/:id/revoke', authenticate, async (req, res) => {
+router.post('/:id/revoke', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const key = await ApiKey.findOneAndUpdate(
@@ -459,7 +459,7 @@ router.post('/:id/revoke', authenticate, async (req, res) => {
 });
 
 // DELETE /api/v1/api-keys/:id — permanently delete an API key
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const key = await ApiKey.findOneAndDelete({ _id: req.params.id, ...scope });

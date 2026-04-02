@@ -165,7 +165,7 @@ const updateSlotSchema = z.object({
  * GET /api/ptm
  * List all PTM sessions for the school (not deleted)
  */
-router.get('/', authenticate, checkPermission('ptm', 'view'), async (req, res) => {
+router.get('/', checkPermission('ptm', 'view'), async (req, res) => {
   try {
     const { classId, staffId, status, from, to } = req.query;
     const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
@@ -197,7 +197,7 @@ router.get('/', authenticate, checkPermission('ptm', 'view'), async (req, res) =
  * POST /api/ptm
  * Create a new PTM session
  */
-router.post('/', authenticate, checkPermission('ptm', 'create'), async (req, res) => {
+router.post('/', checkPermission('ptm', 'create'), async (req, res) => {
   try {
     const parsed = createSessionSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -285,7 +285,7 @@ router.post('/', authenticate, checkPermission('ptm', 'create'), async (req, res
  * GET /api/ptm/:id
  * Get a single PTM session with all slots
  */
-router.get('/:id', authenticate, checkPermission('ptm', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('ptm', 'view'), async (req, res) => {
   try {
     const session = await PTMSession.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -309,7 +309,7 @@ router.get('/:id', authenticate, checkPermission('ptm', 'view'), async (req, res
  * PUT /api/ptm/:id
  * Update a PTM session
  */
-router.put('/:id', authenticate, checkPermission('ptm', 'edit'), async (req, res) => {
+router.put('/:id', checkPermission('ptm', 'edit'), async (req, res) => {
   try {
     const parsed = updateSessionSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -420,7 +420,7 @@ router.put('/:id', authenticate, checkPermission('ptm', 'edit'), async (req, res
  * DELETE /api/ptm/:id
  * Soft-delete a PTM session
  */
-router.delete('/:id', authenticate, checkPermission('ptm', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('ptm', 'delete'), async (req, res) => {
   try {
     const session = await PTMSession.findOneAndUpdate(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
@@ -474,7 +474,7 @@ router.delete('/:id', authenticate, checkPermission('ptm', 'delete'), async (req
  * concurrent requests both pass the conflict check and book the same
  * time slot. The transaction ensures the read-check-write is atomic.
  */
-router.post('/:id/slots', authenticate, checkPermission('ptm', 'create'), async (req, res) => {
+router.post('/:id/slots', checkPermission('ptm', 'create'), async (req, res) => {
   try {
     const parsed = addSlotSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -587,7 +587,6 @@ router.post('/:id/slots', authenticate, checkPermission('ptm', 'create'), async 
  */
 router.put(
   '/:sessionId/slots/:slotId',
-  authenticate,
   checkPermission('ptm', 'edit'),
   async (req, res) => {
     try {
@@ -690,7 +689,6 @@ router.put(
  */
 router.delete(
   '/:sessionId/slots/:slotId',
-  authenticate,
   checkPermission('ptm', 'delete'),
   async (req, res) => {
     try {

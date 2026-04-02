@@ -143,7 +143,6 @@ function generateTimetableEntries(
 // GET /exam-schedules - List all exam schedules
 router.get(
   '/exam-schedules',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -171,7 +170,6 @@ router.get(
 // GET /exam-schedules/:id - Get single schedule with full details
 router.get(
   '/exam-schedules/:id',
-  authenticate,
   checkPermission('academics', 'view'),
   async (req, res) => {
     try {
@@ -198,7 +196,6 @@ router.get(
 // POST /exam-schedules - Create a new draft schedule
 router.post(
   '/exam-schedules',
-  authenticate,
   checkPermission('academics', 'create'),
   validateZod(createExamScheduleSchema),
   async (req, res) => {
@@ -281,7 +278,6 @@ router.post(
 // POST /exam-schedules/:id/generate - Auto-generate timetable entries
 router.post(
   '/exam-schedules/:id/generate',
-  authenticate,
   checkPermission('academics', 'create'),
   async (req, res) => {
     try {
@@ -335,7 +331,6 @@ router.post(
 // PUT /exam-schedules/:id - Update a draft schedule
 router.put(
   '/exam-schedules/:id',
-  authenticate,
   checkPermission('academics', 'edit'),
   validateZod(updateExamScheduleSchema),
   async (req, res) => {
@@ -382,7 +377,6 @@ router.put(
 // POST /exam-schedules/:id/confirm - Confirm schedule and create individual Exam documents
 router.post(
   '/exam-schedules/:id/confirm',
-  authenticate,
   checkPermission('academics', 'create'),
   async (req, res) => {
     try {
@@ -494,7 +488,6 @@ router.post(
 // POST /exam-schedules/:id/send - Send timetable to parents
 router.post(
   '/exam-schedules/:id/send',
-  authenticate,
   checkPermission('academics', 'publish'),
   async (req, res) => {
     try {
@@ -568,7 +561,6 @@ router.post(
 // DELETE /exam-schedules/:id - Soft delete
 router.delete(
   '/exam-schedules/:id',
-  authenticate,
   checkPermission('academics', 'delete'),
   async (req, res) => {
     try {

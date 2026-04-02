@@ -218,7 +218,7 @@ router.use(authenticate);
 const logger = createLogger('FeeHeads');
 
 // Get all fee heads
-router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const feeHeads = await FeeHead.find({ schoolId: req.user.schoolId, isActive: true }).sort({
       createdAt: -1,
@@ -231,7 +231,7 @@ router.get('/', authenticate, checkPermission('fees', 'view'), async (req, res) 
 });
 
 // Get fee head by ID
-router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
     if (!feeHead) {
@@ -247,7 +247,6 @@ router.get('/:id', authenticate, checkPermission('fees', 'view'), async (req, re
 // Create new fee head
 router.post(
   '/',
-  authenticate,
   checkPermission('fees', 'create'),
   validateZod(zodSchemas.createFeeHead),
   async (req, res) => {
@@ -309,7 +308,6 @@ router.post(
 // Update fee head
 router.put(
   '/:id',
-  authenticate,
   checkPermission('fees', 'edit'),
   validateZod(zodSchemas.updateFeeHead),
   async (req, res) => {
@@ -372,7 +370,7 @@ router.put(
 );
 
 // Delete fee head
-router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
   try {
     const feeHead = await FeeHead.findOneAndDelete({
       _id: req.params.id,
@@ -409,7 +407,7 @@ router.delete('/:id', authenticate, checkPermission('fees', 'delete'), async (re
 });
 
 // Apply fee head to all applicable students
-router.post('/:id/apply', authenticate, checkPermission('fees', 'edit'), async (req, res) => {
+router.post('/:id/apply', checkPermission('fees', 'edit'), async (req, res) => {
   try {
     const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
 

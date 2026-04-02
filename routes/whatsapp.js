@@ -64,7 +64,7 @@ router.put('/opt-out', authenticateParent, async (req, res) => {
  * GET /api/v1/whatsapp/opt-in-stats
  * Admin — count of parents who have opted in to WhatsApp for this school.
  */
-router.get('/opt-in-stats', authenticate, async (req, res) => {
+router.get('/opt-in-stats', async (req, res) => {
   try {
     const scope = buildSchoolScopedQuery(req.user.schoolId);
     const total = await Parent.countDocuments(scope);

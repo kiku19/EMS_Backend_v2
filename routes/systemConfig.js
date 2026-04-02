@@ -15,7 +15,6 @@ router.use(authenticate);
 
 router.get(
   '/staff-id-config',
-  authenticate,
   checkPermission('settings', 'view'),
   async (req, res) => {
     try {
@@ -48,7 +47,6 @@ router.get(
 
 router.put(
   '/staff-id-config',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(updateStaffIdConfigSchema),
   async (req, res) => {
@@ -89,7 +87,6 @@ router.put(
 
 router.get(
   '/school-settings',
-  authenticate,
   checkPermission('settings', 'view'),
   async (req, res) => {
     try {
@@ -109,7 +106,6 @@ router.get(
 
 router.put(
   '/school-settings',
-  authenticate,
   checkPermission('settings', 'edit'),
   validateZod(updateSchoolSettingsSchema),
   async (req, res) => {
