@@ -45,7 +45,12 @@ function parseCookies(cookieHeader = '') {
 
       const key = part.slice(0, separatorIndex).trim();
       const value = part.slice(separatorIndex + 1).trim();
-      cookies[key] = decodeURIComponent(value);
+      try {
+        cookies[key] = decodeURIComponent(value);
+      } catch {
+        // Malformed percent-encoding (e.g. %ZZ) — use raw value
+        cookies[key] = value;
+      }
       return cookies;
     }, {});
 }

@@ -9,6 +9,7 @@ import { sendEmail } from '../config/email.js';
 import { authenticate } from '../middleware/auth.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { scheduleJob, cancelJobs } from '../config/agenda.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 
@@ -349,7 +350,18 @@ router.delete('/:id', async (req, res) => {
     if (campaign.scheduledFor) {
       await cancelJobs({ 'data.campaignId': campaign._id });
     }
+    const campaignSnapshot = campaign.toObject();
     await EmailCampaign.findByIdAndDelete(campaign._id);
+
+    logToTrash({
+      itemType: 'EmailCampaign',
+      itemId: campaignSnapshot._id,
+      itemName: campaignSnapshot.name || campaignSnapshot.subject || 'Email Campaign',
+      originalData: campaignSnapshot,
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
+
     res.json({ message: 'Email campaign deleted successfully' });
   } catch (error) {
     console.error('Error deleting email campaign:', error);

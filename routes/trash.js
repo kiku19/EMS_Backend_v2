@@ -2,51 +2,132 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
-import { Student, Staff, Class } from '../database.js';
 import TrashItem from '../models/TrashItem.js';
 import { escapeRegex } from './students/helpers.js';
 import { permanentlyDeleteStudentData } from '../services/studentDataErasureService.js';
+import { ENTITY_REGISTRY } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
 
+// ─── Helpers ───
+
+/**
+ * Generic restore for a single trash item.
+ * Reads restoreStrategy / modelName / softDeleteField from the trash record itself.
+ */
+async function restoreTrashItem(trashItem) {
+  const { itemType, restoreStrategy, modelName, softDeleteField, itemId, originalData } =
+    trashItem;
+
+  // BulkCleanup has its own restore path
+  if (itemType === 'BulkCleanup') {
+    const bulkModelName = trashItem.bulkCleanup?.modelName;
+    if (!bulkModelName) throw new Error('BulkCleanup missing modelName');
+    const Model = mongoose.model(bulkModelName);
+    const documents = originalData;
+    if (documents && documents.length > 0) {
+      await Model.insertMany(documents, { ordered: false });
+    }
+    return;
+  }
+
+  if (!modelName) throw new Error(`No modelName on trash item ${trashItem._id}`);
+  const Model = mongoose.model(modelName);
+
+  if (restoreStrategy === 'soft-delete') {
+    const field = softDeleteField || 'isDeleted';
+    // For isActive fields, restore means setting to true; for isDeleted, setting to false
+    const registryEntry = ENTITY_REGISTRY[itemType];
+    const restoreValue =
+      registryEntry?.softDeleteRestore !== undefined ? registryEntry.softDeleteRestore : false;
+
+    const updateFields = { [field]: restoreValue, deletedAt: null, deletedBy: null };
+
+    // For isActive-based entities, don't clear deletedAt/deletedBy (they don't have those)
+    if (field === 'isActive') {
+      delete updateFields.deletedAt;
+      delete updateFields.deletedBy;
+    }
+
+    await Model.findByIdAndUpdate(itemId, { $set: updateFields });
+  } else {
+    // hard-delete restore: re-insert the original document
+    if (!originalData || typeof originalData !== 'object') {
+      throw new Error(`Cannot restore ${itemType}: original data is missing or invalid`);
+    }
+
+    // Try with _id first to preserve references, fall back to without _id on duplicate key
+    try {
+      await Model.create(originalData);
+    } catch (err) {
+      if (err.code === 11000) {
+        const { _id, ...dataWithoutId } = originalData;
+        await Model.create(dataWithoutId);
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+/**
+ * Generic permanent delete for a single trash item.
+ */
+async function permanentlyDeleteTrashItem(trashItem) {
+  const { itemType, modelName, restoreStrategy, itemId } = trashItem;
+
+  // Student has special GDPR-compliant cascading erasure
+  if (itemType === 'Student') {
+    await permanentlyDeleteStudentData(itemId);
+    return;
+  }
+
+  // BulkCleanup — data already deleted from source, nothing to do
+  if (itemType === 'BulkCleanup') return;
+
+  // For soft-deleted items, the document still exists — hard-delete it now
+  if (restoreStrategy === 'soft-delete' && modelName) {
+    const Model = mongoose.model(modelName);
+    await Model.findByIdAndDelete(itemId);
+  }
+  // For hard-deleted items, the document is already gone — nothing to do
+}
+
+// ─── Routes ───
+
 /**
  * GET /api/trash
- * List all trash items with optional filters
- * Query params: type (filter by itemType), search (search itemName)
+ * List all trash items with optional filters, scoped to school
  */
 router.get('/', checkPermission('settings', 'view'), async (req, res) => {
   try {
     const { type, search } = req.query;
+    const schoolId = req.user?.schoolId;
 
-    // Build query
-    const query = {};
+    const query = { schoolId };
 
-    // Type filter
     if (type) {
       query.itemType = type;
     }
 
-    // Search filter
     if (search) {
       const searchRegex = new RegExp(escapeRegex(search), 'i');
       query.itemName = searchRegex;
     }
 
-    // Execute query with pagination - EXCLUDE originalData for performance
-    // originalData is only needed for restore, not for listing
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const skip = (page - 1) * limit;
 
     const [trashItems, total] = await Promise.all([
       TrashItem.find(query)
-        .select('-originalData') // Exclude large originalData field
+        .select('-originalData')
         .populate('deletedBy', 'name email')
         .sort({ deletedAt: -1 })
         .limit(limit)
         .skip(skip)
-        .lean(), // Use lean() for better performance
+        .lean(),
       TrashItem.countDocuments(query),
     ]);
 
@@ -73,16 +154,17 @@ router.get('/', checkPermission('settings', 'view'), async (req, res) => {
 
 /**
  * GET /api/trash/stats
- * Get trash statistics by type and expiring items
+ * Get trash statistics by type and expiring items, scoped to school
  */
 router.get('/stats', checkPermission('settings', 'view'), async (req, res) => {
   try {
-    // Calculate date 7 days from now
+    const schoolId = req.user?.schoolId;
+
     const sevenDaysFromNow = new Date();
     sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
 
-    // Aggregate by itemType
     const statsByType = await TrashItem.aggregate([
+      { $match: { schoolId: new mongoose.Types.ObjectId(schoolId) } },
       {
         $group: {
           _id: '$itemType',
@@ -94,12 +176,9 @@ router.get('/stats', checkPermission('settings', 'view'), async (req, res) => {
           },
         },
       },
-      {
-        $sort: { _id: 1 },
-      },
+      { $sort: { _id: 1 } },
     ]);
 
-    // Format result
     const byType = {};
     let totalExpiring = 0;
 
@@ -136,12 +215,11 @@ router.post(
   async (req, res) => {
     try {
       const { trashItemId } = req.params;
+      const schoolId = req.user?.schoolId;
 
-      // Find trash item
-      const trashItem = await TrashItem.findById(trashItemId);
+      const trashItem = await TrashItem.findOne({ _id: trashItemId, schoolId });
 
       if (!trashItem) {
-        console.warn(`⚠️ Trash item not found: ${trashItemId}`);
         return res.status(404).json({
           success: false,
           error: req.t('common:routes.trashItemNotFound'),
@@ -149,61 +227,7 @@ router.post(
         });
       }
 
-      // Restore based on item type
-      switch (trashItem.itemType) {
-        case 'Student':
-          await Student.findByIdAndUpdate(trashItem.itemId, {
-            isDeleted: false,
-            deletedAt: null,
-            deletedBy: null,
-          });
-          break;
-
-        case 'Staff':
-          await Staff.findByIdAndUpdate(trashItem.itemId, {
-            isDeleted: false,
-            deletedAt: null,
-            deletedBy: null,
-          });
-          break;
-
-        case 'Class':
-          await Class.findByIdAndUpdate(trashItem.itemId, {
-            isDeleted: false,
-            deletedAt: null,
-            deletedBy: null,
-          });
-          break;
-
-        case 'BulkCleanup': {
-          const { modelName, recordCount } = trashItem.bulkCleanup || {};
-          const Model = mongoose.model(modelName);
-
-          if (!Model) {
-            return res.status(400).json({
-              success: false,
-              error: req.t('common:routes.modelNotFound'),
-              message: `Cannot restore: model "${modelName}" not found`,
-            });
-          }
-
-          const documents = trashItem.originalData;
-          if (documents && documents.length > 0) {
-            await Model.insertMany(documents, { ordered: false });
-          }
-          break;
-        }
-
-        default:
-          console.warn(`⚠️ Unknown item type: ${trashItem.itemType}`);
-          return res.status(400).json({
-            success: false,
-            error: req.t('common:routes.unknownItemType'),
-            message: `Cannot restore item of type: ${trashItem.itemType}`,
-          });
-      }
-
-      // Delete the trash item record
+      await restoreTrashItem(trashItem);
       await TrashItem.findByIdAndDelete(trashItemId);
 
       res.json({
@@ -231,12 +255,11 @@ router.delete(
   async (req, res) => {
     try {
       const { trashItemId } = req.params;
+      const schoolId = req.user?.schoolId;
 
-      // Find trash item
-      const trashItem = await TrashItem.findById(trashItemId);
+      const trashItem = await TrashItem.findOne({ _id: trashItemId, schoolId });
 
       if (!trashItem) {
-        console.warn(`⚠️ Trash item not found: ${trashItemId}`);
         return res.status(404).json({
           success: false,
           error: req.t('common:routes.trashItemNotFound'),
@@ -244,37 +267,7 @@ router.delete(
         });
       }
 
-      // Delete based on item type
-      switch (trashItem.itemType) {
-        case 'Student':
-          await permanentlyDeleteStudentData(trashItem.itemId);
-          break;
-
-        case 'Staff':
-          // Delete the staff
-          await Staff.findByIdAndDelete(trashItem.itemId);
-          break;
-
-        case 'Class':
-          // Delete the class
-          await Class.findByIdAndDelete(trashItem.itemId);
-          break;
-
-        case 'BulkCleanup':
-          // For bulk cleanup items, the data is already deleted from source.
-          // Just remove the trash record (originalData gets discarded).
-          break;
-
-        default:
-          console.warn(`⚠️ Unknown item type: ${trashItem.itemType}`);
-          return res.status(400).json({
-            success: false,
-            error: req.t('common:routes.unknownItemType'),
-            message: `Cannot permanently delete item of type: ${trashItem.itemType}`,
-          });
-      }
-
-      // Delete the trash item record
+      await permanentlyDeleteTrashItem(trashItem);
       await TrashItem.findByIdAndDelete(trashItemId);
 
       res.json({
@@ -295,7 +288,6 @@ router.delete(
 /**
  * POST /api/trash/bulk-restore
  * Bulk restore multiple items
- * Body: { trashItemIds: [] }
  */
 router.post(
   '/bulk-restore',
@@ -303,6 +295,7 @@ router.post(
   async (req, res) => {
     try {
       const { trashItemIds } = req.body;
+      const schoolId = req.user?.schoolId;
 
       if (!trashItemIds || !Array.isArray(trashItemIds) || trashItemIds.length === 0) {
         return res.status(400).json({
@@ -312,56 +305,12 @@ router.post(
         });
       }
 
-      // Process all items in parallel
       const results = await Promise.allSettled(
         trashItemIds.map(async (trashItemId) => {
-          // Find trash item
-          const trashItem = await TrashItem.findById(trashItemId);
+          const trashItem = await TrashItem.findOne({ _id: trashItemId, schoolId });
+          if (!trashItem) throw new Error(`Trash item not found: ${trashItemId}`);
 
-          if (!trashItem) {
-            throw new Error(`Trash item not found: ${trashItemId}`);
-          }
-
-          // Restore based on item type
-          switch (trashItem.itemType) {
-            case 'Student':
-              await Student.findByIdAndUpdate(trashItem.itemId, {
-                isDeleted: false,
-                deletedAt: null,
-                deletedBy: null,
-              });
-              break;
-
-            case 'Staff':
-              await Staff.findByIdAndUpdate(trashItem.itemId, {
-                isDeleted: false,
-                deletedAt: null,
-                deletedBy: null,
-              });
-              break;
-
-            case 'Class':
-              await Class.findByIdAndUpdate(trashItem.itemId, {
-                isDeleted: false,
-                deletedAt: null,
-                deletedBy: null,
-              });
-              break;
-
-            case 'BulkCleanup': {
-              const Model = mongoose.model(trashItem.bulkCleanup.modelName);
-              const documents = trashItem.originalData;
-              if (documents && documents.length > 0) {
-                await Model.insertMany(documents, { ordered: false });
-              }
-              break;
-            }
-
-            default:
-              throw new Error(`Unknown item type: ${trashItem.itemType}`);
-          }
-
-          // Delete the trash item record
+          await restoreTrashItem(trashItem);
           await TrashItem.findByIdAndDelete(trashItemId);
 
           return {
@@ -373,9 +322,7 @@ router.post(
         })
       );
 
-      // Separate successful and failed restores
       const restored = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
-
       const failed = results
         .filter((r) => r.status === 'rejected')
         .map((r, index) => ({
@@ -403,7 +350,6 @@ router.post(
 /**
  * DELETE /api/trash/bulk-delete
  * Bulk permanent delete
- * Body: { trashItemIds: [] }
  */
 router.delete(
   '/bulk-delete',
@@ -411,6 +357,7 @@ router.delete(
   async (req, res) => {
     try {
       const { trashItemIds } = req.body;
+      const schoolId = req.user?.schoolId;
 
       if (!trashItemIds || !Array.isArray(trashItemIds) || trashItemIds.length === 0) {
         return res.status(400).json({
@@ -420,41 +367,12 @@ router.delete(
         });
       }
 
-      // Process all items in parallel
       const results = await Promise.allSettled(
         trashItemIds.map(async (trashItemId) => {
-          // Find trash item
-          const trashItem = await TrashItem.findById(trashItemId);
+          const trashItem = await TrashItem.findOne({ _id: trashItemId, schoolId });
+          if (!trashItem) throw new Error(`Trash item not found: ${trashItemId}`);
 
-          if (!trashItem) {
-            throw new Error(`Trash item not found: ${trashItemId}`);
-          }
-
-          // Delete based on item type
-          switch (trashItem.itemType) {
-            case 'Student':
-              await permanentlyDeleteStudentData(trashItem.itemId);
-              break;
-
-            case 'Staff':
-              // Delete the staff
-              await Staff.findByIdAndDelete(trashItem.itemId);
-              break;
-
-            case 'Class':
-              // Delete the class
-              await Class.findByIdAndDelete(trashItem.itemId);
-              break;
-
-            case 'BulkCleanup':
-              // Data already deleted from source, just discard the backup
-              break;
-
-            default:
-              throw new Error(`Unknown item type: ${trashItem.itemType}`);
-          }
-
-          // Delete the trash item record
+          await permanentlyDeleteTrashItem(trashItem);
           await TrashItem.findByIdAndDelete(trashItemId);
 
           return {
@@ -466,9 +384,7 @@ router.delete(
         })
       );
 
-      // Separate successful and failed deletes
       const deleted = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
-
       const failed = results
         .filter((r) => r.status === 'rejected')
         .map((r, index) => ({

@@ -15,6 +15,7 @@ import { syncUsageMetrics } from '../../services/billingService.js';
 import { planLimitGate } from '../../middleware/auth/planLimitGate.js';
 import PushToken from '../../models/PushToken.js';
 import { cascadeDeleteStaffReferences } from '../../services/staffDeletionService.js';
+import { logToTrash } from '../../services/trashService.js';
 import { dispatchWebhookEvent } from '../../services/webhookService.js';
 import { piiMatch } from '../../utils/encryption.js';
 import {
@@ -582,6 +583,11 @@ router.put(
 // Fix 1.7/3.3: Soft delete instead of hard delete
 router.delete('/:id', authenticate, checkPermission('staff', 'delete'), async (req, res) => {
   try {
+    // Snapshot before mutation for trash logging
+    const staffSnapshot = await Staff.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    ).lean();
+
     const staff = await Staff.findOneAndUpdate(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
       {
@@ -597,6 +603,18 @@ router.delete('/:id', authenticate, checkPermission('staff', 'delete'), async (r
 
     if (!staff) {
       return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
+    }
+
+    // Log to trash for restore capability
+    if (staffSnapshot) {
+      logToTrash({
+        itemType: 'Staff',
+        itemId: staff._id,
+        itemName: staffSnapshot.name || 'Staff',
+        originalData: staffSnapshot,
+        deletedBy: req.user.id || req.user._id,
+        schoolId: req.user?.schoolId,
+      }).catch(() => {});
     }
 
     // Fix 6.2: Clean up class teacher AFTER verifying school ownership

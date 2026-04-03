@@ -200,6 +200,7 @@ import {
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { computeGrade } from '../utils/grading.js';
+import { logToTrash } from '../services/trashService.js';
 
 // AUDIT-19: Zod validation schemas for single result endpoints
 const createResultSchema = z.object({
@@ -806,6 +807,11 @@ router.delete(
   checkPermission('academics', 'delete'),
   async (req, res) => {
     try {
+      // Snapshot before mutation for trash logging
+      const examSnapshot = await Exam.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      ).lean();
+
       // Issue #25: Soft delete with audit trail
       const exam = await Exam.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
@@ -820,6 +826,19 @@ router.delete(
         isDeleted: true,
         deletedAt: new Date(),
       });
+
+      // Log to trash
+      if (examSnapshot) {
+        logToTrash({
+          itemType: 'Exam',
+          itemId: exam._id,
+          itemName: examSnapshot.name || 'Exam',
+          originalData: examSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId: req.user?.schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ message: 'Exam deleted successfully' });
     } catch (error) {
       res.status(500).json({ error: 'An internal error occurred. Please try again.' });

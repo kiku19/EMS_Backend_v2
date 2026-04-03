@@ -40,6 +40,22 @@ export const regularizeAttendanceSchema = z
   })
   .strip();
 
+// ─── MOBILE ATTENDANCE MARK ───────────────────────────────────
+export const mobileAttendanceMarkSchema = z
+  .object({
+    status: z.enum(['present', 'absent', 'leave', 'halfday'], {
+      errorMap: () => ({ message: 'Status must be present, absent, leave, or halfday' }),
+    }),
+    reason: optionalString(500),
+    location: z
+      .object({
+        latitude: z.number().optional(),
+        longitude: z.number().optional(),
+      })
+      .optional(),
+  })
+  .strip();
+
 // ─── MOBILE LEAVE APPLICATION ──────────────────────────────────
 export const mobileLeaveApplySchema = z
   .object({

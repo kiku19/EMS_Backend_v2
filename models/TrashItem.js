@@ -4,7 +4,6 @@ const trashItemSchema = new mongoose.Schema(
   {
     itemType: {
       type: String,
-      enum: ['Student', 'Staff', 'Class', 'Event', 'BulkCleanup'],
       required: true,
       index: true,
     },
@@ -16,6 +15,25 @@ const trashItemSchema = new mongoose.Schema(
     itemName: {
       type: String,
       required: true,
+    },
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      required: true,
+      index: true,
+    },
+    restoreStrategy: {
+      type: String,
+      enum: ['soft-delete', 'hard-delete'],
+      required: true,
+    },
+    modelName: {
+      type: String,
+      required: false, // null for BulkCleanup
+    },
+    softDeleteField: {
+      type: String,
+      default: 'isDeleted',
     },
     // For BulkCleanup items: stores the category key and model name
     bulkCleanup: {
@@ -65,8 +83,8 @@ const trashItemSchema = new mongoose.Schema(
 // Compound index for efficient expired queries
 trashItemSchema.index({ expiresAt: 1, itemType: 1 });
 
-// Compound index for efficient listing queries
-trashItemSchema.index({ itemType: 1, deletedAt: -1 });
+// Compound index for efficient listing queries (school-scoped)
+trashItemSchema.index({ schoolId: 1, itemType: 1, deletedAt: -1 });
 
 // Index for search by name
 trashItemSchema.index({ itemName: 'text' });

@@ -13,6 +13,7 @@ import {
   bulkStaffAttendanceSchema,
   regularizeAttendanceSchema,
   mobileLeaveApplySchema,
+  mobileAttendanceMarkSchema,
   leaveApprovalSchema,
 } from '../validators/staffAttendanceSchema.js';
 
@@ -436,7 +437,7 @@ router.put('/:id/regularize', checkPermission('staff', 'edit'), validateZod(regu
 // ============ MOBILE APP ENDPOINTS ============
 
 // Mark attendance from mobile app (with status and reason)
-router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, res) => {
+router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, validateZod(mobileAttendanceMarkSchema), async (req, res) => {
   try {
     const { status, location } = req.body;
     const reason = sanitizeString(req.body.reason);

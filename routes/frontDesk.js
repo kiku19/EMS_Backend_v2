@@ -7,6 +7,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { validateStageTransition, updateAdmissionSchema } from '../validators/admissionSchema.js';
+import { logToTrash } from '../services/trashService.js';
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -233,7 +234,26 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
+
+      // Snapshot before deletion for trash logging
+      const admissionSnapshot = await Admission.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id })
+      ).lean();
+
       await Admission.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+      // Log to trash
+      if (admissionSnapshot) {
+        logToTrash({
+          itemType: 'Admission',
+          itemId: admissionSnapshot._id,
+          itemName: admissionSnapshot.studentName || admissionSnapshot.name || 'Admission',
+          originalData: admissionSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true, message: 'Admission deleted successfully' });
     } catch (error) {
       console.error('❌ Delete admission error:', error);
@@ -581,7 +601,26 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
+
+      // Snapshot before deletion for trash logging
+      const appointmentSnapshot = await Appointment.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id })
+      ).lean();
+
       await Appointment.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+      // Log to trash
+      if (appointmentSnapshot) {
+        logToTrash({
+          itemType: 'Appointment',
+          itemId: appointmentSnapshot._id,
+          itemName: appointmentSnapshot.visitorName || 'Appointment',
+          originalData: appointmentSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true, message: 'Appointment deleted successfully' });
     } catch (error) {
       console.error('❌ Delete appointment error:', error);
@@ -722,7 +761,26 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+
+      // Snapshot before deletion for trash logging
+      const feedbackSnapshot = await Feedback.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id })
+      ).lean();
+
       await Feedback.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+      // Log to trash
+      if (feedbackSnapshot) {
+        logToTrash({
+          itemType: 'Feedback',
+          itemId: feedbackSnapshot._id,
+          itemName: feedbackSnapshot.name || feedbackSnapshot.subject || 'Feedback',
+          originalData: feedbackSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true, message: 'Feedback deleted successfully' });
     } catch (error) {
       console.error('❌ Delete feedback error:', error);
@@ -855,7 +913,26 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : null;
+
+      // Snapshot before deletion for trash logging
+      const callLogSnapshot = await CallLog.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id })
+      ).lean();
+
       await CallLog.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+      // Log to trash
+      if (callLogSnapshot) {
+        logToTrash({
+          itemType: 'CallLog',
+          itemId: callLogSnapshot._id,
+          itemName: callLogSnapshot.callerName || 'Call Log',
+          originalData: callLogSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true, message: 'Call log deleted successfully' });
     } catch (error) {
       console.error('❌ Delete call log error:', error);

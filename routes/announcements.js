@@ -280,6 +280,7 @@ import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js'
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { createSmsRateLimiter } from '../middleware/tenantRateLimit.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
+import { logToTrash } from '../services/trashService.js';
 
 // --- Zod validation schemas ---
 
@@ -790,6 +791,9 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
+    // Snapshot before mutation for trash logging
+    const announcementSnapshot = announcement.toObject();
+
     // Cancel scheduled job if exists
     if (announcement.scheduledFor) {
       await cancelJobs({ 'data.announcementId': announcement._id });
@@ -800,6 +804,16 @@ router.delete('/:id', async (req, res) => {
     announcement.deletedAt = new Date();
     announcement.deletedBy = req.user._id;
     await announcement.save();
+
+    // Log to trash
+    logToTrash({
+      itemType: 'Announcement',
+      itemId: announcement._id,
+      itemName: announcementSnapshot.title || 'Announcement',
+      originalData: announcementSnapshot,
+      deletedBy: req.user._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
 
     res.json({ message: req.t('common:routes.announcementDeletedSuccessfully') });
   } catch (error) {

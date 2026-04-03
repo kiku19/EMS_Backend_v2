@@ -96,6 +96,7 @@ import { z } from 'zod';
 import Changelog from '../models/Changelog.js';
 import ChangelogRead from '../models/ChangelogRead.js';
 import { authenticate } from '../middleware/auth.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -304,10 +305,20 @@ router.delete('/admin/:id', async (req, res) => {
       return res.status(403).json({ error: 'Super admin access required' });
     }
 
+    const entrySnapshot = await Changelog.findById(req.params.id).lean();
     const entry = await Changelog.findByIdAndDelete(req.params.id);
     if (!entry) {
       return res.status(404).json({ error: 'Changelog entry not found' });
     }
+
+    logToTrash({
+      itemType: 'Changelog',
+      itemId: entry._id,
+      itemName: (entrySnapshot || entry).title || 'Changelog Entry',
+      originalData: entrySnapshot || entry.toObject(),
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
 
     await ChangelogRead.deleteMany({ changelogId: req.params.id });
 

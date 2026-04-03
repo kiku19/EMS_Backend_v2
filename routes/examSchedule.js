@@ -7,6 +7,7 @@ import { createExamScheduleSchema, updateExamScheduleSchema } from '../validator
 import { sendNotification } from './notifications.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -573,10 +574,23 @@ router.delete(
         return res.status(404).json({ error: 'Exam schedule not found' });
       }
 
+      // Snapshot before mutation for trash logging
+      const scheduleSnapshot = schedule.toObject();
+
       // Soft delete the schedule
       schedule.isDeleted = true;
       schedule.deletedAt = new Date();
       await schedule.save();
+
+      // Log to trash
+      logToTrash({
+        itemType: 'ExamSchedule',
+        itemId: schedule._id,
+        itemName: scheduleSnapshot.name || 'Exam Schedule',
+        originalData: scheduleSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId,
+      }).catch(() => {});
 
       // Also soft-delete generated exams and their results
       if (schedule.generatedExamIds?.length > 0) {

@@ -15,6 +15,8 @@ import {
   listCoupons,
   validateCoupon,
 } from '../services/couponService.js';
+import { Coupon } from '../models/Coupon.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -92,7 +94,20 @@ router.put(
 // DELETE /coupons/:id - delete coupon (admin only)
 router.delete('/:id', checkPermission('settings', 'edit'), async (req, res) => {
   try {
+    const couponSnapshot = await Coupon.findById(req.params.id).lean();
     await deleteCoupon(req.params.id);
+
+    if (couponSnapshot) {
+      logToTrash({
+        itemType: 'Coupon',
+        itemId: couponSnapshot._id,
+        itemName: couponSnapshot.code || 'Coupon',
+        originalData: couponSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId,
+      }).catch(() => {});
+    }
+
     res.json({ success: true });
   } catch (error) {
     res.status(error.status || 500).json({

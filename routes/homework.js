@@ -250,6 +250,7 @@ import { Student } from '../database.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { zodSchemas, validateZod } from '../middleware/validation.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -733,6 +734,11 @@ router.post('/:id/grade', validateZod(zodSchemas.gradeHomework), async (req, res
 // Delete homework (soft delete — preserves grading data)
 router.delete('/:id', checkPermission('homework', 'delete'), async (req, res) => {
   try {
+    // Snapshot before mutation for trash logging
+    const homeworkSnapshot = await Homework.findOne(
+      scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    ).lean();
+
     const homework = await Homework.findOneAndUpdate(
       scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
       { $set: { isDeleted: true, deletedAt: new Date() } },
@@ -741,6 +747,18 @@ router.delete('/:id', checkPermission('homework', 'delete'), async (req, res) =>
 
     if (!homework) {
       return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
+    }
+
+    // Log to trash
+    if (homeworkSnapshot) {
+      logToTrash({
+        itemType: 'Homework',
+        itemId: homework._id,
+        itemName: homeworkSnapshot.title || 'Homework',
+        originalData: homeworkSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user.schoolId,
+      }).catch(() => {});
     }
 
     res.json({ success: true, message: req.t('common:routes.homeworkDeletedSuccessfully') });

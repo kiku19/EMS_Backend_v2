@@ -919,6 +919,7 @@ router.post(
 
       // Use timetableService to sync each slot to both class and teacher timetables
       // (mirrors the single-slot PUT /:classId/slot approach)
+      const failedSlots = [];
       for (const update of updates) {
         const { day, periodIndex, subject, teacherId, room } = update;
 
@@ -939,11 +940,16 @@ router.post(
           });
         } catch (syncError) {
           console.error(
-            `Batch sync error for slot ${day}[${periodIndex}] (falling back to direct save):`,
+            `Batch sync error for slot ${day}[${periodIndex}] (collecting for batch fallback):`,
             syncError
           );
-          // Fallback: save class timetable directly (without teacher sync)
-          // Ensure schedule array has enough slots
+          failedSlots.push({ day, periodIndex, subject, teacherId, room });
+        }
+      }
+
+      // Batch fallback: apply all failed slots in a single save to avoid version conflicts
+      if (failedSlots.length > 0) {
+        for (const { day, periodIndex, subject, teacherId, room } of failedSlots) {
           while (timetable.schedule[day].length <= periodIndex) {
             timetable.schedule[day].push({
               subject: '',
@@ -953,7 +959,6 @@ router.post(
               modifiedBy: req.user?.id,
             });
           }
-
           timetable.schedule[day][periodIndex] = {
             subject: subject || '',
             teacherId: teacherId || null,
@@ -961,10 +966,11 @@ router.post(
             lastModified: new Date(),
             modifiedBy: req.user?.id,
           };
-          timetable.version += 1;
-          timetable.lastSyncedAt = new Date();
-          await timetable.save();
         }
+        timetable.version += 1;
+        timetable.lastSyncedAt = new Date();
+        await timetable.save();
+        console.warn(`Batch fallback: saved ${failedSlots.length} slot(s) without teacher sync for class ${classId}`);
       }
 
       // Reload and populate for response

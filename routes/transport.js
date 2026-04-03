@@ -6,6 +6,7 @@ import { Student } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { escapeRegex } from './students/helpers.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -216,12 +217,26 @@ router.delete(
   checkPermission('transport', 'delete'),
   async (req, res) => {
     try {
+      const vehicleSnapshot = await Vehicle.findOne({
+        _id: req.params.id, schoolId: req.user.schoolId, isDeleted: { $ne: true },
+      }).lean();
+
       const vehicle = await Vehicle.findOneAndUpdate(
         { _id: req.params.id, schoolId: req.user.schoolId, isDeleted: { $ne: true } },
         { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: req.user.id } },
         { new: true }
       );
       if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
+
+      logToTrash({
+        itemType: 'Vehicle',
+        itemId: vehicle._id,
+        itemName: vehicleSnapshot?.registrationNumber || 'Vehicle',
+        originalData: vehicleSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId,
+      }).catch(() => {});
+
       res.json({ message: req.t('common:routes.vehicleDeletedSuccessfully') });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -401,12 +416,26 @@ router.delete(
   checkPermission('transport', 'delete'),
   async (req, res) => {
     try {
+      const routeSnapshot = await TransportRoute.findOne({
+        _id: req.params.id, schoolId: req.user.schoolId, isDeleted: { $ne: true },
+      }).lean();
+
       const route = await TransportRoute.findOneAndUpdate(
         { _id: req.params.id, schoolId: req.user.schoolId, isDeleted: { $ne: true } },
         { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: req.user.id } },
         { new: true }
       );
       if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
+
+      logToTrash({
+        itemType: 'TransportRoute',
+        itemId: route._id,
+        itemName: routeSnapshot?.routeName || 'Transport Route',
+        originalData: routeSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId,
+      }).catch(() => {});
+
       res.json({ message: req.t('common:routes.routeDeletedSuccessfully') });
     } catch (err) {
       res.status(500).json({ error: err.message });

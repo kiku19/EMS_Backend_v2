@@ -296,6 +296,10 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
       itemId: sid,
       itemName: 'Cascade Student',
       deletedBy: admin._id,
+      schoolId: school._id,
+      restoreStrategy: 'soft-delete',
+      modelName: 'Student',
+      softDeleteField: 'isDeleted',
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       originalData: { name: 'Cascade Student' },
     });

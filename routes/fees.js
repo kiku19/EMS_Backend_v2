@@ -144,6 +144,7 @@ import {
 import { validateZod, createFeePaymentSchema, createRefundSchema } from '../validators/index.js';
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { getFeePaymentGateway } from '../services/paymentGateway/index.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -980,7 +981,21 @@ router.delete('/refunds/:id', checkPermission('fees', 'delete'), async (req, res
       return res.status(400).json({ error: 'Only pending refunds can be deleted' });
     }
 
+    // Snapshot for trash logging
+    const refundSnapshot = refund.toObject();
+
     await FeeRefund.findByIdAndDelete(refund._id);
+
+    // Log to trash
+    logToTrash({
+      itemType: 'FeeRefund',
+      itemId: refundSnapshot._id,
+      itemName: `Refund #${refundSnapshot.refundId || refundSnapshot._id}`,
+      originalData: refundSnapshot,
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
+
     res.json({ message: 'Refund deleted successfully' });
   } catch (error) {
     logger.error({ err: error }, 'Error deleting refund');

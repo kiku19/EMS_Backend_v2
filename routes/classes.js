@@ -189,6 +189,7 @@ import { sendNotification } from './notifications.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import mongoose from 'mongoose';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -532,14 +533,52 @@ router.put(
     try {
       const { assignedSubjects } = req.body;
 
+      // Get previous subjects before update to detect removals
+      const prevClass = await Class.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      );
+      if (!prevClass) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      }
+
+      const prevSubjects = new Set((prevClass.assignedSubjects || []).map(s => typeof s === 'string' ? s : s.name));
+      const newSubjects = new Set(assignedSubjects.map(s => typeof s === 'string' ? s : s.name));
+      const removedSubjects = [...prevSubjects].filter(s => !newSubjects.has(s));
+
       const classDoc = await Class.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         { assignedSubjects, subjects: assignedSubjects },
         { new: true, runValidators: true }
       );
 
-      if (!classDoc) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      // Clean up timetable slots for removed subjects
+      if (removedSubjects.length > 0) {
+        try {
+          const timetable = await Timetable.findOne(
+            scopeBySchool(req.user?.schoolId, { classId: req.params.id, academicYear: CURRENT_ACADEMIC_YEAR, isDeleted: { $ne: true } })
+          );
+          if (timetable) {
+            let modified = false;
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            for (const day of days) {
+              if (!timetable.schedule[day]) continue;
+              for (let i = 0; i < timetable.schedule[day].length; i++) {
+                const slot = timetable.schedule[day][i];
+                if (slot.subject && removedSubjects.includes(slot.subject)) {
+                  timetable.schedule[day][i] = { subject: '', teacherId: null, room: '', lastModified: new Date(), modifiedBy: req.user?.id };
+                  modified = true;
+                }
+              }
+            }
+            if (modified) {
+              timetable.version += 1;
+              timetable.lastSyncedAt = new Date();
+              await timetable.save();
+            }
+          }
+        } catch (cleanupError) {
+          console.error('Error cleaning timetable after subject removal:', cleanupError);
+        }
       }
 
       res.json({
@@ -547,6 +586,7 @@ router.put(
         classId: classDoc._id,
         subjects: classDoc.subjects,
         assignedSubjects: classDoc.assignedSubjects,
+        removedSubjects: removedSubjects.length > 0 ? removedSubjects : undefined,
       });
     } catch (error) {
       console.error('Error updating class subjects:', error);
@@ -744,6 +784,9 @@ router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => 
       return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
 
+    // Snapshot before mutation for trash logging
+    const classSnapshot = scopedCheck.toObject();
+
     const studentCount = await countActiveStudents(req.params.id, req.user?.schoolId);
     if (studentCount > 0) {
       return res.status(400).json({ error: 'Cannot delete class with active students' });
@@ -817,6 +860,16 @@ router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => 
     if (!classDoc) {
       return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
+
+    // Log to trash for restore capability
+    logToTrash({
+      itemType: 'Class',
+      itemId: classDoc._id,
+      itemName: classSnapshot.name || 'Class',
+      originalData: classSnapshot,
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId,
+    }).catch(() => {});
 
     res.json({ success: true });
   } catch (error) {

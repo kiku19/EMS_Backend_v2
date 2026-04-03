@@ -8,6 +8,7 @@ import {
   getNextAdmissionId,
 } from '../../database.js';
 import { permanentlyDeleteStudentData } from '../../services/studentDataErasureService.js';
+import { logToTrash } from '../../services/trashService.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { resolveAcademicYear, getConfiguredAcademicYear } from '../../utils/academicYear.js';
@@ -317,11 +318,24 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
     // AUDIT-284: Capture active status BEFORE mutation for billing metric
     const wasActive = student.status === 'active';
 
+    // Snapshot before mutation for trash logging
+    const studentSnapshot = student.toObject();
+
     // Soft delete: mark as deleted instead of permanent removal
     student.isDeleted = true;
     student.deletedAt = new Date();
     student.status = 'inactive';
     await student.save();
+
+    // Log to trash for restore capability
+    logToTrash({
+      itemType: 'Student',
+      itemId: student._id,
+      itemName: student.name || 'Student',
+      originalData: studentSnapshot,
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
 
     if (req.user?.schoolId && wasActive) {
       await incrementUsageMetric(req.user.schoolId, 'students', -1);

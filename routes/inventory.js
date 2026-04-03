@@ -8,6 +8,7 @@ import AssetAudit from '../models/AssetAudit.js';
 import Vendor from '../models/Vendor.js';
 import MaintenanceLog from '../models/MaintenanceLog.js';
 import ProcurementRequest from '../models/ProcurementRequest.js';
+import { logToTrash } from '../services/trashService.js';
 import {
   createAssetSchema,
   updateAssetSchema,
@@ -291,6 +292,10 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user.schoolId;
+      const assetSnapshot = await Asset.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      ).lean();
+
       const asset = await Asset.findOneAndUpdate(
         scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         { isDeleted: true, updatedBy: req.user._id },
@@ -298,6 +303,18 @@ router.delete(
       );
 
       if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
+
+      if (assetSnapshot) {
+        logToTrash({
+          itemType: 'Asset',
+          itemId: assetSnapshot._id,
+          itemName: assetSnapshot.name || 'Unnamed Asset',
+          originalData: assetSnapshot,
+          deletedBy: req.user?._id || req.user?.id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -389,6 +406,10 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user.schoolId;
+      const categorySnapshot = await AssetCategory.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      ).lean();
+
       const category = await AssetCategory.findOneAndUpdate(
         scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         { isDeleted: true, updatedBy: req.user._id },
@@ -397,6 +418,18 @@ router.delete(
 
       if (!category)
         return res.status(404).json({ error: req.t('common:routes.categoryNotFound') });
+
+      if (categorySnapshot) {
+        logToTrash({
+          itemType: 'AssetCategory',
+          itemId: categorySnapshot._id,
+          itemName: categorySnapshot.name || 'Unnamed Category',
+          originalData: categorySnapshot,
+          deletedBy: req.user?._id || req.user?.id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -503,6 +536,10 @@ router.delete(
         });
       }
 
+      const vendorSnapshot = await Vendor.findOne(
+        scopeBySchool(schoolId, { _id: vendorId, isDeleted: { $ne: true } })
+      ).lean();
+
       const vendor = await Vendor.findOneAndUpdate(
         scopeBySchool(schoolId, { _id: vendorId, isDeleted: { $ne: true } }),
         { isDeleted: true, updatedBy: req.user._id },
@@ -510,6 +547,18 @@ router.delete(
       );
 
       if (!vendor) return res.status(404).json({ error: req.t('common:routes.vendorNotFound') });
+
+      if (vendorSnapshot) {
+        logToTrash({
+          itemType: 'Vendor',
+          itemId: vendorSnapshot._id,
+          itemName: vendorSnapshot.name || 'Unnamed Vendor',
+          originalData: vendorSnapshot,
+          deletedBy: req.user?._id || req.user?.id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -631,6 +680,10 @@ router.delete(
     try {
       const schoolId = req.user.schoolId;
 
+      const logSnapshot = await MaintenanceLog.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      ).lean();
+
       const log = await MaintenanceLog.findOneAndUpdate(
         scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         { isDeleted: true, deletedAt: new Date(), deletedBy: req.user._id },
@@ -639,6 +692,17 @@ router.delete(
 
       if (!log)
         return res.status(404).json({ error: req.t('common:routes.maintenanceLogNotFound') });
+
+      if (logSnapshot) {
+        logToTrash({
+          itemType: 'MaintenanceLog',
+          itemId: logSnapshot._id,
+          itemName: logSnapshot.description || 'Unnamed Maintenance Log',
+          originalData: logSnapshot,
+          deletedBy: req.user?._id || req.user?.id,
+          schoolId,
+        }).catch(() => {});
+      }
 
       // If the log was for an active maintenance, restore asset status
       if (log.status !== 'COMPLETED') {
@@ -778,6 +842,10 @@ router.delete(
   async (req, res) => {
     try {
       const schoolId = req.user.schoolId;
+      const requestSnapshot = await ProcurementRequest.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      ).lean();
+
       const request = await ProcurementRequest.findOneAndUpdate(
         scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         { isDeleted: true, updatedBy: req.user._id },
@@ -786,6 +854,18 @@ router.delete(
 
       if (!request)
         return res.status(404).json({ error: req.t('common:routes.procurementRequestNotFound') });
+
+      if (requestSnapshot) {
+        logToTrash({
+          itemType: 'ProcurementRequest',
+          itemId: requestSnapshot._id,
+          itemName: requestSnapshot.itemName || 'Unnamed Procurement Request',
+          originalData: requestSnapshot,
+          deletedBy: req.user?._id || req.user?.id,
+          schoolId,
+        }).catch(() => {});
+      }
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -905,9 +985,22 @@ router.delete(
           });
       }
 
+      const auditSnapshot = existing.toObject();
+
       existing.isDeleted = true;
       existing.updatedBy = req.user._id;
       await existing.save();
+
+      if (auditSnapshot) {
+        logToTrash({
+          itemType: 'AssetAudit',
+          itemId: auditSnapshot._id,
+          itemName: auditSnapshot.name || 'Unnamed Asset Audit',
+          originalData: auditSnapshot,
+          deletedBy: req.user?._id || req.user?.id,
+          schoolId,
+        }).catch(() => {});
+      }
 
       res.json({ success: true });
     } catch (error) {

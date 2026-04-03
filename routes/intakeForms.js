@@ -24,6 +24,7 @@ import {
   mockThirdPartyValidation,
 } from '../services/phoneValidation.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { logToTrash } from '../services/trashService.js';
 import { ensureDefaultSchool } from '../utils/schoolContext.js';
 import {
   sendIntakeFormAssignedEmail,
@@ -261,6 +262,16 @@ router.delete('/intake-forms/:id', async (req, res) => {
         message: `No form found with ID: ${id}`,
       });
     }
+
+    // Log to trash before cascade
+    logToTrash({
+      itemType: 'IntakeForm',
+      itemId: form._id,
+      itemName: form.formName || 'Intake Form',
+      originalData: form.toObject(),
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
 
     // Cascade: soft-delete related assignments and submissions
     await FormAssignment.updateMany(
@@ -637,6 +648,15 @@ router.delete('/form-assignments/:id', async (req, res) => {
       });
     }
 
+    logToTrash({
+      itemType: 'FormAssignment',
+      itemId: assignment._id,
+      itemName: assignment.assignedToEmail || assignment.assignedToPhone || 'Form Assignment',
+      originalData: assignment.toObject(),
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
+
     res.json({
       success: true,
       message: 'Form assignment deleted successfully',
@@ -789,6 +809,15 @@ router.delete('/form-submissions/:id', async (req, res) => {
         message: `No submission found with ID: ${id}`,
       });
     }
+
+    logToTrash({
+      itemType: 'FormSubmission',
+      itemId: submission._id,
+      itemName: submission.submitterName || submission.submitterEmail || 'Form Submission',
+      originalData: submission.toObject(),
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
 
     res.json({
       success: true,

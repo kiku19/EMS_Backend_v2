@@ -15,24 +15,32 @@ import { createTestApp } from './helpers/testApp.js';
 const BASE = '/api/trash';
 
 /** Create a trash item record for a student. */
-async function createStudentTrashItem({ studentId, deletedBy, itemName = 'Test Student' }) {
+async function createStudentTrashItem({ studentId, deletedBy, schoolId, itemName = 'Test Student' }) {
   return TrashItem.create({
     itemType: 'Student',
     itemId: studentId,
     itemName,
     deletedBy,
+    schoolId,
+    restoreStrategy: 'soft-delete',
+    modelName: 'Student',
+    softDeleteField: 'isDeleted',
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
     originalData: { _id: studentId, name: itemName },
   });
 }
 
 /** Create a trash item record for a class. */
-async function createClassTrashItem({ classId, deletedBy, itemName = 'Test Class' }) {
+async function createClassTrashItem({ classId, deletedBy, schoolId, itemName = 'Test Class' }) {
   return TrashItem.create({
     itemType: 'Class',
     itemId: classId,
     itemName,
     deletedBy,
+    schoolId,
+    restoreStrategy: 'soft-delete',
+    modelName: 'Class',
+    softDeleteField: 'isDeleted',
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     originalData: { _id: classId, name: itemName },
   });
@@ -91,7 +99,7 @@ describe('trash routes', () => {
         classId: defaultClass._id,
         rollNo: 1,
       });
-      await createStudentTrashItem({ studentId: student._id, deletedBy: admin._id });
+      await createStudentTrashItem({ studentId: student._id, deletedBy: admin._id, schoolId: school._id });
 
       const res = await request(app).get(BASE).set(headers).expect(200);
 
@@ -113,11 +121,13 @@ describe('trash routes', () => {
       await createStudentTrashItem({
         studentId: student._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: 'Filtered Student',
       });
       await createClassTrashItem({
         classId: cls._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: 'Filtered Class',
       });
 
@@ -144,11 +154,13 @@ describe('trash routes', () => {
       await createStudentTrashItem({
         studentId: student1._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: 'Alice Smith',
       });
       await createStudentTrashItem({
         studentId: student2._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: 'Bob Jones',
       });
 
@@ -184,9 +196,9 @@ describe('trash routes', () => {
       });
       const cls = await createClassRecord({ schoolId: school._id, name: 'Stats Class' });
 
-      await createStudentTrashItem({ studentId: s1._id, deletedBy: admin._id });
-      await createStudentTrashItem({ studentId: s2._id, deletedBy: admin._id });
-      await createClassTrashItem({ classId: cls._id, deletedBy: admin._id });
+      await createStudentTrashItem({ studentId: s1._id, deletedBy: admin._id, schoolId: school._id });
+      await createStudentTrashItem({ studentId: s2._id, deletedBy: admin._id, schoolId: school._id });
+      await createClassTrashItem({ classId: cls._id, deletedBy: admin._id, schoolId: school._id });
 
       const res = await request(app).get(`${BASE}/stats`).set(headers).expect(200);
 
@@ -212,6 +224,7 @@ describe('trash routes', () => {
       const trashItem = await createStudentTrashItem({
         studentId: student._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: student.name,
       });
 
@@ -241,6 +254,7 @@ describe('trash routes', () => {
       const trashItem = await createClassTrashItem({
         classId: cls._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: cls.name,
       });
 
@@ -279,6 +293,10 @@ describe('trash routes', () => {
         itemId: staffMember._id,
         itemName: staffMember.name,
         deletedBy: admin._id,
+        schoolId: school._id,
+        restoreStrategy: 'soft-delete',
+        modelName: 'Staff',
+        softDeleteField: 'isDeleted',
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         originalData: { _id: staffMember._id, name: staffMember.name },
       });
@@ -339,11 +357,13 @@ describe('trash routes', () => {
       const t1 = await createStudentTrashItem({
         studentId: s1._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: 'Bulk S1',
       });
       const t2 = await createStudentTrashItem({
         studentId: s2._id,
         deletedBy: admin._id,
+        schoolId: school._id,
         itemName: 'Bulk S2',
       });
 
@@ -371,6 +391,7 @@ describe('trash routes', () => {
       const trashItem = await createStudentTrashItem({
         studentId: student._id,
         deletedBy: admin._id,
+        schoolId: school._id,
       });
 
       const fakeId = new mongoose.Types.ObjectId().toString();

@@ -6,6 +6,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { createGatePassSchema, updateGatePassSchema } from '../validators/frontDeskSchema.js';
+import { logToTrash } from '../services/trashService.js';
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -819,7 +820,17 @@ router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res
       });
     }
 
+    const gatePassSnapshot = gatePass.toObject();
     await GatePass.deleteOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+    logToTrash({
+      itemType: 'GatePass',
+      itemId: gatePassSnapshot._id,
+      itemName: gatePassSnapshot.studentName || gatePassSnapshot.purpose || 'Gate Pass',
+      originalData: gatePassSnapshot,
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId,
+    }).catch(() => {});
 
     res.json({
       success: true,

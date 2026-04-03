@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { sanitizeQueryStr } from '../middleware/validation.js';
 import { createLogger } from '../utils/logger.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -325,6 +326,12 @@ router.put('/rules/:id', checkPermission('fees', 'edit'), async (req, res) => {
 // Delete fee rule
 router.delete('/rules/:id', checkPermission('fees', 'delete'), async (req, res) => {
   try {
+    // Snapshot before deletion for trash logging
+    const ruleSnapshot = await FeeRule.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+    }).lean();
+
     const rule = await FeeRule.findOneAndDelete({
       _id: req.params.id,
       schoolId: req.user.schoolId,
@@ -332,6 +339,18 @@ router.delete('/rules/:id', checkPermission('fees', 'delete'), async (req, res) 
 
     if (!rule) {
       return res.status(404).json({ error: req.t('common:routes.feeRuleNotFound') });
+    }
+
+    // Log to trash
+    if (ruleSnapshot) {
+      logToTrash({
+        itemType: 'FeeRule',
+        itemId: ruleSnapshot._id,
+        itemName: ruleSnapshot.name || 'Fee Rule',
+        originalData: ruleSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user.schoolId,
+      }).catch(() => {});
     }
 
     res.json({ message: req.t('common:routes.feeRuleDeletedSuccessfully') });

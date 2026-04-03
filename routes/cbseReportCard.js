@@ -11,6 +11,7 @@ import {
   bulkCBSEReportCardsSchema,
 } from '../validators/cbseSchema.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -379,6 +380,17 @@ router.delete('/:id', checkPermission('students', 'edit'), async (req, res) => {
       { new: true }
     );
     if (!reportCard) return res.status(404).json({ error: 'CBSE report card not found' });
+
+    // Log to trash (use existingCard which was fetched before mutation)
+    logToTrash({
+      itemType: 'CBSEReportCard',
+      itemId: reportCard._id,
+      itemName: existingCard.studentName || `Report Card ${id}`,
+      originalData: existingCard.toObject(),
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId,
+    }).catch(() => {});
+
     res.json({ message: 'CBSE report card deleted' });
   } catch (error) {
     console.error('Error deleting CBSE report card:', error);

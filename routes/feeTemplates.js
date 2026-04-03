@@ -5,6 +5,7 @@ import SchoolGroup from '../models/SchoolGroup.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { logToTrash } from '../services/trashService.js';
 import {
   validateZod,
   createFeeTemplateSchema,
@@ -29,7 +30,9 @@ async function resolveRequestSchoolId(req) {
 router.get('/', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
-    const ownTemplates = await FeeTemplate.find(scopeBySchool(schoolId)).sort({ name: 1 });
+    const query = scopeBySchool(schoolId);
+    if (req.query.academicYear) query.academicYear = req.query.academicYear;
+    const ownTemplates = await FeeTemplate.find(query).sort({ name: 1 });
 
     // Include group-level templates if school belongs to a group with sharedFeeTemplates=true
     let groupTemplates = [];
@@ -133,6 +136,11 @@ router.put(
 
 router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
   try {
+    // Snapshot before deletion for trash logging
+    const templateSnapshot = await FeeTemplate.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    ).lean();
+
     const template = await FeeTemplate.findOneAndDelete(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })
     );
@@ -144,6 +152,18 @@ router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
     await FeeStructure.updateMany(scopeBySchool(req.user?.schoolId, { templateId: template._id }), {
       $unset: { templateId: 1 },
     });
+
+    // Log to trash
+    if (templateSnapshot) {
+      logToTrash({
+        itemType: 'FeeTemplate',
+        itemId: templateSnapshot._id,
+        itemName: templateSnapshot.name || 'Fee Template',
+        originalData: templateSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId,
+      }).catch(() => {});
+    }
 
     res.json({ success: true });
   } catch (error) {

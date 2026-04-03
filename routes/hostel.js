@@ -7,6 +7,7 @@ import HostelAllocation from '../models/HostelAllocation.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -178,8 +179,18 @@ router.delete(
         return res.status(400).json({ error: 'Cannot delete hostel with active allocations' });
       }
 
+      const hostelSnapshot = hostel.toObject();
       hostel.isActive = false;
       await hostel.save();
+
+      logToTrash({
+        itemType: 'Hostel',
+        itemId: hostel._id,
+        itemName: hostel.name,
+        originalData: hostelSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId || schoolId,
+      }).catch(() => {});
 
       // Cascade-deactivate all rooms belonging to this hostel
       await HostelRoom.updateMany(buildSchoolScopedQuery(schoolId, { hostelId: req.params.id }), {
@@ -351,8 +362,18 @@ router.delete('/rooms/:id', checkPermission('hostel', 'delete'), async (req, res
       return res.status(400).json({ error: 'Cannot delete room with active allocations' });
     }
 
+    const roomSnapshot = room.toObject();
     room.isActive = false;
     await room.save();
+
+    logToTrash({
+      itemType: 'HostelRoom',
+      itemId: room._id,
+      itemName: room.roomNumber,
+      originalData: roomSnapshot,
+      deletedBy: req.user?.id || req.user?._id,
+      schoolId: req.user?.schoolId || schoolId,
+    }).catch(() => {});
 
     await Hostel.findByIdAndUpdate(room.hostelId, {
       $inc: { totalRooms: -1, totalCapacity: -room.capacity },

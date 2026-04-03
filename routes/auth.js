@@ -696,12 +696,19 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
         email: payload.email,
         name: payload.name,
       });
+      const refreshToken = jwt.sign(
+        { userId: payload.id, userType: 'super-admin' },
+        getJwtRefreshSecret(),
+        { expiresIn: '30d' }
+      );
 
       setAuthCookie(res, token);
+      setRefreshCookie(res, refreshToken);
 
       return res.json({
         ...payload,
         token,
+        refreshToken,
         tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
       });
     }
@@ -780,11 +787,18 @@ router.get('/session', authenticate, async (req, res) => {
         email: payload.email,
         name: payload.name,
       });
+      const refreshToken = jwt.sign(
+        { userId: payload.id, userType: 'super-admin' },
+        getJwtRefreshSecret(),
+        { expiresIn: '30d' }
+      );
       setAuthCookie(res, token);
+      setRefreshCookie(res, refreshToken);
 
       return res.json({
         ...payload,
         token,
+        refreshToken,
         tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
       });
     }
@@ -801,11 +815,18 @@ router.get('/session', authenticate, async (req, res) => {
       schoolId: payload.schoolId,
       userType: 'staff',
     });
+    const refreshToken = generateStaffRefreshToken(
+      staff._id.toString(),
+      payload.schoolId,
+      staff.tokenVersion || 1
+    );
     setAuthCookie(res, token);
+    setRefreshCookie(res, refreshToken);
 
     res.json({
       ...payload,
       token,
+      refreshToken,
       tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
     });
   } catch (error) {
@@ -858,6 +879,31 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
     }
 
     const decoded = jwt.verify(refreshToken, getJwtRefreshSecret());
+
+    // Handle super-admin refresh tokens
+    if (decoded.userType === 'super-admin') {
+      const payload = buildSuperAdminAuthPayload();
+      const newToken = generateToken(payload.id, payload.role, {
+        userType: payload.userType,
+        email: payload.email,
+        name: payload.name,
+      });
+      const newRefreshToken = jwt.sign(
+        { userId: payload.id, userType: 'super-admin' },
+        getJwtRefreshSecret(),
+        { expiresIn: '30d' }
+      );
+
+      setAuthCookie(res, newToken);
+      setRefreshCookie(res, newRefreshToken);
+
+      return res.json({
+        success: true,
+        token: newToken,
+        refreshToken: newRefreshToken,
+        tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
+      });
+    }
 
     if (decoded.userType !== 'staff') {
       return res.status(401).json({ error: req.t('auth:errors.invalidRefreshToken') });

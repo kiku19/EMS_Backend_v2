@@ -353,6 +353,9 @@ router.post(
             deletedBy,
             expiresAt,
             originalData: documents,
+            schoolId,
+            restoreStrategy: 'hard-delete',
+            modelName: model.modelName,
             bulkCleanup: {
               category: categoryKey,
               modelName: model.modelName,

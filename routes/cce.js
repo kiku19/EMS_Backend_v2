@@ -6,6 +6,7 @@ import { validateZod } from '../validators/zodHelpers.js';
 import { createCCEConfigSchema, updateCCEConfigSchema } from '../validators/cceSchema.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -162,9 +163,24 @@ router.delete(
       if (!config) {
         return res.status(404).json({ error: 'CCE config not found for this academic year' });
       }
+
+      // Snapshot before mutation for trash logging
+      const configSnapshot = config.toObject();
+
       config.isDeleted = true;
       config.deletedAt = new Date();
       await config.save();
+
+      // Log to trash
+      logToTrash({
+        itemType: 'CCEConfig',
+        itemId: config._id,
+        itemName: `CCE Config ${academicYear}`,
+        originalData: configSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId,
+      }).catch(() => {});
+
       res.json({ message: 'CCE configuration deleted successfully' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete CCE configuration' });

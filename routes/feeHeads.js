@@ -213,6 +213,7 @@ import { zodSchemas, validateZod } from '../middleware/validation/validation.js'
 import { computeFeeHeadStatus } from '../utils/feeCalculator.js';
 import { createLogger } from '../utils/logger.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
+import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -375,6 +376,12 @@ router.put(
 // Delete fee head
 router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
   try {
+    // Snapshot before deletion for trash logging
+    const feeHeadSnapshot = await FeeHead.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+    }).lean();
+
     const feeHead = await FeeHead.findOneAndDelete({
       _id: req.params.id,
       schoolId: req.user.schoolId,
@@ -382,6 +389,18 @@ router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
 
     if (!feeHead) {
       return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
+    }
+
+    // Log to trash
+    if (feeHeadSnapshot) {
+      logToTrash({
+        itemType: 'FeeHead',
+        itemId: feeHeadSnapshot._id,
+        itemName: feeHeadSnapshot.name || 'Fee Head',
+        originalData: feeHeadSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user.schoolId,
+      }).catch(() => {});
     }
 
     // Save affected structure IDs BEFORE the $pull operation
