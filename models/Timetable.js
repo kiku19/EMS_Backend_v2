@@ -72,11 +72,13 @@ const timetableSchema = new mongoose.Schema(
     },
     version: { type: Number, default: 1 },
     lastSyncedAt: { type: Date, default: Date.now },
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date },
   },
   { timestamps: true }
 );
 
-timetableSchema.index({ schoolId: 1, classId: 1, academicYear: 1 }, { unique: true });
+timetableSchema.index({ schoolId: 1, classId: 1, academicYear: 1 }, { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } });
 timetableSchema.index({ 'schedule.Monday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Tuesday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Wednesday.teacherId': 1 });

@@ -11,6 +11,9 @@ import { validateZod } from '../validators/zodHelpers.js';
 import {
   singleStaffAttendanceSchema,
   bulkStaffAttendanceSchema,
+  regularizeAttendanceSchema,
+  mobileLeaveApplySchema,
+  leaveApprovalSchema,
 } from '../validators/staffAttendanceSchema.js';
 
 const router = express.Router();
@@ -320,7 +323,7 @@ router.post(
 );
 
 // Regularize attendance
-router.put('/:id/regularize', checkPermission('staff', 'edit'), async (req, res) => {
+router.put('/:id/regularize', checkPermission('staff', 'edit'), validateZod(regularizeAttendanceSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { date, status, checkInTime, checkOutTime, reason } = req.body;
@@ -445,8 +448,9 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
       minute: '2-digit',
     });
 
-    // Validate staff exists
-    const staff = await Staff.findById(staffId);
+    // AUDIT-306: Validate staff exists with schoolId scoping
+    const mobileSchoolId = await resolveRequestSchoolId(req);
+    const staff = await Staff.findOne(scopeBySchool(mobileSchoolId, { _id: staffId, isDeleted: { $ne: true } }));
     if (!staff) {
       return res.status(404).json({
         success: false,
@@ -464,8 +468,9 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
     }
 
     // Check if attendance was already marked by admin — don't allow mobile override
+    // Use mobileSchoolId (already resolved at line 452) for consistent scoping
     const existingAttendance = await StaffAttendance.findOne(
-      scopeBySchool(req.user?.schoolId, { staffId, date })
+      scopeBySchool(mobileSchoolId, { staffId, date })
     );
     if (existingAttendance && existingAttendance.checkInMethod === 'admin') {
       return res.status(409).json({
@@ -482,8 +487,7 @@ router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, async (req, r
       });
     }
 
-    // Upsert attendance record (allows both create and update from mobile)
-    const mobileSchoolId = await resolveRequestSchoolId(req);
+    // Upsert attendance record — reuse mobileSchoolId from line 452 (removed duplicate call)
     const newAttendance = await StaffAttendance.findOneAndUpdate(
       scopeBySchool(mobileSchoolId, { staffId, date }),
       {
@@ -658,15 +662,19 @@ router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (re
 });
 
 // Apply for leave (from mobile app)
-router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, async (req, res) => {
+router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, validateZod(mobileLeaveApplySchema), async (req, res) => {
   try {
     const { leaveType, startDate, endDate } = req.body;
     const reason = sanitizeString(req.body.reason);
     const staffId = req.user.id;
 
-    // Calculate number of days
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    // Validate startDate <= endDate
+    if (startDate > endDate) {
+      return res.status(400).json({ error: 'Start date must be before or equal to end date' });
+    }
+    // Calculate number of days (use UTC to avoid timezone off-by-one)
+    const start = new Date(startDate + 'T00:00:00Z');
+    const end = new Date(endDate + 'T00:00:00Z');
     const numberOfDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
 
     const leaveSchoolId = await resolveRequestSchoolId(req);
@@ -741,6 +749,7 @@ router.get('/leave/pending', checkPermission('staff', 'view'), async (req, res) 
 router.put(
   '/leave/:id/approve',
   checkPermission('staff', 'edit'),
+  validateZod(leaveApprovalSchema),
   async (req, res) => {
     try {
       const { id } = req.params;

@@ -314,13 +314,16 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
       return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
     }
 
+    // AUDIT-284: Capture active status BEFORE mutation for billing metric
+    const wasActive = student.status === 'active';
+
     // Soft delete: mark as deleted instead of permanent removal
     student.isDeleted = true;
     student.deletedAt = new Date();
     student.status = 'inactive';
     await student.save();
 
-    if (req.user?.schoolId && student.status === 'active') {
+    if (req.user?.schoolId && wasActive) {
       await incrementUsageMetric(req.user.schoolId, 'students', -1);
     }
 

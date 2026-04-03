@@ -137,8 +137,8 @@ export async function buildStudentListQuery(
         { admissionId: searchRegex },
         { email: searchRegex },
         { parentName: searchRegex },
-        { parentPhone: searchRegex },
-        { 'parents.phone': searchRegex },
+        // Note: parentPhone and parents.phone are PII-encrypted and not in searchableFields,
+        // so regex queries cannot match against them. Only searchable PII fields (phone, email) are included.
         ...(Number.isNaN(numericSearch) ? [] : [{ rollNo: numericSearch }]),
       ],
     });

@@ -8,7 +8,7 @@ const feeHeadBreakdownSchema = z
   .object({
     feeHeadId: objectId.optional(),
     name: z.string().min(1, 'Fee head name is required').optional(),
-    amount: z.number().min(0, 'Fee head amount cannot be negative'),
+    amount: z.number().min(1, 'Fee head amount must be at least 1'),
   })
   .passthrough();
 

@@ -26,7 +26,16 @@ const parentSchema = z.object({
   occupation: optionalString(100),
   isWhatsapp: z.boolean().nullish(),
   isParent: z.boolean().nullish(),
-});
+}).refine(
+  (data) => {
+    // When isParent is true, at least phone or email must be provided for parent app login
+    if (data.isParent) {
+      return !!(data.phone || data.email);
+    }
+    return true;
+  },
+  { message: 'Parent app access requires at least a phone number or email address', path: ['phone'] }
+);
 
 // Sibling subdocument schema
 const siblingSchema = z
@@ -222,6 +231,30 @@ export const createStudentSchema = z
   .strip(); // Strip unknown fields (equivalent to Joi stripUnknown)
 
 // ─── UPDATE STUDENT (all fields optional) ───────────────────────
+// Schema for POST /:id/documents
+export const addDocumentSchema = z
+  .object({
+    name: z.string().min(1, 'Document name is required').max(200),
+    type: z.string().min(1, 'Document type is required').max(100),
+    url: z.string().url('Document URL must be a valid URL').optional(),
+    uploadDate: z.string().optional(),
+    size: z.string().optional(),
+    category: optionalString(100),
+    front: z
+      .object({
+        url: z.string().url('Front side URL must be a valid URL'),
+        uploadDate: z.string().optional(),
+      })
+      .optional(),
+    back: z
+      .object({
+        url: z.string().url('Back side URL must be a valid URL'),
+        uploadDate: z.string().optional(),
+      })
+      .optional(),
+  })
+  .strip();
+
 export const updateStudentSchema = createStudentSchema
   .partial() // All fields become optional
   .omit({ admissionId: true, academicYear: true }) // These shouldn't change on update

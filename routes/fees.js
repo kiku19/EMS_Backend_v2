@@ -172,7 +172,12 @@ router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
     const filter = scopeBySchool(req.user?.schoolId, {});
     if (studentId) filter.studentId = studentId;
     if (academicYear) filter.academicYear = academicYear;
-    if (status) filter.status = status;
+    if (status) {
+      filter.status = status;
+    } else {
+      // Exclude cancelled payments by default unless explicitly requested
+      filter.status = { $ne: 'cancelled' };
+    }
     if (startDate || endDate) {
       filter.paymentDate = {};
       // paymentDate is stored as a String (YYYY-MM-DD) in FeePayment schema,
@@ -205,6 +210,7 @@ router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
   }
 });
 
+// Import shared constant instead of duplicating (also defined in validators/feeSchema.js)
 const ONLINE_PAYMENT_MODES = ['online', 'card', 'upi', 'bank_transfer'];
 
 // Create a new payment
@@ -241,6 +247,22 @@ router.post(
       }
 
       const schoolId = await resolveRequestSchoolId(req);
+
+      // ── Validate payment amount against outstanding balance ─────────────────
+      if (studentId) {
+        const sfs = await StudentFeeStructure.findOne({
+          studentId,
+          academicYear: resolvedAcademicYear,
+          schoolId,
+        });
+        if (sfs && sfs.totalBalance != null && amount > sfs.totalBalance && sfs.totalBalance >= 0) {
+          return res.status(400).json({
+            error: `Payment amount (${amount}) exceeds outstanding balance (${sfs.totalBalance}). Please enter a smaller amount.`,
+            code: 'EXCEEDS_BALANCE',
+            maxAmount: sfs.totalBalance,
+          });
+        }
+      }
 
       // ── Payment gateway verification for online payments ──────────────────────
       let gatewayVerified = false;
@@ -312,33 +334,48 @@ router.post(
             scopeBySchool(req.user?.schoolId, { _id: studentId })
           );
           if (student) {
-            // Use atomic $inc to avoid read-modify-write race condition
+            // Atomic $inc for paidAmount + compute balance in single update pipeline
+            // Using aggregation pipeline update to avoid read-modify-write race condition
             const updatedStudent = await Student.findByIdAndUpdate(
               student._id,
-              {
-                $inc: { 'feeDetails.paidAmount': amount },
-                $set: { 'feeDetails.lastPaymentDate': payment.paymentDate },
-              },
+              [
+                {
+                  $set: {
+                    'feeDetails.paidAmount': { $add: [{ $ifNull: ['$feeDetails.paidAmount', 0] }, amount] },
+                    'feeDetails.lastPaymentDate': payment.paymentDate,
+                  },
+                },
+                {
+                  $set: {
+                    'feeDetails.balanceAmount': {
+                      $max: [
+                        {
+                          $subtract: [
+                            { $ifNull: ['$feeDetails.totalFee', 0] },
+                            { $add: [{ $ifNull: ['$feeDetails.paidAmount', 0] }, { $ifNull: ['$feeDetails.discountApplied', 0] }] },
+                          ],
+                        },
+                        0,
+                      ],
+                    },
+                  },
+                },
+              ],
               { new: true }
             );
 
             if (updatedStudent) {
               const totalFee = updatedStudent.feeDetails?.totalFee || 0;
-              const discountApplied = updatedStudent.feeDetails?.discountApplied || 0;
               const paidAmount = updatedStudent.feeDetails?.paidAmount || 0;
-              const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
-
-              const setFields = { 'feeDetails.balanceAmount': balanceAmount };
+              const discountApplied = updatedStudent.feeDetails?.discountApplied || 0;
               if (totalFee > 0) {
                 const { overallStatus } = computeFeeBalance({
                   totalFee,
                   totalPaid: paidAmount,
                   discountApplied,
                 });
-                setFields.feeStatus = overallStatus;
+                await Student.findByIdAndUpdate(student._id, { $set: { feeStatus: overallStatus } });
               }
-
-              await Student.findByIdAndUpdate(student._id, { $set: setFields });
             }
 
             // Issue #36 fix: update StudentFeeStructure (source of truth for fee tracking)
@@ -351,8 +388,16 @@ router.post(
               );
 
               if (sfs) {
-                sfs.totalPaid = (sfs.totalPaid || 0) + amount;
-                sfs.lastPaymentDate = payment.paymentDate;
+                // Use atomic $inc for totalPaid to prevent race conditions
+                await StudentFeeStructure.findByIdAndUpdate(sfs._id, {
+                  $inc: { totalPaid: amount },
+                  $set: { lastPaymentDate: payment.paymentDate },
+                });
+                // Re-fetch to compute derived fields
+                const updatedSfs = await StudentFeeStructure.findById(sfs._id);
+                if (!updatedSfs) throw new Error('Fee structure disappeared');
+                // Alias for subsequent code
+                Object.assign(sfs, updatedSfs.toObject());
 
                 // Distribute payment across fee heads if breakdown provided
                 if (Array.isArray(feeHeads) && feeHeads.length > 0 && Array.isArray(sfs.feeHeads)) {
@@ -765,6 +810,24 @@ router.put(
       if (refund.status !== 'pending')
         return res.status(400).json({ error: 'Only pending refunds can be approved' });
 
+      // Re-validate refund amount against current total paid at approval time
+      const totalPaidAgg = await FeePayment.aggregate([
+        {
+          $match: scopeBySchool(req.user?.schoolId, {
+            studentId: refund.studentId,
+            status: 'completed',
+          }),
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]);
+      const currentTotalPaid = totalPaidAgg[0]?.total || 0;
+      if (refund.amount > currentTotalPaid) {
+        return res.status(400).json({
+          error: `Refund amount (${refund.amount}) exceeds current total paid (${currentTotalPaid}). Cannot approve.`,
+          code: 'REFUND_EXCEEDS_PAID',
+        });
+      }
+
       refund.status = 'approved';
       refund.approvedBy = req.user?._id;
       refund.approvedAt = new Date();
@@ -773,6 +836,7 @@ router.put(
 
       res.json(refund);
     } catch (error) {
+      logger.error({ err: error }, 'Failed to approve refund');
       res.status(500).json({ error: 'Failed to approve refund' });
     }
   }

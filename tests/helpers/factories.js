@@ -2,6 +2,7 @@ import { Class, School, Staff, Student, UserPermission } from '../../database.js
 import { generateToken } from '../../middleware/auth.js';
 import { PERMISSION_TEMPLATES } from '../../models/UserPermission.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
+import { CURRENT_ACADEMIC_YEAR } from '../../utils/constants.js';
 
 let sequence = 0;
 let defaultSchool = null;
@@ -101,7 +102,7 @@ export async function createClassRecord({
   section = 'A',
   classTeacherId = null,
   subjects = ['Math'],
-  academicYear = '2025-26',
+  academicYear = CURRENT_ACADEMIC_YEAR,
   schoolId,
 } = {}) {
   if (!schoolId) {
@@ -121,7 +122,7 @@ export async function createClassRecord({
 export async function createStudentRecord({
   name = 'Student One',
   admissionId,
-  academicYear = '2025-26',
+  academicYear = CURRENT_ACADEMIC_YEAR,
   rollNo = 1,
   classId,
   schoolId,

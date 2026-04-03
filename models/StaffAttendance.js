@@ -11,7 +11,15 @@ const staffAttendanceSchema = new mongoose.Schema(
     date: {
       type: String,
       required: true,
-    }, // Format: YYYY-MM-DD
+      validate: {
+        validator: function (v) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+          const d = new Date(v + 'T00:00:00Z');
+          return !isNaN(d.getTime()) && d.toISOString().startsWith(v);
+        },
+        message: 'Date must be a valid date in YYYY-MM-DD format',
+      },
+    },
     status: {
       type: String,
       enum: ['present', 'absent', 'leave', 'halfday', 'unmarked'],

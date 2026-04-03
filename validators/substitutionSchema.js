@@ -1,13 +1,13 @@
 import { z } from 'zod';
-import { objectIdString } from './zodHelpers.js';
+import { objectId } from './zodHelpers.js';
 
 // --- Create substitution ---
 export const createSubstitutionSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD format'),
-  classId: objectIdString,
+  classId: objectId,
   period: z.string().min(1, 'Period is required'),
-  absentTeacherId: objectIdString.optional(),
-  substituteTeacherId: objectIdString,
+  absentTeacherId: objectId.optional(),
+  substituteTeacherId: objectId,
   reason: z.string().max(500).optional(),
   type: z.enum(['auto', 'manual']).optional().default('manual'),
   status: z.enum(['pending', 'confirmed', 'completed', 'declined']).optional().default('confirmed'),
@@ -16,7 +16,7 @@ export const createSubstitutionSchema = z.object({
 
 // --- Update substitution ---
 export const updateSubstitutionSchema = z.object({
-  substituteTeacherId: objectIdString.optional(),
+  substituteTeacherId: objectId.optional(),
   status: z.enum(['pending', 'confirmed', 'completed', 'declined']).optional(),
   teacherResponse: z.enum(['pending', 'accepted', 'declined']).optional(),
   reason: z.string().max(500).optional(),
@@ -28,9 +28,9 @@ export const bulkAssignSchema = z.object({
   substitutions: z.array(
     z.object({
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
-      classId: objectIdString,
+      classId: objectId,
       period: z.string().min(1),
-      substituteTeacherId: objectIdString,
+      substituteTeacherId: objectId,
       reason: z.string().max(500).optional(),
     }).strip()
   ).min(1, 'At least one substitution is required').max(50),

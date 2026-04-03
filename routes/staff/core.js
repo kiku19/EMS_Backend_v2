@@ -182,6 +182,12 @@ router.post(
         salary,
         salaryTemplate,
         salaryBreakdown,
+        panNumber,
+        nationality,
+        shift,
+        designation,
+        qualification,
+        experience,
       } = req.body;
 
       const schoolId = await resolveRequestSchoolId(req);
@@ -270,6 +276,12 @@ router.post(
         salary,
         salaryTemplate,
         salaryBreakdown,
+        panNumber,
+        nationality,
+        shift,
+        designation,
+        qualification,
+        experience,
       });
 
       await staff.save();
@@ -287,13 +299,20 @@ router.post(
 
       // Fix 3.8: Add schoolId scoping to class teacher lookup
       if (isClassTeacher && classTeacherOf) {
-        const classMatch = classTeacherOf.match(/^(\d+)-([A-Za-z]+)$/);
+        const classMatch = classTeacherOf.match(/^(.+)-([A-Za-z]+)$/);
         if (classMatch) {
           const [, className, section] = classMatch;
           const targetClass = await Class.findOne(
             scopeBySchool(schoolId, { name: className, section: section.toUpperCase() })
           );
           if (targetClass) {
+            // AUDIT-349: Clean up old teacher's class teacher assignment
+            if (targetClass.classTeacherId) {
+              await Staff.findOneAndUpdate(
+                scopeBySchool(schoolId, { _id: targetClass.classTeacherId }),
+                { isClassTeacher: false, classTeacherOf: null }
+              );
+            }
             await Class.findByIdAndUpdate(targetClass._id, { classTeacherId: staff._id });
           }
         }
@@ -405,6 +424,22 @@ router.put(
         }
       }
 
+      // AUDIT-313: Check email uniqueness within school on update
+      if (email) {
+        const existingByEmail = await Staff.findOne(
+          scopeBySchool(req.user?.schoolId, {
+            ...piiMatch('email', email.toLowerCase()),
+            _id: { $ne: req.params.id },
+            isDeleted: { $ne: true },
+          })
+        );
+        if (existingByEmail) {
+          return res.status(409).json({
+            error: `Email already used by ${existingByEmail.name} (${existingByEmail.code})`,
+          });
+        }
+      }
+
       const updateData = {
         name,
         role,
@@ -497,10 +532,24 @@ router.put(
           $unset: { classTeacherId: 1 },
         });
         if (assignedClassId) {
-          await Class.findOneAndUpdate(
+          const assignedClassDoc = await Class.findOneAndUpdate(
             scopeBySchool(req.user?.schoolId, { _id: assignedClassId }),
-            { classTeacherId: staff._id }
+            { classTeacherId: staff._id },
+            { new: true }
           );
+          // AUDIT-348: Sync Staff document's class teacher fields
+          if (assignedClassDoc) {
+            await Staff.findByIdAndUpdate(staff._id, {
+              isClassTeacher: true,
+              classTeacherOf: `${assignedClassDoc.name}-${assignedClassDoc.section}`,
+            });
+          }
+        } else {
+          // Unassigning: clear Staff fields too
+          await Staff.findByIdAndUpdate(staff._id, {
+            isClassTeacher: false,
+            classTeacherOf: null,
+          });
         }
       }
 

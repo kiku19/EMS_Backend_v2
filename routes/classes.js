@@ -187,6 +187,8 @@ import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js'
 import { countActiveStudents, checkClassCapacity } from '../utils/classCapacity.js';
 import { sendNotification } from './notifications.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 router.use(authenticate);
@@ -208,18 +210,19 @@ async function resolveRequestSchoolId(req) {
  * Clears the old teacher's fields and sets the new teacher's fields.
  */
 async function syncClassTeacherStaff({ oldTeacherId, newTeacherId, classDoc }) {
+  const schoolId = classDoc.schoolId;
   if (oldTeacherId && String(oldTeacherId) !== String(newTeacherId)) {
-    await Staff.findByIdAndUpdate(oldTeacherId, {
-      classTeacherOf: null,
-      isClassTeacher: false,
-    });
+    await Staff.findOneAndUpdate(
+      scopeBySchool(schoolId, { _id: oldTeacherId }),
+      { classTeacherOf: null, isClassTeacher: false }
+    );
   }
 
   if (newTeacherId) {
-    await Staff.findByIdAndUpdate(newTeacherId, {
-      classTeacherOf: `${classDoc.name}-${classDoc.section}`,
-      isClassTeacher: true,
-    });
+    await Staff.findOneAndUpdate(
+      scopeBySchool(schoolId, { _id: newTeacherId }),
+      { classTeacherOf: `${classDoc.name}-${classDoc.section}`, isClassTeacher: true }
+    );
   }
 }
 
@@ -269,7 +272,8 @@ async function ensureTeacherAvailable(classTeacherId, currentClassId = null, sch
 router.get('/public', async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
-    const classes = await Class.find(scopeBySchool(schoolId, { isDeleted: { $ne: true } })).sort({
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+    const classes = await Class.find(scopeBySchool(schoolId, { isDeleted: { $ne: true }, academicYear })).sort({
       name: 1,
       section: 1,
     });
@@ -288,8 +292,16 @@ router.get('/public', async (req, res) => {
 
 router.get('/', checkPermission('classes', 'view'), async (req, res) => {
   try {
-    const baseQuery = req.query.teacherId ? { classTeacherId: req.query.teacherId } : {};
+    const { academicYear = CURRENT_ACADEMIC_YEAR, teacherId } = req.query;
+    const baseQuery = {};
+    if (teacherId) {
+      if (!mongoose.isValidObjectId(teacherId)) {
+        return res.status(400).json({ error: 'Invalid teacherId format' });
+      }
+      baseQuery.classTeacherId = teacherId;
+    }
     baseQuery.isDeleted = { $ne: true };
+    baseQuery.academicYear = academicYear;
     const query = scopeBySchool(req.user?.schoolId, baseQuery);
     const classes = await Class.find(query)
       .populate('classTeacherId', 'name')
@@ -297,13 +309,15 @@ router.get('/', checkPermission('classes', 'view'), async (req, res) => {
 
     // AUDIT-65: Bulk-fetch student counts instead of N+1 individual queries
     const classIds = classes.map((cls) => cls._id);
+    const schoolIdRaw = extractSchoolId(req.user?.schoolId);
+    const schoolOid = schoolIdRaw ? new mongoose.Types.ObjectId(schoolIdRaw) : null;
     const studentCountAgg = await Student.aggregate([
       {
         $match: {
           classId: { $in: classIds },
           status: 'active',
           isDeleted: { $ne: true },
-          ...(req.user?.schoolId ? { schoolId: extractSchoolId(req.user.schoolId) } : {}),
+          ...(schoolOid ? { schoolId: schoolOid } : {}),
         },
       },
       { $group: { _id: '$classId', count: { $sum: 1 } } },
@@ -639,6 +653,12 @@ router.get('/:id', checkPermission('classes', 'view'), async (req, res) => {
       studentCount,
       academicYear: classDoc.academicYear,
       strengthLimit: classDoc.strengthLimit,
+      room: classDoc.room,
+      block: classDoc.block,
+      classTag: classDoc.classTag,
+      assignedSubjects: classDoc.assignedSubjects,
+      averageAttendance: classDoc.averageAttendance,
+      rating: classDoc.rating,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

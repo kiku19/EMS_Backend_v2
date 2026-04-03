@@ -28,3 +28,36 @@ export const bulkStaffAttendanceSchema = z
     checkOutTime: z.string().max(20).optional(),
   })
   .strip();
+
+// ─── REGULARIZE ATTENDANCE ─────────────────────────────────────
+export const regularizeAttendanceSchema = z
+  .object({
+    date: dateString,
+    status: staffAttendanceStatusEnum,
+    checkInTime: z.string().max(20).optional(),
+    checkOutTime: z.string().max(20).optional(),
+    reason: optionalString(500),
+  })
+  .strip();
+
+// ─── MOBILE LEAVE APPLICATION ──────────────────────────────────
+export const mobileLeaveApplySchema = z
+  .object({
+    leaveType: z.enum(['casual', 'sick', 'earned', 'maternity', 'paternity', 'unpaid', 'other'], {
+      errorMap: () => ({ message: 'Leave type must be casual, sick, earned, maternity, paternity, unpaid, or other' }),
+    }),
+    startDate: dateString,
+    endDate: dateString,
+    reason: optionalString(500),
+  })
+  .strip();
+
+// ─── LEAVE APPROVAL/REJECTION ──────────────────────────────────
+export const leaveApprovalSchema = z
+  .object({
+    approvalStatus: z.enum(['approved', 'rejected'], {
+      errorMap: () => ({ message: 'Approval status must be approved or rejected' }),
+    }),
+    rejectionReason: optionalString(500),
+  })
+  .strip();

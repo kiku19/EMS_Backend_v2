@@ -687,15 +687,15 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
         const grossPay = baseSalary + totalAllowances;
         const netPay = grossPay - totalDeductions;
 
-        // Check if record already exists
-        let record = await PayrollRecord.findOne({
-          schoolId,
-          employeeId: empId,
-          month,
-          year,
-        });
+        // Atomic check-and-lock: use findOneAndUpdate to prevent race conditions (AUDIT-208)
+        let record = await PayrollRecord.findOneAndUpdate(
+          { schoolId, employeeId: empId, month, year },
+          { $setOnInsert: { schoolId, employeeId: empId, month, year, status: 'not_generated' } },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
 
-        if (record) {
+        const isExistingRecord = record.status !== 'not_generated';
+        if (isExistingRecord) {
           // Log changes before update
           const oldRecord = { ...record.toObject() };
 
@@ -737,23 +737,17 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
             status: 'success',
           });
         } else {
-          // Create new record
-          record = new PayrollRecord({
-            schoolId,
-            employeeId: empId,
-            payrollRunId: payrollRun._id,
-            month,
-            year,
-            baseSalary: baseSalary,
-            allowances,
-            deductions,
-            totalAllowances,
-            totalDeductions,
-            grossPay,
-            netPay,
-            employmentType: employee.employmentType || 'full_time',
-            status: 'generated',
-          });
+          // Populate new record fields (record was created via upsert with minimal fields)
+          record.payrollRunId = payrollRun._id;
+          record.baseSalary = baseSalary;
+          record.allowances = allowances;
+          record.deductions = deductions;
+          record.totalAllowances = totalAllowances;
+          record.totalDeductions = totalDeductions;
+          record.grossPay = grossPay;
+          record.netPay = netPay;
+          record.employmentType = employee.employmentType || 'full_time';
+          record.status = 'generated';
 
           await logAudit({
             entityType: 'PayrollRecord',

@@ -31,5 +31,6 @@ const attendanceSchema = new mongoose.Schema(
 attendanceSchema.index({ schoolId: 1, studentId: 1, date: 1 }, { unique: true });
 attendanceSchema.index({ classId: 1, date: 1 });
 attendanceSchema.index({ studentId: 1, date: 1 });
+attendanceSchema.index({ schoolId: 1, classId: 1, date: -1 }); // Optimizes class-level attendance reports
 
 export default mongoose.model('Attendance', attendanceSchema);

@@ -52,7 +52,7 @@ const qualificationSchema = z.object({
 // Salary breakdown component
 const salaryComponentSchema = z.object({
   component: z.string().min(1, 'Salary component name is required'),
-  amount: z.number().min(0, 'Salary component amount cannot be negative'),
+  amount: z.number().min(0, 'Salary component amount cannot be negative').max(10000000, 'Salary component amount cannot exceed 10,000,000'),
 });
 
 // Emergency contact subdocument
@@ -107,7 +107,20 @@ export const createStaffSchema = z
     emergencyPhone: optionalPhone,
 
     // Emergency contacts (new array format)
-    emergencyContacts: z.array(emergencyContactSchema).nullish(),
+    emergencyContacts: z.array(emergencyContactSchema).nullish().refine(
+      (contacts) => {
+        if (!contacts || contacts.length <= 1) return true;
+        const seen = new Set();
+        for (const c of contacts) {
+          if (!c.name && !c.phone) continue;
+          const key = `${(c.name || '').toLowerCase().trim()}-${(c.phone || '').trim()}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+        }
+        return true;
+      },
+      { message: 'Duplicate emergency contacts (same name and phone) are not allowed' }
+    ),
 
     // WhatsApp
     whatsappNumber: optionalPhone,
@@ -134,7 +147,7 @@ export const createStaffSchema = z
     assignedClasses: z.array(z.string()).nullish(),
     isClassTeacher: z.boolean().nullish(),
     classTeacherOf: optionalString(50),
-    shift: z.enum(['Morning', 'Afternoon', 'Evening']).nullish().or(z.literal('')),
+    shift: z.enum(['Morning', 'Afternoon', 'Evening', 'Full Day']).nullish().or(z.literal('')),
     designation: optionalString(100),
 
     // Bank & Salary

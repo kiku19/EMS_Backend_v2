@@ -2,6 +2,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import mongoose from 'mongoose';
 import { Class, Staff, Timetable, TeacherTimetable } from '../database.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { zodSchemas } from '../middleware/validation.js';
 import {
   createClassRecord,
@@ -112,7 +113,7 @@ describe('Timetable Zod Schemas', () => {
 
     it('accepts valid periodRules', () => {
       const result = zodSchemas.generateAll.safeParse({
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         periodRules: {
           maxPeriodsPerSubjectPerDay: 2,
           maxPeriodsPerSubjectPerWeek: 10,
@@ -194,6 +195,7 @@ describe('Timetable Zod Schemas', () => {
         day: 'Monday',
         periodIndex: 0,
         newClassId: '507f1f77bcf86cd799439011',
+        oldClassId: '507f1f77bcf86cd799439012',
         subject: 'Math',
       });
       expect(result.success).toBe(true);
@@ -247,7 +249,7 @@ describe('Timetable Routes', () => {
       await Timetable.create({
         classId: cls._id,
         schoolId: school._id,
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         periods: [{ name: 'Period 1', startTime: '09:00', endTime: '09:45', isBreak: false }],
         schedule: {
           Monday: [{}],
@@ -313,7 +315,7 @@ describe('Timetable Routes', () => {
       const res = await request(app)
         .post('/api/timetable/generate-all')
         .set(authHeadersFor(admin))
-        .send({ academicYear: '2025-26' });
+        .send({ academicYear: CURRENT_ACADEMIC_YEAR });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -326,7 +328,7 @@ describe('Timetable Routes', () => {
       // Verify teacher timetable was synced
       const teacherTT = await TeacherTimetable.findOne({
         teacherId: teacher._id,
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
       });
       expect(teacherTT).toBeTruthy();
       expect(teacherTT.totalPeriodsPerWeek).toBeGreaterThan(0);
@@ -383,7 +385,7 @@ describe('Staff Timetable Endpoints', () => {
     await Timetable.create({
       classId: cls._id,
       schoolId: school._id,
-      academicYear: '2025-26',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       periods: [{ name: 'Period 1', startTime: '09:00', endTime: '09:45', isBreak: false }],
       schedule: { Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [] },
     });
@@ -394,7 +396,7 @@ describe('Staff Timetable Endpoints', () => {
     await TeacherTimetable.create({
       teacherId: teacher._id,
       schoolId: school._id,
-      academicYear: '2025-26',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       schedule: {
         [today]: [{ periodIndex: 0, classId: cls._id, subject: 'Math', room: 'A1' }],
         ...Object.fromEntries(
@@ -427,7 +429,7 @@ describe('Staff Timetable Endpoints', () => {
     await TeacherTimetable.create({
       teacherId: teacher._id,
       schoolId: school._id,
-      academicYear: '2025-26',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       schedule: {
         Monday: [],
         Tuesday: [],
@@ -479,7 +481,7 @@ describe('Schema schoolId', () => {
     const tt = await Timetable.create({
       classId: cls._id,
       schoolId: school._id,
-      academicYear: '2025-26',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       periods: [],
       schedule: {
         Monday: [],
@@ -504,7 +506,7 @@ describe('Schema schoolId', () => {
     await Timetable.create({
       classId: cls1._id,
       schoolId: school1._id,
-      academicYear: '2025-26',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       periods: [],
       schedule: { Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [] },
     });
@@ -512,7 +514,7 @@ describe('Schema schoolId', () => {
     await Timetable.create({
       classId: cls2._id,
       schoolId: school2._id,
-      academicYear: '2025-26',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       periods: [],
       schedule: { Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [] },
     });

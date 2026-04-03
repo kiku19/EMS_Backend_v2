@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { objectIdString } from './zodHelpers.js';
+import { objectId } from './zodHelpers.js';
 
 // --- Period schema ---
 const periodSchema = z.object({
@@ -12,7 +12,7 @@ const periodSchema = z.object({
 // --- Slot schema (one class period) ---
 const slotSchema = z.object({
   subject: z.string().max(100).optional(),
-  teacherId: objectIdString.optional().nullable(),
+  teacherId: objectId.optional().nullable(),
   room: z.string().max(50).optional(),
 }).strip();
 
@@ -51,16 +51,16 @@ export const updateSlotSchema = z.object({
   day: z.enum(DAYS),
   periodIndex: z.number().int().min(0).max(14),
   subject: z.string().max(100).optional(),
-  teacherId: objectIdString.optional().nullable(),
+  teacherId: objectId.optional().nullable(),
   room: z.string().max(50).optional(),
 }).strip();
 
 // --- Auto-generate request ---
 export const autoGenerateSchema = z.object({
-  classId: objectIdString,
+  classId: objectId,
   subjects: z.array(z.object({
     name: z.string().min(1),
-    teacherId: objectIdString.optional(),
+    teacherId: objectId.optional(),
     periodsPerWeek: z.number().int().min(1).max(30),
   }).strip()).min(1, 'At least one subject is required'),
   constraints: z.object({

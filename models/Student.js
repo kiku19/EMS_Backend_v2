@@ -103,6 +103,9 @@ const studentSchema = new mongoose.Schema(
     siblings: [
       {
         name: { type: String, required: true },
+        age: { type: Number },
+        class: { type: String },
+        school: { type: String },
         inSameSchool: { type: Boolean, default: true },
         classId: {
           type: mongoose.Schema.Types.ObjectId,
@@ -182,7 +185,7 @@ const studentSchema = new mongoose.Schema(
       enum: ['paid', 'pending', 'partial', 'overdue'],
       default: 'pending',
     },
-    status: { type: String, default: 'active' },
+    status: { type: String, enum: ['active', 'inactive', 'graduated', 'transferred', 'alumni'], default: 'active' },
 
     // Alumni Information (populated when status is set to 'alumni')
     alumniInfo: {
@@ -309,5 +312,7 @@ studentSchema.index({ status: 1 });
 studentSchema.index({ feeStatus: 1 });
 studentSchema.index({ isDeleted: 1, deletedAt: -1 });
 studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
+studentSchema.index({ schoolId: 1, classId: 1, isDeleted: 1 });
+studentSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1 });
 
 export default mongoose.model('Student', studentSchema);

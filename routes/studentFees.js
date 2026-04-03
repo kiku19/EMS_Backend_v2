@@ -286,7 +286,9 @@ import {
   updateDiscountSchema,
   defaultersQuerySchema,
 } from '../validators/index.js';
+import { createLogger } from '../utils/logger.js';
 
+const logger = createLogger('StudentFees');
 const router = express.Router();
 router.use(authenticate);
 
@@ -379,11 +381,14 @@ router.get(
 
           emitFeeUpdate(student._id, student.name, feeStructure);
         } catch (saveError) {
-          // Race condition: another request already created it
+          // Race condition: another request already created it — fetch the existing one
           if (saveError.code === 11000) {
             feeStructure = await StudentFeeStructure.findOne(
               scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
-            );
+            ).populate('feeHeads.feeHeadId');
+            if (!feeStructure) {
+              throw new Error('Fee structure creation raced but neither version found');
+            }
           } else {
             throw saveError;
           }
@@ -415,7 +420,7 @@ router.get(
 
       res.json(feeStructure);
     } catch (error) {
-      console.error('Error fetching student fee structure:', error);
+      logger.error({ err: error }, 'Error fetching student fee structure');
       res.status(500).json({ error: error.message });
     }
   }
@@ -453,7 +458,7 @@ router.post('/batch', checkPermission('fees', 'view'), async (req, res) => {
 
     res.json(result);
   } catch (error) {
-    console.error('Error fetching batch fee structures:', error);
+    logger.error({ err: error }, 'Error fetching batch fee structures');
     res.status(500).json({ error: error.message });
   }
 });
@@ -476,7 +481,7 @@ router.get('/all', checkPermission('fees', 'view'), async (req, res) => {
 
     res.json(feeStructures);
   } catch (error) {
-    console.error('Error fetching all fee structures:', error);
+    logger.error({ err: error }, 'Error fetching all fee structures');
     res.status(500).json({ error: error.message });
   }
 });
@@ -579,7 +584,7 @@ router.post(
           return res.json({ message: 'Fee structure already exists', feeStructure: existing });
         }
       }
-      console.error('Error initializing fee structure:', error);
+      logger.error({ err: error }, 'Error initializing fee structure');
       res.status(500).json({ error: error.message });
     }
   }
@@ -636,7 +641,7 @@ router.put(
 
       res.json(feeStructure);
     } catch (error) {
-      console.error('Error updating discount:', error);
+      logger.error({ err: error }, 'Error updating discount');
       res.status(500).json({ error: error.message });
     }
   }
@@ -727,7 +732,7 @@ router.post(
         });
         await feePayment.save();
       } catch (fpError) {
-        console.error('Non-critical: could not create FeePayment record:', fpError.message);
+        logger.warn({ err: fpError }, 'Non-critical: could not create FeePayment record');
       }
 
       // Sync fee data to Student model for consistent reads
@@ -743,7 +748,7 @@ router.post(
 
       res.json(feeStructure);
     } catch (error) {
-      console.error('Error recording payment:', error);
+      logger.error({ err: error }, 'Error recording payment');
       res.status(500).json({ error: error.message });
     }
   }
@@ -803,7 +808,7 @@ router.get('/defaulters', checkPermission('fees', 'view'), async (req, res) => {
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (error) {
-    console.error('Error fetching defaulters:', error);
+    logger.error({ err: error }, 'Error fetching defaulters');
     res.status(500).json({ error: error.message });
   }
 });
@@ -904,7 +909,7 @@ router.post(
         after,
       });
     } catch (error) {
-      console.error('Error reconciling fees:', error);
+      logger.error({ err: error }, 'Error reconciling fees');
       res.status(500).json({ error: error.message });
     }
   }

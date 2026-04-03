@@ -59,7 +59,7 @@ router.post('/:id/transfer-certificate', checkPermission('students', 'edit'), as
     }
 
     const schoolId = extractSchoolId(req.user?.schoolId);
-    const student = await Student.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+    const student = await Student.findOne(scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } }));
 
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
@@ -81,6 +81,7 @@ router.post('/:id/transfer-certificate', checkPermission('students', 'edit'), as
       scopeBySchool(schoolId, {
         'transferCertificate.tcNumber': tcNumber,
         _id: { $ne: student._id },
+        isDeleted: { $ne: true },
       })
     ).lean();
 

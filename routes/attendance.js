@@ -103,7 +103,7 @@
  */
 
 import express from 'express';
-import { Attendance } from '../database.js';
+import { Attendance, Student } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import resolveClassId from '../utils/resolveClassId.js';
@@ -136,6 +136,12 @@ async function notifyParentsOfAbsent(absentStudentIds, date, schoolId) {
     const { sendNotification } = await import('./notifications.js');
     const { Parent, Student } = await import('../database.js');
     const { sendAttendanceAlertWhatsApp } = await import('../services/whatsappService.js');
+
+    // Batch load all students upfront to avoid N+1 query (PERF fix)
+    const students = await Student.find({ _id: { $in: absentStudentIds } }).select('name').lean();
+    const studentMap = {};
+    for (const s of students) studentMap[String(s._id)] = s.name || 'your child';
+
     for (const studentId of absentStudentIds) {
       const parentQuery = { 'children.studentId': studentId };
       if (schoolId) parentQuery.schoolId = schoolId;
@@ -152,9 +158,8 @@ async function notifyParentsOfAbsent(absentStudentIds, date, schoolId) {
 
         // WhatsApp notification for opted-in parents
         if (parent.preferences?.whatsappOptIn && parent.phone) {
-          const student = await Student.findById(studentId).select('name').lean();
           sendAttendanceAlertWhatsApp(parent.phone, {
-            studentName: student?.name || 'your child',
+            studentName: studentMap[String(studentId)] || 'your child',
             date,
             isPresent: false,
           }).catch((err) => console.error('[Attendance] WhatsApp failed:', err.message));
@@ -372,6 +377,13 @@ async function markBulkAttendance(req, res) {
   const results = [];
   const skipped = [];
 
+  // AUDIT-344: Verify all submitted students belong to this class
+  const submittedStudentIds = attendance.map(r => r.studentId).filter(Boolean);
+  const validStudents = await Student.find(
+    scopeBySchool(schoolId, { _id: { $in: submittedStudentIds }, classId: resolved.classId, isDeleted: { $ne: true } })
+  ).select('_id').lean();
+  const validStudentIdSet = new Set(validStudents.map(s => s._id.toString()));
+
   for (const record of attendance) {
     const { studentId, status } = record;
     if (!studentId || !status || !validStatuses.includes(status)) {
@@ -379,6 +391,12 @@ async function markBulkAttendance(req, res) {
         studentId: studentId || 'missing',
         reason: !studentId ? 'Missing studentId' : !status ? 'Missing status' : `Invalid status: ${status}`,
       });
+      continue;
+    }
+
+    // AUDIT-344: Skip students not in this class
+    if (!validStudentIdSet.has(studentId.toString())) {
+      skipped.push({ studentId, reason: 'Student does not belong to this class' });
       continue;
     }
 
@@ -651,6 +669,19 @@ router.post(
 
       const schoolId = await resolveRequestSchoolId(req);
 
+      // AUDIT-345: Verify student belongs to the specified class
+      if (classId && studentId) {
+        const studentDoc = await Student.findOne(
+          scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+        ).select('classId').lean();
+        if (!studentDoc) {
+          return res.status(404).json({ error: 'Student not found' });
+        }
+        if (studentDoc.classId && classId !== studentDoc.classId.toString()) {
+          return res.status(400).json({ error: 'Student does not belong to the specified class' });
+        }
+      }
+
       // Dirty-state detection for single record
       if (clientTimestamp) {
         const since = new Date(clientTimestamp);
@@ -734,6 +765,14 @@ router.post(
       const { classId, date } = req.body;
       if (!classId || !date) {
         return res.status(400).json({ error: 'classId and date are required' });
+      }
+      // Validate classId is a valid ObjectId
+      if (!/^[0-9a-fA-F]{24}$/.test(classId)) {
+        return res.status(400).json({ error: 'Invalid classId format' });
+      }
+      // Validate date format is YYYY-MM-DD
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'Date must be in YYYY-MM-DD format' });
       }
 
       const schoolId = await resolveRequestSchoolId(req);

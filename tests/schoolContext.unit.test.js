@@ -111,20 +111,22 @@ describe('buildSchoolScopedQuery', () => {
     expect(result.schoolId).toBe(id.toString());
   });
 
-  it('returns query without schoolId when schoolId is null', () => {
-    const result = buildSchoolScopedQuery(null, { name: 'test' });
-    expect(result).toEqual({ name: 'test' });
-    expect(result.schoolId).toBeUndefined();
+  it('throws when schoolId is null', () => {
+    expect(() => buildSchoolScopedQuery(null, { name: 'test' })).toThrow(
+      'schoolId is required for school-scoped queries'
+    );
   });
 
-  it('returns query without schoolId when schoolId is undefined', () => {
-    const result = buildSchoolScopedQuery(undefined, { status: 'active' });
-    expect(result.schoolId).toBeUndefined();
+  it('throws when schoolId is undefined', () => {
+    expect(() => buildSchoolScopedQuery(undefined, { status: 'active' })).toThrow(
+      'schoolId is required for school-scoped queries'
+    );
   });
 
-  it('returns an empty query with no extra keys when both args are empty', () => {
-    const result = buildSchoolScopedQuery(null);
-    expect(result).toEqual({});
+  it('throws when called with no arguments', () => {
+    expect(() => buildSchoolScopedQuery(null)).toThrow(
+      'schoolId is required for school-scoped queries'
+    );
   });
 
   it('does not mutate the original query object', () => {

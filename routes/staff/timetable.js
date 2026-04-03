@@ -33,7 +33,7 @@ router.get('/:id/timetable/today', authenticate, async (req, res) => {
       ...new Set(daySlots.filter((s) => s.classId).map((s) => s.classId.toString())),
     ];
     const [classes, classTimetables] = await Promise.all([
-      Class.find({ _id: { $in: classIds } })
+      Class.find(scopeBySchool(req.user?.schoolId, { _id: { $in: classIds } }))
         .select('name section')
         .lean(),
       Timetable.find(
@@ -130,7 +130,7 @@ router.get('/:id/timetable/week', authenticate, async (req, res) => {
     const classIdArr = [...allClassIds];
 
     const [classes, classTimetables, studentCounts] = await Promise.all([
-      Class.find({ _id: { $in: classIdArr } })
+      Class.find(scopeBySchool(req.user?.schoolId, { _id: { $in: classIdArr } }))
         .select('name section')
         .lean(),
       Timetable.find(

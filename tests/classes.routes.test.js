@@ -2,6 +2,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import mongoose from 'mongoose';
 import { Class, Staff, Student } from '../database.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
   createClassRecord,
   createSchoolRecord,
@@ -62,7 +63,7 @@ describe('classes routes', () => {
           name: 'Class 5',
           section: 'A',
           subjects: ['Math', 'Science'],
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
         })
         .expect(201);
 
@@ -70,7 +71,7 @@ describe('classes routes', () => {
         name: 'Class 5',
         section: 'A',
         subjects: ['Math', 'Science'],
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
       });
       expect(response.body.id).toBeTruthy();
     });
@@ -83,13 +84,13 @@ describe('classes routes', () => {
       await request(app)
         .post('/api/classes')
         .set(authHeaders)
-        .send({ name: 'Class 6', section: 'B', academicYear: '2025-26' })
+        .send({ name: 'Class 6', section: 'B', academicYear: CURRENT_ACADEMIC_YEAR })
         .expect(201);
 
       const response = await request(app)
         .post('/api/classes')
         .set(authHeaders)
-        .send({ name: 'Class 6', section: 'B', academicYear: '2025-26' });
+        .send({ name: 'Class 6', section: 'B', academicYear: CURRENT_ACADEMIC_YEAR });
 
       // The unique compound index { schoolId, name, section, academicYear }
       // should prevent duplicates. When it fires, the route returns 400.
@@ -224,7 +225,7 @@ describe('classes routes', () => {
           section: 'A',
           classTeacherId: teacher._id.toString(),
           subjects: ['English'],
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
         })
         .expect(201);
 
@@ -251,7 +252,7 @@ describe('classes routes', () => {
           section: 'A',
           classTeacherId: oldTeacher._id.toString(),
           subjects: ['Hindi'],
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
         })
         .expect(201);
 
@@ -266,7 +267,7 @@ describe('classes routes', () => {
           section: 'A',
           classTeacherId: newTeacher._id.toString(),
           subjects: ['Hindi'],
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
         })
         .expect(200);
 
@@ -314,7 +315,7 @@ describe('classes routes', () => {
           name: 'Class 3',
           section: 'A',
           classTeacherId: teacher._id.toString(),
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
         })
         .expect(201);
 
@@ -350,7 +351,7 @@ describe('classes routes', () => {
           section: 'B',
           classTeacherId: teacher._id.toString(),
           subjects: ['Art'],
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
         })
         .expect(201);
 
@@ -383,7 +384,7 @@ describe('classes routes', () => {
         name: 'Tiny Class',
         section: 'A',
         schoolId: school._id,
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         strengthLimit: { current: 2, default: 2 },
       });
 
@@ -394,7 +395,7 @@ describe('classes routes', () => {
         .send({
           name: 'Student One',
           admissionId: 'CAP-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 1,
           classId: classDoc._id.toString(),
           parents: [
@@ -410,7 +411,7 @@ describe('classes routes', () => {
         .send({
           name: 'Student Two',
           admissionId: 'CAP-002',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 2,
           classId: classDoc._id.toString(),
           parents: [
@@ -426,7 +427,7 @@ describe('classes routes', () => {
         .send({
           name: 'Student Three',
           admissionId: 'CAP-003',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 3,
           classId: classDoc._id.toString(),
           parents: [
@@ -468,7 +469,7 @@ describe('classes routes', () => {
       await Student.create({
         name: 'Deleted One',
         admissionId: 'DEL-SC-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 99,
         classId: classRecord._id,
         schoolId: school._id,
@@ -504,7 +505,7 @@ describe('classes routes', () => {
       await Class.create({
         name: 'Class 10',
         section: 'A',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         schoolId: schoolA._id,
       });
 
@@ -512,7 +513,7 @@ describe('classes routes', () => {
       const classB = await Class.create({
         name: 'Class 10',
         section: 'A',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         schoolId: schoolB._id,
       });
 
@@ -530,14 +531,14 @@ describe('classes routes', () => {
       await Class.create({
         name: 'Visible Class',
         section: 'A',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         schoolId: schoolA._id,
       });
 
       await Class.create({
         name: 'Hidden Class',
         section: 'B',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         schoolId: schoolB._id,
       });
 
@@ -558,7 +559,7 @@ describe('classes routes', () => {
       const schoolBClass = await Class.create({
         name: 'Secret Class',
         section: 'X',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         schoolId: schoolB._id,
       });
 

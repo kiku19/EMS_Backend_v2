@@ -8,6 +8,7 @@ import Parent from '../models/Parent.js';
 import Remark from '../models/Remark.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import { piiMatch } from '../utils/encryption.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
   createClassRecord,
   createSchoolRecord,
@@ -39,7 +40,7 @@ describe('students routes', () => {
       .send({
         name: 'Jane Student',
         admissionId: 'ADM9001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 7,
         classId: classRecord._id.toString(),
         dateOfBirth: '2010-05-15',
@@ -98,16 +99,17 @@ describe('students routes', () => {
     await Attendance.create({
       studentId,
       classId: classRecord._id,
+      schoolId: admin.schoolId,
       date: '2025-01-20',
       status: 'present',
     });
 
     await StudentFeeStructure.findOneAndUpdate(
-      { studentId, academicYear: '2025-26' },
+      { studentId, academicYear: CURRENT_ACADEMIC_YEAR },
       {
         studentId,
         classId: classRecord._id,
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         feeHeads: [],
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -128,6 +130,7 @@ describe('students routes', () => {
       description: 'Complete the worksheet',
       subject: 'Math',
       classId: classRecord._id,
+      schoolId: admin.schoolId,
       teacherId: admin._id,
       dueDate: new Date('2025-01-25T00:00:00.000Z'),
       submissions: [
@@ -140,6 +143,7 @@ describe('students routes', () => {
 
     await ClassAnnouncement.create({
       classId: classRecord._id,
+      schoolId: admin.schoolId,
       title: 'Exam reminder',
       description: 'Bring geometry tools.',
       sentBy: admin._id,
@@ -195,7 +199,7 @@ describe('students routes', () => {
       .send({
         name: 'John Student',
         admissionId: 'ADM9002',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 8,
         classId: classRecord._id.toString(),
         dateOfBirth: '2011-07-22',
@@ -265,7 +269,7 @@ describe('students routes', () => {
         .send({
           name: 'First Student',
           admissionId: 'ADM-DUP-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 1,
           classId: classRecord._id.toString(),
           parents: defaultParent,
@@ -278,7 +282,7 @@ describe('students routes', () => {
         .send({
           name: 'Second Student',
           admissionId: 'ADM-DUP-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 2,
           classId: classRecord._id.toString(),
           parents: defaultParent,
@@ -303,7 +307,7 @@ describe('students routes', () => {
         .send({
           name: 'Roll Holder',
           admissionId: 'ADM-ROLL-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 10,
           classId: classRecord._id.toString(),
           parents: defaultParent,
@@ -316,7 +320,7 @@ describe('students routes', () => {
         .send({
           name: 'Roll Conflict',
           admissionId: 'ADM-ROLL-002',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 10,
           classId: classRecord._id.toString(),
           parents: defaultParent,
@@ -340,7 +344,7 @@ describe('students routes', () => {
         .set(authHeaders)
         .send({
           admissionId: 'ADM-NO-NAME',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
@@ -360,7 +364,7 @@ describe('students routes', () => {
         .set(authHeaders)
         .send({
           name: 'No Admission ID Student',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
@@ -380,7 +384,7 @@ describe('students routes', () => {
         .send({
           name: 'No Class Student',
           admissionId: 'ADM-NO-CLASS',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           parents: defaultParent,
         })
         .expect(400);
@@ -400,7 +404,7 @@ describe('students routes', () => {
         .send({
           name: 'Ghost Class Student',
           admissionId: 'ADM-GHOST-CLASS',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           classId: nonExistentClassId,
           parents: defaultParent,
         })
@@ -421,7 +425,7 @@ describe('students routes', () => {
         .send({
           name: 'Unauthorized Student',
           admissionId: 'ADM-UNAUTH',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
@@ -431,7 +435,7 @@ describe('students routes', () => {
     it('created student has schoolId from the authenticated user', async () => {
       const school = await createSchoolRecord({ name: 'Greenwood Academy' });
       const admin = await createStaffUser({ schoolId: school._id });
-      const classRecord = await createClassRecord();
+      const classRecord = await createClassRecord({ schoolId: school._id });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
 
@@ -441,7 +445,7 @@ describe('students routes', () => {
         .send({
           name: 'School Scoped Student',
           admissionId: 'ADM-SCHOOL-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 1,
           classId: classRecord._id.toString(),
           parents: defaultParent,
@@ -466,7 +470,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Alpha Student',
         admissionId: 'ADM-LIST-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classRecord._id,
         schoolId: school._id,
@@ -476,7 +480,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Beta Student',
         admissionId: 'ADM-LIST-002',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 2,
         classId: classRecord._id,
         schoolId: school._id,
@@ -506,7 +510,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Class A Student',
         admissionId: 'ADM-CLA-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classA._id,
         schoolId: school._id,
@@ -516,7 +520,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Class B Student',
         admissionId: 'ADM-CLB-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classB._id,
         schoolId: school._id,
@@ -542,7 +546,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Active Student',
         admissionId: 'ADM-ACT-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classRecord._id,
         schoolId: school._id,
@@ -553,7 +557,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Inactive Student',
         admissionId: 'ADM-INA-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 2,
         classId: classRecord._id,
         schoolId: school._id,
@@ -585,7 +589,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Priya Sharma',
         admissionId: 'ADM-SRCH-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classRecord._id,
         schoolId: school._id,
@@ -595,7 +599,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'Rahul Verma',
         admissionId: 'ADM-SRCH-002',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 2,
         classId: classRecord._id,
         schoolId: school._id,
@@ -622,7 +626,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'School A Student',
         admissionId: 'ADM-SA-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classRecord._id,
         schoolId: schoolA._id,
@@ -632,7 +636,7 @@ describe('students routes', () => {
       await Student.create({
         name: 'School B Student',
         admissionId: 'ADM-SB-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 2,
         classId: classRecord._id,
         schoolId: schoolB._id,
@@ -666,7 +670,7 @@ describe('students routes', () => {
         .send({
           name: 'Fetch Me Student',
           admissionId: 'ADM-FETCH-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 3,
           classId: classRecord._id.toString(),
           parents: defaultParent,
@@ -709,7 +713,7 @@ describe('students routes', () => {
       const schoolBStudent = await Student.create({
         name: 'School B Only Student',
         admissionId: 'ADM-XSID-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classRecord._id,
         schoolId: schoolB._id,
@@ -744,7 +748,7 @@ describe('students routes', () => {
         .send({
           name: 'Update Target Student',
           admissionId: 'ADM-UPD-001',
-          academicYear: '2025-26',
+          academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 5,
           classId: classRecord._id.toString(),
           parentName: 'Original Parent',
@@ -796,7 +800,7 @@ describe('students routes', () => {
       const schoolBStudent = await Student.create({
         name: 'School Two Student',
         admissionId: 'ADM-XUPD-001',
-        academicYear: '2025-26',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         rollNo: 1,
         classId: classRecord._id,
         schoolId: schoolB._id,

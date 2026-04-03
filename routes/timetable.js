@@ -330,7 +330,7 @@ router.get('/', checkPermission('classes', 'view'), async (req, res) => {
   try {
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-    const timetables = await Timetable.find(scopeBySchool(req.user?.schoolId, { academicYear }))
+    const timetables = await Timetable.find(scopeBySchool(req.user?.schoolId, { academicYear, isDeleted: { $ne: true } }))
       .populate('classId', 'name section teacher')
       .sort({ 'classId.name': 1, 'classId.section': 1 });
 
@@ -622,9 +622,14 @@ router.post(
         const resolvedSchoolId = await resolveRequestSchoolId(req);
         const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-        // Reload all generated timetables
+        // AUDIT-328: Clean up all existing TeacherTimetable docs before rebuilding
+        await TeacherTimetable.deleteMany(
+          scopeBySchool(resolvedSchoolId, { academicYear })
+        );
+
+        // Reload all generated timetables (exclude soft-deleted)
         const allTimetables = await Timetable.find(
-          scopeBySchool(req.user?.schoolId, { academicYear })
+          scopeBySchool(req.user?.schoolId, { academicYear, isDeleted: { $ne: true } })
         ).lean();
 
         // Build teacher → schedule map
@@ -714,7 +719,7 @@ router.get('/:classId', checkPermission('classes', 'view'), async (req, res) => 
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
     const timetable = await Timetable.findOne(
-      scopeBySchool(req.user?.schoolId, { classId, academicYear })
+      scopeBySchool(req.user?.schoolId, { classId, academicYear, isDeleted: { $ne: true } })
     );
 
     if (!timetable) {
@@ -1158,8 +1163,10 @@ router.delete('/:classId', checkPermission('classes', 'delete'), async (req, res
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-    const timetable = await Timetable.findOneAndDelete(
-      scopeBySchool(req.user?.schoolId, { classId, academicYear })
+    const timetable = await Timetable.findOneAndUpdate(
+      scopeBySchool(req.user?.schoolId, { classId, academicYear, isDeleted: { $ne: true } }),
+      { $set: { isDeleted: true, deletedAt: new Date() } },
+      { new: true }
     );
 
     if (!timetable) {

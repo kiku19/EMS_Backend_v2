@@ -212,6 +212,7 @@ import { checkPermission } from '../middleware/permissions.js';
 import { zodSchemas, validateZod } from '../middleware/validation/validation.js';
 import { computeFeeHeadStatus } from '../utils/feeCalculator.js';
 import { createLogger } from '../utils/logger.js';
+import { extractSchoolId } from '../utils/schoolContext.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -220,7 +221,9 @@ const logger = createLogger('FeeHeads');
 // Get all fee heads
 router.get('/', checkPermission('fees', 'view'), async (req, res) => {
   try {
-    const feeHeads = await FeeHead.find({ schoolId: req.user.schoolId, isActive: true }).sort({
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) return res.status(400).json({ error: 'schoolId is required' });
+    const feeHeads = await FeeHead.find({ schoolId, isActive: true }).sort({
       createdAt: -1,
     });
     res.json(feeHeads);
@@ -233,7 +236,7 @@ router.get('/', checkPermission('fees', 'view'), async (req, res) => {
 // Get fee head by ID
 router.get('/:id', checkPermission('fees', 'view'), async (req, res) => {
   try {
-    const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
+    const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: extractSchoolId(req.user?.schoolId) });
     if (!feeHead) {
       return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
     }
@@ -262,7 +265,7 @@ router.post(
         autoApply,
       } = req.body;
 
-      const schoolId = req.user?.schoolId;
+      const schoolId = extractSchoolId(req.user?.schoolId);
 
       // Create fee head
       const feeHead = new FeeHead({
@@ -409,7 +412,7 @@ router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
 // Apply fee head to all applicable students
 router.post('/:id/apply', checkPermission('fees', 'edit'), async (req, res) => {
   try {
-    const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: req.user.schoolId });
+    const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: extractSchoolId(req.user?.schoolId) });
 
     if (!feeHead) {
       return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });

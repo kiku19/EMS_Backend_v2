@@ -1,9 +1,12 @@
 import express from 'express';
 import mongoose from 'mongoose';
+import { z } from 'zod';
 import { Student } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { scopeBySchool } from './helpers.js';
+import { validateZod } from '../../validators/zodHelpers.js';
+import { addDocumentSchema } from '../../validators/studentSchema.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -12,6 +15,7 @@ router.post(
   '/:id/documents',
   authenticate,
   checkPermission('students', 'edit'),
+  validateZod(addDocumentSchema),
   async (req, res) => {
     try {
       const { name, type, url, uploadDate, category, front, back } = req.body;
@@ -96,7 +100,9 @@ router.delete(
   }
 );
 
-router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+const updatePhotoSchema = z.object({ photo: z.string().url('Photo must be a valid URL').nullable() }).strip();
+
+router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), validateZod(updatePhotoSchema), async (req, res) => {
   try {
     const scopedStudent = await Student.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id })

@@ -163,7 +163,7 @@ router.put('/:id/profile', authenticate, validateStaffProfileUpdate, async (req,
     }
 
     const staff = await Staff.findOneAndUpdate(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
       updateData,
       { new: true }
     );

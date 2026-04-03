@@ -87,6 +87,7 @@ router.post(
       const remark = new Remark({
         schoolId: req.user?.schoolId,
         studentId: req.params.id,
+        classId: student.classId,
         title: sanitizeString(req.body.title),
         description: sanitizeString(req.body.description),
         category: req.body.category || 'general',

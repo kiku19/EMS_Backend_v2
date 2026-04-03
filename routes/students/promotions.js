@@ -140,7 +140,7 @@ router.post(
                 lastPaymentDate: null,
               };
               await student.save();
-              await StudentFeeStructure.deleteOne(
+              await StudentFeeStructure.deleteMany(
                 scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
               );
               try {
@@ -290,7 +290,7 @@ router.post(
       await student.save();
 
       // Remove old StudentFeeStructure and initialize new one for promoted class/year
-      await StudentFeeStructure.deleteOne(
+      await StudentFeeStructure.deleteMany(
         scopeBySchool(schoolId, { studentId: id, academicYear: oldAcademicYear })
       );
       try {
