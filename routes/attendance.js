@@ -103,6 +103,7 @@
  */
 
 import express from 'express';
+import mongoose from 'mongoose';
 import { Attendance, Student } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
@@ -203,9 +204,17 @@ router.get(
         .select('classId studentId status')
         .lean();
 
+      // AUDIT-457: Exclude attendance records for soft-deleted students
+      const studentIds = [...new Set(records.map(r => r.studentId?.toString()).filter(Boolean))];
+      const activeStudents = studentIds.length
+        ? await Student.find({ _id: { $in: studentIds }, isDeleted: { $ne: true } }).select('_id').lean()
+        : [];
+      const activeStudentIds = new Set(activeStudents.map(s => String(s._id)));
+
       // Group by classId → { present, absent, late, leave, halfday, total }
       const byClass = {};
       for (const record of records) {
+        if (!activeStudentIds.has(String(record.studentId))) continue;
         const classKey = String(record.classId);
         if (!byClass[classKey]) {
           byClass[classKey] = { present: 0, absent: 0, late: 0, leave: 0, halfday: 0, total: 0 };
@@ -233,6 +242,17 @@ router.get(
       const { start, end, academicYear } = req.query;
 
       const schoolId = await resolveRequestSchoolId(req);
+
+      // AUDIT-457: Verify student is not soft-deleted before querying attendance
+      const studentDoc = await Student.findOne(
+        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+      ).select('_id').lean();
+      if (!studentDoc) {
+        res.set('X-Total-Count', '0');
+        res.set('X-Has-More', 'false');
+        return res.json([]);
+      }
+
       const query = scopeBySchool(schoolId, { studentId });
       if (start && end) {
         query.date = { $gte: start, $lte: end };
@@ -384,6 +404,8 @@ async function markBulkAttendance(req, res) {
   ).select('_id').lean();
   const validStudentIdSet = new Set(validStudents.map(s => s._id.toString()));
 
+  // Pre-filter valid records vs skipped before the transaction
+  const validRecords = [];
   for (const record of attendance) {
     const { studentId, status } = record;
     if (!studentId || !status || !validStatuses.includes(status)) {
@@ -400,20 +422,32 @@ async function markBulkAttendance(req, res) {
       continue;
     }
 
-    const attendanceRecord = await Attendance.findOneAndUpdate(
-      scopeBySchool(schoolId, { studentId, date }),
-      {
-        studentId,
-        classId: resolved.classId,
-        date,
-        status,
-        markedBy: req.user?.id,
-        schoolId,
-      },
-      { new: true, upsert: true }
-    );
+    validRecords.push(record);
+  }
 
-    results.push(attendanceRecord);
+  // AUDIT-443: Use a transaction so bulk attendance is atomic — all succeed or none
+  const mongoSession = await mongoose.startSession();
+  try {
+    await mongoSession.withTransaction(async () => {
+      for (const record of validRecords) {
+        const attendanceRecord = await Attendance.findOneAndUpdate(
+          scopeBySchool(schoolId, { studentId: record.studentId, date }),
+          {
+            studentId: record.studentId,
+            classId: resolved.classId,
+            date,
+            status: record.status,
+            markedBy: req.user?.id,
+            schoolId,
+          },
+          { new: true, upsert: true, session: mongoSession }
+        );
+
+        results.push(attendanceRecord);
+      }
+    });
+  } finally {
+    await mongoSession.endSession();
   }
 
   dispatchWebhookEvent(schoolId, 'attendance.marked', {
@@ -556,12 +590,16 @@ router.get(
         summary[studentKey].total += 1;
       });
 
+      // AUDIT-456: Use configurable late weight from school settings
+      const settings = await SchoolSettings.findOne({ schoolId: req.user?.schoolId }).lean();
+      const lateW = (settings?.attendanceRules?.lateWeight ?? 100) / 100;
+
       const report = Object.values(summary).map((studentSummary) => ({
         ...studentSummary,
         percentage:
           studentSummary.total > 0
             ? (
-                ((studentSummary.present + studentSummary.late) / studentSummary.total) *
+                ((studentSummary.present + studentSummary.late * lateW + studentSummary.halfday * 0.5) / studentSummary.total) *
                 100
               ).toFixed(2)
             : 0,
@@ -620,7 +658,19 @@ router.get('/:studentId', checkPermission('attendance', 'view'), async (req, res
     const { studentId } = req.params;
     const { startDate, endDate, academicYear } = req.query;
 
-    const query = scopeBySchool(req.user?.schoolId, { studentId });
+    const schoolId = req.user?.schoolId;
+
+    // AUDIT-457: Verify student is not soft-deleted before querying attendance
+    const studentDoc = await Student.findOne(
+      scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    ).select('_id').lean();
+    if (!studentDoc) {
+      res.set('X-Total-Count', '0');
+      res.set('X-Has-More', 'false');
+      return res.json({});
+    }
+
+    const query = scopeBySchool(schoolId, { studentId });
     if (startDate || endDate) {
       query.date = {};
       if (startDate) {
@@ -631,7 +681,7 @@ router.get('/:studentId', checkPermission('attendance', 'view'), async (req, res
       }
     } else if (academicYear) {
       // Scope to academic year date range when no explicit dates provided
-      const dateRange = await getAcademicYearDateRange(academicYear, req.user?.schoolId);
+      const dateRange = await getAcademicYearDateRange(academicYear, schoolId);
       if (dateRange) query.date = dateRange;
     }
 

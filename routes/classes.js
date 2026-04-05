@@ -312,19 +312,69 @@ router.get('/', checkPermission('classes', 'view'), async (req, res) => {
     const classIds = classes.map((cls) => cls._id);
     const schoolIdRaw = extractSchoolId(req.user?.schoolId);
     const schoolOid = schoolIdRaw ? new mongoose.Types.ObjectId(schoolIdRaw) : null;
-    const studentCountAgg = await Student.aggregate([
-      {
-        $match: {
-          classId: { $in: classIds },
-          status: 'active',
-          isDeleted: { $ne: true },
-          ...(schoolOid ? { schoolId: schoolOid } : {}),
+    const schoolMatch = schoolOid ? { schoolId: schoolOid } : {};
+
+    // AUDIT-339: Bulk-fetch student counts, attendance, and academic performance in parallel
+    const [studentCountAgg, attendanceAgg, academicAgg] = await Promise.all([
+      Student.aggregate([
+        {
+          $match: {
+            classId: { $in: classIds },
+            status: 'active',
+            isDeleted: { $ne: true },
+            ...schoolMatch,
+          },
         },
-      },
-      { $group: { _id: '$classId', count: { $sum: 1 } } },
+        { $group: { _id: '$classId', count: { $sum: 1 } } },
+      ]),
+      Attendance.aggregate([
+        {
+          $match: {
+            classId: { $in: classIds },
+            ...schoolMatch,
+          },
+        },
+        {
+          $group: {
+            _id: '$classId',
+            total: { $sum: 1 },
+            present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
+            late: { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
+          },
+        },
+      ]),
+      Result.aggregate([
+        {
+          $match: {
+            classId: { $in: classIds },
+            isDeleted: { $ne: true },
+            isPublished: true,
+            ...schoolMatch,
+          },
+        },
+        {
+          $group: {
+            _id: '$classId',
+            avgPercentage: { $avg: '$percentage' },
+          },
+        },
+      ]),
     ]);
+
     const studentCountMap = new Map(
       studentCountAgg.map((item) => [item._id.toString(), item.count])
+    );
+    const attendanceMap = new Map(
+      attendanceAgg.map((item) => [
+        item._id.toString(),
+        item.total > 0 ? Math.round(((item.present + item.late) / item.total) * 100) : null,
+      ])
+    );
+    const academicMap = new Map(
+      academicAgg.map((item) => [
+        item._id.toString(),
+        item.avgPercentage != null ? Math.round(item.avgPercentage) : 0,
+      ])
     );
 
     const formatted = classes.map((cls) => ({
@@ -335,8 +385,14 @@ router.get('/', checkPermission('classes', 'view'), async (req, res) => {
       classTeacherId: cls.classTeacherId?._id?.toString(),
       classTeacherName: cls.classTeacherId?.name,
       studentCount: studentCountMap.get(cls._id.toString()) || 0,
+      averageAttendance: attendanceMap.get(cls._id.toString()) ?? null,
+      averageAcademicPerformance: academicMap.get(cls._id.toString()) ?? 0,
       academicYear: cls.academicYear,
       strengthLimit: cls.strengthLimit,
+      room: cls.room,
+      block: cls.block,
+      classTag: cls.classTag,
+      assignedSubjects: cls.assignedSubjects,
     }));
 
     res.json(formatted);
@@ -351,7 +407,7 @@ router.post(
   validateZod(createClassSchema),
   async (req, res) => {
     try {
-      const { name, section, classTeacherId, subjects, academicYear, strengthLimit } = req.body;
+      const { name, section, classTeacherId, subjects, academicYear, strengthLimit, room, block, classTag, assignedSubjects } = req.body;
       const schoolId = await resolveRequestSchoolId(req);
       if (!schoolId) {
         return res.status(400).json({ error: 'School context is required' });
@@ -368,6 +424,10 @@ router.post(
         academicYear,
         schoolId,
         ...(strengthLimit && { strengthLimit }),
+        ...(room && { room }),
+        ...(block && { block }),
+        ...(classTag && { classTag }),
+        ...(assignedSubjects?.length && { assignedSubjects }),
       });
       await classDoc.save();
 
@@ -395,7 +455,7 @@ router.put(
   validateZod(updateClassTeacherSchema),
   async (req, res) => {
     try {
-      const { classTeacherId } = req.body;
+      const { classTeacherId, force } = req.body;
       const classDoc = await Class.findOne(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
@@ -403,13 +463,41 @@ router.put(
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
-      const validation = await ensureTeacherAvailable(
+      let validation = await ensureTeacherAvailable(
         classTeacherId,
         req.params.id,
         req.user?.schoolId
       );
       if (validation?.error) {
-        return res.status(validation.error.status).json(validation.error.body);
+        // If force=true, unassign the teacher from their current class first
+        if (force && validation.error.body?.existingClass?.id) {
+          const prevClassId = validation.error.body.existingClass.id;
+          const prevClass = await Class.findById(prevClassId);
+          if (prevClass) {
+            const prevOldTeacherId = prevClass.classTeacherId;
+            prevClass.classTeacherId = null;
+            await prevClass.save();
+            await syncClassTeacherStaff({ oldTeacherId: prevOldTeacherId, newTeacherId: null, classDoc: prevClass });
+
+            // Emit update for the previous class so frontend clears it
+            const io = req.app.get('io');
+            if (io) {
+              emitEvent(io, EVENTS.CLASS_UPDATED, {
+                schoolId: req.user.schoolId?.toString(),
+                classId: prevClass._id.toString(),
+                name: prevClass.name,
+                section: prevClass.section,
+                classTeacherId: null,
+                teacher: null,
+                teacherPhoto: null,
+              });
+            }
+          }
+          // Re-validate — teacher is now available
+          validation = await ensureTeacherAvailable(classTeacherId, req.params.id, req.user?.schoolId);
+        } else {
+          return res.status(validation.error.status).json(validation.error.body);
+        }
       }
 
       const oldTeacherId = classDoc.classTeacherId;
@@ -711,7 +799,7 @@ router.put(
   validateZod(updateClassSchema),
   async (req, res) => {
     try {
-      const { name, section, classTeacherId, subjects, academicYear, strengthLimit } = req.body;
+      const { name, section, classTeacherId, subjects, assignedSubjects, academicYear, classTag, room, block, strengthLimit } = req.body;
       const validation = await ensureTeacherAvailable(
         classTeacherId,
         req.params.id,
@@ -730,7 +818,16 @@ router.put(
 
       const oldTeacherId = scopedCheck.classTeacherId;
 
-      const updateData = { name, section, classTeacherId, subjects, academicYear };
+      const updateData = {};
+      if (name !== undefined) updateData.name = name;
+      if (section !== undefined) updateData.section = section;
+      if (classTeacherId !== undefined) updateData.classTeacherId = classTeacherId;
+      if (subjects !== undefined) updateData.subjects = subjects;
+      if (assignedSubjects !== undefined) updateData.assignedSubjects = assignedSubjects;
+      if (academicYear !== undefined) updateData.academicYear = academicYear;
+      if (classTag !== undefined) updateData.classTag = classTag;
+      if (room !== undefined) updateData.room = room;
+      if (block !== undefined) updateData.block = block;
       if (strengthLimit) {
         if (strengthLimit.current != null)
           updateData['strengthLimit.current'] = strengthLimit.current;

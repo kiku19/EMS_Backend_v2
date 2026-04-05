@@ -394,7 +394,7 @@ export async function seedStudents(schoolId, classes) {
         bloodGroup: pick(BLOOD_GROUPS),
         nationality: 'Indian',
         religion: pick(['Hindu', 'Muslim', 'Christian', 'Sikh', 'Jain']),
-        category: pick(['General', 'OBC', 'SC', 'ST']),
+        category: pick(['General', 'OBC', 'SC', 'ST', 'EWS']),
         motherTongue: pick([
           'Hindi',
           'Tamil',

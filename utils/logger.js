@@ -9,10 +9,10 @@ const SENSITIVE_KEYS = new Set([
   'password',
   'secret',
   'token',
-  'accessToken',
-  'refreshToken',
-  'apiKey',
-  'apiSecret',
+  'accesstoken',
+  'refreshtoken',
+  'apikey',
+  'apisecret',
   'jwt',
 ]);
 
@@ -82,7 +82,7 @@ function sanitizeValue(value, seen = new WeakSet()) {
     seen.add(value);
 
     return Object.entries(value).reduce((result, [key, entryValue]) => {
-      if (SENSITIVE_KEYS.has(key)) {
+      if (SENSITIVE_KEYS.has(key.toLowerCase())) {
         result[key] = REDACTED_VALUE;
         return result;
       }

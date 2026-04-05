@@ -8,7 +8,7 @@ const router = express.Router();
 router.use(authenticate);
 
 // Fix 3.6: Rewritten to query TeacherTimetable (not Timetable) and look up period times
-router.get('/:id/timetable/today', authenticate, async (req, res) => {
+router.get('/:id/timetable/today', async (req, res) => {
   try {
     const { CURRENT_ACADEMIC_YEAR } = await import('../../utils/constants.js');
     const { academicYear = CURRENT_ACADEMIC_YEAR, timezone = 'Asia/Kolkata' } = req.query;
@@ -99,7 +99,7 @@ router.get('/:id/timetable/today', authenticate, async (req, res) => {
   }
 });
 
-router.get('/:id/timetable/week', authenticate, async (req, res) => {
+router.get('/:id/timetable/week', async (req, res) => {
   try {
     const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const { CURRENT_ACADEMIC_YEAR } = await import('../../utils/constants.js');

@@ -17,6 +17,8 @@ import PushToken from '../../models/PushToken.js';
 import { cascadeDeleteStaffReferences } from '../../services/staffDeletionService.js';
 import { logToTrash } from '../../services/trashService.js';
 import { dispatchWebhookEvent } from '../../services/webhookService.js';
+import { sendWelcomeEmail } from '../../services/emailService.js';
+import { sendSMS } from '../../config/sms.js';
 import { piiMatch } from '../../utils/encryption.js';
 import {
   scopeBySchool,
@@ -33,7 +35,7 @@ router.use(authenticate);
 
 // Fix: Add isDeleted filter and schoolId to Class query
 // Fix 3.15: Add pagination support with backward compatibility
-router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
     const isPaginated = req.query.page !== undefined;
@@ -116,7 +118,7 @@ router.get('/', authenticate, checkPermission('staff', 'view'), async (req, res)
 });
 
 // Fix: Add isDeleted filter and schoolId to Class query
-router.get('/:id', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const staff = await Staff.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -136,7 +138,6 @@ router.get('/:id', authenticate, checkPermission('staff', 'view'), async (req, r
 
 router.post(
   '/',
-  authenticate,
   checkPermission('staff', 'create'),
   planLimitGate('staff'),
   validateZod(createStaffSchema),
@@ -295,6 +296,20 @@ router.post(
         code: staff.code,
       }).catch(() => {});
 
+      // AUDIT-312: Send auto-generated credentials to new staff via email/SMS
+      if (staff.email) {
+        sendWelcomeEmail(
+          { name: staff.name, email: staff.email },
+          password
+        ).catch(() => {});
+      }
+      if (phone) {
+        sendSMS(
+          phone,
+          `Welcome! Your login credentials — Username: ${username}, Password: ${password}. Please change your password after first login.`
+        ).catch(() => {});
+      }
+
       await syncUsageMetrics(schoolId);
       const permissionRole = await buildPermissions(staff.role, staff._id, schoolId);
 
@@ -347,7 +362,6 @@ router.post(
 // Fix 2.9: Add salary, panNumber, nationality, shift, designation, qualification, experience to destructuring
 router.put(
   '/:id',
-  authenticate,
   checkPermission('staff', 'edit'),
   validateZod(updateStaffSchema),
   async (req, res) => {
@@ -581,7 +595,7 @@ router.put(
 );
 
 // Fix 1.7/3.3: Soft delete instead of hard delete
-router.delete('/:id', authenticate, checkPermission('staff', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('staff', 'delete'), async (req, res) => {
   try {
     // Snapshot before mutation for trash logging
     const staffSnapshot = await Staff.findOne(

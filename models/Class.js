@@ -56,7 +56,8 @@ classSchema.index(
 
 /**
  * Compute and persist the average attendance percentage for a class.
- * Counts 'present' and 'late' as fully present, 'halfday' as 0.5 present.
+ * Late weight is configurable via school settings (default 100%).
+ * Halfday counts as 0.5 present.
  * Updates the `averageAttendance` field on the Class document.
  *
  * @param {ObjectId|string} classId - The class to update
@@ -69,6 +70,11 @@ classSchema.statics.updateAverageAttendance = async function updateAverageAttend
 ) {
   // Lazy import to avoid circular dependency (Attendance -> Class -> Attendance)
   const { default: Attendance } = await import('./Attendance.js');
+  const { default: SchoolSettings } = await import('./SchoolSettings.js');
+
+  // AUDIT-456: Use configurable late weight from school settings
+  const settings = await SchoolSettings.findOne({ schoolId }).lean();
+  const lateW = (settings?.attendanceRules?.lateWeight ?? 100) / 100;
 
   const pipeline = [
     {
@@ -83,7 +89,12 @@ classSchema.statics.updateAverageAttendance = async function updateAverageAttend
         totalRecords: { $sum: 1 },
         presentCount: {
           $sum: {
-            $cond: [{ $in: ['$status', ['present', 'late']] }, 1, 0],
+            $cond: [{ $eq: ['$status', 'present'] }, 1, 0],
+          },
+        },
+        lateCount: {
+          $sum: {
+            $cond: [{ $eq: ['$status', 'late'] }, 1, 0],
           },
         },
         halfdayCount: {
@@ -99,7 +110,7 @@ classSchema.statics.updateAverageAttendance = async function updateAverageAttend
 
   let averageAttendance = 0;
   if (result && result.totalRecords > 0) {
-    const effectivePresent = result.presentCount + result.halfdayCount * 0.5;
+    const effectivePresent = result.presentCount + result.lateCount * lateW + result.halfdayCount * 0.5;
     averageAttendance = Math.round((effectivePresent / result.totalRecords) * 100);
   }
 

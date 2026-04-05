@@ -16,6 +16,7 @@ import {
   mobileAttendanceMarkSchema,
   leaveApprovalSchema,
 } from '../validators/staffAttendanceSchema.js';
+import SchoolSettings from '../models/SchoolSettings.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -40,6 +41,32 @@ async function resolveRequestSchoolId(req) {
   if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
   const school = await ensureDefaultSchool();
   return extractSchoolId(school._id);
+}
+
+// AUDIT-444: Validate date is not a holiday or non-working day
+async function validateWorkingDay(date, schoolId) {
+  try {
+    const settings = await SchoolSettings.findOne({ schoolId });
+    if (!settings) return null;
+
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const attendanceDate = new Date(date);
+    const dayOfWeek = dayNames[attendanceDate.getUTCDay()];
+    const workingDays = settings.workingDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    if (!workingDays.includes(dayOfWeek)) {
+      return { error: `Cannot mark attendance on ${dayOfWeek} — it is not a working day`, nonWorkingDay: true };
+    }
+
+    const dateStr = attendanceDate.toISOString().split('T')[0];
+    const holiday = (settings.holidays || []).find((h) => h.date === dateStr);
+    if (holiday) {
+      return { error: `Cannot mark attendance on ${dateStr} — it is a holiday (${holiday.name})`, holiday: true };
+    }
+  } catch (_) {
+    // Non-blocking — if settings can't be fetched, allow attendance marking
+  }
+  return null;
 }
 
 // Get all attendance records (with pagination and date filter)
@@ -88,6 +115,51 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
   } catch (error) {
     console.error('[StaffAttendance] Error fetching attendance:', error);
     res.status(500).json({ error: 'Failed to fetch staff attendance records' });
+  }
+});
+
+// Get attendance report for a date range (no pagination, for CSV export)
+router.get('/report', checkPermission('staff', 'view'), async (req, res) => {
+  try {
+    const startDate = sanitizeQueryStr(req.query.startDate);
+    const endDate = sanitizeQueryStr(req.query.endDate);
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    const schoolId = await resolveRequestSchoolId(req);
+    const query = scopeBySchool(schoolId, { date: { $gte: startDate, $lte: endDate } });
+
+    const [records, staffList] = await Promise.all([
+      StaffAttendance.find(query).sort({ date: 1 }).lean(),
+      Staff.find(scopeBySchool(schoolId, { status: 'active' })).select('name department role').lean(),
+    ]);
+
+    // Build a staffId -> staff info map
+    const staffMap = {};
+    staffList.forEach((s) => {
+      staffMap[s._id.toString()] = { name: s.name, department: s.department, role: s.role };
+    });
+
+    const data = records.map((r) => {
+      const info = staffMap[r.staffId?.toString()] || {};
+      return {
+        staffId: r.staffId?.toString(),
+        name: info.name || 'Unknown',
+        department: info.department || '',
+        role: info.role || '',
+        date: r.date,
+        status: r.status,
+        checkInTime: r.checkInTime || '-',
+        checkOutTime: r.checkOutTime || '-',
+        reason: r.reason || '',
+      };
+    });
+
+    res.json({ data });
+  } catch (error) {
+    console.error('[StaffAttendance] Error fetching report:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance report' });
   }
 });
 
@@ -200,6 +272,10 @@ router.post(
 
       const schoolId = await resolveRequestSchoolId(req);
 
+      // AUDIT-444: Prevent marking on holidays or non-working days
+      const dayCheck = await validateWorkingDay(date, schoolId);
+      if (dayCheck) return res.status(400).json(dayCheck);
+
       const attendance = await StaffAttendance.findOneAndUpdate(
         scopeBySchool(schoolId, { staffId, date }),
         {
@@ -244,7 +320,8 @@ router.post(
             const substitutions = await substitutionService.createSubstitutionFromAbsence(
               staffId,
               date,
-              reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`
+              reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`,
+              schoolId
             );
 
             // Emit substitution alert
@@ -288,12 +365,16 @@ router.post(
         return res.status(400).json({ error: 'Cannot mark attendance for future dates' });
       }
 
+      const schoolId = await resolveRequestSchoolId(req);
+
+      // AUDIT-444: Prevent marking on holidays or non-working days
+      const dayCheck = await validateWorkingDay(date, schoolId);
+      if (dayCheck) return res.status(400).json(dayCheck);
+
       // Default times if not provided
       const defaultInTime = checkInTime || (status === 'present' ? '09:00' : '-');
       const defaultOutTime = checkOutTime || '-';
       const finalReason = reason || '';
-
-      const schoolId = await resolveRequestSchoolId(req);
 
       const operations = staffIds.map((staffId) => ({
         updateOne: {
@@ -315,6 +396,55 @@ router.post(
       }));
 
       const result = await StaffAttendance.bulkWrite(operations);
+
+      // AUDIT-311: Trigger substitution alerts for absent/leave teachers
+      if (status === 'absent' || status === 'leave') {
+        try {
+          const staffMembers = await Staff.find(
+            scopeBySchool(schoolId, {
+              _id: { $in: staffIds },
+              isDeleted: { $ne: true },
+            })
+          ).select('name role staffType teacherAssignments').lean();
+
+          const absentTeachers = staffMembers.filter(
+            (s) =>
+              s.role?.includes('Teacher') ||
+              s.staffType?.includes('Teacher') ||
+              s.teacherAssignments?.length > 0
+          );
+
+          for (const teacher of absentTeachers) {
+            try {
+              const substitutions = await substitutionService.createSubstitutionFromAbsence(
+                teacher._id.toString(),
+                date,
+                finalReason || `${status.charAt(0).toUpperCase() + status.slice(1)}`,
+                schoolId
+              );
+
+              if (req.app?.get('io') && substitutions.length > 0) {
+                req.app.get('io').emit('substitution_alert', {
+                  type: 'new_alerts',
+                  teacherName: teacher.name,
+                  teacherId: teacher._id.toString(),
+                  date,
+                  count: substitutions.length,
+                  markedBy: req.user.name || req.user.id,
+                });
+              }
+            } catch (subError) {
+              console.error(
+                `[StaffAttendance] Error creating substitution for teacher ${teacher._id}:`,
+                subError
+              );
+            }
+          }
+        } catch (subError) {
+          console.error('[StaffAttendance] Error processing bulk substitution alerts:', subError);
+        }
+      }
+
       res.json({ success: true, modified: result.modifiedCount, upserted: result.upsertedCount });
     } catch (error) {
       console.error('[StaffAttendance] Error bulk marking attendance:', error);
@@ -713,7 +843,27 @@ router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, valida
       });
     }
 
-    const result = await StaffAttendance.bulkWrite(operations);
+    const result = await StaffAttendance.bulkWrite(operations, { ordered: false });
+
+    const savedCount = (result.modifiedCount || 0) + (result.upsertedCount || 0);
+
+    if (savedCount === 0) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to submit leave application — no days were saved',
+      });
+    }
+
+    if (savedCount < numberOfDays) {
+      return res.status(207).json({
+        success: false,
+        message: `Leave partially saved: ${savedCount} of ${numberOfDays} days saved`,
+        numberOfDays,
+        savedCount,
+        modified: result.modifiedCount,
+        upserted: result.upsertedCount,
+      });
+    }
 
     res.json({
       success: true,
@@ -723,6 +873,20 @@ router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, valida
       upserted: result.upsertedCount,
     });
   } catch (error) {
+    // bulkWrite with ordered:false may throw BulkWriteError with partial results
+    if (error.name === 'BulkWriteError' || error.name === 'MongoBulkWriteError') {
+      const partialResult = error.result || {};
+      const savedCount = (partialResult.nModified || 0) + (partialResult.nUpserted || 0);
+      console.error(`[StaffAttendance] Partial leave save: ${savedCount}/${numberOfDays} days`, error.message);
+      if (savedCount > 0) {
+        return res.status(207).json({
+          success: false,
+          message: `Leave partially saved: ${savedCount} of ${numberOfDays} days saved`,
+          numberOfDays,
+          savedCount,
+        });
+      }
+    }
     console.error('[StaffAttendance] Error applying for leave:', error);
     res.status(500).json({ error: 'Failed to submit leave application' });
   }

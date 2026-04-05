@@ -1,5 +1,28 @@
 import Joi from 'joi';
 
+// Allowed domains for uploaded document/image URLs
+const ALLOWED_URL_DOMAINS = ['res.cloudinary.com'];
+
+/** Joi custom validator: URI restricted to allowed upload domains */
+const allowedDomainUri = () =>
+  Joi.string()
+    .uri()
+    .custom((value, helpers) => {
+      if (!value) return value;
+      try {
+        const { hostname } = new URL(value);
+        if (!ALLOWED_URL_DOMAINS.includes(hostname)) {
+          return helpers.error('string.disallowedDomain', { hostname });
+        }
+      } catch {
+        return helpers.error('string.uri');
+      }
+      return value;
+    })
+    .messages({
+      'string.disallowedDomain': '{{#label}} URL domain "{{#hostname}}" is not allowed',
+    });
+
 // Validation schemas
 export const schemas = {
   // Authentication
@@ -113,19 +136,19 @@ export const schemas = {
 
     isWhatsapp: Joi.boolean().allow(null),
 
-    // Documents
-    picture: Joi.string().uri().allow('', null),
+    // Documents — URLs restricted to allowed upload domains
+    picture: allowedDomainUri().allow('', null),
     // Fix 2.7: Only allow object format for idDocuments (Mongoose requires objects, not plain strings)
     idDocuments: Joi.array()
       .items(
         Joi.object({
           type: Joi.string().allow('', null),
-          url: Joi.string().uri().allow('', null),
+          url: allowedDomainUri().allow('', null),
           name: Joi.string().allow('', null),
         })
       )
       .allow(null),
-    customDocuments: Joi.array().items(Joi.string().uri()).allow(null),
+    customDocuments: Joi.array().items(allowedDomainUri()).allow(null),
 
     // Qualifications
     professionalQualifications: Joi.array()
@@ -133,14 +156,14 @@ export const schemas = {
         Joi.object({
           name: Joi.string().required(),
           year: Joi.string().allow('', null),
-          documents: Joi.array().items(Joi.string().uri()),
+          documents: Joi.array().items(allowedDomainUri()),
         })
       )
       .allow(null),
     totalExperience: Joi.string().allow('', null),
     previousOrganization: Joi.string().max(100).allow('', null),
     roleInOrganization: Joi.string().allow('', null),
-    qualificationDocs: Joi.array().items(Joi.string().uri()).allow(null),
+    qualificationDocs: Joi.array().items(allowedDomainUri()).allow(null),
 
     // Staff Info
     staffNumber: Joi.string().allow('', null),
@@ -242,30 +265,30 @@ export const schemas = {
       .pattern(/^[0-9]{10}$/)
       .allow('', null),
     isWhatsapp: Joi.boolean().allow(null),
-    picture: Joi.string().uri().allow('', null),
+    picture: allowedDomainUri().allow('', null),
     idDocuments: Joi.array()
       .items(
         Joi.object({
           type: Joi.string().allow('', null),
-          url: Joi.string().uri().allow('', null),
+          url: allowedDomainUri().allow('', null),
           name: Joi.string().allow('', null),
         })
       )
       .allow(null),
-    customDocuments: Joi.array().items(Joi.string().uri()).allow(null),
+    customDocuments: Joi.array().items(allowedDomainUri()).allow(null),
     professionalQualifications: Joi.array()
       .items(
         Joi.object({
           name: Joi.string().required(),
           year: Joi.string().allow('', null),
-          documents: Joi.array().items(Joi.string().uri()),
+          documents: Joi.array().items(allowedDomainUri()),
         })
       )
       .allow(null),
     totalExperience: Joi.string().allow('', null),
     previousOrganization: Joi.string().max(100).allow('', null),
     roleInOrganization: Joi.string().allow('', null),
-    qualificationDocs: Joi.array().items(Joi.string().uri()).allow(null),
+    qualificationDocs: Joi.array().items(allowedDomainUri()).allow(null),
     staffNumber: Joi.string().allow('', null),
     // Fix 2.6: Normalize staffType to always be an array
     staffType: Joi.alternatives()
@@ -1306,7 +1329,6 @@ export const zodSchemas = {
     classId: objectId,
     // Optional section identifier (e.g. 'A') for section-level targeting within a class
     sectionId: z.string().trim().min(1, 'Section cannot be empty').max(10).optional(),
-    teacherId: objectId,
     dueDate: z
       .string()
       .refine((val) => !isNaN(new Date(val).getTime()), {

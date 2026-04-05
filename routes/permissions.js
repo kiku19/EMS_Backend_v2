@@ -73,11 +73,60 @@ const customRoleCreateSchema = z.object({
 
 const customRoleUpdateSchema = customRoleCreateSchema.partial();
 
-// Get user's permissions
+// Get current user's own permissions (no IDOR risk — userId from auth token)
+router.get('/me', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const sid = req.user.schoolId;
+
+    let userPermission = await UserPermission.findOne(schoolQuery(req, { userId }));
+
+    if (!userPermission) {
+      const user = await Staff.findOne(schoolQuery(req, { _id: userId }));
+      if (!user) {
+        return res.status(404).json({ error: req.t('common:routes.userNotFound') });
+      }
+
+      const role = determineRole(user.role);
+      const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
+
+      userPermission = await UserPermission.findOneAndUpdate(
+        schoolQuery(req, { userId }),
+        {
+          schoolId: sid,
+          userId,
+          role,
+          permissions: buildPermissionsArray(defaultPermissions),
+          customPermissions: false,
+        },
+        { upsert: true, new: true }
+      );
+    } else {
+      await ensurePermissionDocument(userPermission, userPermission.role);
+    }
+
+    res.json(userPermission);
+  } catch (error) {
+    console.error('Error fetching user permissions:', error);
+    res.status(500).json({ error: req.t('common:routes.failedToFetchPermissions') });
+  }
+});
+
+// Get user's permissions (admin or self only)
 router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const sid = req.user.schoolId;
+
+    // IDOR guard: only allow fetching own permissions or if requester is admin
+    if (userId !== req.user.id) {
+      const requesterPermission = await UserPermission.findOne(
+        schoolQuery(req, { userId: req.user.id })
+      );
+      if (!requesterPermission || requesterPermission.role !== 'admin') {
+        return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
+      }
+    }
 
     let userPermission = await UserPermission.findOne(schoolQuery(req, { userId }));
 
@@ -368,11 +417,21 @@ router.put('/requests/:requestId', async (req, res) => {
   }
 });
 
-// Get user's permission requests
+// Get user's permission requests (admin or self only)
 router.get('/user/:userId/requests', async (req, res) => {
   try {
     const { userId } = req.params;
     const { status } = req.query;
+
+    // IDOR guard: only allow fetching own requests or if requester is admin
+    if (userId !== req.user.id) {
+      const requesterPermission = await UserPermission.findOne(
+        schoolQuery(req, { userId: req.user.id })
+      );
+      if (!requesterPermission || requesterPermission.role !== 'admin') {
+        return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
+      }
+    }
 
     const filter = { userId };
     if (status) filter.status = status;
@@ -394,8 +453,21 @@ router.get('/user/:userId/requests', async (req, res) => {
 router.get('/custom-roles', async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    const roles = await CustomRole.find({ schoolId }).sort({ createdAt: 1 });
-    res.json(roles);
+    const roles = await CustomRole.find({ schoolId }).sort({ createdAt: 1 }).lean();
+
+    // Aggregate assigned-user counts per role in one query
+    const counts = await UserPermission.aggregate([
+      { $match: { schoolId, customRoleId: { $exists: true, $ne: null } } },
+      { $group: { _id: '$customRoleId', count: { $sum: 1 } } },
+    ]);
+    const countMap = Object.fromEntries(counts.map(c => [String(c._id), c.count]));
+
+    const rolesWithCounts = roles.map(r => ({
+      ...r,
+      userCount: countMap[String(r._id)] || 0,
+    }));
+
+    res.json(rolesWithCounts);
   } catch (error) {
     console.error('Error fetching custom roles:', error);
     res.status(500).json({ error: req.t('common:routes.failedToFetchCustomRoles') });

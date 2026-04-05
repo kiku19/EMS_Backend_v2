@@ -106,10 +106,6 @@ const createSessionBaseSchema = z.object({
   classId: z.string().length(24, 'Invalid classId'),
   staffId: z.string().length(24, 'Invalid staffId'),
   venue: z.string().max(300).optional().default(''),
-  status: z
-    .enum(['scheduled', 'ongoing', 'completed', 'cancelled'])
-    .optional()
-    .default('scheduled'),
 });
 
 const createSessionSchema = createSessionBaseSchema.refine(
@@ -120,7 +116,9 @@ const createSessionSchema = createSessionBaseSchema.refine(
   }
 );
 
-const updateSessionSchema = createSessionBaseSchema.partial().refine(
+const updateSessionSchema = createSessionBaseSchema.extend({
+  status: z.enum(['scheduled', 'ongoing', 'completed', 'cancelled']).optional(),
+}).partial().refine(
   (data) => {
     // Only validate time ordering when both times are provided
     if (data.startTime && data.endTime) {
@@ -228,6 +226,7 @@ router.post('/', checkPermission('ptm', 'create'), async (req, res) => {
     const session = await PTMSession.create({
       ...data,
       sessionDate: new Date(data.sessionDate),
+      status: 'scheduled',
       schoolId,
     });
 

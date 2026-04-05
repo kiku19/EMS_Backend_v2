@@ -10,7 +10,7 @@ const router = express.Router();
 router.use(authenticate);
 
 // Fix 3.1: Add authenticate + schoolId scoping to /public
-router.get('/public', authenticate, async (req, res) => {
+router.get('/public', async (req, res) => {
   try {
     const staff = await Staff.find(
       scopeBySchool(req.user?.schoolId, { status: 'active', isDeleted: { $ne: true } })
@@ -26,7 +26,7 @@ router.get('/public', authenticate, async (req, res) => {
 });
 
 // Fix 3.2: Add authenticate + schoolId scoping, remove email/phone from response
-router.get('/validate/:id', authenticate, async (req, res) => {
+router.get('/validate/:id', async (req, res) => {
   try {
     const staff = await Staff.findOne(
       scopeBySchool(req.user?.schoolId, {
@@ -54,7 +54,7 @@ router.get('/validate/:id', authenticate, async (req, res) => {
   }
 });
 
-router.get('/me', authenticate, async (req, res) => {
+router.get('/me', async (req, res) => {
   try {
     const staff = await Staff.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.user.id })
@@ -72,7 +72,7 @@ router.get('/me', authenticate, async (req, res) => {
 });
 
 // Fix 3.8: Add schoolId scoping to Class sub-queries
-router.get('/:id/classes', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/:id/classes', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const staff = await Staff.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -190,7 +190,7 @@ router.get('/:id/classes', authenticate, checkPermission('staff', 'view'), async
 });
 
 // GET /api/staff/:id/ratings — Admin: get teacher ratings summary
-router.get('/:id/ratings', authenticate, checkPermission('staff', 'view'), async (req, res) => {
+router.get('/:id/ratings', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const teacherId = req.params.id;

@@ -13,6 +13,7 @@ const staffSchema = new mongoose.Schema(
           type: String,
           enum: [
             'Admin',
+            'Super Admin',
             'Teacher',
             'Accountant',
             'Librarian',
@@ -20,6 +21,9 @@ const staffSchema = new mongoose.Schema(
             'Vice Principal',
             'Lab Assistant',
             'Receptionist',
+            'Counselor',
+            'Driver',
+            'Security',
             'Administrative',
             'Teaching',
           ],

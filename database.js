@@ -201,6 +201,7 @@ import SchoolSubscription from './models/SchoolSubscription.js';
 import SchoolInvoice from './models/SchoolInvoice.js';
 import UserDayActivity from './models/UserDayActivity.js';
 import SchoolMetricSnapshot from './models/SchoolMetricSnapshot.js';
+import SalaryTemplateModel from './models/SalaryTemplate.js';
 
 // Transport models
 import VehicleModel from './models/Vehicle.js';
@@ -272,6 +273,7 @@ export {
   ClassAnnouncement,
 };
 
+export const SalaryTemplate = SalaryTemplateModel;
 export const Asset = AssetModel;
 export const Vendor = VendorModel;
 export const MaintenanceLog = MaintenanceLogModel;

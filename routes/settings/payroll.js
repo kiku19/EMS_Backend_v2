@@ -19,6 +19,9 @@ const updatePayrollSettingsSchema = z
       .min(1, 'Must be between 1 and 31')
       .max(31, 'Must be between 1 and 31')
       .optional(),
+    payrollCycle: z
+      .enum(['weekly', 'biweekly', 'monthly'], { message: 'Must be weekly, biweekly, or monthly' })
+      .optional(),
   })
   .strict();
 
@@ -34,6 +37,7 @@ router.get('/payroll', authenticate, async (req, res) => {
     res.json({
       data: {
         disburseDate: settings?.payroll?.disburseDate || 1,
+        payrollCycle: settings?.payroll?.payrollCycle || 'monthly',
       },
     });
   } catch (error) {
@@ -52,11 +56,14 @@ router.put(
     try {
       await ensureSchoolSettings(req.user?.schoolId);
 
-      const { disburseDate } = req.body;
+      const { disburseDate, payrollCycle } = req.body;
 
       const update = {};
       if (disburseDate !== undefined) {
         update['payroll.disburseDate'] = disburseDate;
+      }
+      if (payrollCycle !== undefined) {
+        update['payroll.payrollCycle'] = payrollCycle;
       }
 
       const settings = await SchoolSettings.findOneAndUpdate(
@@ -68,6 +75,7 @@ router.put(
       res.json({
         data: {
           disburseDate: settings?.payroll?.disburseDate || 1,
+          payrollCycle: settings?.payroll?.payrollCycle || 'monthly',
         },
         message: 'Payroll settings updated successfully',
       });

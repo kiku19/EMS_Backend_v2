@@ -182,6 +182,16 @@ const schoolSettingsSchema = z.object({
         .optional(),
       notifyAbsent: z.boolean().optional(),
       notifyDefaulter: z.boolean().optional(),
+      permissions: z
+        .array(
+          z.object({
+            role: z.string().min(1),
+            canMark: z.boolean(),
+            canEdit: z.boolean(),
+            canLock: z.boolean(),
+          })
+        )
+        .optional(),
     })
     .optional(),
 });
@@ -367,6 +377,12 @@ router.get('/exam-config', authenticate, async (req, res) => {
 
 // ─── Attendance Rules ────────────────────────────────────────────────────
 
+const DEFAULT_ATTENDANCE_PERMISSIONS = [
+  { role: 'Super Admin', canMark: true, canEdit: true, canLock: true },
+  { role: 'Admin', canMark: true, canEdit: true, canLock: true },
+  { role: 'Teacher', canMark: true, canEdit: false, canLock: false },
+];
+
 const DEFAULT_ATTENDANCE_RULES = {
   defaulterThreshold: 75,
   lockTime: '16:00',
@@ -374,6 +390,8 @@ const DEFAULT_ATTENDANCE_RULES = {
   editWindow: 24,
   notifyAbsent: true,
   notifyDefaulter: true,
+  lateWeight: 100,
+  permissions: DEFAULT_ATTENDANCE_PERMISSIONS,
 };
 
 // Get attendance rules
@@ -388,6 +406,8 @@ router.get('/attendance-rules', authenticate, async (req, res) => {
       editWindow: rules.editWindow ?? DEFAULT_ATTENDANCE_RULES.editWindow,
       notifyAbsent: rules.notifyAbsent ?? DEFAULT_ATTENDANCE_RULES.notifyAbsent,
       notifyDefaulter: rules.notifyDefaulter ?? DEFAULT_ATTENDANCE_RULES.notifyDefaulter,
+      lateWeight: rules.lateWeight ?? DEFAULT_ATTENDANCE_RULES.lateWeight,
+      permissions: rules.permissions?.length ? rules.permissions : DEFAULT_ATTENDANCE_PERMISSIONS,
     });
   } catch (error) {
     console.error('Error fetching attendance rules:', error);
@@ -411,6 +431,17 @@ const attendanceRulesSchema = z
       .optional(),
     notifyAbsent: z.boolean().optional(),
     notifyDefaulter: z.boolean().optional(),
+    lateWeight: z.number().int().min(0).max(100).optional(),
+    permissions: z
+      .array(
+        z.object({
+          role: z.string().min(1),
+          canMark: z.boolean(),
+          canEdit: z.boolean(),
+          canLock: z.boolean(),
+        })
+      )
+      .optional(),
   })
   .strict();
 

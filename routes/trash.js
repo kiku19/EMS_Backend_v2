@@ -348,10 +348,10 @@ router.post(
 );
 
 /**
- * DELETE /api/trash/bulk-delete
+ * POST /api/trash/bulk-delete
  * Bulk permanent delete
  */
-router.delete(
+router.post(
   '/bulk-delete',
   checkPermission('settings', 'delete'),
   async (req, res) => {

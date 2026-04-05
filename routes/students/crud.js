@@ -9,7 +9,6 @@ import {
 } from '../../database.js';
 import { permanentlyDeleteStudentData } from '../../services/studentDataErasureService.js';
 import { logToTrash } from '../../services/trashService.js';
-import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { resolveAcademicYear, getConfiguredAcademicYear } from '../../utils/academicYear.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
@@ -24,9 +23,8 @@ import {
 } from './helpers.js';
 
 const router = express.Router();
-router.use(authenticate);
 
-router.get('/', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/', checkPermission('students', 'view'), async (req, res) => {
   try {
     const {
       classId,
@@ -193,7 +191,7 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
 
     const formatted = students.map((student) => {
       const classInfo = formatStudentClass(student);
-      const currentFeeStatus = feeStatusMap[student._id.toString()] || student.feeStatus;
+      const currentFeeStatus = feeStatusMap[student._id.toString()] || student.feeStatus || 'pending';
 
       const sid = student._id.toString();
       return {
@@ -266,7 +264,7 @@ router.get('/', authenticate, checkPermission('students', 'view'), async (req, r
   }
 });
 
-router.get('/next-admission-id', authenticate, async (req, res) => {
+router.get('/next-admission-id', async (req, res) => {
   try {
     const admissionId = await getNextAdmissionId(req.user.schoolId);
     res.json({ admissionId });
@@ -276,7 +274,7 @@ router.get('/next-admission-id', authenticate, async (req, res) => {
   }
 });
 
-router.get('/:id', authenticate, checkPermission('students', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('students', 'view'), async (req, res) => {
   try {
     const student = await Student.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -305,7 +303,7 @@ router.get('/:id', authenticate, checkPermission('students', 'view'), async (req
   }
 });
 
-router.delete('/:id', authenticate, checkPermission('students', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('students', 'delete'), async (req, res) => {
   try {
     // Verify student belongs to this school before deleting
     const student = await Student.findOne(
@@ -327,15 +325,21 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
     student.status = 'inactive';
     await student.save();
 
-    // Log to trash for restore capability
-    logToTrash({
-      itemType: 'Student',
-      itemId: student._id,
-      itemName: student.name || 'Student',
-      originalData: studentSnapshot,
-      deletedBy: req.user?.id || req.user?._id,
-      schoolId: req.user?.schoolId,
-    }).catch(() => {});
+    // Log to trash for restore capability (await to return trashItemId for undo)
+    let trashItemId = null;
+    try {
+      const trashItem = await logToTrash({
+        itemType: 'Student',
+        itemId: student._id,
+        itemName: student.name || 'Student',
+        originalData: studentSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId,
+      });
+      trashItemId = trashItem?._id || null;
+    } catch (trashErr) {
+      console.error('Failed to log student to trash:', trashErr);
+    }
 
     if (req.user?.schoolId && wasActive) {
       await incrementUsageMetric(req.user.schoolId, 'students', -1);
@@ -363,6 +367,7 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
       success: true,
       message: 'Student deleted successfully',
       deletedStudentId: student._id,
+      trashItemId,
     });
   } catch (error) {
     console.error('Error deleting student:', error);
@@ -370,7 +375,7 @@ router.delete('/:id', authenticate, checkPermission('students', 'delete'), async
   }
 });
 
-router.put('/:id/pin', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+router.put('/:id/pin', checkPermission('students', 'edit'), async (req, res) => {
   try {
     const student = await Student.findOneAndUpdate(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
@@ -393,7 +398,7 @@ router.put('/:id/pin', authenticate, checkPermission('students', 'edit'), async 
   }
 });
 
-router.put('/:id/unpin', authenticate, checkPermission('students', 'edit'), async (req, res) => {
+router.put('/:id/unpin', checkPermission('students', 'edit'), async (req, res) => {
   try {
     const student = await Student.findOneAndUpdate(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),

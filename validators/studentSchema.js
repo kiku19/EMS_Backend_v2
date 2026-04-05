@@ -146,7 +146,8 @@ export const createStudentSchema = z
     admissionId: z
       .string()
       .min(1, 'Admission ID is required')
-      .max(50, 'Admission ID must not exceed 50 characters'),
+      .max(50, 'Admission ID must not exceed 50 characters')
+      .optional(),
     academicYear: academicYear,
     classId: objectId,
 
@@ -257,7 +258,7 @@ export const addDocumentSchema = z
 
 export const updateStudentSchema = createStudentSchema
   .partial() // All fields become optional
-  .omit({ admissionId: true, academicYear: true }) // These shouldn't change on update
+  .omit({ academicYear: true }) // academicYear shouldn't change on update
   .extend({
     // On update, parents can be omitted (undefined) or null — both mean "don't change parents".
     // When explicitly provided as an array, at least 1 parent is still required.

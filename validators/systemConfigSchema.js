@@ -123,6 +123,7 @@ export const updateSchoolSettingsSchema = z.object({
   payroll: z
     .object({
       disburseDate: z.number().int().min(1).max(31).optional(),
+      payrollCycle: z.enum(['weekly', 'biweekly', 'monthly']).optional(),
     })
     .optional(),
   tc: z

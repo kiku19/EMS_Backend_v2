@@ -1,4 +1,5 @@
 import express from 'express';
+import { z } from 'zod';
 import FeeConsession from '../models/FeeConcession.js';
 import LateFeeRule from '../models/LateFeeRule.js';
 import FeeRule from '../models/FeeRule.js';
@@ -274,10 +275,27 @@ router.get('/rules/:id', checkPermission('fees', 'view'), async (req, res) => {
   }
 });
 
+// Zod schema for fee rule creation/update
+const feeRuleSchema = z.object({
+  academicYear: z.string().min(1),
+  newAdmission: z.object({
+    feeCalculation: z.enum(['total', 'prorated']).optional(),
+    prorateFrom: z.enum(['admission_date', 'month_start', 'quarter_start']).optional(),
+    prorateMethod: z.enum(['monthly', 'daily']).optional(),
+  }).optional(),
+  allowPartialPayment: z.boolean().optional(),
+  minimumPartialPaymentPercent: z.number().min(0).max(100).optional(),
+  refundPolicy: z.object({
+    enabled: z.boolean().optional(),
+    processingDays: z.number().min(1).max(365).optional(),
+  }).optional(),
+}).passthrough();
+
 // Create or update fee rule (only one per school per academic year)
 router.post('/rules', checkPermission('fees', 'edit'), async (req, res) => {
   try {
-    const { schoolId: _bodySchoolId, academicYear, ...rest } = req.body;
+    const parsed = feeRuleSchema.parse(req.body);
+    const { schoolId: _bodySchoolId, academicYear, ...rest } = parsed;
     const schoolId = req.user.schoolId;
 
     // Check if rule already exists for this school + academic year

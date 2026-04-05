@@ -63,7 +63,7 @@ const feeRuleSchema = new mongoose.Schema(
 
     // Additional rules
     allowPartialPayment: { type: Boolean, default: true },
-    minimumPartialPaymentPercent: { type: Number, default: 0 },
+    minimumPartialPaymentPercent: { type: Number, default: 0, min: 0, max: 100 },
 
     refundPolicy: {
       enabled: { type: Boolean, default: false },

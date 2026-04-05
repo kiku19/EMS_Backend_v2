@@ -12,6 +12,7 @@ import communicationRouter from './settings/communication.js';
 import admissionFormConfigRouter from './settings/admissionFormConfig.js';
 import admissionAndRollConfigRouter from './settings/admissionAndRollConfig.js';
 import payrollRouter from './settings/payroll.js';
+import salaryTemplatesRouter from './settings/salaryTemplates.js';
 
 const router = express.Router();
 
@@ -28,5 +29,6 @@ router.use('/', communicationRouter);
 router.use('/', admissionFormConfigRouter);
 router.use('/', admissionAndRollConfigRouter);
 router.use('/', payrollRouter);
+router.use('/', salaryTemplatesRouter);
 
 export default router;

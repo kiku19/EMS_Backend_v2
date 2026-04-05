@@ -1,5 +1,5 @@
 import express from 'express';
-import { Student, Class, StudentFeeStructure } from '../../database.js';
+import { Student, Class, StudentFeeStructure, Attendance, Result, getNextAdmissionId } from '../../database.js';
 import { createOrUpdateParentAccount } from '../../utils/parentAccountHelper.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
@@ -11,7 +11,7 @@ import { extractSchoolId } from '../../utils/schoolContext.js';
 import { checkClassCapacity } from '../../utils/classCapacity.js';
 import { dispatchWebhookEvent } from '../../services/webhookService.js';
 import { EVENTS, emitEvent } from '../../utils/socketEvents.js';
-import { resolveAcademicYear } from '../../utils/academicYear.js';
+import { resolveAcademicYear, parseAcademicYear } from '../../utils/academicYear.js';
 import {
   scopeBySchool,
   formatStudentClass,
@@ -31,6 +31,13 @@ router.post(
   validateZod(createStudentSchema),
   async (req, res) => {
     try {
+      // Auto-generate admission ID server-side if not provided (avoids race condition
+      // where a separate GET /next-admission-id call increments the counter but the
+      // subsequent student creation fails, permanently consuming the ID).
+      if (!req.body.admissionId) {
+        req.body.admissionId = await getNextAdmissionId(req.user.schoolId);
+      }
+
       const existingAdmission = await Student.findOne(
         scopeBySchool(req.user?.schoolId, {
           admissionId: req.body.admissionId,
@@ -291,6 +298,24 @@ router.put(
         return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
       }
 
+      // Check admissionId uniqueness when it changes
+      if (updateData.admissionId && updateData.admissionId !== originalStudent.admissionId) {
+        const duplicateAdmission = await Student.findOne(
+          scopeBySchool(req.user?.schoolId, {
+            _id: { $ne: req.params.id },
+            admissionId: updateData.admissionId,
+            isDeleted: { $ne: true },
+          })
+        );
+        if (duplicateAdmission) {
+          return res.status(409).json({
+            error: req.t('common:routes.admissionIdAlreadyExists'),
+            field: 'admissionId',
+            value: updateData.admissionId,
+          });
+        }
+      }
+
       // Validate target class exists in the same school when classId changes
       const classChanged =
         updateData.classId && updateData.classId !== originalStudent.classId?.toString();
@@ -367,9 +392,36 @@ router.put(
 
       try {
         if (classChanged || academicYearChanged) {
-          // TODO [AUDIT-15]: Migrate exam results (Result model) and attendance (Attendance model)
-          // when student changes class. Currently records still reference the old classId, making
-          // them invisible in new-class-scoped queries. See Attendance.classId and Result.classId.
+          const resolvedYear = await resolveAcademicYear(student.academicYear);
+
+          // Migrate attendance and result records to the new class so they remain
+          // visible in new-class-scoped queries (fixes AUDIT-343 / AUDIT-15)
+          if (classChanged) {
+            const { startYear, endYear } = parseAcademicYear(resolvedYear);
+            const yearStartDate = `${startYear}-04-01`;
+            const yearEndDate = `${endYear}-03-31`;
+
+            await Attendance.updateMany(
+              {
+                studentId: student._id,
+                classId: originalStudent.classId,
+                schoolId: req.user?.schoolId,
+                date: { $gte: yearStartDate, $lte: yearEndDate },
+              },
+              { $set: { classId: updateData.classId } }
+            );
+
+            await Result.updateMany(
+              {
+                studentId: student._id,
+                classId: originalStudent.classId,
+                schoolId: req.user?.schoolId,
+                academicYear: resolvedYear,
+                isDeleted: { $ne: true },
+              },
+              { $set: { classId: updateData.classId } }
+            );
+          }
 
           // Warn if there are unpaid fees before wiping the fee structure
           const unpaidFees = await StudentFeeStructure.find({
@@ -385,7 +437,6 @@ router.put(
             );
           }
 
-          const resolvedYear = await resolveAcademicYear(student.academicYear);
           await StudentFeeStructure.deleteMany({
             studentId: student._id,
             academicYear: resolvedYear,

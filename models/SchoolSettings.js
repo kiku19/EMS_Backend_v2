@@ -118,11 +118,21 @@ const schoolSettingsSchema = new mongoose.Schema(
       editWindow: { type: Number, default: 24, enum: [12, 24, 48] },
       notifyAbsent: { type: Boolean, default: true },
       notifyDefaulter: { type: Boolean, default: true },
+      lateWeight: { type: Number, default: 100, min: 0, max: 100 },
+      permissions: [
+        {
+          role: { type: String, required: true },
+          canMark: { type: Boolean, default: false },
+          canEdit: { type: Boolean, default: false },
+          canLock: { type: Boolean, default: false },
+        },
+      ],
     },
 
     // Payroll Configuration
     payroll: {
       disburseDate: { type: Number, default: 1, min: 1, max: 31 },
+      payrollCycle: { type: String, default: 'monthly', enum: ['weekly', 'biweekly', 'monthly'] },
     },
 
     // Transfer Certificate Configuration
@@ -256,6 +266,12 @@ const schoolSettingsSchema = new mongoose.Schema(
         enum: ['en', 'hi', 'ta', 'te', 'kn', 'ur'],
         default: 'hi',
       },
+    },
+
+    // NPS Survey Configuration
+    nps: {
+      enabled: { type: Boolean, default: true },
+      cooldownDays: { type: Number, default: 90, min: 7, max: 365 },
     },
 
     // Data Residency Configuration

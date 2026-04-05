@@ -7,7 +7,7 @@ import { validateStaffProfileUpdate } from '../../middleware/validation/staffVal
 const router = express.Router();
 router.use(authenticate);
 
-router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) => {
+router.put('/:id/credentials', authRequireAdmin, async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username && !password) {
@@ -50,9 +50,7 @@ router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) 
           .status(400)
           .json({ error: req.t('common:routes.passwordMustContainAtLeastOneNumber') });
       }
-      const bcrypt = await import('bcrypt');
-      const salt = await bcrypt.genSalt(10);
-      updateData.password = await bcrypt.hash(password, salt);
+      updateData.password = password;
     }
 
     const staff = await Staff.findOneAndUpdate(
@@ -70,7 +68,7 @@ router.put('/:id/credentials', authenticate, authRequireAdmin, async (req, res) 
   }
 });
 
-router.put('/:id/change-password', authenticate, async (req, res) => {
+router.put('/:id/change-password', async (req, res) => {
   try {
     if (req.params.id.toString() !== req.user.id.toString()) {
       return res
@@ -130,7 +128,7 @@ router.put('/:id/change-password', authenticate, async (req, res) => {
 });
 
 // Fix 2.2: Self-service profile update should NOT allow admin-only fields like name, designation, department
-router.put('/:id/profile', authenticate, validateStaffProfileUpdate, async (req, res) => {
+router.put('/:id/profile', validateStaffProfileUpdate, async (req, res) => {
   try {
     if (req.params.id !== req.user.id) {
       return res.status(403).json({ error: req.t('common:routes.youCanOnlyUpdateYourOwnProfile') });

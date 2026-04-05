@@ -352,6 +352,19 @@ router.get('/sms-stats', requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/notifications/unread-count - Lightweight unread count for polling
+router.get('/unread-count', async (req, res) => {
+  try {
+    const user = req.user;
+    const userModel = getUserModel(user);
+    const count = await Notification.getUnreadCount(user.id, userModel);
+    res.json({ count });
+  } catch (error) {
+    console.error('Error fetching unread count:', error);
+    res.status(500).json({ error: 'Failed to fetch unread count' });
+  }
+});
+
 // PUT /api/notifications/:id/read - Mark notification as read
 router.put('/:id/read', async (req, res) => {
   try {

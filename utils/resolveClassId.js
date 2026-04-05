@@ -30,7 +30,7 @@ export async function resolveClassId(identifier, schoolId) {
     }
   }
 
-  const classIdentifier = normalizedIdentifier.replace('-', ' ').replace('_', ' ');
+  const classIdentifier = normalizedIdentifier.replace(/-/g, ' ').replace(/_/g, ' ');
   let classDoc = await Class.findOne({
     ...baseFilter,
     $or: [

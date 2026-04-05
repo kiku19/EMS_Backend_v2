@@ -86,6 +86,7 @@ export const updateClassSchema = z
 export const updateClassTeacherSchema = z
   .object({
     classTeacherId: optionalObjectId,
+    force: z.boolean().optional(),
   })
   .strip();
 

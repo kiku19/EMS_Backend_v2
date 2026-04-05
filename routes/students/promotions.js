@@ -131,6 +131,7 @@ router.post(
             } else {
               student.classId = toClassId;
               student.academicYear = academicYear;
+              student.rollNo = null;
               student.feeStatus = 'pending';
               student.feeDetails = {
                 totalFee: 0,
@@ -279,6 +280,7 @@ router.post(
       // Promote student
       student.classId = targetClassId;
       student.academicYear = academicYear;
+      student.rollNo = null;
       student.feeStatus = 'pending';
       student.feeDetails = {
         totalFee: 0,

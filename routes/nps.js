@@ -1,13 +1,11 @@
 import express from 'express';
 import { z } from 'zod';
 import NpsSurvey from '../models/NpsSurvey.js';
+import SchoolSettings from '../models/SchoolSettings.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
 router.use(authenticate);
-
-// How many days before showing the survey again
-const NPS_COOLDOWN_DAYS = 90;
 
 const submitSchema = z.object({
   score: z.number().int().min(0).max(10),
@@ -15,11 +13,68 @@ const submitSchema = z.object({
   source: z.enum(['dashboard', 'mobile']).default('dashboard'),
 });
 
+const configSchema = z.object({
+  enabled: z.boolean(),
+  cooldownDays: z.number().int().min(7).max(365),
+});
+
+const analyticsQuerySchema = z.object({
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+}).optional();
+
+// Helper: get NPS config for school
+async function getNpsConfig(schoolId) {
+  const settings = await SchoolSettings.findOne({ schoolId }).select('nps').lean();
+  return {
+    enabled: settings?.nps?.enabled ?? true,
+    cooldownDays: settings?.nps?.cooldownDays ?? 90,
+  };
+}
+
+// GET /nps/config — read NPS configuration
+router.get('/config', async (req, res) => {
+  try {
+    const config = await getNpsConfig(req.user.schoolId);
+    res.json(config);
+  } catch (err) {
+    console.error('NPS config read error:', err);
+    res.status(500).json({ error: 'Failed to load NPS config' });
+  }
+});
+
+// PUT /nps/config — update NPS configuration
+router.put('/config', async (req, res) => {
+  try {
+    const parsed = configSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    }
+
+    await SchoolSettings.findOneAndUpdate(
+      { schoolId: req.user.schoolId },
+      { $set: { 'nps.enabled': parsed.data.enabled, 'nps.cooldownDays': parsed.data.cooldownDays } },
+      { upsert: true }
+    );
+
+    res.json({ success: true, ...parsed.data });
+  } catch (err) {
+    console.error('NPS config update error:', err);
+    res.status(500).json({ error: 'Failed to update NPS config' });
+  }
+});
+
 // GET /nps/status — check if the current user should see the survey
 router.get('/status', async (req, res) => {
   try {
+    const config = await getNpsConfig(req.user.schoolId);
+
+    if (!config.enabled) {
+      return res.json({ shouldShow: false });
+    }
+
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - NPS_COOLDOWN_DAYS);
+    cutoff.setDate(cutoff.getDate() - config.cooldownDays);
 
     const recent = await NpsSurvey.findOne({
       userId: req.user.id,
@@ -84,11 +139,19 @@ router.post('/dismiss', async (req, res) => {
 // GET /nps/analytics — school-level NPS analytics (admin use)
 router.get('/analytics', async (req, res) => {
   try {
-    const responses = await NpsSurvey.find({
+    // Optional date range filtering
+    const dateFilter = {};
+    if (req.query.from) dateFilter.$gte = new Date(req.query.from);
+    if (req.query.to) dateFilter.$lte = new Date(req.query.to);
+
+    const query = {
       schoolId: req.user.schoolId,
       dismissed: false,
       score: { $exists: true, $ne: null },
-    }).lean();
+    };
+    if (Object.keys(dateFilter).length > 0) query.createdAt = dateFilter;
+
+    const responses = await NpsSurvey.find(query).lean();
 
     if (responses.length === 0) {
       return res.json({
@@ -99,6 +162,7 @@ router.get('/analytics', async (req, res) => {
         detractors: 0,
         distribution: {},
         comments: [],
+        trend: [],
       });
     }
 
@@ -124,7 +188,27 @@ router.get('/analytics', async (req, res) => {
         createdAt: r.createdAt,
       }));
 
-    res.json({ npsScore, total, promoters, passives, detractors, distribution, comments });
+    // Monthly trend (last 6 months)
+    const trendMap = {};
+    responses.forEach((r) => {
+      const d = new Date(r.createdAt);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (!trendMap[key]) trendMap[key] = { promoters: 0, detractors: 0, total: 0 };
+      trendMap[key].total++;
+      if (r.category === 'promoter') trendMap[key].promoters++;
+      if (r.category === 'detractor') trendMap[key].detractors++;
+    });
+
+    const trend = Object.entries(trendMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-6)
+      .map(([month, d]) => ({
+        month,
+        score: d.total > 0 ? Math.round(((d.promoters - d.detractors) / d.total) * 100) : 0,
+        responses: d.total,
+      }));
+
+    res.json({ npsScore, total, promoters, passives, detractors, distribution, comments, trend });
   } catch (err) {
     console.error('NPS analytics error:', err);
     res.status(500).json({ error: 'Failed to fetch NPS analytics' });

@@ -687,18 +687,22 @@ router.get(
 
         for (let i = 0; i < schedule.length; i++) {
           if (schedule[i] && periods[i] && !periods[i].isBreak) {
-            const [hours, minutes] = periods[i].startTime.split(':').map(Number);
-            const periodStartMinutes = hours * 60 + (minutes || 0);
+            const [startH, startM] = periods[i].startTime.split(':').map(Number);
+            const periodStartMinutes = startH * 60 + (startM || 0);
 
-            if (currentTime >= periodStartMinutes) {
-              if (!currentClass || periodStartMinutes > currentTime) {
-                currentClass = {
-                  period: periods[i].name,
-                  subject: schedule[i].subject,
-                  teacherId: schedule[i].teacherId,
-                };
-              }
-            } else if (!upcomingClass) {
+            let periodEndMinutes = null;
+            if (periods[i].endTime) {
+              const [endH, endM] = periods[i].endTime.split(':').map(Number);
+              periodEndMinutes = endH * 60 + (endM || 0);
+            }
+
+            if (currentTime >= periodStartMinutes && (periodEndMinutes === null || currentTime < periodEndMinutes)) {
+              currentClass = {
+                period: periods[i].name,
+                subject: schedule[i].subject,
+                teacherId: schedule[i].teacherId,
+              };
+            } else if (currentTime < periodStartMinutes && !upcomingClass) {
               upcomingClass = {
                 period: periods[i].name,
                 subject: schedule[i].subject,
@@ -1300,7 +1304,7 @@ router.get(
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
-      const announcements = await ClassAnnouncement.find(scopeBySchool(schoolId, { classId: id }))
+      const announcements = await ClassAnnouncement.find(scopeBySchool(schoolId, { classId: id, isDeleted: { $ne: true } }))
         .populate('sentBy', 'name code')
         .sort({ createdAt: -1 })
         .limit(limit);
