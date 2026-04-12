@@ -2,6 +2,7 @@ node_modules/
 *.db
 .DS_Store
 nul
+logs/
 
 # Environment files — never commit files with real secrets
 # .env.example, .env.render, and .env.docker are TEMPLATES (safe to commit — placeholder values only)
@@ -10,3 +11,14 @@ nul
 .env.*.local
 .env.staging
 .env.production
+
+# Build artifacts & test output
+dist/
+.playwright-artifacts/
+playwright-report/
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Firebase service account keys
+*.firebase-adminsdk*.json
