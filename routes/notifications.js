@@ -209,7 +209,7 @@ router.get('/', async (req, res) => {
       .lean();
 
     // Get unread count
-    const unreadCount = await Notification.getUnreadCount(user.id, query.userModel);
+    const unreadCount = await Notification.getUnreadCount(user.id, query.userModel, user.schoolId);
 
     res.json({
       data: notifications,
@@ -357,7 +357,7 @@ router.get('/unread-count', async (req, res) => {
   try {
     const user = req.user;
     const userModel = getUserModel(user);
-    const count = await Notification.getUnreadCount(user.id, userModel);
+    const count = await Notification.getUnreadCount(user.id, userModel, user.schoolId);
     res.json({ count });
   } catch (error) {
     console.error('Error fetching unread count:', error);
@@ -393,7 +393,7 @@ router.put('/read-all', async (req, res) => {
     const user = req.user;
     const userModel = getUserModel(user);
 
-    await Notification.markAllAsReadForUser(user.id, userModel);
+    await Notification.markAllAsReadForUser(user.id, userModel, user.schoolId);
 
     res.json({ message: 'All notifications marked as read' });
   } catch (error) {

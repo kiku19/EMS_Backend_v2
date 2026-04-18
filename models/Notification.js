@@ -119,13 +119,25 @@ notificationSchema.methods.markAsRead = function () {
 };
 
 // Static method to mark all notifications for a user as read
-notificationSchema.statics.markAllAsReadForUser = function (userId, userModel) {
-  return this.updateMany({ userId, userModel, read: false }, { read: true, readAt: new Date() });
+// schoolId is REQUIRED — without it, a parent/staff member linked to accounts
+// across multiple tenants (migrations, dual-school staff) would have both
+// tenants' notifications wiped in one call.
+notificationSchema.statics.markAllAsReadForUser = function (userId, userModel, schoolId) {
+  if (!schoolId) {
+    return Promise.reject(new Error('schoolId is required for markAllAsReadForUser'));
+  }
+  return this.updateMany(
+    { userId, userModel, schoolId, read: false },
+    { read: true, readAt: new Date() }
+  );
 };
 
 // Static method to get unread count
-notificationSchema.statics.getUnreadCount = function (userId, userModel) {
-  return this.countDocuments({ userId, userModel, read: false });
+notificationSchema.statics.getUnreadCount = function (userId, userModel, schoolId) {
+  if (!schoolId) {
+    return Promise.reject(new Error('schoolId is required for getUnreadCount'));
+  }
+  return this.countDocuments({ userId, userModel, schoolId, read: false });
 };
 
 export default mongoose.model('Notification', notificationSchema);
