@@ -544,6 +544,44 @@ describe('staff routes', () => {
       expect(response.body.email).toBe('upper@example.com');
     });
 
+    it("does NOT desync Staff↔Class when caller sends isClassTeacher/classTeacherOf alone", async () => {
+      // Before the fix, sending `{isClassTeacher: true, classTeacherOf:
+      // 'Class 5-A'}` wrote those flags to the Staff doc without ever
+      // updating Class.classTeacherId — the two collections drifted.
+      // Now those fields are server-derived; the legacy shape is resolved
+      // to an assignedClassId and both sides of the relationship update.
+      const { Class } = await import('../database.js');
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacherInSchool(school._id, { name: 'CT Candidate' });
+
+      const targetClass = await Class.create({
+        schoolId: school._id,
+        name: 'Class 5',
+        section: 'A',
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      await request(app)
+        .put(`/api/staff/${teacher._id}`)
+        .set(authHeaders)
+        .send({
+          isClassTeacher: true,
+          classTeacherOf: 'Class 5-A',
+        })
+        .expect(200);
+
+      // Staff side updated
+      const updatedTeacher = await Staff.findById(teacher._id).lean();
+      expect(updatedTeacher.isClassTeacher).toBe(true);
+      expect(updatedTeacher.classTeacherOf).toBe('Class 5-A');
+
+      // Class side MUST also be updated — this is the fix
+      const updatedClass = await Class.findById(targetClass._id).lean();
+      expect(updatedClass.classTeacherId?.toString()).toBe(teacher._id.toString());
+    });
+
     it('validates update payload with Zod (rejects invalid status)', async () => {
       const { school, admin } = await setupSchoolWithAdmin();
       const teacher = await createTeacherInSchool(school._id);

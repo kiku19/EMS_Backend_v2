@@ -455,6 +455,13 @@ router.put(
         }
       }
 
+      // isClassTeacher / classTeacherOf are server-derived from the class-
+      // teacher assignment block below. Accepting them here would let a
+      // caller send `{isClassTeacher: true, classTeacherOf: '5-A'}` and flip
+      // the Staff flags without ever updating Class.classTeacherId — the
+      // two collections would drift. Callers that want to change class-
+      // teacher status MUST send `assignedClassId` (or the legacy
+      // `classTeacherOf` string which we resolve into one below).
       const updateData = {
         name,
         role,
@@ -487,8 +494,6 @@ router.put(
         staffNumber,
         staffType,
         assignedClasses,
-        isClassTeacher,
-        classTeacherOf,
         accountNumber,
         ifscCode,
         bankName,
@@ -541,14 +546,38 @@ router.put(
         );
       }
 
-      // Fix 3.4: Only wipe class teacher assignments when assignedClassId is explicitly provided
-      if (assignedClassId !== undefined) {
+      // Back-compat: resolve the legacy shape `{isClassTeacher,
+      // classTeacherOf: 'ClassName-Section'}` into an assignedClassId so
+      // the single authoritative branch below handles both sides.
+      let resolvedAssignedClassId = assignedClassId;
+      if (resolvedAssignedClassId === undefined && isClassTeacher !== undefined) {
+        if (isClassTeacher && classTeacherOf) {
+          const classMatch = classTeacherOf.match(/^(.+)-([A-Za-z]+)$/);
+          if (classMatch) {
+            const [, className, section] = classMatch;
+            const target = await Class.findOne(
+              scopeBySchool(req.user?.schoolId, {
+                name: className,
+                section: section.toUpperCase(),
+              })
+            );
+            if (target) resolvedAssignedClassId = target._id;
+          }
+        } else if (!isClassTeacher) {
+          // Explicit unassign via the legacy shape
+          resolvedAssignedClassId = null;
+        }
+      }
+
+      // Fix 3.4: Only wipe class teacher assignments when the caller
+      // actually asked to change them.
+      if (resolvedAssignedClassId !== undefined) {
         await Class.updateMany(scopeBySchool(req.user?.schoolId, { classTeacherId: staff._id }), {
           $unset: { classTeacherId: 1 },
         });
-        if (assignedClassId) {
+        if (resolvedAssignedClassId) {
           const assignedClassDoc = await Class.findOneAndUpdate(
-            scopeBySchool(req.user?.schoolId, { _id: assignedClassId }),
+            scopeBySchool(req.user?.schoolId, { _id: resolvedAssignedClassId }),
             { classTeacherId: staff._id },
             { new: true }
           );
