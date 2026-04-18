@@ -403,8 +403,14 @@ router.get('/:teacherId/conflicts', canViewTeacherTimetable, async (req, res) =>
       });
     }
 
-    // Get all conflicts for this teacher
-    const conflicts = await conflictDetectionService.getTeacherConflicts(teacherId, academicYear);
+    // Get all conflicts for this teacher — pass schoolId so the query is
+    // tenant-scoped and never bleeds across schools when the same teacherId
+    // appears in a migrated/demo dataset.
+    const conflicts = await conflictDetectionService.getTeacherConflicts(
+      teacherId,
+      academicYear,
+      schoolId
+    );
 
     res.json({
       success: true,
