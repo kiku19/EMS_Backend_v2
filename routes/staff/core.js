@@ -313,24 +313,34 @@ router.post(
       await syncUsageMetrics(schoolId);
       const permissionRole = await buildPermissions(staff.role, staff._id, schoolId);
 
-      // Fix 3.8: Add schoolId scoping to class teacher lookup
+      // Resolve classTeacherOf via multiple shapes — regex / last-dash split.
+      // The prior /^(.+)-([A-Za-z]+)$/ failed for "Class 10" (no dash),
+      // "Class XI-A-Boys" (multi-dash), Roman-numeral sections, and
+      // classes whose names contain hyphens. Fall back to "find by full
+      // string" then "split on last hyphen" so we handle those too.
       if (isClassTeacher && classTeacherOf) {
-        const classMatch = classTeacherOf.match(/^(.+)-([A-Za-z]+)$/);
-        if (classMatch) {
-          const [, className, section] = classMatch;
-          const targetClass = await Class.findOne(
-            scopeBySchool(schoolId, { name: className, section: section.toUpperCase() })
-          );
-          if (targetClass) {
-            // AUDIT-349: Clean up old teacher's class teacher assignment
-            if (targetClass.classTeacherId) {
-              await Staff.findOneAndUpdate(
-                scopeBySchool(schoolId, { _id: targetClass.classTeacherId }),
-                { isClassTeacher: false, classTeacherOf: null }
-              );
-            }
-            await Class.findByIdAndUpdate(targetClass._id, { classTeacherId: staff._id });
+        let targetClass = await Class.findOne(
+          scopeBySchool(schoolId, { name: classTeacherOf })
+        );
+        if (!targetClass) {
+          const lastDash = classTeacherOf.lastIndexOf('-');
+          if (lastDash > 0) {
+            const className = classTeacherOf.slice(0, lastDash);
+            const section = classTeacherOf.slice(lastDash + 1).toUpperCase();
+            targetClass = await Class.findOne(
+              scopeBySchool(schoolId, { name: className, section })
+            );
           }
+        }
+        if (targetClass) {
+          // AUDIT-349: Clean up old teacher's class teacher assignment
+          if (targetClass.classTeacherId) {
+            await Staff.findOneAndUpdate(
+              scopeBySchool(schoolId, { _id: targetClass.classTeacherId }),
+              { isClassTeacher: false, classTeacherOf: null }
+            );
+          }
+          await Class.findByIdAndUpdate(targetClass._id, { classTeacherId: staff._id });
         }
       }
 
@@ -522,20 +532,46 @@ router.put(
         }
       });
 
+      let passwordReset = false;
       if (password) {
         const bcrypt = await import('bcrypt');
         const salt = await bcrypt.genSalt(10);
         updateData.password = await bcrypt.hash(password, salt);
+        passwordReset = true;
       }
 
-      // Fix: Add isDeleted filter to update query
+      // Fix: Add isDeleted filter to update query. When an admin resets
+      // another staff's password, also bump tokenVersion so any outstanding
+      // access / refresh tokens are invalidated, and write an AuditTrail
+      // row for compliance (previously silent).
+      const updateDoc = passwordReset
+        ? { $set: updateData, $inc: { tokenVersion: 1 } }
+        : updateData;
       const staff = await Staff.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        updateData,
+        updateDoc,
         { new: true }
       ).populate('reporterId', 'name');
       if (!staff) {
         return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
+      }
+      if (passwordReset) {
+        try {
+          const { default: AuditTrail } = await import('../../models/AuditTrail.js');
+          await AuditTrail.create({
+            schoolId: req.user?.schoolId,
+            userId: req.user?.id,
+            userName: req.user?.name || null,
+            action: 'staff_password_reset',
+            entity: 'Staff',
+            entityId: req.params.id,
+            method: 'PUT',
+            path: req.path,
+            newValue: { resetBy: req.user?.id, targetStaffId: req.params.id },
+          });
+        } catch {
+          // Audit failure must not block the update
+        }
       }
 
       if (role) {

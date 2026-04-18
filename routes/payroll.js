@@ -60,18 +60,22 @@ async function logAudit({
   }
 }
 
-// Validate month is not in the future
+// Validate month is not in the future, using the school's local timezone
+// (defaults to Asia/Kolkata). Using new Date() directly rejected legitimate
+// end-of-month payroll runs near midnight in timezones ahead of server UTC.
 function validateNotFutureMonth(month, year) {
-  const currentDate = new Date();
-  const currentMonth = currentDate.getMonth() + 1;
-  const currentYear = currentDate.getFullYear();
+  const tz = process.env.DEFAULT_SCHOOL_TIMEZONE || 'Asia/Kolkata';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  const currentYear = parseInt(get('year'), 10);
+  const currentMonth = parseInt(get('month'), 10);
 
-  if (year > currentYear) {
-    return false;
-  }
-  if (year === currentYear && month > currentMonth) {
-    return false;
-  }
+  if (year > currentYear) return false;
+  if (year === currentYear && month > currentMonth) return false;
   return true;
 }
 
@@ -223,8 +227,21 @@ router.get('/records', checkPermission('payroll', 'view'), async (req, res) => {
       if (maxSalary) query.netPay.$lte = parseFloat(maxSalary);
     }
     if (employeeId) query.employeeId = employeeId;
+    // `search` historically matched the Staff document's name/code — not
+    // PayrollRecord.employeeId (an ObjectId ref). The previous regex assign
+    // silently errored or returned nothing. Resolve search → Staff._id first,
+    // then filter PayrollRecord by { employeeId: { $in: ... } }.
     if (search) {
-      query.employeeId = new RegExp(escapeRegex(search), 'i');
+      const Staff = req.app.locals.Staff;
+      const re = new RegExp(escapeRegex(search), 'i');
+      const matchingStaff = await Staff.find({
+        schoolId: req.user.schoolId,
+        $or: [{ name: re }, { code: re }],
+      })
+        .select('_id')
+        .lean();
+      const staffIds = matchingStaff.map((s) => s._id);
+      query.employeeId = { $in: staffIds.length ? staffIds : [null] };
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -612,9 +629,13 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
         const daysInMonth = new Date(year, month, 0).getDate();
         const dailyRate = Math.round((baseSalary / daysInMonth) * 100) / 100;
 
-        // 1. Leave deductions from approved TeacherLeave records
-        const hasManualLeaveDeduction = deductions.some((d) =>
-          d.type.toLowerCase().includes('leave')
+        // 1. Leave deductions from approved TeacherLeave records.
+        // Exact-match the auto type (case-insensitive) — the previous
+        // substring include('leave') suppressed the auto-deduction when an
+        // unrelated line item ('Sick Leave Claim', 'Leave Travel Bonus',
+        // etc.) happened to contain the word "leave".
+        const hasManualLeaveDeduction = deductions.some(
+          (d) => String(d.type || '').trim().toLowerCase() === 'leave deduction'
         );
         if (!hasManualLeaveDeduction) {
           const leaveDays = await getMonthlyLeaveDays(empId, schoolId, month, year);
@@ -635,8 +656,11 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
             // Deduct for absent days (leave days already handled above)
             const absentDays = attendance.absent;
             if (absentDays > 0) {
-              const hasManualAbsentDeduction = deductions.some((d) =>
-                d.type.toLowerCase().includes('absent')
+              // Exact-match "absent deduction" so unrelated line items
+              // mentioning "absent" don't silently suppress the
+              // attendance-based auto deduction.
+              const hasManualAbsentDeduction = deductions.some(
+                (d) => String(d.type || '').trim().toLowerCase() === 'absent deduction'
               );
               if (!hasManualAbsentDeduction) {
                 const absentAmount = Math.round(dailyRate * absentDays * 100) / 100;
@@ -968,14 +992,21 @@ router.put(
         reason,
         previousStatus: record.status,
         previousPaymentDate: record.paymentDate,
+        previousPaymentReference: record.paymentReference,
       });
 
-      // Reset record
+      // Reset record. This is an IN-APP reversal only — the helper does
+      // NOT initiate a bank / UPI / NEFT reversal, so the staff member may
+      // still have received the money. `requiresBankReversal=true` is
+      // surfaced on the record so finance can see outstanding real-world
+      // reconciliation work, and the response payload includes a warning
+      // for the admin UI to display.
       record.status = 'generated';
       record.paymentDate = null;
       record.isLocked = false;
       record.lockedAt = null;
       record.paidBy = null;
+      record.requiresBankReversal = true;
 
       await record.save();
 
@@ -997,7 +1028,12 @@ router.put(
         status: 'success',
       });
 
-      res.json({ success: true, data: record });
+      res.json({
+        success: true,
+        data: record,
+        warning:
+          'This is an in-app reversal only. If money has already been disbursed to the employee, initiate the bank/UPI reversal separately. Field `requiresBankReversal` is now true on this record.',
+      });
     } catch (error) {
       console.error('Error reversing payment:', error);
       res.status(500).json({ success: false, error: error.message });
@@ -1038,7 +1074,14 @@ router.post(
           record.status = 'paid';
           record.paymentDate = new Date();
           record.paymentMethod = paymentMethod || 'bank_transfer';
-          record.paymentReference = paymentReference;
+          // Make the reference unique per record so bank statements can be
+          // reconciled. Bulk-pay previously wrote the SAME reference for
+          // every record in the batch — impossible to trace individual
+          // transfers afterward.
+          record.paymentReference = paymentReference
+            ? `${paymentReference}-${record._id.toString().slice(-8).toUpperCase()}`
+            : undefined;
+          record.paymentBatchReference = paymentReference || null;
           record.notes = notes;
           record.isLocked = true;
           record.lockedAt = new Date();
@@ -1196,7 +1239,18 @@ router.get(
         'Payment Reference',
       ];
 
-      let csv = headers.join(',') + '\n';
+      // CSV-safe cell: escape embedded double quotes per RFC 4180, and
+      // prefix a leading single-quote to any value starting with =/+/-/@
+      // so the cell is treated as text in Excel/LibreOffice/Sheets —
+      // closes the CSV-injection vector.
+      const csvCell = (v) => {
+        if (v === null || v === undefined) return '""';
+        let s = String(v);
+        if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+        return `"${s.replace(/"/g, '""')}"`;
+      };
+
+      let csv = headers.map(csvCell).join(',') + '\n';
 
       records.forEach((record) => {
         const staff = staffMap[record.employeeId.toString()] || {};
@@ -1215,7 +1269,7 @@ router.get(
           record.paymentMethod || 'N/A',
           record.paymentReference || 'N/A',
         ];
-        csv += row.map((r) => `"${r}"`).join(',') + '\n';
+        csv += row.map(csvCell).join(',') + '\n';
       });
 
       // Log export
