@@ -387,9 +387,14 @@ router.put(
         }
       }
 
+      // Use $set so mongoose doesn't treat nested objects (feeDetails,
+      // alumniInfo, healthInfo) as full subdocument replacements when only
+      // a subset of keys is provided. Without this wrap, sending just
+      // {alumniInfo: {since: '2024'}} would erase alumniInfo.reunionEmail
+      // etc.
       const student = await Student.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
-        updateData,
+        { $set: updateData },
         { new: true }
       ).populate('classId', 'name section');
       if (!student) {

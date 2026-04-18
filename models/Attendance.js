@@ -24,11 +24,22 @@ const attendanceSchema = new mongoose.Schema(
       enum: ['present', 'absent', 'late', 'leave', 'halfday'],
     },
     markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+    // Soft-delete support: admins can now retract an accidental mass mark
+    // (via trash restore) instead of hard-deleting rows which left no audit
+    // trail and couldn't be undone.
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   },
   { timestamps: true }
 );
 
-attendanceSchema.index({ schoolId: 1, studentId: 1, date: 1 }, { unique: true });
+// Unique index now filters out soft-deleted rows so restoring an old
+// record doesn't collide with a new one marked after the deletion.
+attendanceSchema.index(
+  { schoolId: 1, studentId: 1, date: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+);
 attendanceSchema.index({ classId: 1, date: 1 });
 attendanceSchema.index({ studentId: 1, date: 1 });
 attendanceSchema.index({ schoolId: 1, classId: 1, date: -1 }); // Optimizes class-level attendance reports
