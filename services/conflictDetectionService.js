@@ -35,9 +35,11 @@ class ConflictDetectionService {
     schoolId = null,
     academicYear = null
   ) {
-    // Cache key must include academicYear so last-year conflicts are not
-    // served on this-year lookups (and vice-versa).
-    const cacheKey = `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}:${academicYear || 'any'}`;
+    // Cache key includes schoolId AND academicYear to prevent cross-tenant
+    // leaks (on shared Redis) and cross-year collisions. Previously the key
+    // was just `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId}`
+    // which would collide across tenants and years.
+    const cacheKey = `conflict:${schoolId || 'any'}:${academicYear || 'any'}:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}`;
     const cached = await cacheService.get(cacheKey);
     if (cached !== null) {
       return cached;

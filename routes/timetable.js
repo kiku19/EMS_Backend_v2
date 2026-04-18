@@ -293,6 +293,7 @@
  */
 
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { SCHEDULE_DAYS } from '../utils/weekdays.js';
 import express from 'express';
 import { Timetable, Class, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -420,7 +421,7 @@ router.post(
           }
 
           // Generate schedule using same logic as wizard
-          const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          const days = SCHEDULE_DAYS;
           const periods = timetable.periods || defaultPeriods;
 
           // Collect conflict descriptions for this class
@@ -485,11 +486,27 @@ router.post(
             }
           });
 
-          // Shuffle and fill schedule
+          // Deterministic shuffle seeded off classId + academicYear so
+          // regenerating a class's timetable produces the same output.
+          // Math.random() made every generation run produce a different
+          // schedule — admins had no way to reproduce or diff a generation.
+          const seedStr = `${cls._id.toString()}:${academicYear}`;
+          let seed = 0;
+          for (let i = 0; i < seedStr.length; i++) {
+            seed = ((seed << 5) - seed + seedStr.charCodeAt(i)) | 0;
+          }
+          // mulberry32 — deterministic, fast, plenty good for shuffling
+          const rng = () => {
+            seed = (seed + 0x6d2b79f5) | 0;
+            let t = seed;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+          };
           const shuffleArray = (arr) => {
             const shuffled = [...arr];
             for (let i = shuffled.length - 1; i > 0; i--) {
-              const j = Math.floor(Math.random() * (i + 1));
+              const j = Math.floor(rng() * (i + 1));
               [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
             }
             return shuffled;
@@ -621,7 +638,7 @@ router.post(
       // --- Sync TeacherTimetable documents from generated class timetables ---
       try {
         const resolvedSchoolId = await resolveRequestSchoolId(req);
-        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const days = SCHEDULE_DAYS;
 
         // AUDIT-328: Clean up all existing TeacherTimetable docs before rebuilding
         await TeacherTimetable.deleteMany(
@@ -1067,7 +1084,25 @@ router.put(
         return res.status(404).json({ error: 'Timetable not found' });
       }
 
-      // Update periods
+      // Update periods — and resize schedule[day] arrays to match the new
+      // period count. Without this, trimming periods 8→6 left orphan slots
+      // at indexes 6-7 referencing deleted period definitions; growing
+      // 6→8 left the new indexes undefined and indexing into them crashed.
+      const newLen = periods.length;
+      const days = SCHEDULE_DAYS;
+      for (const day of days) {
+        if (!Array.isArray(timetable.schedule?.[day])) continue;
+        const dayArr = timetable.schedule[day];
+        if (dayArr.length > newLen) {
+          dayArr.splice(newLen);
+        } else {
+          while (dayArr.length < newLen) {
+            dayArr.push({ subject: '', teacherId: null, room: '' });
+          }
+        }
+      }
+      timetable.markModified('schedule');
+
       timetable.periods = periods;
       timetable.version += 1;
       timetable.lastSyncedAt = new Date();
@@ -1147,7 +1182,7 @@ router.put(
 
       // Sync schedule changes to TeacherTimetable entries
       if (schedule) {
-        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const days = SCHEDULE_DAYS;
         // First, remove all existing TeacherTimetable entries for this class
         const existingTeacherTimetables = await TeacherTimetable.find(
           scopeBySchool(req.user?.schoolId, { academicYear })
@@ -1233,7 +1268,7 @@ router.delete('/:classId', checkPermission('classes', 'delete'), validateObjectI
     }
 
     // Clean up related TeacherTimetable entries for this class
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const days = SCHEDULE_DAYS;
     const teacherTimetables = await TeacherTimetable.find(
       scopeBySchool(req.user?.schoolId, { academicYear })
     );

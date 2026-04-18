@@ -69,6 +69,17 @@ const timetableSchema = new mongoose.Schema(
           modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
         },
       ],
+      // Sunday supported for Gulf / Middle-Eastern schools whose week runs
+      // Sun–Thu. Still empty for typical Mon–Sat schedules.
+      Sunday: [
+        {
+          subject: String,
+          teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+          room: String,
+          lastModified: { type: Date, default: Date.now },
+          modifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+        },
+      ],
     },
     version: { type: Number, default: 1 },
     lastSyncedAt: { type: Date, default: Date.now },
@@ -85,5 +96,6 @@ timetableSchema.index({ 'schedule.Wednesday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Thursday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Friday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Saturday.teacherId': 1 });
+timetableSchema.index({ 'schedule.Sunday.teacherId': 1 });
 
 export default mongoose.model('Timetable', timetableSchema);
