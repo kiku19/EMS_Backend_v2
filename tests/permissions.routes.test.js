@@ -180,6 +180,94 @@ describe('permissions routes', () => {
     expect(response.body).toMatchObject({ error: 'Admin access required' });
   });
 
+  it('rejects cross-tenant permission writes (admin in School A cannot poison School B user)', async () => {
+    const schoolA = await createSchoolRecord({ name: 'Tenant A', code: 'TNTA' });
+    const schoolB = await createSchoolRecord({ name: 'Tenant B', code: 'TNTB' });
+
+    const adminA = await createStaffUser({
+      name: 'Admin A',
+      email: 'admin.a@example.com',
+      schoolId: schoolA._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+    const teacherB = await createStaffUser({
+      name: 'Teacher B',
+      email: 'teacher.b@example.com',
+      schoolId: schoolB._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    const { app } = createTestApp();
+
+    // Admin A attempts to upsert a UserPermission for Teacher B (in School B).
+    // Before the fix this silently created a poisoned row with {userId:
+    // teacher-B, schoolId: school-A, role: 'admin'}.
+    const response = await request(app)
+      .put(`/api/permissions/user/${teacherB._id}`)
+      .set(authHeadersFor(adminA, 'admin'))
+      .send({
+        permissions: [
+          {
+            module: 'students',
+            view: true,
+            create: true,
+            edit: true,
+            delete: true,
+            publish: true,
+          },
+        ],
+        role: 'admin',
+        customPermissions: true,
+      })
+      .expect(404);
+
+    expect(response.body.error).toBeDefined();
+
+    // No UserPermission row should have been created in School A for Teacher B
+    const poisoned = await UserPermission.findOne({
+      userId: teacherB._id,
+      schoolId: schoolA._id,
+    });
+    expect(poisoned).toBeNull();
+  });
+
+  it('rejects PUT /permissions/user/:userId with an invalid role enum', async () => {
+    const school = await createSchoolRecord({ name: 'ZodPerm School', code: 'ZODPERM' });
+    const admin = await createStaffUser({
+      name: 'Zod Admin',
+      email: 'zod.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+    const teacher = await createStaffUser({
+      name: 'Zod Teacher',
+      email: 'zod.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .put(`/api/permissions/user/${teacher._id}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .send({
+        permissions: [],
+        role: 'superuser', // not in enum
+        customPermissions: true,
+      })
+      .expect(400);
+
+    expect(response.body.error).toBe('Validation Error');
+    expect(response.body.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'role' })])
+    );
+  });
+
   // ── POST /api/permissions/request ──────────────────────────────────
 
   it('creates a permission request', async () => {

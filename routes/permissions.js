@@ -73,6 +73,14 @@ const customRoleCreateSchema = z.object({
 
 const customRoleUpdateSchema = customRoleCreateSchema.partial();
 
+// Matches UserPermission.role enum. 'custom' lets admins flip customPermissions
+// true without forcing a template role.
+const userPermissionUpdateSchema = z.object({
+  role: z.enum(['admin', 'teacher', 'accountant', 'receptionist', 'custom']),
+  permissions: z.array(modulePermissionSchema),
+  customPermissions: z.boolean().optional().default(false),
+});
+
 // Get current user's own permissions (no IDOR risk — userId from auth token)
 router.get('/me', async (req, res) => {
   try {
@@ -165,14 +173,36 @@ router.get('/user/:userId', async (req, res) => {
 router.put('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { permissions, role, customPermissions } = req.body;
     const adminId = req.user.id;
     const sid = req.user.schoolId;
+
+    // Validate body BEFORE any DB work — unchecked role/permissions would let an
+    // admin bypass PERMISSION_TEMPLATES by submitting arbitrary shapes.
+    const parsed = userPermissionUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'Validation Error',
+        details: parsed.error.issues.map((i) => ({
+          field: i.path.join('.'),
+          message: i.message,
+        })),
+      });
+    }
+    const { permissions, role, customPermissions } = parsed.data;
 
     // Verify admin
     const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: adminId }));
     if (!adminPermission || adminPermission.role !== 'admin') {
       return res.status(403).json({ error: req.t('common:routes.adminAccessRequired') });
+    }
+
+    // Tenant-isolation guard: the target userId MUST belong to the admin's
+    // school. Without this, an admin in School A can upsert a NEW
+    // UserPermission row for a School B userId (previous behaviour), poisoning
+    // {userId}-only lookups and letting an attacker escalate across tenants.
+    const targetStaff = await Staff.findOne(schoolQuery(req, { _id: userId })).lean();
+    if (!targetStaff) {
+      return res.status(404).json({ error: req.t('common:routes.userNotFound') });
     }
 
     const updated = await UserPermission.findOneAndUpdate(
