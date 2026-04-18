@@ -166,32 +166,50 @@ export const checkPermission = (module, action) => {
   };
 };
 
+// Map canonical Staff role strings (models/Staff.js enum) to the permission
+// template roles (models/UserPermission.js enum). Anything not in this table
+// — legacy freeform roles like "Administrative Assistant", "Frontdesk admin",
+// "Vice Principal" — falls through to the least-privileged 'teacher' bucket
+// rather than the old substring-matching which silently granted admin rights.
+const STAFF_TO_PERMISSION_ROLE = Object.freeze({
+  Admin: 'admin',
+  Principal: 'admin',
+  Accountant: 'accountant',
+  Receptionist: 'receptionist',
+  Teacher: 'teacher',
+  Teaching: 'teacher',
+  'Vice Principal': 'teacher',
+  Librarian: 'teacher',
+  'Lab Assistant': 'teacher',
+  Counselor: 'teacher',
+  Driver: 'teacher',
+  Security: 'teacher',
+  Administrative: 'teacher',
+});
+
 /**
- * Determine role from user's role string or array
+ * Determine permission role from the Staff.role field.
+ * Accepts the array form (preferred — Staff.role is an array) or a single string.
+ * Defaults to the least-privileged 'teacher' when no canonical mapping exists.
  */
 export function determineRole(userRole) {
-  const roleStr = Array.isArray(userRole) ? userRole[0] : userRole;
+  const roles = Array.isArray(userRole) ? userRole : [userRole];
 
-  if (!roleStr || typeof roleStr !== 'string') {
-    return 'teacher';
-  }
+  // Walk the array so Staff with ['Teacher', 'Admin'] resolves to the highest
+  // canonical role present (admin > accountant/receptionist > teacher).
+  const ranking = { admin: 3, accountant: 2, receptionist: 2, teacher: 1 };
+  let best = null;
 
-  const roleLower = roleStr.toLowerCase();
-
-  if (roleLower.includes('admin') || roleLower.includes('principal')) {
-    return 'admin';
-  }
-  if (roleLower.includes('teacher')) {
-    return 'teacher';
-  }
-  if (roleLower.includes('accountant') || roleLower.includes('finance')) {
-    return 'accountant';
-  }
-  if (roleLower.includes('receptionist') || roleLower.includes('front')) {
-    return 'receptionist';
+  for (const role of roles) {
+    if (typeof role !== 'string') continue;
+    const mapped = STAFF_TO_PERMISSION_ROLE[role];
+    if (!mapped) continue;
+    if (!best || ranking[mapped] > ranking[best]) {
+      best = mapped;
+    }
   }
 
-  return 'teacher';
+  return best || 'teacher';
 }
 
 /**
