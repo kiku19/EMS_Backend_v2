@@ -183,9 +183,12 @@ export async function buildStudentListQuery(
       overallStatus: feeStatus,
     }).distinct('studentId');
 
-    conditions.push({
-      $or: [{ _id: { $in: matchingFeeStudentIds } }, { feeStatus }],
-    });
+    // Match ONLY against StudentFeeStructure.overallStatus (the authoritative
+    // source). The previous $or joined Student.feeStatus — a legacy field
+    // that was client-settable pre-fix and can still hold stale / forged
+    // values ("paid" without a payment record), so it leaked the wrong
+    // students into filters.
+    conditions.push({ _id: { $in: matchingFeeStudentIds } });
   }
 
   return conditions.length === 1 ? conditions[0] : { $and: conditions };

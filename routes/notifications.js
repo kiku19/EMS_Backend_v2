@@ -190,9 +190,13 @@ router.get('/', async (req, res) => {
     const user = req.user;
     const { unreadOnly, type, limit = 50 } = req.query;
 
+    // Always tenant-scope notifications so a user who legitimately belongs
+    // to multiple schools (group-admin / cross-posted staff) doesn't see
+    // notifications from another tenant in the current session view.
     const query = {
       userId: user.id,
       userModel: getUserModel(user),
+      ...(user.schoolId ? { schoolId: user.schoolId } : {}),
     };
 
     if (unreadOnly === 'true') {

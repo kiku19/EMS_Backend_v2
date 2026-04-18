@@ -160,7 +160,18 @@ export const createStudentSchema = z
 
     // Personal Information
     gender: genderEnum.nullish().or(z.literal('')),
-    dateOfBirth: optionalString(20),
+    // dateOfBirth: YYYY-MM-DD or ISO-8601 — reject junk strings up to 20
+    // chars that previously passed Zod and produced unhelpful 500s from
+    // Mongoose validator.
+    dateOfBirth: z
+      .string()
+      .max(20)
+      .refine(
+        (v) => !v || !isNaN(Date.parse(v)),
+        'dateOfBirth must be a valid date (YYYY-MM-DD)'
+      )
+      .nullish()
+      .or(z.literal('')),
     bloodGroup: bloodGroupEnum.nullish().or(z.literal('')),
     nationality: optionalString(50),
     religion: optionalString(50),
