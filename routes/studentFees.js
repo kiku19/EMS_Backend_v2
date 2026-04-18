@@ -287,6 +287,8 @@ import {
   defaultersQuerySchema,
 } from '../validators/index.js';
 import { createLogger } from '../utils/logger.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
+import { updateFeeStructureWithRetry } from '../utils/sfsConcurrency.js';
 
 const logger = createLogger('StudentFees');
 const router = express.Router();
@@ -314,6 +316,7 @@ async function resolveRequestSchoolId(req) {
 // Get fee structure for a student (auto-initializes if missing)
 router.get(
   '/student/:studentId',
+  validateObjectIdParam('studentId'),
   checkPermission('fees', 'view'),
   async (req, res) => {
     try {
@@ -577,9 +580,20 @@ router.post(
 
       res.status(201).json(feeStructure);
     } catch (error) {
-      // Handle race condition: duplicate key means another request already initialized it
+      // Handle race condition: duplicate key means another request already
+      // initialised it. The lookup MUST scope by schoolId + academicYear —
+      // without it the recovery could return a fee structure from a
+      // different tenant (same studentId collision) or from a prior
+      // academic year.
       if (error.code === 11000) {
-        const existing = await StudentFeeStructure.findOne({ studentId: req.params.studentId });
+        const year = await resolveAcademicYear(req.body.academicYear, req.user?.schoolId);
+        const schoolId = await resolveRequestSchoolId(req);
+        const existing = await StudentFeeStructure.findOne(
+          scopeBySchool(schoolId, {
+            studentId: req.params.studentId,
+            academicYear: year,
+          })
+        );
         if (existing) {
           return res.json({ message: 'Fee structure already exists', feeStructure: existing });
         }
@@ -593,6 +607,7 @@ router.post(
 // Update discount for a student
 router.put(
   '/student/:studentId/discount',
+  validateObjectIdParam('studentId'),
   checkPermission('fees', 'edit'),
   validateZod(updateDiscountSchema),
   async (req, res) => {
@@ -650,59 +665,99 @@ router.put(
 // Record payment for a student
 router.post(
   '/student/:studentId/payment',
+  validateObjectIdParam('studentId'),
   checkPermission('fees', 'edit'),
   validateZod(studentFeePaymentSchema),
   async (req, res) => {
     try {
       const { amount, feeHeadPayments, academicYear } = req.body;
 
-      const feeStructure = await StudentFeeStructure.findOne(
+      const resolvedAcademicYear = await resolveAcademicYear(
+        academicYear,
+        req.user?.schoolId
+      );
+
+      // Pre-flight balance check against the current snapshot — the
+      // authoritative check is inside the retry loop below (since another
+      // concurrent payment might have drained the balance).
+      const preflight = await StudentFeeStructure.findOne(
         scopeBySchool(req.user?.schoolId, {
           studentId: req.params.studentId,
-          academicYear: await resolveAcademicYear(academicYear, req.user?.schoolId),
+          academicYear: resolvedAcademicYear,
         })
       );
+      if (!preflight) {
+        return res.status(404).json({ error: 'Fee structure not found' });
+      }
+      if (amount > (preflight.totalBalance || 0)) {
+        return res.status(400).json({
+          error: `Payment amount (₹${amount}) exceeds outstanding balance (₹${preflight.totalBalance || 0})`,
+        });
+      }
+
+      // Update individual fee heads under optimistic concurrency. Before this
+      // helper existed, two concurrent POSTs both read the same feeStructure,
+      // mutated feeHeads independently, and the second save() silently
+      // clobbered the first's feeHead updates.
+      let distributedFeeHeadPayments = [];
+      let feeStructure = null;
+      try {
+        feeStructure = await updateFeeStructureWithRetry(
+          scopeBySchool(req.user?.schoolId, {
+            studentId: req.params.studentId,
+            academicYear: resolvedAcademicYear,
+          }),
+          async (fs) => {
+            // Re-check balance on the freshly-read snapshot inside the loop —
+            // a concurrent payment might have changed it since the preflight.
+            if (amount > (fs.totalBalance || 0)) {
+              const err = new Error(
+                `Payment amount (₹${amount}) exceeds outstanding balance (₹${fs.totalBalance || 0})`
+              );
+              err.code = 'EXCEEDS_BALANCE';
+              throw err;
+            }
+
+            distributedFeeHeadPayments = [];
+            if (feeHeadPayments && Array.isArray(feeHeadPayments)) {
+              for (const payment of feeHeadPayments) {
+                const feeHeadIndex = fs.feeHeads.findIndex(
+                  (fh) => fh.feeHeadId.toString() === payment.feeHeadId
+                );
+                if (feeHeadIndex >= 0) {
+                  const head = fs.feeHeads[feeHeadIndex];
+                  const headBalance = (head.amount || 0) - (head.paidAmount || 0);
+                  const safePayment = Math.min(payment.amount, Math.max(0, headBalance));
+                  fs.feeHeads[feeHeadIndex].paidAmount += safePayment;
+                  const headResult = computeFeeHeadStatus(fs.feeHeads[feeHeadIndex]);
+                  fs.feeHeads[feeHeadIndex].balanceAmount = headResult.balanceAmount;
+                  fs.feeHeads[feeHeadIndex].status = headResult.status;
+                  distributedFeeHeadPayments.push({
+                    feeHeadId: payment.feeHeadId,
+                    name: payment.name || head.name || '',
+                    amount: safePayment,
+                  });
+                }
+              }
+            }
+
+            fs.totalPaid = fs.feeHeads.reduce((sum, fh) => sum + fh.paidAmount, 0);
+            fs.lastPaymentDate = new Date();
+            const { totalBalance, overallStatus } = computeFeeBalance(fs);
+            fs.totalBalance = totalBalance;
+            fs.overallStatus = overallStatus;
+          }
+        );
+      } catch (err) {
+        if (err.code === 'EXCEEDS_BALANCE') {
+          return res.status(400).json({ error: err.message });
+        }
+        throw err;
+      }
 
       if (!feeStructure) {
         return res.status(404).json({ error: 'Fee structure not found' });
       }
-
-      // Guard: payment cannot exceed the outstanding balance
-      const currentBalance = feeStructure.totalBalance || 0;
-      if (amount > currentBalance) {
-        return res.status(400).json({
-          error: `Payment amount (₹${amount}) exceeds outstanding balance (₹${currentBalance})`,
-        });
-      }
-
-      // Update individual fee heads — cap each at its own balance to prevent overpayment
-      if (feeHeadPayments && Array.isArray(feeHeadPayments)) {
-        for (const payment of feeHeadPayments) {
-          const feeHeadIndex = feeStructure.feeHeads.findIndex(
-            (fh) => fh.feeHeadId.toString() === payment.feeHeadId
-          );
-
-          if (feeHeadIndex >= 0) {
-            const head = feeStructure.feeHeads[feeHeadIndex];
-            const headBalance = (head.amount || 0) - (head.paidAmount || 0);
-            const safePayment = Math.min(payment.amount, Math.max(0, headBalance));
-            feeStructure.feeHeads[feeHeadIndex].paidAmount += safePayment;
-            const headResult = computeFeeHeadStatus(feeStructure.feeHeads[feeHeadIndex]);
-            feeStructure.feeHeads[feeHeadIndex].balanceAmount = headResult.balanceAmount;
-            feeStructure.feeHeads[feeHeadIndex].status = headResult.status;
-          }
-        }
-      }
-
-      // Recalculate totals from fee heads (source of truth)
-      feeStructure.totalPaid = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.paidAmount, 0);
-      feeStructure.lastPaymentDate = new Date();
-
-      const { totalBalance, overallStatus } = computeFeeBalance(feeStructure);
-      feeStructure.totalBalance = totalBalance;
-      feeStructure.overallStatus = overallStatus;
-
-      await feeStructure.save();
 
       // Create a FeePayment record so the payments collection stays in sync
       // (fixes bug where studentFees payment endpoint didn't create FeePayment)
@@ -720,13 +775,7 @@ router.post(
           paymentDate: new Date().toISOString().split('T')[0],
           amount,
           paymentMode: req.body.paymentMode || 'cash',
-          feeHeads: Array.isArray(feeHeadPayments)
-            ? feeHeadPayments.map((fh) => ({
-                feeHeadId: fh.feeHeadId,
-                name: fh.name || '',
-                amount: fh.amount,
-              }))
-            : [],
+          feeHeads: distributedFeeHeadPayments,
           status: 'completed',
           remarks: req.body.remarks || '',
         });

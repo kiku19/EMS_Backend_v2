@@ -464,6 +464,66 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     expect(res.body.feeHeads[0].name).toBe('Class 5 Tuition');
     expect(res.body.totalFee).toBe(3000);
   });
+
+  it('scopes 11000-duplicate recovery by schoolId + academicYear, not studentId alone', async () => {
+    // Before the fix, a 11000 on initialize fell back to
+    // `StudentFeeStructure.findOne({ studentId })` which could return a
+    // doc from a prior academic year or (if studentIds ever collided
+    // across tenants) from a different school. Force the duplicate
+    // condition for school A by seeding a fee structure for year
+    // 2024-25, then request an initialize that somehow clashes on the
+    // unique index; the recovery MUST return the exact (student,
+    // school, year) tuple.
+    const schoolA = await createSchoolRecord({ name: 'Scope School', code: 'SSC-01', isDefault: true });
+    const accountant = await createAccountant({ schoolId: schoolA._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'Z',
+      schoolId: schoolA._id,
+    });
+    await createFeeHeads(schoolA._id, '10');
+
+    const student = await createStudentRecord({
+      name: 'Scope Student',
+      classId: classRecord._id,
+      schoolId: schoolA._id,
+    });
+
+    // Seed a fee structure for an OLD academic year — the recovery must
+    // NOT match on this if we ask for a different year.
+    await insertFeeStructureDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2024-25',
+      schoolId: schoolA._id,
+      feeHeads: [],
+      totalFee: 1111,
+      totalPaid: 0,
+      totalBalance: 1111,
+      overallStatus: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    // Happy path: request 2025-26 → new structure created, NOT the 2024-25
+    // row the buggy recovery would have returned.
+    const res = await request(app)
+      .post(`/api/student-fees/initialize/${student._id}`)
+      .set(authHeaders)
+      .send({ academicYear: '2025-26' })
+      .expect(201);
+
+    expect(res.body.academicYear).toBe('2025-26');
+    expect(res.body.totalFee).not.toBe(1111);
+
+    // And both rows exist — the recovery didn't accidentally hand back
+    // the wrong academic year.
+    const rows = await StudentFeeStructure.find({ studentId: student._id }).lean();
+    expect(rows).toHaveLength(2);
+    const years = rows.map((r) => r.academicYear).sort();
+    expect(years).toEqual(['2024-25', '2025-26']);
+  });
 });
 
 // ---------------------------------------------------------------------------

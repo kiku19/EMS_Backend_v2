@@ -145,6 +145,7 @@ import { validateZod, createFeePaymentSchema, createRefundSchema } from '../vali
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { getFeePaymentGateway } from '../services/paymentGateway/index.js';
 import { logToTrash } from '../services/trashService.js';
+import { updateFeeStructureWithRetry } from '../utils/sfsConcurrency.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -226,7 +227,6 @@ router.post(
         studentName,
         classId,
         academicYear,
-        receiptNumber,
         paymentDate,
         amount,
         paymentMode,
@@ -292,8 +292,8 @@ router.post(
       }
       // ─────────────────────────────────────────────────────────────────────────
 
-      // Generate receipt number if not provided (atomic counter — prevents duplicates)
-      const receipt = receiptNumber || (await getNextReceiptNumber(schoolId));
+      // Always generate receipt number server-side via atomic counter (prevents duplicates)
+      const receipt = await getNextReceiptNumber(schoolId);
 
       // Create payment with explicit fields
       const payment = new FeePayment({
@@ -380,50 +380,66 @@ router.post(
             }
 
             // Issue #36 fix: update StudentFeeStructure (source of truth for fee tracking)
+            //
+            // Optimistic-concurrency retry loop: findOne → mutate sfs.feeHeads
+            // in memory → save(). Before adding optimisticConcurrency on the
+            // schema, two concurrent payments both read the same snapshot and
+            // the second save() silently clobbered the first's feeHead
+            // updates. The helper retries on VersionError so both payments
+            // land safely.
+            let distributedHeads = [];
             try {
-              const sfs = await StudentFeeStructure.findOne(
+              const updatedSfs = await updateFeeStructureWithRetry(
                 scopeBySchool(req.user?.schoolId, {
                   studentId: student._id,
                   academicYear: resolvedAcademicYear,
-                })
-              );
+                }),
+                async (sfs) => {
+                  sfs.totalPaid = (sfs.totalPaid || 0) + amount;
+                  sfs.lastPaymentDate = payment.paymentDate;
 
-              if (sfs) {
-                // Use atomic $inc for totalPaid to prevent race conditions
-                await StudentFeeStructure.findByIdAndUpdate(sfs._id, {
-                  $inc: { totalPaid: amount },
-                  $set: { lastPaymentDate: payment.paymentDate },
-                });
-                // Re-fetch to compute derived fields
-                const updatedSfs = await StudentFeeStructure.findById(sfs._id);
-                if (!updatedSfs) throw new Error('Fee structure disappeared');
-                // Alias for subsequent code
-                Object.assign(sfs, updatedSfs.toObject());
-
-                // Distribute payment across fee heads if breakdown provided
-                if (Array.isArray(feeHeads) && feeHeads.length > 0 && Array.isArray(sfs.feeHeads)) {
-                  for (const paymentHead of feeHeads) {
-                    const matchingHead = sfs.feeHeads.find(
-                      (h) =>
-                        (paymentHead.feeHeadId &&
-                          h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
-                        (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
-                    );
-                    if (matchingHead) {
-                      matchingHead.paidAmount =
-                        (matchingHead.paidAmount || 0) + (paymentHead.amount || 0);
-                      const headResult = computeFeeHeadStatus(matchingHead);
-                      matchingHead.balanceAmount = headResult.balanceAmount;
-                      matchingHead.status = headResult.status;
+                  // Distribute payment across fee heads if breakdown provided.
+                  // Track the ACTUAL (safe) amount credited to each head, since
+                  // cancel will reverse against this breakdown — storing the
+                  // raw requested amount caused over-reversal when the request
+                  // asked for more than the head's outstanding balance.
+                  distributedHeads = [];
+                  if (Array.isArray(feeHeads) && feeHeads.length > 0 && Array.isArray(sfs.feeHeads)) {
+                    for (const paymentHead of feeHeads) {
+                      const matchingHead = sfs.feeHeads.find(
+                        (h) =>
+                          (paymentHead.feeHeadId &&
+                            h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
+                          (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
+                      );
+                      if (matchingHead) {
+                        const headBalance = (matchingHead.amount || 0) - (matchingHead.paidAmount || 0);
+                        const safePayment = Math.min(paymentHead.amount || 0, Math.max(0, headBalance));
+                        matchingHead.paidAmount = (matchingHead.paidAmount || 0) + safePayment;
+                        const headResult = computeFeeHeadStatus(matchingHead);
+                        matchingHead.balanceAmount = headResult.balanceAmount;
+                        matchingHead.status = headResult.status;
+                        distributedHeads.push({
+                          feeHeadId: paymentHead.feeHeadId || matchingHead.feeHeadId,
+                          name: paymentHead.name || matchingHead.name,
+                          amount: safePayment,
+                        });
+                      }
                     }
                   }
+
+                  const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+                  sfs.totalBalance = totalBalance;
+                  sfs.overallStatus = overallStatus;
                 }
+              );
 
-                const { totalBalance, overallStatus } = computeFeeBalance(sfs);
-                sfs.totalBalance = totalBalance;
-                sfs.overallStatus = overallStatus;
-
-                await sfs.save();
+              // Persist the capped/distributed feeHeads on the payment so
+              // DELETE /payments/:id reverses the amount that was actually
+              // credited, not the original request body.
+              if (updatedSfs && distributedHeads.length > 0) {
+                payment.feeHeads = distributedHeads;
+                await payment.save();
               }
             } catch (sfsError) {
               logger.warn(
@@ -474,6 +490,10 @@ router.post(
 
       res.status(201).json(payment);
     } catch (error) {
+      if (error.code === 11000) {
+        logger.warn({ err: error }, 'Duplicate receipt number on concurrent payment — retried automatically');
+        return res.status(409).json({ error: 'A payment was already recorded concurrently. Please refresh and try again.', code: 'DUPLICATE_RECEIPT' });
+      }
       logger.error({ err: error }, 'Error creating payment');
       res.status(500).json({ error: 'Failed to create payment' });
     }

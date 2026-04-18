@@ -69,7 +69,7 @@ const studentFeeStructureSchema = new mongoose.Schema(
     lastDueReminderSentAt: Date,
     lastOverdueReminderSentAt: Date,
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
 
 // Index for quick lookups — include schoolId to prevent cross-school collisions in multi-tenant setups
