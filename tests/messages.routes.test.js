@@ -355,6 +355,66 @@ describe('messages routes', () => {
       expect(receiverParticipant.unreadCount).toBe(1);
     });
 
+    it('rejects sending a message into a conversation the user is not a participant of', async () => {
+      // Set up: admin1 + admin2 are participants of a direct conversation.
+      // admin3 (same school) is NOT a participant. Before the fix, admin3
+      // could POST /messages with that conversationId and the message would
+      // be persisted + receiver unread counts bumped.
+      setupSeq += 1;
+      const school = await createSchoolRecord({
+        name: `Inject School ${setupSeq}`,
+        code: `INJ-${setupSeq}`,
+      });
+      const admin1 = await createStaffUser({
+        name: 'Inject A',
+        email: `inj.a.${setupSeq}@chat.example.com`,
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      await Staff.findByIdAndUpdate(admin1._id, { username: `injA_${setupSeq}` });
+      const admin2 = await createStaffUser({
+        name: 'Inject B',
+        email: `inj.b.${setupSeq}@chat.example.com`,
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      await Staff.findByIdAndUpdate(admin2._id, { username: `injB_${setupSeq}` });
+      const outsider = await createStaffUser({
+        name: 'Inject C',
+        email: `inj.c.${setupSeq}@chat.example.com`,
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      await Staff.findByIdAndUpdate(outsider._id, { username: `injC_${setupSeq}` });
+
+      const conversation = await createDirectConversation(admin1, admin2);
+      const { app } = createTestApp();
+
+      const res = await request(app)
+        .post('/api/messages/')
+        .set(authHeadersFor(outsider, 'admin'))
+        .send({
+          conversationId: conversation._id.toString(),
+          receiverId: admin2._id.toString(),
+          receiverModel: 'Staff',
+          content: 'I should never land in this conversation',
+          type: 'text',
+        })
+        .expect(403);
+
+      expect(res.body.error).toMatch(/participant/i);
+
+      // No message should have been persisted
+      const injected = await Message.findOne({
+        conversationId: conversation._id,
+        senderId: outsider._id,
+      });
+      expect(injected).toBeNull();
+    });
+
     it('allows sending a voice message with empty content', async () => {
       const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
       const conversation = await createDirectConversation(admin1, admin2);

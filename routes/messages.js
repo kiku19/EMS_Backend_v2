@@ -335,7 +335,16 @@ router.post('/', async (req, res) => {
     }
 
     const senderId = req.user.id || req.user.userId;
-    const senderModel = (req.user.userType || 'staff') === 'staff' ? 'Staff' : 'Student';
+    // Map req.user.userType ('staff' | 'student' | 'parent') to the Message
+    // senderModel enum ('Staff' | 'Student' | 'Parent'). The previous binary
+    // (staff ? 'Staff' : 'Student') silently mis-tagged parent messages as
+    // Student, causing wrong ref-model populate and broken participant lookup.
+    const senderModel =
+      req.user.userType === 'parent'
+        ? 'Parent'
+        : req.user.userType === 'student'
+          ? 'Student'
+          : 'Staff';
     const schoolId = req.user.schoolId;
     const {
       conversationId,
@@ -352,6 +361,31 @@ router.post('/', async (req, res) => {
       waveform,
       clientMessageId,
     } = parsed.data;
+
+    // Authorization: the sender MUST be a participant in the conversation
+    // being written to. Without this, any authenticated user within the same
+    // school could inject messages into arbitrary conversations and spoof
+    // unread counts via conversation.incrementUnread below.
+    const conversationForAuth = await Conversation.findOne({
+      _id: conversationId,
+      schoolId,
+      'participants.userId': senderId,
+    }).lean();
+    if (!conversationForAuth) {
+      return res.status(403).json({ error: 'Not a participant of this conversation' });
+    }
+
+    // Authorization: the sender's role must allow messaging a user of the
+    // receiver's type (teachers → students/parents/staff, students → staff,
+    // etc.). canMessageUser encapsulates the CHAT_PERMISSIONS matrix.
+    if (receiverId && receiverModel) {
+      const senderType = req.user.userType === 'staff' ? 'staff' : req.user.userType;
+      const receiverType = receiverModel.toLowerCase();
+      const allowed = await canMessageUser(senderId, senderType, receiverId, receiverType);
+      if (!allowed) {
+        return res.status(403).json({ error: 'Not allowed to message this recipient' });
+      }
+    }
 
     // Idempotency check: return existing message if clientMessageId already exists
     if (clientMessageId) {
