@@ -613,35 +613,46 @@ router.put(
   async (req, res) => {
     try {
       const { discountAmount, discountReason, academicYear } = req.body;
+      const resolvedYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
 
-      const feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(req.user?.schoolId, {
-          studentId: req.params.studentId,
-          academicYear: await resolveAcademicYear(academicYear, req.user?.schoolId),
-        })
-      );
+      let feeStructure = null;
+      try {
+        feeStructure = await updateFeeStructureWithRetry(
+          scopeBySchool(req.user?.schoolId, {
+            studentId: req.params.studentId,
+            academicYear: resolvedYear,
+          }),
+          async (fs) => {
+            const maxDiscount = fs.totalFee - fs.totalPaid;
+            if ((discountAmount || 0) > maxDiscount) {
+              const err = new Error(
+                `Discount cannot exceed outstanding balance of ₹${maxDiscount}`
+              );
+              err.code = 'EXCEEDS_DISCOUNT';
+              err.maxAllowed = maxDiscount;
+              throw err;
+            }
+            fs.discountApplied = discountAmount || 0;
+            fs.discountReason = discountReason || '';
+            const { totalBalance, overallStatus } = computeFeeBalance(fs);
+            fs.totalBalance = totalBalance;
+            fs.overallStatus = overallStatus;
+          }
+        );
+      } catch (err) {
+        if (err.code === 'EXCEEDS_DISCOUNT') {
+          return res.status(400).json({
+            error: err.message,
+            field: 'discountAmount',
+            maxAllowed: err.maxAllowed,
+          });
+        }
+        throw err;
+      }
 
       if (!feeStructure) {
         return res.status(404).json({ error: 'Fee structure not found' });
       }
-
-      const maxDiscount = feeStructure.totalFee - feeStructure.totalPaid;
-      if ((discountAmount || 0) > maxDiscount) {
-        return res.status(400).json({
-          error: `Discount cannot exceed outstanding balance of ₹${maxDiscount}`,
-          field: 'discountAmount',
-          maxAllowed: maxDiscount,
-        });
-      }
-
-      feeStructure.discountApplied = discountAmount || 0;
-      feeStructure.discountReason = discountReason || '';
-
-      const { totalBalance, overallStatus } = computeFeeBalance(feeStructure);
-      feeStructure.totalBalance = totalBalance;
-      feeStructure.overallStatus = overallStatus;
-
-      await feeStructure.save();
 
       // Sync fee data to Student model for consistent reads
       await syncStudentFeeDetails(req.params.studentId, feeStructure);
@@ -881,14 +892,20 @@ router.post(
         return res.status(404).json({ error: req.t('students:errors.notFound') });
       }
 
-      const feeStructure = await StudentFeeStructure.findOne(
+      // Capture "before" from a one-shot read (only for the diff report below).
+      const preSnapshot = await StudentFeeStructure.findOne(
         scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
       );
-      if (!feeStructure) {
+      if (!preSnapshot) {
         return res
           .status(404)
           .json({ error: 'Fee structure not found for this student and academic year' });
       }
+      const before = {
+        totalPaid: preSnapshot.totalPaid,
+        totalBalance: preSnapshot.totalBalance,
+        overallStatus: preSnapshot.overallStatus,
+      };
 
       // Sum all completed payments from FeePayment records
       const payments = await FeePayment.find(
@@ -900,14 +917,9 @@ router.post(
       );
       const actualTotalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
-      const before = {
-        totalPaid: feeStructure.totalPaid,
-        totalBalance: feeStructure.totalBalance,
-        overallStatus: feeStructure.overallStatus,
-      };
-
-      // ── Redistribute payments across individual fee heads ────────────
-      // Build a map of feeHeadId -> total paid from all FeePayment records
+      // Build a map of feeHeadId -> total paid from all FeePayment records.
+      // Computed outside the retry loop since it depends only on FeePayment
+      // records, not on the SFS doc being mutated.
       const headPaidMap = new Map();
       for (const payment of payments) {
         if (Array.isArray(payment.feeHeads)) {
@@ -920,25 +932,24 @@ router.post(
         }
       }
 
-      // Update each fee head's paidAmount from the aggregated payment data
-      if (Array.isArray(feeStructure.feeHeads)) {
-        for (const fh of feeStructure.feeHeads) {
-          const key = fh.feeHeadId ? fh.feeHeadId.toString() : fh.name;
-          fh.paidAmount = headPaidMap.get(key) || 0;
-          const headResult = computeFeeHeadStatus(fh);
-          fh.balanceAmount = headResult.balanceAmount;
-          fh.status = headResult.status;
+      const feeStructure = await updateFeeStructureWithRetry(
+        scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear }),
+        async (fs) => {
+          if (Array.isArray(fs.feeHeads)) {
+            for (const fh of fs.feeHeads) {
+              const key = fh.feeHeadId ? fh.feeHeadId.toString() : fh.name;
+              fh.paidAmount = headPaidMap.get(key) || 0;
+              const headResult = computeFeeHeadStatus(fh);
+              fh.balanceAmount = headResult.balanceAmount;
+              fh.status = headResult.status;
+            }
+          }
+          fs.totalPaid = actualTotalPaid;
+          const { totalBalance, overallStatus } = computeFeeBalance(fs);
+          fs.totalBalance = totalBalance;
+          fs.overallStatus = overallStatus;
         }
-      }
-      // ────────────────────────────────────────────────────────────────
-
-      // Correct stored totals
-      feeStructure.totalPaid = actualTotalPaid;
-      const { totalBalance, overallStatus } = computeFeeBalance(feeStructure);
-      feeStructure.totalBalance = totalBalance;
-      feeStructure.overallStatus = overallStatus;
-
-      await feeStructure.save();
+      );
       await syncStudentFeeDetails(req.params.studentId, feeStructure);
 
       const after = {

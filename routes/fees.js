@@ -550,46 +550,43 @@ router.delete(
         // Reverse StudentFeeStructure balances
         try {
           const resolvedYear = payment.academicYear || (await resolveAcademicYear(null, schoolId));
-          const sfs = await StudentFeeStructure.findOne(
+          await updateFeeStructureWithRetry(
             scopeBySchool(schoolId, {
               studentId: payment.studentId,
               academicYear: resolvedYear,
-            })
-          );
-
-          if (sfs) {
-            // Reverse per-fee-head amounts if breakdown was recorded
-            if (
-              Array.isArray(payment.feeHeads) &&
-              payment.feeHeads.length > 0 &&
-              Array.isArray(sfs.feeHeads)
-            ) {
-              for (const paymentHead of payment.feeHeads) {
-                const matchingHead = sfs.feeHeads.find(
-                  (h) =>
-                    (paymentHead.feeHeadId &&
-                      h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
-                    (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
-                );
-                if (matchingHead) {
-                  matchingHead.paidAmount = Math.max(
-                    (matchingHead.paidAmount || 0) - (paymentHead.amount || 0),
-                    0
+            }),
+            async (sfs) => {
+              // Reverse per-fee-head amounts if breakdown was recorded
+              if (
+                Array.isArray(payment.feeHeads) &&
+                payment.feeHeads.length > 0 &&
+                Array.isArray(sfs.feeHeads)
+              ) {
+                for (const paymentHead of payment.feeHeads) {
+                  const matchingHead = sfs.feeHeads.find(
+                    (h) =>
+                      (paymentHead.feeHeadId &&
+                        h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
+                      (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
                   );
-                  const headResult = computeFeeHeadStatus(matchingHead);
-                  matchingHead.balanceAmount = headResult.balanceAmount;
-                  matchingHead.status = headResult.status;
+                  if (matchingHead) {
+                    matchingHead.paidAmount = Math.max(
+                      (matchingHead.paidAmount || 0) - (paymentHead.amount || 0),
+                      0
+                    );
+                    const headResult = computeFeeHeadStatus(matchingHead);
+                    matchingHead.balanceAmount = headResult.balanceAmount;
+                    matchingHead.status = headResult.status;
+                  }
                 }
               }
+
+              sfs.totalPaid = Math.max((sfs.totalPaid || 0) - cancelledAmount, 0);
+              const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+              sfs.totalBalance = totalBalance;
+              sfs.overallStatus = overallStatus;
             }
-
-            sfs.totalPaid = Math.max((sfs.totalPaid || 0) - cancelledAmount, 0);
-            const { totalBalance, overallStatus } = computeFeeBalance(sfs);
-            sfs.totalBalance = totalBalance;
-            sfs.overallStatus = overallStatus;
-
-            await sfs.save();
-          }
+          );
         } catch (sfsError) {
           logger.warn(
             { err: sfsError, paymentId: payment._id },
@@ -888,19 +885,18 @@ router.put(
       if (refund.studentId && refundAmount > 0) {
         try {
           // Update StudentFeeStructure — decrease totalPaid, increase totalBalance
-          const sfs = await StudentFeeStructure.findOne(
+          await updateFeeStructureWithRetry(
             scopeBySchool(req.user?.schoolId, {
               studentId: refund.studentId,
               academicYear: refund.academicYear,
-            })
+            }),
+            async (sfs) => {
+              sfs.totalPaid = Math.max((sfs.totalPaid || 0) - refundAmount, 0);
+              const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+              sfs.totalBalance = totalBalance;
+              sfs.overallStatus = overallStatus;
+            }
           );
-          if (sfs) {
-            sfs.totalPaid = Math.max((sfs.totalPaid || 0) - refundAmount, 0);
-            const { totalBalance, overallStatus } = computeFeeBalance(sfs);
-            sfs.totalBalance = totalBalance;
-            sfs.overallStatus = overallStatus;
-            await sfs.save();
-          }
 
           // Update Student.feeDetails — decrease paidAmount, increase balanceAmount
           const student = await Student.findOne(

@@ -31,6 +31,7 @@ import {
 import { createLogger } from '../utils/logger.js';
 import agenda from '../config/agenda.js';
 import { piiMatch } from '../utils/encryption.js';
+import { updateFeeStructureWithRetry } from '../utils/sfsConcurrency.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -828,17 +829,21 @@ router.post(
               $inc: { 'feeDetails.paidAmount': data.amount },
             });
 
-            const sfs = await StudentFeeStructure.findOne({
-              studentId: student._id,
-              academicYear: data.academicYear,
-            });
-            if (sfs) {
-              sfs.totalPaid = (sfs.totalPaid || 0) + data.amount;
-              sfs.totalBalance = Math.max(0, (sfs.totalFee || 0) - sfs.totalPaid);
-              sfs.overallStatus =
-                sfs.totalBalance <= 0 ? 'paid' : sfs.totalPaid > 0 ? 'partial' : 'pending';
-              await sfs.save();
-            }
+            // Retry-on-VersionError + scope by schoolId so we don't pick up
+            // a cross-tenant row on collision.
+            await updateFeeStructureWithRetry(
+              {
+                studentId: student._id,
+                schoolId: student.schoolId,
+                academicYear: data.academicYear,
+              },
+              async (sfs) => {
+                sfs.totalPaid = (sfs.totalPaid || 0) + data.amount;
+                sfs.totalBalance = Math.max(0, (sfs.totalFee || 0) - sfs.totalPaid);
+                sfs.overallStatus =
+                  sfs.totalBalance <= 0 ? 'paid' : sfs.totalPaid > 0 ? 'partial' : 'pending';
+              }
+            );
           } catch (updateErr) {
             logger.warn(
               { err: updateErr, studentId: student._id },

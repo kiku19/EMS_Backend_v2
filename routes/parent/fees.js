@@ -14,6 +14,7 @@ import {
 import { applyOutputSchema, paymentOutputSchema } from '../../validators/parentOutputSchemas.js';
 import { scopeBySchool, resolveRequestSchoolId } from './helpers.js';
 import { createLogger } from '../../utils/logger.js';
+import { updateFeeStructureWithRetry } from '../../utils/sfsConcurrency.js';
 
 const router = express.Router();
 const logger = createLogger('ParentFees');
@@ -282,37 +283,34 @@ router.post(
 
       await payment.save();
 
-      // Update StudentFeeStructure — strict year scope, no cross-year fallback
-      const feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(req.parent?.schoolId, { studentId, academicYear: year })
-      );
-
-      if (feeStructure) {
-        // Update individual fee head payments if breakdown provided
-        if (feeHeadPayments && feeHeadPayments.length > 0) {
-          for (const fhp of feeHeadPayments) {
-            const head = feeStructure.feeHeads.find(
-              (h) =>
-                h.feeHeadId?.toString() === fhp.feeHeadId || h._id?.toString() === fhp.feeHeadId
-            );
-            if (head) {
-              head.paidAmount = (head.paidAmount || 0) + fhp.amount;
-              const headResult = computeFeeHeadStatus(head);
-              head.balanceAmount = headResult.balanceAmount;
-              head.status = headResult.status;
+      // Update StudentFeeStructure — strict year scope, no cross-year fallback.
+      // Uses the retry helper so concurrent parent/admin payments don't lose
+      // each other's feeHead updates.
+      const feeStructure = await updateFeeStructureWithRetry(
+        scopeBySchool(req.parent?.schoolId, { studentId, academicYear: year }),
+        async (fs) => {
+          if (feeHeadPayments && feeHeadPayments.length > 0) {
+            for (const fhp of feeHeadPayments) {
+              const head = fs.feeHeads.find(
+                (h) =>
+                  h.feeHeadId?.toString() === fhp.feeHeadId || h._id?.toString() === fhp.feeHeadId
+              );
+              if (head) {
+                head.paidAmount = (head.paidAmount || 0) + fhp.amount;
+                const headResult = computeFeeHeadStatus(head);
+                head.balanceAmount = headResult.balanceAmount;
+                head.status = headResult.status;
+              }
             }
           }
+
+          fs.totalPaid = (fs.totalPaid || 0) + amount;
+          fs.lastPaymentDate = new Date();
+          const { totalBalance, overallStatus } = computeFeeBalance(fs);
+          fs.totalBalance = totalBalance;
+          fs.overallStatus = overallStatus;
         }
-
-        // Update totals using shared calculator
-        feeStructure.totalPaid = (feeStructure.totalPaid || 0) + amount;
-        feeStructure.lastPaymentDate = new Date();
-        const { totalBalance, overallStatus } = computeFeeBalance(feeStructure);
-        feeStructure.totalBalance = totalBalance;
-        feeStructure.overallStatus = overallStatus;
-
-        await feeStructure.save();
-      }
+      );
 
       // Sync Student.feeDetails and feeStatus from the updated fee structure
       if (feeStructure) {
