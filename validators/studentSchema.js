@@ -218,8 +218,10 @@ export const createStudentSchema = z
     transportRequired: z.boolean().nullish(),
     hostelRequired: z.boolean().nullish(),
 
-    // Status
-    feeStatus: z.enum(['paid', 'pending', 'partial', 'overdue']).default('pending'),
+    // Status — feeStatus is deliberately NOT client-settable. It's derived
+    // from StudentFeeStructure.overallStatus and only mutated via payment /
+    // refund / structure-resync code paths. Any incoming feeStatus is
+    // stripped by .strip() below.
     status: z.enum(['active', 'inactive', 'graduated', 'transferred', 'alumni']).default('active'),
 
     // Documents & Photo
@@ -266,5 +268,7 @@ export const updateStudentSchema = createStudentSchema
     parents: z.array(parentSchema).min(1, 'At least one parent or guardian is required').nullish(),
     // Teacher-assessed student ratings (Mixed/freeform object)
     ratings: z.record(z.any()).optional(),
+    // Optimistic locking: client sends the updatedAt it loaded; server rejects if stale
+    clientUpdatedAt: z.string().datetime({ offset: true }).optional(),
   })
   .strip();

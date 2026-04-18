@@ -824,6 +824,189 @@ describe('students routes', () => {
         .send({ parentName: 'No Auth Parent' })
         .expect(401);
     });
+
+    it('ignores client-supplied feeStatus on create — always seeds as pending', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .post('/api/students')
+        .set(authHeaders)
+        .send({
+          name: 'FeeStatus Client',
+          admissionId: 'ADM-FS-001',
+          academicYear: CURRENT_ACADEMIC_YEAR,
+          rollNo: 30,
+          classId: classRecord._id.toString(),
+          parents: defaultParent,
+          feeStatus: 'paid', // client tries to escalate
+        })
+        .expect(201);
+
+      expect(res.body.feeStatus).toBe('pending');
+      const dbStudent = await Student.findById(res.body.id).lean();
+      expect(dbStudent.feeStatus).toBe('pending');
+    });
+
+    it('ignores client-supplied feeStatus on update', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const createRes = await request(app)
+        .post('/api/students')
+        .set(authHeaders)
+        .send({
+          name: 'FeeStatus PUT Client',
+          admissionId: 'ADM-FSU-001',
+          academicYear: CURRENT_ACADEMIC_YEAR,
+          rollNo: 31,
+          classId: classRecord._id.toString(),
+          parents: defaultParent,
+        })
+        .expect(201);
+
+      // Anyone with students.edit could previously flip feeStatus to 'paid'
+      // with no payment record — now it's stripped by the Zod schema.
+      await request(app)
+        .put(`/api/students/${createRes.body.id}`)
+        .set(authHeaders)
+        .send({ feeStatus: 'paid' })
+        .expect(200);
+
+      const dbStudent = await Student.findById(createRes.body.id).lean();
+      expect(dbStudent.feeStatus).toBe('pending');
+    });
+
+    it('keeps StudentFeeStructure intact after soft-delete so trash-restore preserves fee history', async () => {
+      const FeeHead = (await import('../models/FeeHead.js')).default;
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 6', section: 'A' });
+      await FeeHead.create({
+        schoolId: admin.schoolId,
+        name: 'Tuition',
+        amount: 2000,
+        applicableClasses: ['6'],
+        isActive: true,
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const createRes = await request(app)
+        .post('/api/students')
+        .set(authHeaders)
+        .send({
+          name: 'Soft Delete Preserves Fees',
+          admissionId: 'ADM-SDPF-001',
+          academicYear: CURRENT_ACADEMIC_YEAR,
+          rollNo: 12,
+          classId: classRecord._id.toString(),
+          parents: defaultParent,
+        })
+        .expect(201);
+
+      const studentId = createRes.body.id;
+
+      // Record some payment history
+      const fs = await StudentFeeStructure.findOne({
+        studentId,
+        schoolId: admin.schoolId,
+      });
+      fs.feeHeads[0].paidAmount = 800;
+      fs.feeHeads[0].balanceAmount = 1200;
+      fs.totalPaid = 800;
+      fs.totalBalance = 1200;
+      fs.overallStatus = 'partial';
+      await fs.save();
+
+      // Soft-delete the student
+      await request(app).delete(`/api/students/${studentId}`).set(authHeaders).expect(200);
+
+      // Before the fix, fee structures were hard-deleted here across all
+      // academic years and restore-from-trash left the student with no
+      // payment history. Post-fix they must survive soft-delete.
+      const surviving = await StudentFeeStructure.findOne({
+        studentId,
+        schoolId: admin.schoolId,
+      });
+      expect(surviving).toBeTruthy();
+      expect(surviving.totalPaid).toBe(800);
+      expect(surviving.feeHeads[0].paidAmount).toBe(800);
+    });
+
+    it('preserves paid fee amounts when a student is moved to a new class mid-year', async () => {
+      // Seed: admin, two classes, FeeHead applicable to both, then create a
+      // student in class A. We'll hand-pay ₹500 against the only fee head,
+      // then move the student to class B and assert the paidAmount survives.
+      const FeeHead = (await import('../models/FeeHead.js')).default;
+      const admin = await createStaffUser();
+      const classA = await createClassRecord({ name: 'Class 5', section: 'A' });
+      const classB = await createClassRecord({ name: 'Class 5', section: 'B' });
+
+      // Matching applicableClasses: '5' covers both Class 5-A and Class 5-B
+      await FeeHead.create({
+        schoolId: admin.schoolId,
+        name: 'Tuition',
+        category: 'Academic',
+        amount: 1000,
+        applicableClasses: ['5'],
+        isActive: true,
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const createRes = await request(app)
+        .post('/api/students')
+        .set(authHeaders)
+        .send({
+          name: 'Class Change Student',
+          admissionId: 'ADM-CLC-001',
+          academicYear: CURRENT_ACADEMIC_YEAR,
+          rollNo: 10,
+          classId: classA._id.toString(),
+          parents: defaultParent,
+        })
+        .expect(201);
+
+      const studentId = createRes.body.id;
+
+      // Simulate a payment: bump paidAmount on the existing structure directly
+      const seeded = await StudentFeeStructure.findOne({
+        studentId,
+        schoolId: admin.schoolId,
+      });
+      expect(seeded).toBeTruthy();
+      expect(seeded.totalFee).toBe(1000); // Verifies the #1 fix (fee head is actually picked up)
+      seeded.feeHeads[0].paidAmount = 500;
+      seeded.feeHeads[0].balanceAmount = 500;
+      seeded.feeHeads[0].status = 'partial';
+      seeded.totalPaid = 500;
+      seeded.totalBalance = 500;
+      seeded.overallStatus = 'partial';
+      await seeded.save();
+
+      // Move student to class B
+      await request(app)
+        .put(`/api/students/${studentId}`)
+        .set(authHeaders)
+        .send({ classId: classB._id.toString() })
+        .expect(200);
+
+      const after = await StudentFeeStructure.findOne({
+        studentId,
+        schoolId: admin.schoolId,
+      });
+      expect(after).toBeTruthy();
+      expect(after.totalPaid).toBe(500); // ← this was 0 before the fix
+      expect(after.totalBalance).toBe(500);
+      expect(after.classId.toString()).toBe(classB._id.toString());
+      expect(after.feeHeads[0].paidAmount).toBe(500);
+    });
   });
 
   describe('DELETE /api/students/:id — Delete student', () => {

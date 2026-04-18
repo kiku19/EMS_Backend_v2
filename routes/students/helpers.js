@@ -30,6 +30,12 @@ export const sendReminderSchema = z.object({
   message: z.string().max(500, 'Message too long').optional(),
 });
 
+export const sendRemindersBulkSchema = z.object({
+  studentIds: z.array(z.string().min(1)).min(1, 'At least one student is required').max(500, 'Too many students'),
+  type: z.enum(['fee', 'attendance'], { required_error: 'Reminder type is required' }),
+  message: z.string().max(500, 'Message too long').optional(),
+});
+
 export function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
   if (!normalizedSchoolId) throw new Error('schoolId is required for scoped queries');
@@ -178,10 +184,12 @@ export async function initializeFeeStructure(student) {
   }
 
   const classNumber = classInfo.name.replace('Class ', '');
+  // FeeHead has no academicYear field — it's a tenant-wide reusable catalogue.
+  // Filtering by {academicYear} made this query return zero rows, so every
+  // new student was initialised with an empty fee structure (totalFee=0).
   const applicableFeeHeads = await FeeHead.find({
     schoolId: student.schoolId,
     applicableClasses: classNumber,
-    academicYear,
     isActive: true,
   });
 
@@ -209,4 +217,104 @@ export async function initializeFeeStructure(student) {
   feeStructure.overallStatus = 'pending';
 
   await feeStructure.save();
+}
+
+function overallStatusFor(totalFee, totalPaid) {
+  if (totalPaid >= totalFee && totalFee > 0) return 'paid';
+  if (totalPaid > 0) return 'partial';
+  return 'pending';
+}
+
+function feeHeadStatusFor(amount, paidAmount) {
+  if (paidAmount >= amount && amount > 0) return 'paid';
+  if (paidAmount > 0) return 'partial';
+  return 'pending';
+}
+
+/**
+ * Re-align the student's fee structure to the feeHeads applicable to their
+ * CURRENT class, preserving paidAmount and payment history on any feeHead
+ * carried forward from the old class. Heads present in the old class but not
+ * the new one are retained ONLY when they already have a paidAmount > 0
+ * (i.e. real payment history exists) so downstream payment-cancellation still
+ * works.
+ *
+ * This exists because the previous class-change flow did
+ * `deleteMany({studentId, academicYear}) + initializeFeeStructure()` which
+ * zeroed out every recorded paidAmount — a 'paid Rs. 10,000' student showed
+ * up to the new class owing the full amount.
+ */
+export async function resyncFeeStructureForClassChange(student) {
+  const academicYear = await resolveAcademicYear(student.academicYear);
+
+  const existing = await StudentFeeStructure.findOne({
+    studentId: student._id,
+    academicYear,
+    schoolId: student.schoolId,
+  });
+
+  if (!existing) {
+    // No structure yet (e.g. student was created without fees) — treat as
+    // first-time init so the new class's heads get applied.
+    return initializeFeeStructure(student);
+  }
+
+  const classInfo = await Class.findOne({ _id: student.classId, schoolId: student.schoolId });
+  if (!classInfo) return;
+
+  const classNumber = classInfo.name.replace('Class ', '');
+  const newApplicableHeads = await FeeHead.find({
+    schoolId: student.schoolId,
+    applicableClasses: classNumber,
+    isActive: true,
+  });
+
+  const priorByFeeHeadId = new Map(
+    existing.feeHeads.map((fh) => [fh.feeHeadId?.toString(), fh])
+  );
+
+  const mergedHeads = newApplicableHeads.map((feeHead) => {
+    const prior = priorByFeeHeadId.get(feeHead._id.toString());
+    const paidAmount = prior?.paidAmount || 0;
+    const balanceAmount = Math.max(0, feeHead.amount - paidAmount);
+    return {
+      feeHeadId: feeHead._id,
+      name: feeHead.name,
+      category: feeHead.category,
+      amount: feeHead.amount,
+      mandatory: feeHead.mandatory,
+      frequency: feeHead.frequency,
+      paidAmount,
+      balanceAmount,
+      status: feeHeadStatusFor(feeHead.amount, paidAmount),
+    };
+  });
+
+  // Preserve old-class heads that carry real payment history — dropping them
+  // would orphan their FeePayment.feeHeads entries and make refunds nonsense.
+  const newIds = new Set(newApplicableHeads.map((fh) => fh._id.toString()));
+  for (const prior of existing.feeHeads) {
+    const id = prior.feeHeadId?.toString();
+    if (id && !newIds.has(id) && (prior.paidAmount || 0) > 0) {
+      mergedHeads.push({
+        feeHeadId: prior.feeHeadId,
+        name: prior.name,
+        category: prior.category,
+        amount: prior.amount,
+        mandatory: prior.mandatory,
+        frequency: prior.frequency,
+        paidAmount: prior.paidAmount,
+        balanceAmount: 0, // Legacy head — no further balance accrues in new class
+        status: 'paid',
+      });
+    }
+  }
+
+  existing.classId = student.classId;
+  existing.feeHeads = mergedHeads;
+  existing.totalFee = mergedHeads.reduce((s, h) => s + (h.amount || 0), 0);
+  existing.totalPaid = mergedHeads.reduce((s, h) => s + (h.paidAmount || 0), 0);
+  existing.totalBalance = Math.max(0, existing.totalFee - existing.totalPaid);
+  existing.overallStatus = overallStatusFor(existing.totalFee, existing.totalPaid);
+  await existing.save();
 }

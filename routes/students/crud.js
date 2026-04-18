@@ -6,6 +6,7 @@ import {
   Result,
   ActivityLog,
   getNextAdmissionId,
+  peekNextAdmissionId,
 } from '../../database.js';
 import { permanentlyDeleteStudentData } from '../../services/studentDataErasureService.js';
 import { logToTrash } from '../../services/trashService.js';
@@ -21,8 +22,10 @@ import {
   buildStudentListQuery,
   getStudentListSort,
 } from './helpers.js';
+import { objectIdParamHandler } from '../../middleware/validation.js';
 
 const router = express.Router();
+router.param('id', objectIdParamHandler);
 
 router.get('/', checkPermission('students', 'view'), async (req, res) => {
   try {
@@ -264,12 +267,14 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
   }
 });
 
+// Read-only preview — does NOT increment the counter.
+// The actual admission ID is generated atomically by POST /students at creation time.
 router.get('/next-admission-id', async (req, res) => {
   try {
-    const admissionId = await getNextAdmissionId(req.user.schoolId);
+    const admissionId = await peekNextAdmissionId(req.user.schoolId);
     res.json({ admissionId });
   } catch (error) {
-    console.error('Error generating admission ID:', error);
+    console.error('Error previewing admission ID:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -324,6 +329,26 @@ router.delete('/:id', checkPermission('students', 'delete'), async (req, res) =>
     student.deletedAt = new Date();
     student.status = 'inactive';
     await student.save();
+
+    // Cascade cleanup: remove orphaned child records for this student.
+    //
+    // StudentFeeStructure is deliberately NOT touched here. Soft-delete is
+    // reversible via /api/trash/:id/restore which flips Student.isDeleted
+    // false — if we hard-deleted the fee structures we'd restore a student
+    // with zero payment history across every academic year, even though
+    // FeePayment receipts still point at them. Fee structures scope by
+    // studentId; while the student is soft-deleted they remain dormant in
+    // the collection. Permanent-delete is handled separately by
+    // permanentlyDeleteStudentData (studentDataErasureService).
+    await Promise.all([
+      // Soft-delete exam results (schema supports isDeleted)
+      Result.updateMany(
+        { studentId: student._id, schoolId: student.schoolId },
+        { isDeleted: true, deletedAt: new Date() }
+      ),
+      // Hard-delete attendance records (no isDeleted field; records are genuinely orphaned)
+      Attendance.deleteMany({ studentId: student._id, schoolId: student.schoolId }),
+    ]);
 
     // Log to trash for restore capability (await to return trashItemId for undo)
     let trashItemId = null;

@@ -258,10 +258,10 @@ async function initializeFeeStructure(student) {
   }
 
   const classNumber = classInfo.name.replace('Class ', '');
+  // FeeHead has no academicYear field; filtering by it always returns zero.
   const applicableFeeHeads = await FeeHead.find({
     schoolId: student.schoolId,
     applicableClasses: classNumber,
-    academicYear,
     isActive: true,
   });
 

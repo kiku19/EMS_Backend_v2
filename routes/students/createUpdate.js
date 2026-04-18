@@ -18,6 +18,7 @@ import {
   cleanObject,
   processParents,
   initializeFeeStructure,
+  resyncFeeStructureForClassChange,
 } from './helpers.js';
 
 const router = express.Router();
@@ -134,7 +135,10 @@ router.post(
         hostelRequired: req.body.hostelRequired || false,
         isWhatsapp: req.body.isWhatsapp || false,
         whatsappNumber: req.body.whatsappNumber,
-        feeStatus: req.body.feeStatus || 'pending',
+        // feeStatus is server-derived from the fee structure, never accepted
+        // from the client. Always initialise to 'pending' — overallStatus
+        // will flip to 'paid'/'partial'/'overdue' as payments land.
+        feeStatus: 'pending',
         status: req.body.status || 'active',
         photo: req.body.photo,
         documents: req.body.documents || [],
@@ -273,7 +277,7 @@ router.put(
         hostelRequired: req.body.hostelRequired,
         isWhatsapp: req.body.isWhatsapp,
         whatsappNumber: req.body.whatsappNumber,
-        feeStatus: req.body.feeStatus,
+        // feeStatus is server-derived — not accepted from the client.
         status: req.body.status,
         photo: req.body.photo,
         documents: Array.isArray(req.body.documents) ? req.body.documents : undefined,
@@ -296,6 +300,18 @@ router.put(
       );
       if (!originalStudent) {
         return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
+      }
+
+      // Optimistic locking: if the client sent the updatedAt it loaded, reject if stale
+      if (req.body.clientUpdatedAt) {
+        const clientTs = new Date(req.body.clientUpdatedAt).getTime();
+        const serverTs = new Date(originalStudent.updatedAt).getTime();
+        if (clientTs !== serverTs) {
+          return res.status(409).json({
+            error: 'This student record was modified in another tab or session. Please close this form and reopen to get the latest data.',
+            code: 'STALE_DATA',
+          });
+        }
       }
 
       // Check admissionId uniqueness when it changes
@@ -423,40 +439,25 @@ router.put(
             );
           }
 
-          // Warn if there are unpaid fees before wiping the fee structure
-          const unpaidFees = await StudentFeeStructure.find({
-            schoolId: req.user?.schoolId,
-            studentId: student._id,
-            totalBalance: { $gt: 0 },
-          });
-
-          if (unpaidFees.length > 0) {
-            const totalUnpaid = unpaidFees.reduce((sum, fs) => sum + fs.totalBalance, 0);
-            console.warn(
-              `Deleting fee structures for student ${student._id} with ₹${totalUnpaid} unpaid balance`
-            );
-          }
-
-          await StudentFeeStructure.deleteMany({
-            studentId: student._id,
-            academicYear: resolvedYear,
-            schoolId: req.user?.schoolId,
-          });
-          await initializeFeeStructure(student);
-        }
-
-        if (updateData.feeStatus && updateData.feeStatus !== originalStudent.feeStatus) {
-          const feeStructure = await StudentFeeStructure.findOne({
-            schoolId: req.user?.schoolId,
-            studentId: student._id,
-            academicYear: await resolveAcademicYear(student.academicYear),
-          });
-
-          if (feeStructure) {
-            feeStructure.overallStatus = updateData.feeStatus;
-            await feeStructure.save();
+          // Re-align fee structure to the new class WITHOUT wiping paid
+          // amounts. The previous deleteMany+init flow zeroed every recorded
+          // paidAmount, so a student who had paid ₹10k appeared to owe the
+          // full new-class amount. resyncFeeStructureForClassChange merges
+          // new feeHeads over the existing structure, preserves paidAmount
+          // on carry-over heads, and keeps old-class heads that still have
+          // payment history so FeePayment refunds stay consistent.
+          if (academicYearChanged) {
+            // Academic-year change is a fresh start — initialise into the new
+            // year instead of merging across year boundaries.
+            await initializeFeeStructure(student);
+          } else {
+            await resyncFeeStructureForClassChange(student);
           }
         }
+
+        // feeStatus is no longer client-settable so the previous sync block
+        // (copying updateData.feeStatus onto feeStructure.overallStatus) is
+        // removed — overallStatus is authored by the fee/payment code paths.
       } catch (feeError) {
         console.error('Error syncing fee structure:', feeError);
       }
