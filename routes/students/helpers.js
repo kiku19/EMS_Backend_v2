@@ -5,6 +5,32 @@ import FeeHead from '../../models/FeeHead.js';
 import { extractSchoolId, ensureDefaultSchool } from '../../utils/schoolContext.js';
 import { resolveAcademicYear } from '../../utils/academicYear.js';
 
+/**
+ * Produce the candidate tokens for matching a Class against
+ * FeeHead.applicableClasses. Schools use different conventions — "Class 10",
+ * "Grade 10", "10", "X" (Roman), "X-A" — so we return a small set and the
+ * caller does `$in` against it.
+ *
+ * Examples:
+ *   "Class 10" → ['Class 10', '10']
+ *   "Grade 5"  → ['Grade 5', '5']
+ *   "10"       → ['10']
+ *   "X"        → ['X']
+ *   "Nursery"  → ['Nursery']
+ */
+export function classNameTokens(name) {
+  if (!name || typeof name !== 'string') return [];
+  const trimmed = name.trim();
+  const tokens = new Set([trimmed]);
+  // "Class N" / "Grade N" → N
+  const numberMatch = trimmed.match(/\b(\d+)\b/);
+  if (numberMatch) tokens.add(numberMatch[1]);
+  // "Class X" → X  (Roman-numeral / single-letter tail)
+  const tailMatch = trimmed.match(/(?:Class|Grade)\s+([A-Za-z0-9]+(?:-[A-Za-z0-9]+)?)$/i);
+  if (tailMatch) tokens.add(tailMatch[1]);
+  return Array.from(tokens);
+}
+
 export const createRemarkSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200, 'Title too long'),
   description: z.string().min(1, 'Description is required').max(2000, 'Description too long'),
@@ -183,13 +209,15 @@ export async function initializeFeeStructure(student) {
     return;
   }
 
-  const classNumber = classInfo.name.replace('Class ', '');
   // FeeHead has no academicYear field — it's a tenant-wide reusable catalogue.
   // Filtering by {academicYear} made this query return zero rows, so every
   // new student was initialised with an empty fee structure (totalFee=0).
+  // Also accept multiple class-name shapes ("Class 10", "Grade 10", "10",
+  // Roman) so schools using non-"Class N" naming conventions still match.
+  const tokens = classNameTokens(classInfo.name);
   const applicableFeeHeads = await FeeHead.find({
     schoolId: student.schoolId,
-    applicableClasses: classNumber,
+    applicableClasses: { $in: tokens },
     isActive: true,
   });
 
@@ -262,10 +290,9 @@ export async function resyncFeeStructureForClassChange(student) {
   const classInfo = await Class.findOne({ _id: student.classId, schoolId: student.schoolId });
   if (!classInfo) return;
 
-  const classNumber = classInfo.name.replace('Class ', '');
   const newApplicableHeads = await FeeHead.find({
     schoolId: student.schoolId,
-    applicableClasses: classNumber,
+    applicableClasses: { $in: classNameTokens(classInfo.name) },
     isActive: true,
   });
 

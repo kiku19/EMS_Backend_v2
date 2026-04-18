@@ -450,15 +450,26 @@ router.post('/:id/apply', checkPermission('fees', 'edit'), async (req, res) => {
   }
 });
 
-// Helper function to apply fee head to students
+// Helper function to apply fee head to students.
+// Accept class names in any convention — "Class 10", "Grade 10", "10",
+// Roman numerals. Previously only the "Class N" prefix matched and schools
+// using "Grade N" or raw numbers got zero class matches and zero students
+// updated (silent no-op). Match ON EITHER side: the raw token OR the
+// "Class N" / "Grade N" wrapped form.
 async function applyFeeHeadToStudents(feeHead, schoolId) {
   try {
+    const tokenSet = new Set();
+    for (const c of feeHead.applicableClasses || []) {
+      if (!c) continue;
+      tokenSet.add(c);
+      tokenSet.add(`Class ${c}`);
+      tokenSet.add(`Grade ${c}`);
+    }
+
     // Find all classes that match the applicable classes
     const classes = await Class.find({
       schoolId,
-      name: {
-        $in: feeHead.applicableClasses.map((c) => `Class ${c}`),
-      },
+      name: { $in: Array.from(tokenSet) },
     });
 
     if (classes.length === 0) {

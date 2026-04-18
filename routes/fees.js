@@ -250,13 +250,25 @@ router.post(
       const schoolId = await resolveRequestSchoolId(req);
 
       // ── Validate payment amount against outstanding balance ─────────────────
+      // Require an SFS to exist before accepting the payment. Previously the
+      // balance check only ran when an SFS existed; students with no SFS
+      // silently accepted any amount with no balance constraint and no
+      // structure record tracking the overpayment.
       if (studentId) {
         const sfs = await StudentFeeStructure.findOne({
           studentId,
           academicYear: resolvedAcademicYear,
           schoolId,
         });
-        if (sfs && sfs.totalBalance != null && amount > sfs.totalBalance && sfs.totalBalance >= 0) {
+        if (!sfs) {
+          return res.status(400).json({
+            error:
+              'Student has no fee structure for this academic year. ' +
+              'Initialise fees first via POST /api/student-fees/initialize/:studentId.',
+            code: 'NO_FEE_STRUCTURE',
+          });
+        }
+        if (sfs.totalBalance != null && amount > sfs.totalBalance && sfs.totalBalance >= 0) {
           return res.status(400).json({
             error: `Payment amount (${amount}) exceeds outstanding balance (${sfs.totalBalance}). Please enter a smaller amount.`,
             code: 'EXCEEDS_BALANCE',
@@ -536,6 +548,24 @@ router.delete(
         return res.status(400).json({ error: 'Payment is already cancelled' });
       }
 
+      // Refund referential integrity: if there's a pending/approved refund
+      // pointing at this payment, cancelling the source payment would leave
+      // the refund dangling — processable against a voided source. Block it.
+      const blockingRefund = await FeeRefund.findOne(
+        scopeBySchool(schoolId, {
+          paymentId: payment._id,
+          status: { $in: ['pending', 'approved'] },
+        })
+      );
+      if (blockingRefund) {
+        return res.status(409).json({
+          error:
+            'Payment has an active refund attached — cancel or process the refund first.',
+          code: 'REFUND_PENDING',
+          refundId: blockingRefund._id,
+        });
+      }
+
       const cancelledAmount = payment.amount || 0;
       const previousStatus = payment.status;
 
@@ -600,8 +630,13 @@ router.delete(
             scopeBySchool(schoolId, { _id: payment.studentId })
           );
           if (student) {
+            // Clamp paidAmount floor at 0 — $inc alone would let it go
+            // negative if the payment was somehow reversed twice, which
+            // would then overstate balanceAmount computation.
+            const currentPaid = student.feeDetails?.paidAmount || 0;
+            const newPaid = Math.max(0, currentPaid - cancelledAmount);
             await Student.findByIdAndUpdate(student._id, {
-              $inc: { 'feeDetails.paidAmount': -cancelledAmount },
+              $set: { 'feeDetails.paidAmount': newPaid },
             });
             const updated = await Student.findById(student._id);
             if (updated) {
@@ -658,8 +693,11 @@ router.put('/payments/:id', checkPermission('fees', 'edit'), async (req, res) =>
       return res.status(400).json({ error: 'Cannot update a cancelled payment' });
     }
 
-    // Only allow updating metadata fields — not amount or studentId
-    const ALLOWED_FIELDS = [
+    // Only allow updating metadata fields — not amount or studentId.
+    // Completed payments have a stricter allow-list so historical receipts
+    // can't silently change retroactively. paymentDate changes on a
+    // completed payment require cancel + re-record.
+    const ALLOWED_FIELDS_DRAFT = [
       'paymentMode',
       'transactionId',
       'chequeNumber',
@@ -667,14 +705,58 @@ router.put('/payments/:id', checkPermission('fees', 'edit'), async (req, res) =>
       'remarks',
       'paymentDate',
     ];
+    const ALLOWED_FIELDS_COMPLETED = [
+      'paymentMode',
+      'transactionId',
+      'chequeNumber',
+      'bankName',
+      'remarks',
+    ];
+    const allowed =
+      payment.status === 'completed' ? ALLOWED_FIELDS_COMPLETED : ALLOWED_FIELDS_DRAFT;
 
-    for (const field of ALLOWED_FIELDS) {
-      if (req.body[field] !== undefined) {
+    if (
+      payment.status === 'completed' &&
+      req.body.paymentDate !== undefined &&
+      String(req.body.paymentDate) !== String(payment.paymentDate)
+    ) {
+      return res.status(400).json({
+        error:
+          'paymentDate cannot be edited on a completed payment. Cancel and re-record the payment with the correct date instead.',
+        code: 'PAYMENT_DATE_IMMUTABLE',
+      });
+    }
+
+    const changedFields = {};
+    for (const field of allowed) {
+      if (req.body[field] !== undefined && req.body[field] !== payment[field]) {
+        changedFields[field] = { from: payment[field], to: req.body[field] };
         payment[field] = req.body[field];
       }
     }
 
     await payment.save();
+
+    // Audit trail — record WHO changed WHAT on an existing payment so the
+    // historical receipt is defensible.
+    if (Object.keys(changedFields).length > 0) {
+      try {
+        const { default: AuditTrail } = await import('../models/AuditTrail.js');
+        await AuditTrail.create({
+          schoolId: req.user?.schoolId,
+          userId: req.user?.id,
+          userName: req.user?.name || null,
+          action: 'payment_updated',
+          entity: 'FeePayment',
+          entityId: payment._id.toString(),
+          method: 'PUT',
+          path: req.path,
+          newValue: changedFields,
+        });
+      } catch {
+        // Audit-trail failures must not block the mutation
+      }
+    }
 
     const populated = await FeePayment.findById(payment._id).populate(
       'studentId',
@@ -898,13 +980,17 @@ router.put(
             }
           );
 
-          // Update Student.feeDetails — decrease paidAmount, increase balanceAmount
+          // Update Student.feeDetails — decrease paidAmount, increase balanceAmount.
+          // Clamp floor at 0 so duplicate refund processing can't drive
+          // paidAmount negative.
           const student = await Student.findOne(
             scopeBySchool(req.user?.schoolId, { _id: refund.studentId })
           );
           if (student) {
+            const currentPaid = student.feeDetails?.paidAmount || 0;
+            const newPaid = Math.max(0, currentPaid - refundAmount);
             await Student.findByIdAndUpdate(student._id, {
-              $inc: { 'feeDetails.paidAmount': -refundAmount },
+              $set: { 'feeDetails.paidAmount': newPaid },
             });
             const updated = await Student.findById(student._id);
             if (updated) {

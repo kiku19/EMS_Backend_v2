@@ -289,6 +289,7 @@ import {
 import { createLogger } from '../utils/logger.js';
 import { validateObjectIdParam } from '../middleware/validation.js';
 import { updateFeeStructureWithRetry } from '../utils/sfsConcurrency.js';
+import { classNameTokens } from './students/helpers.js';
 
 const logger = createLogger('StudentFees');
 const router = express.Router();
@@ -340,9 +341,11 @@ router.get(
 
       // Auto-initialize fee structure if it doesn't exist and student has a class
       if (!feeStructure && student.classId) {
-        const classNumber = student.classId.name.replace('Class ', '');
         const applicableFeeHeads = await FeeHead.find(
-          scopeBySchool(schoolId, { applicableClasses: classNumber, isActive: true })
+          scopeBySchool(schoolId, {
+            applicableClasses: { $in: classNameTokens(student.classId.name) },
+            isActive: true,
+          })
         );
 
         feeStructure = new StudentFeeStructure({
@@ -525,13 +528,12 @@ router.post(
         });
       }
 
-      // Extract class number from class name (e.g., "Class 10" -> "10")
-      const classNumber = student.classId.name.replace('Class ', '');
-
-      // Find applicable fee heads for this class (fee heads are not academic year specific)
+      // Extract candidate class tokens — handles "Class 10"/"Grade 10"/"10"/Roman
+      // so schools using non-default naming conventions still match their
+      // FeeHead.applicableClasses entries.
       const applicableFeeHeads = await FeeHead.find(
         scopeBySchool(schoolId, {
-          applicableClasses: classNumber,
+          applicableClasses: { $in: classNameTokens(student.classId.name) },
           isActive: true,
         })
       );
@@ -770,8 +772,11 @@ router.post(
         return res.status(404).json({ error: 'Fee structure not found' });
       }
 
-      // Create a FeePayment record so the payments collection stays in sync
-      // (fixes bug where studentFees payment endpoint didn't create FeePayment)
+      // Create a FeePayment record so the payments collection stays in sync.
+      // A failure HERE is NOT non-critical — the SFS totals have already been
+      // updated and if the audit record is missing, the school's book and the
+      // bank won't reconcile. Surface a 500 + rollback the SFS change so the
+      // caller can retry.
       const schoolId = extractSchoolId(req.user?.schoolId);
       const resolvedYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
       try {
@@ -792,7 +797,41 @@ router.post(
         });
         await feePayment.save();
       } catch (fpError) {
-        logger.warn({ err: fpError }, 'Non-critical: could not create FeePayment record');
+        // Attempt to reverse the SFS update so we don't end up with money
+        // "paid" in the structure but no FeePayment audit row.
+        try {
+          await updateFeeStructureWithRetry(
+            scopeBySchool(req.user?.schoolId, {
+              studentId: req.params.studentId,
+              academicYear: resolvedYear,
+            }),
+            async (fs) => {
+              fs.totalPaid = Math.max(0, (fs.totalPaid || 0) - amount);
+              for (const distributed of distributedFeeHeadPayments) {
+                const head = fs.feeHeads.find(
+                  (h) => h.feeHeadId?.toString() === distributed.feeHeadId?.toString()
+                );
+                if (head) {
+                  head.paidAmount = Math.max(0, (head.paidAmount || 0) - distributed.amount);
+                  const r = computeFeeHeadStatus(head);
+                  head.balanceAmount = r.balanceAmount;
+                  head.status = r.status;
+                }
+              }
+              const { totalBalance, overallStatus } = computeFeeBalance(fs);
+              fs.totalBalance = totalBalance;
+              fs.overallStatus = overallStatus;
+            }
+          );
+        } catch (rollbackErr) {
+          logger.error({ err: rollbackErr }, 'Failed to reverse SFS after FeePayment failure');
+        }
+        logger.error({ err: fpError }, 'FeePayment save failed — SFS update reversed');
+        return res.status(500).json({
+          error:
+            'Could not persist payment audit record — transaction reversed. Please retry.',
+          code: 'PAYMENT_AUDIT_FAILED',
+        });
       }
 
       // Sync fee data to Student model for consistent reads
