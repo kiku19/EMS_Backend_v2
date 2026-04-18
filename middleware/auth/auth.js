@@ -334,9 +334,6 @@ export async function requireGroupAdmin(req, res, next) {
 }
 
 export async function requireSuperAdmin(req, res, next) {
-  process.stdout.write(
-    `[AUTH-DEBUG] requireSuperAdmin called, user=${JSON.stringify(req.user?.userType)}\n`
-  );
   try {
     if (!req.user) {
       return res.status(401).json({

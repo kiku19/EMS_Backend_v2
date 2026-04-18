@@ -885,6 +885,15 @@ router.post('/logout', async (req, res) => {
       const decoded = jwt.decode(token);
       if (decoded && decoded.userId) {
         await Staff.findByIdAndUpdate(decoded.userId, { $inc: { tokenVersion: 1 } });
+        // Also revoke this session so GET /auth/sessions stops showing it
+        // as active and authenticate() middleware rejects the access token
+        // immediately rather than waiting for it to expire naturally.
+        if (decoded.sessionId) {
+          await Session.findOneAndUpdate(
+            { sessionId: decoded.sessionId },
+            { $set: { isRevoked: true, revokedAt: new Date() } }
+          ).catch(() => {});
+        }
         // Log logout event if we have schoolId from the token claims
         if (decoded.schoolId) {
           logAuthEvent(
