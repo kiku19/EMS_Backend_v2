@@ -299,6 +299,22 @@ export function initializeChatHandlers(io) {
           return;
         }
 
+        // Participant check: when the client supplied an existing
+        // conversationId, the socket user MUST be a participant of that
+        // conversation. Without this any authed socket in the same school
+        // could inject messages into arbitrary conversations. (The
+        // join_conversation handler at line 174 already enforces this for
+        // reading — same rule should apply on write.)
+        if (conversationId) {
+          const isParticipant = conversation.participants.some(
+            (p) => p.userId.toString() === socket.userId.toString()
+          );
+          if (!isParticipant) {
+            socket.emit('error', { message: 'Not a participant of this conversation' });
+            return;
+          }
+        }
+
         // Provide default content for non-text messages if not provided
         let messageContent = content;
         if (!messageContent || messageContent.trim() === '') {
