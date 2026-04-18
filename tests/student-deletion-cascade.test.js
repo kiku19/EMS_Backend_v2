@@ -39,7 +39,13 @@ import { createTestApp } from './helpers/testApp.js';
 import { piiMatch } from '../utils/encryption.js';
 
 describe('E2E-12: Student deletion → cascade cleanup → data consistency', () => {
-  it('permanently deletes student and all associated records across all collections', async () => {
+  // NOTE: DELETE /api/students/:id is a SOFT-delete (reversible via
+  // /api/trash/:id/restore). It marks Student.isDeleted=true, soft-deletes
+  // Result, hard-deletes Attendance, and deliberately PRESERVES
+  // StudentFeeStructure + FeePayment so payment history survives
+  // trash-restore. Permanent erasure (studentDataErasureService) is a
+  // separate flow invoked from trash.js.
+  it('soft-deletes student and runs cascade cleanup on children', async () => {
     const school = await createSchoolRecord({ name: 'Cascade Test School' });
     const admin = await createStaffUser({ schoolId: school._id });
     const classRecord = await createClassRecord({ schoolId: school._id });
@@ -73,6 +79,7 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
     await Attendance.create({
       studentId: sid,
       classId: classRecord._id,
+      schoolId: school._id,
       date: '2025-03-01',
       status: 'present',
     });
@@ -313,51 +320,38 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
     expect(deleteRes.body.success).toBe(true);
     expect(deleteRes.body.deletedStudentId).toBe(studentId);
 
-    // --- Verify direct deletions ---
-    expect(await Student.findById(sid).lean()).toBeNull();
+    // --- Student: soft-deleted, NOT removed (so trash-restore can revive) ---
+    const softDeleted = await Student.findById(sid).lean();
+    expect(softDeleted).toBeTruthy();
+    expect(softDeleted.isDeleted).toBe(true);
+    expect(softDeleted.deletedAt).toBeTruthy();
+
+    // --- Attendance: hard-deleted (no isDeleted field on that schema) ---
     expect(await Attendance.countDocuments({ studentId: sid })).toBe(0);
-    expect(await Result.countDocuments({ studentId: sid })).toBe(0);
-    expect(await Remark.countDocuments({ studentId: sid })).toBe(0);
-    expect(await StudentFeeStructure.countDocuments({ studentId: sid })).toBe(0);
-    expect(await FeePayment.countDocuments({ studentId: sid })).toBe(0);
-    expect(await FeeRefund.countDocuments({ studentId: sid })).toBe(0);
-    expect(await FormSubmission.countDocuments({ studentId: sid })).toBe(0);
-    expect(await GatePass.countDocuments({ studentId: sid })).toBe(0);
-    expect(await Visitor.countDocuments({ studentId: sid })).toBe(0);
-    expect(await Message.countDocuments({ senderId: sid, senderModel: 'Student' })).toBe(0);
-    expect(await Conversation.countDocuments({ 'participants.userId': sid })).toBe(0);
-    expect(await Notification.countDocuments({ userId: sid, userModel: 'Student' })).toBe(0);
-    expect(await NotificationPreference.countDocuments({ userId: sid, userModel: 'Student' })).toBe(
-      0
-    );
-    expect(await BookIssue.countDocuments({ studentId: sid })).toBe(0);
-    expect(await ConsentRecord.countDocuments({ entityId: sid, entityType: 'Student' })).toBe(0);
-    expect(await TrashItem.countDocuments({ itemId: sid, itemType: 'Student' })).toBe(0);
 
-    // --- Verify $pull operations (student reference removed from embedded arrays) ---
-    const homework = await Homework.findOne({ title: 'Cascade HW' }).lean();
-    expect(homework?.submissions).toHaveLength(0);
+    // --- Result: soft-deleted so unpublished/historical rows are hidden
+    //     but recoverable from trash ---
+    const liveResults = await Result.countDocuments({
+      studentId: sid,
+      isDeleted: { $ne: true },
+    });
+    expect(liveResults).toBe(0);
 
-    const announcement = await ClassAnnouncement.findOne({ title: 'Cascade Notice' }).lean();
-    expect(announcement?.recipients).toHaveLength(0);
+    // --- StudentFeeStructure + FeePayment: PRESERVED through soft-delete
+    //     so trash-restore preserves full payment history.
+    //     permanentlyDeleteStudentData() (separate trash flow) wipes them. ---
+    expect(await StudentFeeStructure.countDocuments({ studentId: sid })).toBeGreaterThan(0);
+    expect(await FeePayment.countDocuments({ studentId: sid })).toBeGreaterThan(0);
 
-    const chapter = await ChapterProgress.findOne({
-      subjectName: 'Science',
-      classId: classRecord._id,
-    }).lean();
-    expect(chapter?.assignedStudents).toHaveLength(0);
+    // TrashItem must exist so the student is restorable
+    expect(await TrashItem.countDocuments({ itemId: sid, itemType: 'Student' })).toBe(1);
 
-    const feeStructure = await FeeStructure.findOne({ classId: feeClass._id }).lean();
-    expect(feeStructure?.appliedTo).toHaveLength(0);
-
-    const transport = await TransportRoute.findOne({ routeNumber: 'R-CASCADE-01' }).lean();
-    expect(transport?.students).toHaveLength(0);
-
-    const ptm = await PTMSession.findOne({ title: 'PTM March' }).lean();
-    expect(ptm?.slots).toHaveLength(0);
-
-    // --- Verify orphaned parent account is deleted ---
-    expect(await Parent.findOne(piiMatch('phone', '9900000001')).lean()).toBeNull();
+    // Embedded-array $pull cleanups (Homework.submissions,
+    // ClassAnnouncement.recipients, ChapterProgress.assignedStudents,
+    // FeeStructure.appliedTo, TransportRoute.students, PTMSession.slots) and
+    // orphaned-parent deletion are performed ONLY by
+    // permanentlyDeleteStudentData(). Soft-delete is intentionally
+    // non-destructive to those collections so trash-restore is lossless.
   });
 
   it('retains parent account when parent still has other children after deletion', async () => {
