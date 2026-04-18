@@ -230,10 +230,9 @@ router.post(
             };
             if (newRollNo) student.rollNo = newRollNo;
             await student.save();
-            await StudentFeeStructure.deleteOne(
-              scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
-            );
-            // Initialize new fee structure for the promoted class/year
+            // The prior-year fee structure is intentionally kept as
+            // historical record (payment history, discount, etc.). A fresh
+            // structure is minted for the new year below.
             try {
               await initializeFeeStructure(student);
             } catch (feeErr) {
@@ -252,10 +251,7 @@ router.post(
               lastPaymentDate: null,
             };
             await student.save();
-            await StudentFeeStructure.deleteOne(
-              scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
-            );
-            // Initialize new fee structure for the detained student's class/year
+            // Prior-year fee structure kept as history (see promoted branch).
             try {
               await initializeFeeStructure(student);
             } catch (feeErr) {
@@ -932,9 +928,8 @@ router.post(
               };
               if (newRollNo) student.rollNo = newRollNo;
               await student.save();
-              await StudentFeeStructure.deleteOne(
-                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
-              );
+              // Prior-year fee structure kept as history (rollback path
+              // /promote/:id/rollback only wipes the NEW year's row).
               try {
                 await initializeFeeStructure(student);
               } catch (e) {
@@ -953,9 +948,6 @@ router.post(
                 lastPaymentDate: null,
               };
               await student.save();
-              await StudentFeeStructure.deleteOne(
-                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
-              );
               try {
                 await initializeFeeStructure(student);
               } catch (e) {
