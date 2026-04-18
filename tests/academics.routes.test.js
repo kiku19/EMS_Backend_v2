@@ -369,6 +369,93 @@ describe('academics routes', () => {
     });
   });
 
+  // ─── Regression: absent status + custom passingMarks ─────────────────
+
+  describe('POST /api/results/bulk — absent / passingMarks regressions', () => {
+    it("preserves status:'absent' when submitted through bulk results (Zod no longer strips it)", async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 8', section: 'A' });
+      const student = await createStudentRecord({
+        name: 'Absent Student',
+        rollNo: 1,
+        classId: classRecord._id,
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const examRes = await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Absent Test Exam',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2027-04-12',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          results: [
+            { studentId: student._id.toString(), marksObtained: 0, status: 'absent' },
+          ],
+        })
+        .expect(200);
+
+      const saved = await Result.findOne({ studentId: student._id }).lean();
+      expect(saved.status).toBe('absent');
+    });
+
+    it("respects exam.passingMarks below 33% — a 30% pass does NOT get flipped to 'failed' by the Result pre-save hook", async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 9', section: 'A' });
+      const student = await createStudentRecord({
+        name: 'Custom Pass Student',
+        rollNo: 1,
+        classId: classRecord._id,
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      // Exam with a custom passing threshold of 25/100 — common for
+      // competitive/practical exams.
+      const examRes = await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Low-Threshold Exam',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 25,
+          startDate: '2027-04-14',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          // 30 is below the old hardcoded 33% threshold, but above the
+          // exam's real 25 passing mark — must be 'passed'.
+          results: [{ studentId: student._id.toString(), marksObtained: 30 }],
+        })
+        .expect(200);
+
+      const saved = await Result.findOne({ studentId: student._id }).lean();
+      expect(saved.marksObtained).toBe(30);
+      expect(saved.status).toBe('passed');
+    });
+  });
+
   // ─── Exam Publishing ─────────────────────────────────────────────────
 
   describe('POST /api/exams/:id/publish — publish exam and results', () => {

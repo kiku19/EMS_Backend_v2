@@ -88,7 +88,19 @@ export const createExamSchema = z
   .refine((data) => data.passingMarks <= data.maxMarks, {
     message: 'Passing marks cannot exceed maximum marks',
     path: ['passingMarks'],
-  });
+  })
+  .refine(
+    (data) => {
+      if (data.endDate && data.startDate) {
+        return data.endDate >= data.startDate;
+      }
+      return true;
+    },
+    {
+      message: 'End date must be on or after start date',
+      path: ['endDate'],
+    }
+  );
 
 // ─── UPDATE EXAM (all fields optional) ───────────────────────────
 export const updateExamSchema = z
@@ -145,6 +157,18 @@ export const updateExamSchema = z
       message: 'Passing marks cannot exceed maximum marks',
       path: ['passingMarks'],
     }
+  )
+  .refine(
+    (data) => {
+      if (data.endDate && data.startDate) {
+        return data.endDate >= data.startDate;
+      }
+      return true;
+    },
+    {
+      message: 'End date must be on or after start date',
+      path: ['endDate'],
+    }
   );
 
 // ─── BULK RESULTS ─────────────────────────────────────────────────
@@ -162,6 +186,11 @@ export const bulkResultsSchema = z
             .number()
             .min(0, 'Marks obtained cannot be negative')
             .max(1000, 'Marks obtained cannot exceed 1000'),
+          // 'absent' must survive validation: the route has explicit logic to
+          // keep it ('result.status === "absent" ? "absent" : ...'), but
+          // without this field the Zod .strip() below dropped it and every
+          // absentee was saved as 'failed'.
+          status: z.enum(['passed', 'failed', 'absent']).optional(),
           remarks: optionalString(500),
         })
       )
