@@ -115,6 +115,7 @@ import { validateZod } from '../validators/zodHelpers.js';
 import { bulkAttendanceSchema, singleAttendanceSchema } from '../validators/attendanceSchema.js';
 import { resolveAcademicYear, parseAcademicYear } from '../utils/academicYear.js';
 import SchoolSettings from '../models/SchoolSettings.js';
+import { localTodayString } from '../utils/dateTimezone.js';
 
 /**
  * Convert an academic year (e.g. "2025-26") into a date range filter object.
@@ -198,7 +199,11 @@ router.get(
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
-      const today = new Date().toISOString().split('T')[0];
+      // "Today" must be the local date, not UTC. Attendance.date is stored
+      // as a YYYY-MM-DD string in the school's local timezone, so a UTC
+      // comparison flips to "yesterday" for IST users after ~5:30 IST the
+      // next morning (and vice-versa after ~6:30pm IST the prior evening).
+      const today = localTodayString();
 
       const records = await Attendance.find(scopeBySchool(schoolId, { date: today }))
         .select('classId studentId status')
@@ -335,6 +340,15 @@ async function markBulkAttendance(req, res) {
 
   if (!classId || !date || !Array.isArray(attendance)) {
     return res.status(400).json({ error: 'classId, date, and attendance array are required' });
+  }
+
+  // Reject future dates — attendance cannot be marked in advance. "Today"
+  // MUST be the local date, not UTC; after UTC midnight IST users marking
+  // today's attendance were rejected as "future date" because UTC was
+  // still the prior day.
+  const today = localTodayString();
+  if (date > today) {
+    return res.status(400).json({ error: 'Cannot mark attendance for a future date' });
   }
 
   const resolved = await resolveClassId(classId, req.user?.schoolId);
