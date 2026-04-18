@@ -18,6 +18,7 @@ import {
   markAsPaidSchema,
   reversePaymentSchema,
   runPayrollSchema,
+  updatePayrollRecordSchema,
   validatePayrollSchema,
 } from '../validators/payrollSchema.js';
 import mongoose from 'mongoose';
@@ -1096,8 +1097,11 @@ router.post(
   }
 );
 
-// Update payroll record - Admin only
-router.put('/records/:id', requireAdmin, async (req, res) => {
+// Update payroll record - Admin only. Zod-validated so a missing/null
+// amount on an allowance or deduction can't turn the pre-save hook's
+// reduce() into NaN grossPay/netPay, and status is pinned to the schema
+// enum.
+router.put('/records/:id', requireAdmin, validateZod(updatePayrollRecordSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { baseSalary, allowances, deductions, status, notes } = req.body;
@@ -1423,6 +1427,14 @@ router.get('/audit-logs', requireAdmin, async (req, res) => {
 router.get('/adjustments/:employeeId', async (req, res) => {
   try {
     const { employeeId } = req.params;
+
+    // Authorization: user must be the employee themselves or an admin
+    const isOwn = req.user._id?.toString() === employeeId;
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    if (!isOwn && !isAdmin) {
+      return res.status(403).json({ success: false, error: 'Not authorized to view this employee\'s adjustments' });
+    }
+
     const adjustments = await SalaryAdjustment.find({
       employeeId,
       schoolId: req.user.schoolId,

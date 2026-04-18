@@ -431,6 +431,93 @@ describe('payroll routes', () => {
   });
 
   // ───────────────────────────────────────────────────────────────
+  // PUT /records/:id — update payroll record (admin only)
+  // ───────────────────────────────────────────────────────────────
+  describe('PUT /records/:id (admin edit)', () => {
+    it('rejects a null allowance amount (Zod) so grossPay/netPay can never be NaN', async () => {
+      const emp = await createPayrollStaff({
+        schoolId: school._id,
+        name: 'Null Amt Emp',
+        salary: 30000,
+        email: 'nullamt.emp@example.com',
+      });
+      const record = await createPayrollRecord({
+        schoolId: school._id,
+        employeeId: emp._id,
+        month: 9,
+        year: 2025,
+        baseSalary: 30000,
+      });
+
+      const res = await request(app)
+        .put(`${BASE}/records/${record._id}`)
+        .set(headers)
+        .send({
+          allowances: [{ type: 'HRA', amount: null }],
+        })
+        .expect(400);
+
+      expect(res.body.error).toBeDefined();
+
+      // Record untouched
+      const after = await PayrollRecord.findById(record._id).lean();
+      expect(Number.isFinite(after.grossPay)).toBe(true);
+      expect(Number.isFinite(after.netPay)).toBe(true);
+      expect(after.allowances).toEqual([]);
+    });
+
+    it('rejects an unknown status enum (Zod)', async () => {
+      const emp = await createPayrollStaff({
+        schoolId: school._id,
+        name: 'Bad Status Emp',
+        salary: 20000,
+        email: 'badstatus.emp@example.com',
+      });
+      const record = await createPayrollRecord({
+        schoolId: school._id,
+        employeeId: emp._id,
+        month: 9,
+        year: 2025,
+        baseSalary: 20000,
+      });
+
+      await request(app)
+        .put(`${BASE}/records/${record._id}`)
+        .set(headers)
+        .send({ status: 'rocketing-to-the-moon' })
+        .expect(400);
+    });
+
+    it('accepts a valid allowance update and recomputes grossPay/netPay', async () => {
+      const emp = await createPayrollStaff({
+        schoolId: school._id,
+        name: 'Valid Edit Emp',
+        salary: 25000,
+        email: 'validedit.emp@example.com',
+      });
+      const record = await createPayrollRecord({
+        schoolId: school._id,
+        employeeId: emp._id,
+        month: 9,
+        year: 2025,
+        baseSalary: 25000,
+      });
+
+      const res = await request(app)
+        .put(`${BASE}/records/${record._id}`)
+        .set(headers)
+        .send({
+          allowances: [{ type: 'HRA', amount: 5000 }],
+          deductions: [{ type: 'PF', amount: 1500 }],
+        })
+        .expect(200);
+
+      expect(res.body.data.grossPay).toBe(30000);
+      expect(res.body.data.netPay).toBe(28500);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────
   // PUT /records/:id/reverse — reverse payment
   // ───────────────────────────────────────────────────────────────
   describe('PUT /records/:id/reverse', () => {

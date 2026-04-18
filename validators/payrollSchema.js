@@ -61,3 +61,35 @@ export const validatePayrollSchema = z
       .min(1, 'At least one employee ID is required'),
   })
   .strip();
+
+// ─── UPDATE PAYROLL RECORD (admin edit of an existing row) ────────
+// Every amount must be a finite non-negative number; the pre-save hook
+// does `reduce((sum, a) => sum + a.amount, 0)` so nulls/undefineds
+// silently produce NaN grossPay/netPay. Enforce here.
+const amountField = z
+  .number({
+    required_error: 'amount is required',
+    invalid_type_error: 'amount must be a number',
+  })
+  .finite('amount must be a finite number')
+  .nonnegative('amount cannot be negative');
+
+const allowanceOrDeductionSchema = z
+  .object({
+    type: z.string().min(1, 'type is required').max(100),
+    amount: amountField,
+    description: z.string().max(300).optional(),
+  })
+  .strip();
+
+export const updatePayrollRecordSchema = z
+  .object({
+    baseSalary: z.number().finite().nonnegative().optional(),
+    allowances: z.array(allowanceOrDeductionSchema).max(50).optional(),
+    deductions: z.array(allowanceOrDeductionSchema).max(50).optional(),
+    status: z
+      .enum(['not_generated', 'generated', 'paid', 'on_hold', 'failed'])
+      .optional(),
+    notes: optionalString(500),
+  })
+  .strip();

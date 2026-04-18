@@ -130,11 +130,24 @@ payrollRecordSchema.index({ schoolId: 1, employeeId: 1, month: 1, year: 1 }, { u
 payrollRecordSchema.index({ payrollRunId: 1 });
 payrollRecordSchema.index({ status: 1 });
 
-// Calculate totals before saving
+// Calculate totals before saving. Defensive against null/undefined/NaN
+// amounts — the API boundary is Zod-validated (updatePayrollRecordSchema)
+// but internal callers (bulk import, background jobs) could still sneak
+// in a null and turn grossPay/netPay into NaN without this coercion.
+function asNumber(n) {
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  return v;
+}
 payrollRecordSchema.pre('save', function (next) {
-  this.totalAllowances = this.allowances.reduce((sum, a) => sum + a.amount, 0);
-  this.totalDeductions = this.deductions.reduce((sum, d) => sum + d.amount, 0);
-  this.grossPay = this.baseSalary + this.totalAllowances;
+  this.totalAllowances = (this.allowances || []).reduce(
+    (sum, a) => sum + asNumber(a?.amount),
+    0
+  );
+  this.totalDeductions = (this.deductions || []).reduce(
+    (sum, d) => sum + asNumber(d?.amount),
+    0
+  );
+  this.grossPay = asNumber(this.baseSalary) + this.totalAllowances;
   this.netPay = this.grossPay - this.totalDeductions;
   next();
 });
