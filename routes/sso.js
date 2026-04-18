@@ -30,6 +30,8 @@ import { generateToken } from '../middleware/auth.js';
 import { validateZod, zodSchemas } from '../middleware/validation.js';
 import { getRequiredSecret } from '../config/environment.js';
 import { createLogger } from '../utils/logger.js';
+import { randomUUID } from 'crypto';
+import { createStaffSessionRecord } from '../utils/sessions.js';
 
 const deflateRawAsync = promisify(deflateRaw);
 
@@ -81,12 +83,15 @@ function verifySsoState(state) {
   }
 }
 
-function generateRefreshToken(staffId, schoolId, tokenVersion) {
-  return jwt.sign(
-    { userId: staffId.toString(), schoolId: schoolId.toString(), userType: 'staff', tokenVersion },
-    getJwtRefreshSecret(),
-    { expiresIn: '30d' }
-  );
+function generateRefreshToken(staffId, schoolId, tokenVersion, sessionId) {
+  const claims = {
+    userId: staffId.toString(),
+    schoolId: schoolId.toString(),
+    userType: 'staff',
+    tokenVersion,
+  };
+  if (sessionId) claims.sessionId = sessionId;
+  return jwt.sign(claims, getJwtRefreshSecret(), { expiresIn: '30d' });
 }
 
 async function deflateAndEncode(xml) {
@@ -749,12 +754,22 @@ router.get('/:provider/callback', async (req, res) => {
   }
 
   // ── Issue JWT ────────────────────────────────────────────────────────────────
+  // Mint a sessionId + Session record so SSO logins are revocable via
+  // /auth/sessions (previously SSO skipped session tracking entirely).
   const schoolId = school._id.toString();
+  const sessionId = randomUUID();
   const token = generateToken(staff._id.toString(), staff.role, {
     schoolId,
     userType: 'staff',
+    sessionId,
   });
-  const refreshToken = generateRefreshToken(staff._id, schoolId, staff.tokenVersion || 1);
+  const refreshToken = generateRefreshToken(
+    staff._id,
+    schoolId,
+    staff.tokenVersion || 1,
+    sessionId
+  );
+  await createStaffSessionRecord({ staff, sessionId, req });
 
   logSsoEvent(`sso_login_${provider}`, staff, school, req);
 
@@ -882,9 +897,22 @@ router.post('/saml/callback', express.urlencoded({ extended: false }), async (re
     }
   }
 
+  // Mint a sessionId + Session record so SAML SSO logins are revocable via
+  // /auth/sessions.
   const schoolId = school._id.toString();
-  const token = generateToken(staff._id.toString(), staff.role, { schoolId, userType: 'staff' });
-  const refreshToken = generateRefreshToken(staff._id, schoolId, staff.tokenVersion || 1);
+  const sessionId = randomUUID();
+  const token = generateToken(staff._id.toString(), staff.role, {
+    schoolId,
+    userType: 'staff',
+    sessionId,
+  });
+  const refreshToken = generateRefreshToken(
+    staff._id,
+    schoolId,
+    staff.tokenVersion || 1,
+    sessionId
+  );
+  await createStaffSessionRecord({ staff, sessionId, req });
 
   logSsoEvent('sso_login_saml', staff, school, req);
 

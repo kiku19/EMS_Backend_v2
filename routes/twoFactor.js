@@ -14,6 +14,7 @@ const authenticator = {
 };
 import QRCode from 'qrcode';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import { Staff } from '../database.js';
 import {
   authenticate,
@@ -25,6 +26,7 @@ import { validateZod, zodSchemas } from '../middleware/validation.js';
 import { getRequiredSecret } from '../config/environment.js';
 import { createLogger } from '../utils/logger.js';
 import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.js';
+import { createStaffSessionRecord } from '../utils/sessions.js';
 
 const logger = createLogger('TwoFactor');
 const router = express.Router();
@@ -74,15 +76,23 @@ router.post('/verify', validateZod(zodSchemas.twoFactorVerifyLogin), async (req,
     }
 
     const authPayload = await buildStaffAuthPayload(staff);
+    // Mint a sessionId and persist a Session row so the 2FA-verified login
+    // is revocable via /auth/sessions (same guarantee as password login).
+    // Before this fix the 2FA path skipped session tracking entirely — any
+    // admin who enabled 2FA could never be kicked via logout-everywhere.
+    const sessionId = randomUUID();
     const token = generateToken(staff._id.toString(), staff.role, {
       schoolId: authPayload.schoolId,
       userType: 'staff',
+      sessionId,
     });
     const refreshToken = generateStaffRefreshToken(
       staff._id.toString(),
       authPayload.schoolId,
-      staff.tokenVersion || 1
+      staff.tokenVersion || 1,
+      sessionId
     );
+    await createStaffSessionRecord({ staff, sessionId, req });
 
     if (rememberDevice) {
       await addTrustedDevice(res, staff, req.headers['user-agent']);

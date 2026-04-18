@@ -5,6 +5,8 @@ import { onboardSchool } from '../services/schoolProvisioningService.js';
 import { generateToken, setAuthCookie, setRefreshCookie } from '../middleware/auth.js';
 import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.js';
 import { validateZod } from '../middleware/validation.js';
+import { randomUUID } from 'crypto';
+import { createStaffSessionRecord } from '../utils/sessions.js';
 import {
   seedStaff,
   seedClasses,
@@ -102,15 +104,19 @@ router.post('/provision', demoRateLimiter, validateZod(demoProvisionSchema), asy
 
     // 4. Generate auth token for immediate dashboard access
     const payload = await buildStaffAuthPayload(admin);
+    const sessionId = randomUUID();
     const token = generateToken(admin._id.toString(), admin.role, {
       schoolId: schoolId.toString(),
       userType: 'staff',
+      sessionId,
     });
     const refreshToken = generateStaffRefreshToken(
       admin._id.toString(),
       schoolId.toString(),
-      admin.tokenVersion || 1
+      admin.tokenVersion || 1,
+      sessionId
     );
+    await createStaffSessionRecord({ staff: admin, sessionId, req });
 
     // Set httpOnly cookies so auth survives page refresh
     setAuthCookie(res, token);
