@@ -187,7 +187,7 @@ import { z } from 'zod';
 import { Class, Exam, Result, SchoolSettings, Staff, Student, Parent } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
-import { validateZod } from '../middleware/validation.js';
+import { validateZod, validateObjectIdParam } from '../middleware/validation.js';
 import { createExamSchema, updateExamSchema, bulkResultsSchema } from '../validators/index.js';
 import { sendNotification } from './notifications.js';
 import resolveClassId from '../utils/resolveClassId.js';
@@ -282,6 +282,7 @@ async function computeAndSaveRanks(examId, classId, schoolId) {
 router.get(
   '/exams/class/:classId',
   checkPermission('academics', 'view'),
+  validateObjectIdParam('classId'),
   async (req, res) => {
     try {
       const resolved = await resolveClassId(req.params.classId, req.user?.schoolId);
@@ -302,6 +303,7 @@ router.get(
 router.get(
   '/exams/staff/:staffId',
   checkPermission('academics', 'view'),
+  validateObjectIdParam('staffId'),
   async (req, res) => {
     try {
       const staff = await Staff.findOne({
@@ -692,6 +694,31 @@ router.put(
         duration,
       } = req.body;
 
+      // Guard: gradingType, weightage, and term shape the report-card
+      // calculation. Changing them AFTER publish silently rewrites
+      // historical report cards with the new rules, with no caller
+      // expecting it. Block unless the caller passes an explicit override.
+      const existingExam = await Exam.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      );
+      if (!existingExam) {
+        return res.status(404).json({ error: 'Exam not found' });
+      }
+      if (existingExam.isPublished) {
+        const wouldChange = [
+          gradingType !== undefined && gradingType !== existingExam.gradingType,
+          weightage !== undefined && weightage !== existingExam.weightage,
+          term !== undefined && term !== existingExam.term,
+        ].some(Boolean);
+        if (wouldChange && req.body.allowPostPublishEdit !== true) {
+          return res.status(409).json({
+            error:
+              'gradingType, weightage, and term cannot be changed after publish without allowPostPublishEdit=true. Historical report cards would silently rewrite.',
+            code: 'POST_PUBLISH_EDIT_BLOCKED',
+          });
+        }
+      }
+
       const updateData = {};
       if (name !== undefined) updateData.name = name;
       if (type !== undefined) updateData.type = type;
@@ -768,22 +795,40 @@ router.put(
         return res.status(404).json({ error: 'Exam not found' });
       }
 
-      // If passingMarks changed, recalculate status for all existing results
+      // If passingMarks changed, recalculate BOTH status AND grade for all
+      // existing results. Previously only status was refreshed so grade
+      // stayed stale — a school admin had to remember to manually call
+      // /recalculate-results or accept that grade and status disagreed.
       if (passingMarks !== undefined) {
         const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
         const examPassingMarks = exam.passingMarks || 35;
+        const examMaxMarks = exam.maxMarks || 100;
+        const schoolSettings = schoolId
+          ? await SchoolSettings.findOne({ schoolId }).lean()
+          : null;
+        const gradingScale = schoolSettings?.gradingScale?.length
+          ? schoolSettings.gradingScale
+          : null;
         const results = await Result.find({ examId: exam._id, schoolId, isDeleted: { $ne: true } });
         if (results.length > 0) {
-          const statusOps = results.map((result) => ({
-            updateOne: {
-              filter: { _id: result._id },
-              update: {
-                $set: {
-                  status: (result.marksObtained || 0) >= examPassingMarks ? 'passed' : 'failed',
+          const statusOps = results.map((result) => {
+            const marks = result.marksObtained || 0;
+            const pct = examMaxMarks > 0 ? Math.round((marks / examMaxMarks) * 10000) / 100 : 0;
+            return {
+              updateOne: {
+                filter: { _id: result._id },
+                update: {
+                  $set: {
+                    status: result.status === 'absent'
+                      ? 'absent'
+                      : marks >= examPassingMarks ? 'passed' : 'failed',
+                    grade: computeGrade(pct, gradingScale),
+                    percentage: pct,
+                  },
                 },
               },
-            },
-          }));
+            };
+          });
           await Result.bulkWrite(statusOps);
           await computeAndSaveRanks(exam._id.toString(), results[0]?.classId?.toString(), schoolId);
         }
@@ -827,6 +872,20 @@ router.delete(
         deletedAt: new Date(),
       });
 
+      // Remove this exam's id from any ExamSchedule.generatedExamIds arrays
+      // — previously soft-deleted exams left dangling references in the
+      // schedule, producing orphaned entries in "exams generated from this
+      // schedule" listings.
+      try {
+        const { default: ExamSchedule } = await import('../models/ExamSchedule.js');
+        await ExamSchedule.updateMany(
+          scopeBySchool(req.user?.schoolId, { generatedExamIds: exam._id }),
+          { $pull: { generatedExamIds: exam._id } }
+        );
+      } catch {
+        // ExamSchedule cleanup is non-critical — proceed with trash log
+      }
+
       // Log to trash
       if (examSnapshot) {
         logToTrash({
@@ -851,9 +910,15 @@ router.post(
   checkPermission('academics', 'publish'),
   async (req, res) => {
     try {
-      // Verify results exist before publishing — prevents empty notifications to parents
+      // Verify results exist before publishing — prevents empty notifications
+      // to parents. Count ONLY non-deleted results; before this filter,
+      // soft-deleted rows counted as "entered" and a truly-empty exam could
+      // pass the publish gate.
       const resultsCount = await Result.countDocuments(
-        scopeBySchool(req.user?.schoolId, { examId: req.params.id })
+        scopeBySchool(req.user?.schoolId, {
+          examId: req.params.id,
+          isDeleted: { $ne: true },
+        })
       );
       if (resultsCount === 0) {
         return res.status(400).json({ error: 'Cannot publish exam without any results entered' });
@@ -975,6 +1040,39 @@ router.put(
         academicYear: exam.academicYear,
       }).catch(() => {});
 
+      // Notify parents that the results have been retracted — otherwise
+      // they'd click the earlier 'results published' notification and get
+      // a 'not available' screen with no explanation.
+      try {
+        const { sendNotification } = await import('./notifications.js');
+        const { Parent } = await import('../database.js');
+        const students = await Result.find(
+          scopeBySchool(req.user?.schoolId, { examId: exam._id, isDeleted: { $ne: true } })
+        )
+          .select('studentId')
+          .lean();
+        const studentIds = students.map((s) => s.studentId).filter(Boolean);
+        if (studentIds.length) {
+          const parents = await Parent.find({ 'children.studentId': { $in: studentIds } }).select('_id');
+          for (const parent of parents) {
+            await sendNotification(
+              parent._id,
+              'Parent',
+              'academic',
+              `${exam.name} results retracted`,
+              `The ${exam.name} results have been temporarily retracted while the school reviews them. We'll notify you when they're republished.`,
+              {
+                relatedId: exam._id,
+                relatedType: 'Exam',
+                priority: 'normal',
+              }
+            ).catch(() => {});
+          }
+        }
+      } catch {
+        // Non-critical — unpublish succeeds even if notifications fail
+      }
+
       res.json(exam);
     } catch (error) {
       res.status(500).json({ error: 'An internal error occurred. Please try again.' });
@@ -985,6 +1083,8 @@ router.put(
 router.get(
   '/results/class/:classId/exam/:examId',
   checkPermission('academics', 'view'),
+  validateObjectIdParam('classId'),
+  validateObjectIdParam('examId'),
   async (req, res) => {
     try {
       const { classId, examId } = req.params;
@@ -1152,7 +1252,8 @@ router.post(
           examMaxMarks > 0 ? Math.round((marksObtained / examMaxMarks) * 100 * 100) / 100 : 0;
         const percentage = Math.min(100, Math.max(0, rawPercentage));
         const grade = computeGrade(percentage, schoolGradingScale);
-        const status = marksObtained >= examPassingMarks ? 'passed' : 'failed';
+        // AUDIT-748: Respect 'absent' status from frontend; do not override it with pass/fail
+        const status = result.status === 'absent' ? 'absent' : (marksObtained >= examPassingMarks ? 'passed' : 'failed');
 
         return {
           updateOne: {
@@ -1248,7 +1349,8 @@ router.post(
           examMaxMarks > 0 ? Math.round((marksObtained / examMaxMarks) * 100 * 100) / 100 : 0;
         const percentage = Math.min(100, Math.max(0, rawPercentage));
         const grade = computeGrade(percentage, gradingScale);
-        const status = marksObtained >= examPassingMarks ? 'passed' : 'failed';
+        // AUDIT-748: Preserve 'absent' status; only recompute pass/fail for non-absent results
+        const status = result.status === 'absent' ? 'absent' : (marksObtained >= examPassingMarks ? 'passed' : 'failed');
 
         return {
           updateOne: {

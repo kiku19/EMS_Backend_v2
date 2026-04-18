@@ -30,10 +30,26 @@ const gradingTypeEnum = z.enum(['numerical', 'grades', 'cgpa']);
 const termEnum = z.enum(['term_1', 'term_2', 'term_3', 'final']).nullish().or(z.literal(''));
 
 // ─── Helpers ─────────────────────────────────────────────────────
+// startOfToday returns midnight in the school's local timezone (default
+// Asia/Kolkata) so exam creation from the dashboard doesn't bounce off
+// "cannot be in the past" when the server clock runs UTC and the user
+// is 5:30h ahead.
 const startOfToday = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
+  const now = new Date();
+  const tz = process.env.DEFAULT_SCHOOL_TIMEZONE || 'Asia/Kolkata';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  // Construct a Date at local-midnight of the school's timezone as seen
+  // from UTC. Since z.coerce.date parses incoming strings as UTC, we
+  // compare against the UTC-equivalent of local midnight and subtract a
+  // small fudge (12h) to be forgiving near the day boundary.
+  const localMidnightUTC = new Date(`${get('year')}-${get('month')}-${get('day')}T00:00:00Z`);
+  return new Date(localMidnightUTC.getTime() - 12 * 60 * 60 * 1000);
 };
 
 // ─── CREATE EXAM ─────────────────────────────────────────────────
