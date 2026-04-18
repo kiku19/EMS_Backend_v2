@@ -9,8 +9,13 @@ const feePaymentSchema = new mongoose.Schema(
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
     receiptNumber: { type: String, required: true },
 
-    // Payment Details
-    paymentDate: { type: Date, required: true },
+    // Payment Details — stored as String YYYY-MM-DD (not Date). Routes
+    // filter via string comparison because Mongoose would otherwise cast
+    // the query operand to Date and `gte:"2026-04-01"` would end up
+    // comparing a Date (00:00 UTC) against a YYYY-MM-DD string value.
+    // Keep the schema type explicitly String so new records are stored
+    // consistently regardless of what shape callers pass.
+    paymentDate: { type: String, required: true },
     amount: { type: Number, required: true },
     paymentMode: { type: String, required: true }, // 'cash', 'cheque', 'online', 'card'
 
