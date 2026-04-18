@@ -97,6 +97,10 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
     let students;
 
     if (sortBy === 'class') {
+      // First run aggregation to get sorted + paginated Student._id list —
+      // we can't return Student.aggregate() directly because it bypasses
+      // the piiPlugin post('find') hook and returns encrypted ciphertext
+      // for phone/email/aadhaarNumber/address/parentPhone.
       const pipeline = [
         { $match: query },
         {
@@ -108,17 +112,23 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
           },
         },
         {
-          $unwind: {
-            path: '$classId',
-            preserveNullAndEmptyArrays: true,
-          },
+          $unwind: { path: '$classId', preserveNullAndEmptyArrays: true },
         },
         { $sort: sort },
+        { $project: { _id: 1 } },
       ];
       if (!noPagination) {
         pipeline.push({ $skip: skip }, { $limit: limitNum });
       }
-      students = await Student.aggregate(pipeline);
+      const idRows = await Student.aggregate(pipeline);
+      const ids = idRows.map((r) => r._id);
+      // Re-fetch via find() so piiPlugin decrypts PII, then reorder to match
+      // the aggregation's sort.
+      const unsorted = await Student.find({ _id: { $in: ids } })
+        .populate('classId', 'name section')
+        .lean();
+      const byId = new Map(unsorted.map((s) => [String(s._id), s]));
+      students = ids.map((id) => byId.get(String(id))).filter(Boolean);
     } else {
       let q = Student.find(query).populate('classId', 'name section').sort(sort);
       if (!noPagination) {
@@ -153,8 +163,21 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
           $group: {
             _id: '$studentId',
             total: { $sum: 1 },
+            // halfday counts as 0.5 attendance to match the authoritative
+            // calculation in routes/attendance.js reports endpoint. Before
+            // this fix the student list counted halfday as absent and the
+            // report counted it as 0.5 — two different percentages for the
+            // same student.
             present: {
-              $sum: { $cond: [{ $in: ['$status', ['present', 'late']] }, 1, 0] },
+              $sum: {
+                $switch: {
+                  branches: [
+                    { case: { $in: ['$status', ['present', 'late']] }, then: 1 },
+                    { case: { $eq: ['$status', 'halfday'] }, then: 0.5 },
+                  ],
+                  default: 0,
+                },
+              },
             },
           },
         },
@@ -164,7 +187,11 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
           $match: {
             studentId: { $in: studentIds },
             isPublished: true,
-            schoolId: req.user?.schoolId,
+            // aggregate's $match doesn't cast schoolId via Mongoose's normal
+            // cast, so `req.user?.schoolId` as a raw string silently matched
+            // zero rows when the stored value was an ObjectId. Use the
+            // extracted / normalised schoolId that everything else uses.
+            ...(schoolId ? { schoolId } : {}),
           },
         },
         { $sort: { createdAt: -1 } },

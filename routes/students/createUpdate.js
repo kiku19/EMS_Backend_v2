@@ -272,7 +272,11 @@ router.put(
         medicalConditions: req.body.medicalConditions,
         emergencyContactName: req.body.emergencyContactName,
         emergencyContactPhone: req.body.emergencyContactPhone,
-        healthInfo: req.body.healthInfo !== undefined ? req.body.healthInfo : undefined,
+        // Reject client-supplied null for nested objects — the buggy
+        // behaviour silently wiped healthInfo / alumniInfo / ratings when a
+        // partial client form sent {healthInfo:null}. Treat null as
+        // "don't touch" (same as undefined).
+        healthInfo: req.body.healthInfo != null ? req.body.healthInfo : undefined,
         transportRequired: req.body.transportRequired,
         hostelRequired: req.body.hostelRequired,
         isWhatsapp: req.body.isWhatsapp,
@@ -281,8 +285,8 @@ router.put(
         status: req.body.status,
         photo: req.body.photo,
         documents: Array.isArray(req.body.documents) ? req.body.documents : undefined,
-        alumniInfo: req.body.alumniInfo !== undefined ? req.body.alumniInfo : undefined,
-        ratings: req.body.ratings !== undefined ? req.body.ratings : undefined,
+        alumniInfo: req.body.alumniInfo != null ? req.body.alumniInfo : undefined,
+        ratings: req.body.ratings != null ? req.body.ratings : undefined,
       };
 
       // Auto-set alumniInfo.since when status is first changed to alumni

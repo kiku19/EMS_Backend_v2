@@ -116,19 +116,63 @@ import { bulkAttendanceSchema, singleAttendanceSchema } from '../validators/atte
 import { resolveAcademicYear, parseAcademicYear } from '../utils/academicYear.js';
 import SchoolSettings from '../models/SchoolSettings.js';
 import { localTodayString } from '../utils/dateTimezone.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
+import { rateLimit } from 'express-rate-limit';
+
+// Rate-limit POST /notify-parents — parent absence SMS/push are real
+// money (SMS credits) and a spammy admin could repeatedly re-notify the
+// same class+date. 3 requests per minute per user is plenty for honest
+// retries, brick-walls accidental button-mashing.
+const notifyParentsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3,
+  keyGenerator: (req) => `${req.user?.id || req.ip}:${req.body?.classId || ''}:${req.body?.date || ''}`,
+  handler: (req, res) =>
+    res.status(429).json({
+      error:
+        'Too many notify-parents requests for this class+date. Please wait a minute before retrying.',
+    }),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+});
 
 /**
  * Convert an academic year (e.g. "2025-26") into a date range filter object.
- * Academic year runs April 1 to March 31.
+ *
+ * Academic year boundaries come from the school's SchoolSettings
+ * (academicYearStart/End, MM-DD format). Defaults to Apr–Mar for Indian
+ * schools. Previously hardcoded to `${startYear}-04-01`..`${endYear}-03-31`
+ * which silently gave schools on a July-June / Sep-Aug calendar the wrong
+ * attendance window for every historical query.
+ *
  * Returns { $gte, $lte } for the date field, or null if no academic year.
  */
 async function getAcademicYearDateRange(academicYear, schoolId) {
   if (!academicYear) return null;
   const resolved = await resolveAcademicYear(academicYear, schoolId);
   const { startYear, endYear } = parseAcademicYear(resolved);
+
+  let startMonthDay = '04-01';
+  let endMonthDay = '03-31';
+  try {
+    if (schoolId) {
+      const settings = await SchoolSettings.findOne({ schoolId }).select(
+        'academicYearStart academicYearEnd'
+      );
+      if (settings?.academicYearStart && /^\d{2}-\d{2}$/.test(settings.academicYearStart)) {
+        startMonthDay = settings.academicYearStart;
+      }
+      if (settings?.academicYearEnd && /^\d{2}-\d{2}$/.test(settings.academicYearEnd)) {
+        endMonthDay = settings.academicYearEnd;
+      }
+    }
+  } catch {
+    // Fall back to April–March defaults on any settings lookup failure
+  }
   return {
-    $gte: `${startYear}-04-01`,
-    $lte: `${endYear}-03-31`,
+    $gte: `${startYear}-${startMonthDay}`,
+    $lte: `${endYear}-${endMonthDay}`,
   };
 }
 
@@ -240,6 +284,7 @@ router.get(
 
 router.get(
   '/student/:studentId',
+  validateObjectIdParam('studentId'),
   checkPermission('attendance', 'view'),
   async (req, res) => {
     try {
@@ -439,6 +484,23 @@ async function markBulkAttendance(req, res) {
     validRecords.push(record);
   }
 
+  // Look up existing attendance for this date BEFORE the upsert so we can
+  // emit parent notifications only for students whose status actually
+  // TRANSITIONED to absent. Previously every bulk-save dispatched an
+  // absent notification for every 'absent' row, so saving the same sheet
+  // twice sent duplicate SMS/push to every absent-student's parent.
+  const priorDocs = await Attendance.find(
+    scopeBySchool(schoolId, {
+      studentId: { $in: validRecords.map((r) => r.studentId) },
+      date,
+    })
+  )
+    .select('studentId status')
+    .lean();
+  const priorStatusByStudent = new Map(
+    priorDocs.map((d) => [d.studentId.toString(), d.status])
+  );
+
   // AUDIT-443: Use a transaction so bulk attendance is atomic — all succeed or none
   const mongoSession = await mongoose.startSession();
   try {
@@ -479,9 +541,15 @@ async function markBulkAttendance(req, res) {
     count: results.length,
   });
 
-  // Notify parents of absent students
-  const absentStudentIds = attendance
-    .filter((r) => r.status === 'absent')
+  // Notify parents only for students who TRANSITIONED to absent —
+  // re-submitting the same sheet (or re-saving a correction) must not
+  // trigger duplicate parent notifications.
+  const absentStudentIds = validRecords
+    .filter((r) => {
+      if (r.status !== 'absent') return false;
+      const prior = priorStatusByStudent.get(String(r.studentId));
+      return prior !== 'absent';
+    })
     .map((r) => r.studentId)
     .filter(Boolean);
   notifyParentsOfAbsent(absentStudentIds, date, schoolId);
@@ -667,7 +735,7 @@ router.get(
   }
 );
 
-router.get('/:studentId', checkPermission('attendance', 'view'), async (req, res) => {
+router.get('/:studentId', validateObjectIdParam('studentId'), checkPermission('attendance', 'view'), async (req, res) => {
   try {
     const { studentId } = req.params;
     const { startDate, endDate, academicYear } = req.query;
@@ -823,6 +891,7 @@ router.post(
 // Used by the "Notify Parents" button in the dashboard attendance page.
 router.post(
   '/notify-parents',
+  notifyParentsLimiter,
   checkPermission('attendance', 'edit'),
   async (req, res) => {
     try {
