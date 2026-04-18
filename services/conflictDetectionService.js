@@ -32,10 +32,12 @@ class ConflictDetectionService {
     periodIndex,
     excludeClassId = null,
     skipDebounce = false,
-    schoolId = null
+    schoolId = null,
+    academicYear = null
   ) {
-    // Check cache first
-    const cacheKey = `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}`;
+    // Cache key must include academicYear so last-year conflicts are not
+    // served on this-year lookups (and vice-versa).
+    const cacheKey = `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}:${academicYear || 'any'}`;
     const cached = await cacheService.get(cacheKey);
     if (cached !== null) {
       return cached;
@@ -50,9 +52,17 @@ class ConflictDetectionService {
           day,
           periodIndex,
           excludeClassId,
-          schoolId
+          schoolId,
+          academicYear
         )
-      : await this.debouncedConflictCheck(teacherId, day, periodIndex, excludeClassId, schoolId);
+      : await this.debouncedConflictCheck(
+          teacherId,
+          day,
+          periodIndex,
+          excludeClassId,
+          schoolId,
+          academicYear
+        );
 
     // Cache the result for 30 seconds
     cacheService.set(cacheKey, result, 30000).catch(() => {}); // fire-and-forget
@@ -68,13 +78,18 @@ class ConflictDetectionService {
     day,
     periodIndex,
     excludeClassId = null,
-    schoolId = null
+    schoolId = null,
+    academicYear = null
   ) {
     try {
-      // Find all timetables where this teacher is assigned at this time slot
+      // Find all timetables where this teacher is assigned at this time slot.
+      // academicYear MUST scope the query — without it, a teacher still listed
+      // in last-year's Timetable at the same day/period produced a false
+      // conflict against their this-year assignment.
       const query = {};
       query[`schedule.${day}.teacherId`] = teacherId;
       if (schoolId) query.schoolId = schoolId;
+      if (academicYear) query.academicYear = academicYear;
 
       const conflictingTimetables = await Timetable.find(query).populate('classId', 'name section');
 
@@ -211,7 +226,8 @@ class ConflictDetectionService {
     day,
     periodIndex,
     strictMode = true,
-    schoolId = null
+    schoolId = null,
+    academicYear = null
   ) {
     try {
       // Always check for time conflicts (hard validation)
@@ -221,7 +237,8 @@ class ConflictDetectionService {
         periodIndex,
         classId,
         false,
-        schoolId
+        schoolId,
+        academicYear
       );
       if (timeConflict) {
         return {

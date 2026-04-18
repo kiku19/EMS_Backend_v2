@@ -43,13 +43,17 @@ class BatchOperationsService {
       }
 
       try {
-        // Check for conflicts (skip debounce for batch operations)
+        // Check for conflicts (skip debounce for batch operations). Scope by
+        // academicYear so last-year timetable entries don't produce false
+        // conflicts against this-year assignments.
         const conflict = await conflictDetectionService.checkTeacherConflict(
           teacherId,
           day,
           periodIndex,
           classId,
-          true // Skip debounce
+          true, // Skip debounce
+          options.schoolId || null,
+          academicYear
         );
 
         if (conflict) {
@@ -62,7 +66,10 @@ class BatchOperationsService {
           classId,
           subject,
           day,
-          periodIndex
+          periodIndex,
+          true,
+          options.schoolId || null,
+          academicYear
         );
 
         return { valid: validation.isValid, slot, error: validation.error };
@@ -280,13 +287,16 @@ class BatchOperationsService {
       }
 
       try {
-        // Check for conflicts
+        // Check for conflicts — scope by academicYear so last-year entries
+        // don't produce false-positive double-booking errors.
         const conflict = await conflictDetectionService.checkTeacherConflict(
           teacherId,
           day,
           periodIndex,
           classId,
-          true // Skip debounce
+          true, // Skip debounce
+          options.schoolId || null,
+          academicYear
         );
 
         if (conflict) {
@@ -299,7 +309,10 @@ class BatchOperationsService {
           classId,
           subject,
           day,
-          periodIndex
+          periodIndex,
+          true,
+          options.schoolId || null,
+          academicYear
         );
 
         return { valid: validation.isValid, slot, error: validation.error };

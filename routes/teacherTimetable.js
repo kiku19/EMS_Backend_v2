@@ -325,7 +325,9 @@ router.put(
             subject,
             day,
             periodIndex,
-            false // Flexible mode - allow scheduling without formal assignments
+            false, // Flexible mode
+            schoolId,
+            academicYear
           );
 
           if (!validation.isValid) {
@@ -480,12 +482,17 @@ router.post(
         }
       }
 
-      // Check for conflicts in the new class slot
+      // Check for conflicts in the new class slot — scoped by academicYear
+      // so a teacher who taught this period in a prior year doesn't trigger
+      // a false-positive conflict against this-year's move.
       const conflict = await conflictDetectionService.checkTeacherConflict(
         teacherId,
         day,
         periodIndex,
-        oldClassId // Exclude old class from conflict check
+        oldClassId, // Exclude old class from conflict check
+        false,
+        schoolId,
+        academicYear
       );
 
       if (conflict) {

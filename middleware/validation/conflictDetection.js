@@ -9,21 +9,25 @@ const logger = createLogger('ConflictDetection');
  */
 export const checkConflicts = async (req, res, next) => {
   try {
-    const { teacherId, day, periodIndex, classId, subject } = req.body;
+    const { teacherId, day, periodIndex, classId, subject, academicYear } = req.body;
 
     // Skip conflict check if no teacher is assigned
     if (!teacherId) {
       return next();
     }
 
-    // Validate the slot assignment (flexible mode - only check time conflicts)
+    // Validate the slot assignment (flexible mode - only check time conflicts).
+    // Pass schoolId + academicYear so last-year timetable entries don't
+    // produce false-positive conflicts.
     const validation = await conflictDetectionService.validateSlotAssignment(
       teacherId,
       classId,
       subject,
       day,
       periodIndex,
-      false // Flexible mode - allow scheduling without formal assignments
+      false, // Flexible mode
+      req.user?.schoolId || null,
+      academicYear || null
     );
 
     if (!validation.isValid) {
@@ -63,7 +67,7 @@ export const checkConflicts = async (req, res, next) => {
 export const checkTeacherTimetableConflicts = async (req, res, next) => {
   try {
     const { teacherId } = req.params;
-    const { day, periodIndex, classId, subject } = req.body;
+    const { day, periodIndex, classId, subject, academicYear } = req.body;
 
     // Skip conflict check if no class is assigned
     if (!classId) {
@@ -71,13 +75,17 @@ export const checkTeacherTimetableConflicts = async (req, res, next) => {
     }
 
     // Validate the slot assignment (flexible mode - only check time conflicts)
+    // Scope by schoolId + academicYear so cross-year / cross-tenant data
+    // doesn't produce false positives.
     const validation = await conflictDetectionService.validateSlotAssignment(
       teacherId,
       classId,
       subject,
       day,
       periodIndex,
-      false // Flexible mode - allow scheduling without formal assignments
+      false, // Flexible mode
+      req.user?.schoolId || null,
+      academicYear || null
     );
 
     if (!validation.isValid) {

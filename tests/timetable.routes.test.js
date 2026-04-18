@@ -369,6 +369,88 @@ describe('Timetable Routes', () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('Validation Error');
     });
+
+    it('rejects batch when a slot would double-book a teacher across classes', async () => {
+      // Before this fix, /batch skipped conflictDetectionService entirely
+      // and silently double-booked teachers. The same check runs on the
+      // single-slot PUT /slot (returns 409) — batch should match.
+      const { school, admin } = await setupSchoolWithAdmin();
+      const { app } = createTestApp();
+      const clsA = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class A',
+        section: 'X',
+        subjects: ['Math'],
+      });
+      const clsB = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class B',
+        section: 'X',
+        subjects: ['Math'],
+      });
+      const teacher = await createTeacher(school._id, 'DB Teacher', [
+        { subject: 'Math', classes: [clsA._id, clsB._id] },
+      ]);
+
+      // Pre-populate Class A timetable so the teacher is already booked Monday P0
+      await Timetable.create({
+        classId: clsA._id,
+        schoolId: school._id,
+        academicYear: CURRENT_ACADEMIC_YEAR,
+        periods: [{ name: 'Period 1', startTime: '09:00', endTime: '09:45', isBreak: false }],
+        schedule: {
+          Monday: [
+            { subject: 'Math', teacherId: teacher._id, room: 'A1', lastModified: new Date() },
+          ],
+          Tuesday: [],
+          Wednesday: [],
+          Thursday: [],
+          Friday: [],
+          Saturday: [],
+        },
+      });
+
+      // Class B has its own timetable row
+      await Timetable.create({
+        classId: clsB._id,
+        schoolId: school._id,
+        academicYear: CURRENT_ACADEMIC_YEAR,
+        periods: [{ name: 'Period 1', startTime: '09:00', endTime: '09:45', isBreak: false }],
+        schedule: {
+          Monday: [{}],
+          Tuesday: [],
+          Wednesday: [],
+          Thursday: [],
+          Friday: [],
+          Saturday: [],
+        },
+      });
+
+      // Attempt to assign the same teacher to Class B Monday P0 via batch
+      const res = await request(app)
+        .post(`/api/timetable/${clsB._id}/batch`)
+        .set(authHeadersFor(admin))
+        .send({
+          slots: [
+            {
+              day: 'Monday',
+              periodIndex: 0,
+              subject: 'Math',
+              teacherId: teacher._id.toString(),
+              room: 'B1',
+            },
+          ],
+          academicYear: CURRENT_ACADEMIC_YEAR,
+        });
+
+      expect(res.status).toBe(409);
+      expect(Array.isArray(res.body.conflicts)).toBe(true);
+      expect(res.body.conflicts.length).toBeGreaterThan(0);
+
+      // Class B Monday P0 must remain untouched (teacher unassigned)
+      const afterB = await Timetable.findOne({ classId: clsB._id }).lean();
+      expect(afterB.schedule.Monday[0]?.teacherId ?? null).toBeNull();
+    });
   });
 });
 
