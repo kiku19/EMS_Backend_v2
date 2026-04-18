@@ -15,16 +15,37 @@ import {
 } from '../../utils/academicYear.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 import { checkPermission } from '../../middleware/auth/permissions.js';
+import { csrfProtect } from '../../middleware/security/csrfProtect.js';
+import { rateLimit } from 'express-rate-limit';
+
+// Public /public-branding endpoint is pre-authenticate (schools need to
+// render their logo on the login page). Without a rate limit it's a free
+// school-enumeration / branding-scrape vector, and the regex-heavy lookups
+// amplify DDoS. Cap at 60 req/min per IP.
+const publicBrandingLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) =>
+    res.status(429).json({ error: 'Too many branding lookups. Please slow down.' }),
+  skip: () => process.env.NODE_ENV === 'test',
+});
 
 const router = express.Router();
 
 // Public branding endpoint — no auth required, used on login page
 // Query: ?schoolCode=ABC or ?domain=school.example.com
-router.get('/public-branding', async (req, res) => {
+router.get('/public-branding', publicBrandingLimiter, async (req, res) => {
   try {
     const { schoolCode, domain } = req.query;
     if (!schoolCode && !domain) {
       return res.status(400).json({ error: 'schoolCode or domain is required' });
+    }
+    // Input-length cap: branding inputs are short identifiers, not paths.
+    // A 400-char query is either junk or abuse.
+    if ((schoolCode && schoolCode.length > 100) || (domain && domain.length > 253)) {
+      return res.status(400).json({ error: 'Input too long' });
     }
 
     let school = null;
@@ -104,6 +125,16 @@ const academicYearSchema = z.object({
   }),
   academicYearStart: z.string().optional(),
   academicYearEnd: z.string().optional(),
+  // Explicit confirmation token — changing the active year pivots every
+  // attendance / fee / exam query in the tenant, and is irreversible
+  // without admin cleanup. Require an explicit confirm:true flag so it
+  // can't be tripped by an errant form.
+  confirm: z.literal(true, {
+    errorMap: () => ({
+      message:
+        'Academic-year change requires confirm:true — review the transition preview first',
+    }),
+  }),
 });
 
 const hexColorRegex = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -134,6 +165,7 @@ const schoolSettingsSchema = z.object({
   udiseNo: z.string().max(20).optional(),
   affiliationNo: z.string().max(50).optional(),
   boardOfEducation: z.string().max(100).optional(),
+  currency: z.string().trim().min(3).max(3).toUpperCase().optional(),
   principalSignature: z.string().optional(),
   correspondentSignature: z.string().optional(),
   examDefaults: z
@@ -194,7 +226,10 @@ const schoolSettingsSchema = z.object({
         .optional(),
     })
     .optional(),
-});
+}).strict(); // Reject unknown top-level keys so arbitrary SchoolSettings
+// fields can't be mass-assigned by the dashboard or an attacker sending
+// extra JSON keys. Dot-notation nested updates are still supported by the
+// handler via the declared shape above.
 
 const DEFAULT_GRADING_SCALE = [
   { minPercentage: 90, grade: 'A+', color: '#16a34a' },
@@ -448,6 +483,7 @@ const attendanceRulesSchema = z
 router.put(
   '/attendance-rules',
   authenticate,
+  csrfProtect,
   checkPermission('settings', 'edit'),
   async (req, res) => {
     try {
@@ -482,7 +518,7 @@ router.get('/board-config/presets', authenticate, async (req, res) => {
 });
 
 // Update school settings (admin/settings-edit only)
-router.put('/school', authenticate, checkPermission('settings', 'edit'), async (req, res) => {
+router.put('/school', authenticate, csrfProtect, checkPermission('settings', 'edit'), async (req, res) => {
   try {
     const parsed = schoolSettingsSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -490,6 +526,27 @@ router.put('/school', authenticate, checkPermission('settings', 'edit'), async (
     }
     let settings = await findSchoolSettings(req);
     const updates = { ...parsed.data };
+
+    // customDomain is globally unique — two schools claiming the same
+    // domain would make /public-branding return the first-created (race).
+    // Enforce uniqueness at write time since the SchoolSettings schema
+    // doesn't have a unique index we control here.
+    if (updates.customDomain) {
+      const normalized = updates.customDomain.toLowerCase().trim();
+      const conflict = await SchoolSettings.findOne({
+        customDomain: normalized,
+        schoolId: { $ne: req.user?.schoolId },
+      })
+        .select('_id')
+        .lean();
+      if (conflict) {
+        return res.status(409).json({
+          error: 'Custom domain is already in use by another school',
+          code: 'DOMAIN_IN_USE',
+        });
+      }
+      updates.customDomain = normalized;
+    }
 
     // NOTE: academicYear updates must go through PUT /academic-year which has
     // dedicated Zod validation (academicYearSchema).  Unknown keys are stripped
@@ -527,7 +584,27 @@ router.put('/school', authenticate, checkPermission('settings', 'edit'), async (
       settings = await SchoolSettings.findById(settings._id);
     }
 
-    res.json(settings);
+    // Flag fields whose change retroactively re-renders historical
+    // artifacts (receipts, report cards, branded PDFs). Without a
+    // versioning/effective-date layer we can at least warn the admin so
+    // they don't think a currency flip only affects new receipts.
+    const retroactiveFields = ['currency', 'primaryColor', 'secondaryColor', 'gradingScale'];
+    const changed = retroactiveFields.filter((f) => Object.prototype.hasOwnProperty.call(updates, f));
+
+    res.json({
+      ...settings.toObject?.() ?? settings,
+      ...(changed.length
+        ? {
+            warning: {
+              code: 'RETROACTIVE_CHANGE',
+              message:
+                'These fields affect how historical receipts / report cards render: ' +
+                `${changed.join(', ')}. Previously-issued documents will re-render with the new values.`,
+              fields: changed,
+            },
+          }
+        : {}),
+    });
   } catch (error) {
     console.error('Error updating school settings:', error);
     res.status(500).json({ error: 'Failed to update school settings' });
@@ -552,6 +629,7 @@ router.get('/academic-year', authenticate, async (req, res) => {
 router.put(
   '/academic-year',
   authenticate,
+  csrfProtect,
   checkPermission('settings', 'edit'),
   async (req, res) => {
     try {
@@ -712,6 +790,7 @@ router.get('/onboarding-status', authenticate, async (req, res) => {
 router.put(
   '/onboarding-progress',
   authenticate,
+  csrfProtect,
   checkPermission('settings', 'edit'),
   async (req, res) => {
     try {
