@@ -265,8 +265,13 @@ router.post('/conversations', async (req, res) => {
       });
     }
 
-    const user1Model = user1Type === 'staff' ? 'Staff' : 'Student';
-    const user2Model = user2Type === 'staff' ? 'Staff' : 'Student';
+    // Parent → 'Parent' (NOT 'Student') — ternary fall-through silently
+    // persisted parent participants as Student, breaking refPath populate
+    // and every downstream avatar/name lookup.
+    const typeToModel = (t) =>
+      t === 'parent' ? 'Parent' : t === 'student' ? 'Student' : 'Staff';
+    const user1Model = typeToModel(user1Type);
+    const user2Model = typeToModel(user2Type);
 
     const conversation = await Conversation.findOrCreate(
       user1Id,
@@ -550,17 +555,16 @@ router.delete('/:messageId', async (req, res) => {
       return res.status(404).json({ error: 'Message not found' });
     }
 
-    // Soft delete - add user to deletedFor array
+    // Soft-delete-for-me: add user to deletedFor so the message is hidden
+    // from that user's view only. The previous behaviour flipped
+    // message.isDeleted=true (erasing it for EVERYONE retroactively) once
+    // deletedFor reached participants.length — the last participant to
+    // "hide" it silently wiped the record for all prior viewers. That's
+    // not hide-for-me semantics; keep the message persistent regardless of
+    // how many users have hidden it from their own view.
     if (!message.deletedFor.includes(userId)) {
       message.deletedFor.push(userId);
     }
-
-    // If both users deleted, mark as deleted
-    const conversation = await Conversation.findOne({ _id: message.conversationId, schoolId });
-    if (message.deletedFor.length >= conversation.participants.length) {
-      message.isDeleted = true;
-    }
-
     await message.save();
 
     res.json({ success: true });

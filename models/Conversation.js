@@ -115,7 +115,11 @@ conversationSchema.index({ schoolId: 1, 'participants.userId': 1 });
 conversationSchema.index({ schoolId: 1, 'lastMessage.timestamp': -1 });
 conversationSchema.index({ schoolId: 1, type: 1 });
 
-// Method to find or create conversation between two users
+// Method to find or create conversation between two users.
+// Handles the race where two concurrent callers both miss the existing
+// conversation and both try to insert: the second insert is caught and
+// we re-read the winning row. Previously this created duplicate direct
+// conversations between the same pair.
 conversationSchema.statics.findOrCreate = async function (
   user1Id,
   user1Model,
@@ -123,16 +127,17 @@ conversationSchema.statics.findOrCreate = async function (
   user2Model,
   schoolId
 ) {
-  // Check if conversation exists within the same school
-  let conversation = await this.findOne({
+  const findFilter = {
     schoolId,
     type: 'direct',
     'participants.userId': { $all: [user1Id, user2Id] },
     participants: { $size: 2 },
-  });
+  };
 
-  if (!conversation) {
-    // Create new conversation
+  let conversation = await this.findOne(findFilter);
+  if (conversation) return conversation;
+
+  try {
     conversation = await this.create({
       schoolId,
       type: 'direct',
@@ -141,9 +146,15 @@ conversationSchema.statics.findOrCreate = async function (
         { userId: user2Id, userModel: user2Model },
       ],
     });
+    return conversation;
+  } catch (err) {
+    // Concurrent creator won — re-read to return their doc.
+    if (err?.code === 11000) {
+      const winner = await this.findOne(findFilter);
+      if (winner) return winner;
+    }
+    throw err;
   }
-
-  return conversation;
 };
 
 // Method to increment unread count for a user
