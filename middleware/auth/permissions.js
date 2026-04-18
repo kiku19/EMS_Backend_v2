@@ -1,5 +1,6 @@
 import UserPermission, { PERMISSION_TEMPLATES } from '../../models/UserPermission.js';
 import { createLogger } from '../../utils/logger.js';
+import { isSuperAdminUser } from '../../utils/superAdmin.js';
 
 const logger = createLogger('Permissions');
 
@@ -80,7 +81,13 @@ export async function ensurePermissionDocument(userPermission, role) {
 export const checkPermission = (module, action) => {
   return async (req, res, next) => {
     try {
+      // Super-admin bypasses RBAC entirely
+      if (isSuperAdminUser(req.user)) {
+        return next();
+      }
+
       const userId = req.user?.id;
+      const schoolId = req.user?.schoolId;
 
       if (!userId) {
         return res.status(401).json({
@@ -89,10 +96,23 @@ export const checkPermission = (module, action) => {
         });
       }
 
-      let userPermission = await UserPermission.findOne({ userId });
+      if (!schoolId) {
+        // No school context = no permission can be evaluated. Without this the
+        // {userId}-only lookup would pick up a stale row from a previous tenant
+        // and silently grant that tenant's permissions.
+        return res.status(403).json({
+          error: req.t('common:errors.forbidden'),
+          message: req.t('auth:errors.moduleAccessDenied', { module }),
+          module,
+          action,
+          hasPermission: false,
+        });
+      }
+
+      let userPermission = await UserPermission.findOne({ userId, schoolId });
 
       if (!userPermission) {
-        const user = await req.app.locals.Staff.findById(userId);
+        const user = await req.app.locals.Staff.findOne({ _id: userId, schoolId });
         if (!user) {
           return res.status(404).json({
             error: req.t('auth:errors.userNotFound'),
@@ -104,9 +124,9 @@ export const checkPermission = (module, action) => {
         const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
         userPermission = await UserPermission.findOneAndUpdate(
-          { userId },
+          { userId, schoolId },
           {
-            schoolId: req.user?.schoolId || user.schoolId || null,
+            schoolId,
             userId,
             role,
             permissions: buildPermissionsArray(defaultPermissions),
@@ -115,16 +135,7 @@ export const checkPermission = (module, action) => {
           { upsert: true, new: true }
         );
       } else {
-        let shouldPersistSchoolId = false;
-        if (!userPermission.schoolId && req.user?.schoolId) {
-          userPermission.schoolId = req.user.schoolId;
-          shouldPersistSchoolId = true;
-        }
         await ensurePermissionDocument(userPermission, userPermission.role);
-        if (shouldPersistSchoolId) {
-          userPermission.lastUpdated = new Date();
-          await userPermission.save({ validateModifiedOnly: true });
-        }
       }
 
       const modulePermission = userPermission.permissions.find(
@@ -217,7 +228,12 @@ export function determineRole(userRole) {
  */
 export const requireAdmin = async (req, res, next) => {
   try {
+    if (isSuperAdminUser(req.user)) {
+      return next();
+    }
+
     const userId = req.user?.id;
+    const schoolId = req.user?.schoolId;
 
     if (!userId) {
       return res.status(401).json({
@@ -226,7 +242,14 @@ export const requireAdmin = async (req, res, next) => {
       });
     }
 
-    const userPermission = await UserPermission.findOne({ userId });
+    if (!schoolId) {
+      return res.status(403).json({
+        error: req.t('auth:errors.adminRequired'),
+        message: req.t('auth:errors.adminPrivilegesRequired'),
+      });
+    }
+
+    const userPermission = await UserPermission.findOne({ userId, schoolId });
 
     if (!userPermission || userPermission.role !== 'admin') {
       return res.status(403).json({
@@ -251,14 +274,10 @@ export const requireAdmin = async (req, res, next) => {
 export const getUserPermissions = async (req, res, next) => {
   try {
     const userId = req.user?.id;
+    const schoolId = req.user?.schoolId;
 
-    if (userId) {
-      const userPermission = await UserPermission.findOne({ userId });
-      if (userPermission && !userPermission.schoolId && req.user?.schoolId) {
-        userPermission.schoolId = req.user.schoolId;
-        await userPermission.save({ validateModifiedOnly: true });
-      }
-      req.userPermissions = userPermission;
+    if (userId && schoolId) {
+      req.userPermissions = await UserPermission.findOne({ userId, schoolId });
     }
 
     next();
