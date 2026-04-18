@@ -730,4 +730,116 @@ describe('auth routes', () => {
     expect(decoded.schoolId).toBe(schoolA._id.toString());
     expect(decoded.schoolId).not.toBe(schoolB._id.toString());
   });
+
+  // ─── Session lifecycle: sessionId must survive /session and /refresh ─────
+
+  it('preserves sessionId across /auth/session and /auth/refresh for staff', async () => {
+    const school = await createSchoolRecord({ name: 'SID School', code: 'SID-SCH' });
+    await createStaffUser({
+      name: 'Sid Staff',
+      email: 'sid.staff@example.com',
+      password: 'Password123',
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+      schoolId: school._id,
+    });
+
+    const { app } = createTestApp();
+    const agent = request.agent(app);
+
+    const loginRes = await agent
+      .post('/api/auth/login')
+      .set('X-Auth-Mode', 'cookie')
+      .send({ email: 'sid.staff@example.com', password: 'Password123' })
+      .expect(200);
+
+    const loginDecoded = verifyToken(loginRes.body.token);
+    const loginSessionId = loginDecoded.sessionId;
+    expect(loginSessionId).toBeTruthy();
+
+    // /session reissue must keep the same sessionId
+    const sessionRes = await agent.get('/api/auth/session').expect(200);
+    const sessionDecoded = verifyToken(sessionRes.body.token);
+    expect(sessionDecoded.sessionId).toBe(loginSessionId);
+
+    // /refresh reissue must keep the same sessionId
+    const refreshRes = await agent.post('/api/auth/refresh').expect(200);
+    const refreshDecoded = verifyToken(refreshRes.body.token);
+    expect(refreshDecoded.sessionId).toBe(loginSessionId);
+
+    // Refresh token itself must now carry the sessionId so future rotations work
+    const refreshTokenDecoded = jwt.verify(
+      refreshRes.body.refreshToken,
+      process.env.JWT_REFRESH_SECRET
+    );
+    expect(refreshTokenDecoded.sessionId).toBe(loginSessionId);
+  });
+
+  it('revokes a staff session so /auth/refresh can no longer mint fresh tokens', async () => {
+    const { Session } = await import('../models/Session.js').then((m) => ({ Session: m.default }));
+
+    const school = await createSchoolRecord({ name: 'Revoke School', code: 'RVK-SCH' });
+    await createStaffUser({
+      name: 'Rev Staff',
+      email: 'rev.staff@example.com',
+      password: 'Password123',
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+      schoolId: school._id,
+    });
+
+    const { app } = createTestApp();
+    const agent = request.agent(app);
+
+    const loginRes = await agent
+      .post('/api/auth/login')
+      .set('X-Auth-Mode', 'cookie')
+      .send({ email: 'rev.staff@example.com', password: 'Password123' })
+      .expect(200);
+
+    const { sessionId } = verifyToken(loginRes.body.token);
+
+    // Simulate admin revoking this session (DELETE /auth/sessions/:id path)
+    await Session.findOneAndUpdate(
+      { sessionId },
+      { $set: { isRevoked: true, revokedAt: new Date() } }
+    );
+
+    // The original access token should now be rejected on protected routes
+    await agent.get('/api/auth/session').expect(401);
+
+    // Refresh must also fail — the rotated token would otherwise bypass revocation
+    await agent.post('/api/auth/refresh').expect(401);
+  });
+
+  it('super-admin login issues a sessionId and the session is revocable on /auth/refresh', async () => {
+    const { Session } = await import('../models/Session.js').then((m) => ({ Session: m.default }));
+
+    const { app } = createTestApp();
+    const agent = request.agent(app);
+
+    const loginRes = await agent
+      .post('/api/auth/login')
+      .set('X-Auth-Mode', 'cookie')
+      .send({ email: 'superid@test.com', password: 'super12345' })
+      .expect(200);
+
+    const decoded = verifyToken(loginRes.body.token);
+    expect(decoded.sessionId).toBeTruthy();
+    expect(decoded.userType).toBe('super-admin');
+
+    // A Session record must have been created with userType super-admin
+    const sessionDoc = await Session.findOne({ sessionId: decoded.sessionId }).lean();
+    expect(sessionDoc).toBeTruthy();
+    expect(sessionDoc.userType).toBe('super-admin');
+
+    // Revoke and verify refresh is blocked — before the fix, super-admin refresh
+    // tokens were non-revocable for 30d
+    await Session.findOneAndUpdate(
+      { sessionId: decoded.sessionId },
+      { $set: { isRevoked: true, revokedAt: new Date() } }
+    );
+
+    await agent.post('/api/auth/refresh').expect(401);
+  });
 });

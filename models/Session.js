@@ -11,12 +11,18 @@ const sessionSchema = new mongoose.Schema(
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Staff',
-      required: true,
+      required: false,
     },
     schoolId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'School',
-      required: true,
+      required: false,
+    },
+    userType: {
+      type: String,
+      enum: ['staff', 'super-admin'],
+      default: 'staff',
+      index: true,
     },
     ipAddress: {
       type: String,

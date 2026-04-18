@@ -82,9 +82,11 @@ export function createTestApp() {
 
   initializeSocket(io);
 
-  app.use('/api', academicsRoutes);
+  // Mount auth routes BEFORE wildcard `/api` routers so signup/login/refresh
+  // don't get trapped by router-level `authenticate` on routers mounted at `/api`.
   app.use('/api/auth', authRoutes);
   app.use('/api/super-admin', superAdminRoutes);
+  app.use('/api', academicsRoutes);
   app.use('/api/announcements', announcementRoutes);
   app.use('/api/billing', billingRoutes);
   app.use('/api/classes', classesRoutes);

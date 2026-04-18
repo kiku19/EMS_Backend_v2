@@ -12,12 +12,10 @@ import {
   syncUsageMetrics, // eslint-disable-line no-unused-vars
 } from '../services/billingService.js';
 
-export function generateStaffRefreshToken(staffId, schoolId, tokenVersion = 1) {
-  return jwt.sign(
-    { userId: staffId, schoolId, userType: 'staff', tokenVersion },
-    getRequiredSecret('JWT_REFRESH_SECRET'),
-    { expiresIn: '30d' }
-  );
+export function generateStaffRefreshToken(staffId, schoolId, tokenVersion = 1, sessionId) {
+  const claims = { userId: staffId, schoolId, userType: 'staff', tokenVersion };
+  if (sessionId) claims.sessionId = sessionId;
+  return jwt.sign(claims, getRequiredSecret('JWT_REFRESH_SECRET'), { expiresIn: '30d' });
 }
 
 export async function buildStaffAuthPayload(staff) {

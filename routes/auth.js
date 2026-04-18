@@ -288,6 +288,28 @@ async function createSessionRecord(staff, req, sessionId) {
     sessionId,
     userId: staff._id,
     schoolId: staff.schoolId,
+    userType: 'staff',
+    ipAddress: ip || null,
+    userAgent,
+    deviceInfo,
+    lastActivityAt: new Date(),
+    expiresAt,
+    isRevoked: false,
+  });
+}
+
+async function createSuperAdminSessionRecord(req, sessionId) {
+  const ip =
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+    req.connection?.remoteAddress ||
+    req.ip;
+  const userAgent = req.headers['user-agent'] || null;
+  const deviceInfo = parseDeviceInfo(userAgent);
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  await Session.create({
+    sessionId,
+    userType: 'super-admin',
     ipAddress: ip || null,
     userAgent,
     deviceInfo,
@@ -691,16 +713,20 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
   try {
     if (req.body.email && (await isSuperAdminLogin(req.body))) {
       const payload = buildSuperAdminAuthPayload();
+      const sessionId = randomUUID();
       const token = generateToken(payload.id, payload.role, {
         userType: payload.userType,
         email: payload.email,
         name: payload.name,
+        sessionId,
       });
       const refreshToken = jwt.sign(
-        { userId: payload.id, userType: 'super-admin' },
+        { userId: payload.id, userType: 'super-admin', sessionId },
         getJwtRefreshSecret(),
         { expiresIn: '30d' }
       );
+
+      await createSuperAdminSessionRecord(req, sessionId);
 
       setAuthCookie(res, token);
       setRefreshCookie(res, refreshToken);
@@ -757,7 +783,8 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
     const refreshToken = generateStaffRefreshToken(
       staff._id.toString(),
       payload.schoolId,
-      staff.tokenVersion || 1
+      staff.tokenVersion || 1,
+      sessionId
     );
 
     await createSessionRecord(staff, req, sessionId);
@@ -782,13 +809,19 @@ router.get('/session', authenticate, async (req, res) => {
   try {
     if (isSuperAdminUser(req.user)) {
       const payload = buildSuperAdminAuthPayload();
+      let sessionId = req.user.sessionId;
+      if (!sessionId) {
+        sessionId = randomUUID();
+        await createSuperAdminSessionRecord(req, sessionId);
+      }
       const token = generateToken(payload.id, payload.role, {
         userType: payload.userType,
         email: payload.email,
         name: payload.name,
+        sessionId,
       });
       const refreshToken = jwt.sign(
-        { userId: payload.id, userType: 'super-admin' },
+        { userId: payload.id, userType: 'super-admin', sessionId },
         getJwtRefreshSecret(),
         { expiresIn: '30d' }
       );
@@ -811,14 +844,21 @@ router.get('/session', authenticate, async (req, res) => {
     }
 
     const payload = await buildStaffAuthPayload(staff);
+    let sessionId = req.user.sessionId;
+    if (!sessionId) {
+      sessionId = randomUUID();
+      await createSessionRecord(staff, req, sessionId);
+    }
     const token = generateToken(staff._id.toString(), staff.role, {
       schoolId: payload.schoolId,
       userType: 'staff',
+      sessionId,
     });
     const refreshToken = generateStaffRefreshToken(
       staff._id.toString(),
       payload.schoolId,
-      staff.tokenVersion || 1
+      staff.tokenVersion || 1,
+      sessionId
     );
     setAuthCookie(res, token);
     setRefreshCookie(res, refreshToken);
@@ -882,14 +922,33 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
 
     // Handle super-admin refresh tokens
     if (decoded.userType === 'super-admin') {
+      let sessionId = decoded.sessionId;
+
+      if (sessionId) {
+        // Verify session is still active (revocable on /auth/sessions/:id DELETE)
+        const existing = await Session.findOne(
+          { sessionId, userType: 'super-admin' },
+          { isRevoked: 1, expiresAt: 1 }
+        ).lean();
+        if (!existing || existing.isRevoked || existing.expiresAt < new Date()) {
+          return res.status(401).json({ error: req.t('auth:errors.refreshTokenRevoked') });
+        }
+      } else {
+        // Legacy refresh token (pre-sessionId) — mint a fresh session so future
+        // refreshes are revocable
+        sessionId = randomUUID();
+        await createSuperAdminSessionRecord(req, sessionId);
+      }
+
       const payload = buildSuperAdminAuthPayload();
       const newToken = generateToken(payload.id, payload.role, {
         userType: payload.userType,
         email: payload.email,
         name: payload.name,
+        sessionId,
       });
       const newRefreshToken = jwt.sign(
-        { userId: payload.id, userType: 'super-admin' },
+        { userId: payload.id, userType: 'super-admin', sessionId },
         getJwtRefreshSecret(),
         { expiresIn: '30d' }
       );
@@ -921,9 +980,29 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
     }
 
     const payload = await buildStaffAuthPayload(staff);
+
+    // Preserve the sessionId across rotations so Session.isRevoked remains enforceable.
+    // If the refresh token carries a sessionId, the session must still be active —
+    // otherwise revoking a session would be ineffective the moment the client refreshes.
+    // Legacy refresh tokens (pre-sessionId) get a fresh session record minted here.
+    let sessionId = decoded.sessionId;
+    if (sessionId) {
+      const existing = await Session.findOne(
+        { sessionId },
+        { isRevoked: 1, expiresAt: 1 }
+      ).lean();
+      if (!existing || existing.isRevoked || existing.expiresAt < new Date()) {
+        return res.status(401).json({ error: req.t('auth:errors.refreshTokenRevoked') });
+      }
+    } else {
+      sessionId = randomUUID();
+      await createSessionRecord(staff, req, sessionId);
+    }
+
     const newToken = generateToken(staff._id.toString(), staff.role, {
       schoolId: payload.schoolId,
       userType: 'staff',
+      sessionId,
     });
 
     // Rotate refresh token: increment tokenVersion so old token is invalidated
@@ -932,7 +1011,8 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
     const newRefreshToken = generateStaffRefreshToken(
       staff._id.toString(),
       payload.schoolId,
-      newTokenVersion
+      newTokenVersion,
+      sessionId
     );
 
     setAuthCookie(res, newToken);
