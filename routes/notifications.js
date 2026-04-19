@@ -449,10 +449,14 @@ router.get('/preferences/me', async (req, res) => {
   try {
     const user = req.user;
     const userModel = getUserModel(user);
+    // Scope by schoolId so a user legitimately in two tenants keeps
+    // per-tenant preferences separate.
+    const scope = user.schoolId ? { schoolId: user.schoolId } : {};
 
     let preferences = await NotificationPreference.findOne({
       userId: user.id,
       userModel,
+      ...scope,
     }).lean();
 
     // If no preferences exist, create default
@@ -460,6 +464,7 @@ router.get('/preferences/me', async (req, res) => {
       preferences = await NotificationPreference.create({
         userId: user.id,
         userModel,
+        schoolId: user.schoolId,
         role: getPreferenceRole(user),
         preferences: [], // Will be populated with defaults
       });
@@ -477,18 +482,21 @@ router.put('/preferences/me', async (req, res) => {
   try {
     const user = req.user;
     const userModel = getUserModel(user);
+    const scope = user.schoolId ? { schoolId: user.schoolId } : {};
 
     const { preferences, quietHours, digestFrequency, emailDigest } = req.body;
 
     let pref = await NotificationPreference.findOne({
       userId: user.id,
       userModel,
+      ...scope,
     });
 
     if (!pref) {
       pref = new NotificationPreference({
         userId: user.id,
         userModel,
+        schoolId: user.schoolId,
         role: getPreferenceRole(user),
       });
     }

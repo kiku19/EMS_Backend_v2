@@ -143,6 +143,16 @@ export const checkPermission = (module, action) => {
       );
 
       if (!modulePermission) {
+        // Module isn't in the user's permissions array yet — typically
+        // because PERMISSION_TEMPLATES pre-date the module (homework,
+        // hostel, inventory, library, ptm, transport, front-office).
+        // Default policy: 'admin' role gets full access so schools can
+        // onboard these modules without a migration; every other role
+        // denies until the template is extended.
+        if (userPermission.role === 'admin') {
+          req.userPermissions = userPermission;
+          return next();
+        }
         return res.status(403).json({
           error: req.t('common:errors.forbidden'),
           message: req.t('auth:errors.moduleAccessDenied', { module }),

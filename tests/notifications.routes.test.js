@@ -47,6 +47,7 @@ describe('notifications routes', () => {
     await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'announcement',
       title: 'Welcome',
       message: 'Hello admin',
@@ -64,6 +65,7 @@ describe('notifications routes', () => {
     await Notification.create({
       userId: other._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'announcement',
       title: 'Other',
       message: 'Not for admin',
@@ -81,6 +83,7 @@ describe('notifications routes', () => {
     await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'event',
       title: 'Unread',
       message: 'not read',
@@ -90,6 +93,7 @@ describe('notifications routes', () => {
     await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'event',
       title: 'Read',
       message: 'already read',
@@ -112,6 +116,7 @@ describe('notifications routes', () => {
     await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'payment',
       title: 'Payment Due',
       message: 'pay up',
@@ -120,6 +125,7 @@ describe('notifications routes', () => {
     await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'attendance',
       title: 'Absent',
       message: 'student absent',
@@ -142,6 +148,7 @@ describe('notifications routes', () => {
     const notif = await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'academic',
       title: 'Exam Published',
       message: 'Results are out',
@@ -176,6 +183,7 @@ describe('notifications routes', () => {
     const notif = await Notification.create({
       userId: other._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'chat',
       title: 'Message',
       message: 'Hello',
@@ -192,6 +200,7 @@ describe('notifications routes', () => {
       {
         userId: admin._id,
         userModel: 'Staff',
+        schoolId: school._id,
         type: 'event',
         title: 'Event 1',
         message: 'msg1',
@@ -200,6 +209,7 @@ describe('notifications routes', () => {
       {
         userId: admin._id,
         userModel: 'Staff',
+        schoolId: school._id,
         type: 'event',
         title: 'Event 2',
         message: 'msg2',
@@ -224,6 +234,7 @@ describe('notifications routes', () => {
     const notif = await Notification.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'salary',
       title: 'Payslip',
       message: 'Your payslip is ready',
@@ -257,6 +268,7 @@ describe('notifications routes', () => {
     const notif = await Notification.create({
       userId: other._id,
       userModel: 'Staff',
+      schoolId: school._id,
       type: 'transport',
       title: 'Bus Update',
       message: 'Route changed',
@@ -285,6 +297,7 @@ describe('notifications routes', () => {
     await NotificationPreference.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       role: 'admin',
       digestFrequency: 'daily',
       preferences: [
@@ -337,6 +350,7 @@ describe('notifications routes', () => {
     await NotificationPreference.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       role: 'admin',
       digestFrequency: 'instant',
     });
@@ -390,6 +404,7 @@ describe('notifications routes', () => {
     await NotificationPreference.create({
       userId: admin._id,
       userModel: 'Staff',
+      schoolId: school._id,
       role: 'admin',
       digestFrequency: 'weekly',
     });
