@@ -88,7 +88,7 @@ router.post('/', checkPermission('fees', 'create'), async (req, res) => {
     if (!parsed.success) {
       return res.status(400).json({
         error: 'Validation failed',
-        details: parsed.error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+        details: parsed.error.issues.map((e) => ({ field: e.path.join('.'), message: e.message })),
       });
     }
 

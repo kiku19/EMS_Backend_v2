@@ -624,6 +624,7 @@ describe('payroll routes', () => {
       });
 
       await SalaryAdjustment.create({
+        schoolId: school._id,
         employeeId: emp._id,
         type: 'allowance',
         category: 'HRA',
@@ -702,6 +703,7 @@ describe('payroll routes', () => {
       });
 
       const adjustment = await SalaryAdjustment.create({
+        schoolId: school._id,
         employeeId: emp._id,
         type: 'allowance',
         category: 'TA',

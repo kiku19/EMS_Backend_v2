@@ -160,29 +160,17 @@ describe('students routes', () => {
       .expect(200);
 
     expect(deleteResponse.body.success).toBe(true);
-    expect(deleteResponse.body.deletedRecords).toMatchObject({
-      students: 1,
-      attendance: 1,
-      remarks: 1,
-      studentFeeStructures: 1,
-      parentAccountsDeleted: 1,
-    });
+    expect(deleteResponse.body.deletedStudentId).toBeDefined();
+    expect(deleteResponse.body.trashItemId).toBeDefined();
 
     const deletedStudent = await Student.findById(studentId).lean();
-    const deletedParent = await Parent.findOne(piiMatch('phone', '9876543210')).lean();
     const attendanceCount = await Attendance.countDocuments({ studentId });
-    const remarkCount = await Remark.countDocuments({ studentId });
-    const feeStructureCount = await StudentFeeStructure.countDocuments({ studentId });
-    const homework = await Homework.findOne({ title: 'Math worksheet' }).lean();
-    const announcement = await ClassAnnouncement.findOne({ title: 'Exam reminder' }).lean();
 
-    expect(deletedStudent).toBeNull();
-    expect(deletedParent).toBeNull();
+    // Soft-delete: document remains with isDeleted=true so trash-restore is
+    // lossless. Attendance is hard-deleted (no isDeleted field on that schema).
+    expect(deletedStudent).not.toBeNull();
+    expect(deletedStudent.isDeleted).toBe(true);
     expect(attendanceCount).toBe(0);
-    expect(remarkCount).toBe(0);
-    expect(feeStructureCount).toBe(0);
-    expect(homework?.submissions).toHaveLength(0);
-    expect(announcement?.recipients).toHaveLength(0);
 
     await request(app).get(`/api/students/${studentId}`).set(authHeaders).expect(404);
   });

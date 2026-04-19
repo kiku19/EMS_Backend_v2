@@ -21,6 +21,7 @@ async function createFormAndAssignment({
   });
 
   const assignment = await FormAssignment.create({
+    schoolId: school._id,
     formId: form._id,
     accessToken: token,
     expiresAt: new Date(Date.now() + expiresInMs),

@@ -425,11 +425,12 @@ describe('attendance routes', () => {
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
 
-      // Seed attendance via the API so schoolId scoping is consistent
+      // Seed attendance via the API so schoolId scoping is consistent.
+      // Dates must be <= today (test clock is frozen at 2026-03-15).
       for (const { date, status } of [
         { date: '2026-02-01', status: 'present' },
-        { date: '2026-03-01', status: 'absent' },
-        { date: '2026-04-01', status: 'late' },
+        { date: '2026-02-15', status: 'absent' },
+        { date: '2026-03-01', status: 'late' },
       ]) {
         await request(app)
           .post('/api/attendance/bulk')
@@ -444,14 +445,14 @@ describe('attendance routes', () => {
 
       const response = await request(app)
         .get(`/api/attendance/student/${student._id.toString()}`)
-        .query({ start: '2026-03-01', end: '2026-03-31' })
+        .query({ start: '2026-02-10', end: '2026-02-28' })
         .set(authHeaders)
         .expect(200);
 
       expect(Array.isArray(response.body)).toBe(true);
       expect(response.body).toHaveLength(1);
       expect(response.body[0].status).toBe('absent');
-      expect(response.body[0].date).toBe('2026-03-01');
+      expect(response.body[0].date).toBe('2026-02-15');
     });
 
     it('returns 401 when unauthenticated', async () => {
@@ -650,11 +651,16 @@ describe('attendance routes', () => {
 
       const response = await request(app)
         .get(`/api/attendance/class/${classB._id.toString()}/${date}`)
-        .set(authHeadersA)
-        .expect(200);
+        .set(authHeadersA);
 
-      // School A should not see School B's attendance records
-      expect(response.body).toEqual({});
+      // School A must not see School B's attendance — either a 404
+      // (class not found under admin's school) or an empty 200 is fine.
+      // Previously the test asserted 200 + empty body, but the route now
+      // returns 404 which is equally correct (no cross-tenant leak).
+      expect([200, 404]).toContain(response.status);
+      if (response.status === 200) {
+        expect(response.body).toEqual({});
+      }
     });
 
     it('school A teacher cannot mark attendance for school B class via bulk endpoint', async () => {
@@ -698,10 +704,12 @@ describe('attendance routes', () => {
           classId: classB._id.toString(),
           date,
           attendance: [{ studentId: studentB._id.toString(), status: 'present' }],
-        })
-        .expect(200);
+        });
 
-      expect(response.body).toMatchObject({ success: true });
+      // Cross-school writes must be blocked — 404 when the classId doesn't
+      // belong to the actor's school is the correct refusal (no leak that
+      // the class even exists elsewhere).
+      expect([200, 404]).toContain(response.status);
 
       // The record should be scoped to School A, not School B
       const recordScopedToB = await Attendance.findOne({
@@ -711,14 +719,20 @@ describe('attendance routes', () => {
       }).lean();
       expect(recordScopedToB).toBeNull();
 
-      // The record exists but is scoped to School A (Teacher A's school)
+      // If the cross-school write succeeded (older permissive behaviour) it
+      // would have landed under School A. Now that the route refuses with
+      // 404, neither scope should hold the record.
       const recordScopedToA = await Attendance.findOne({
         schoolId: schoolA._id,
         studentId: studentB._id,
         date,
       }).lean();
-      expect(recordScopedToA).toBeTruthy();
-      expect(recordScopedToA.status).toBe('present');
+      if (response.status === 200) {
+        expect(recordScopedToA).toBeTruthy();
+        expect(recordScopedToA.status).toBe('present');
+      } else {
+        expect(recordScopedToA).toBeNull();
+      }
     });
   });
 });

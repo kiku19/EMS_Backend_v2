@@ -30,9 +30,12 @@ export const bulkStaffAttendanceSchema = z
   .strip();
 
 // ─── REGULARIZE ATTENDANCE ─────────────────────────────────────
+// date is optional: the route can locate the record by `_id` alone.
+// It is only required when caller passes a staffId in `:id` and wants the
+// route to fall back to findOne({ staffId, date }) / upsert a new record.
 export const regularizeAttendanceSchema = z
   .object({
-    date: dateString,
+    date: dateString.optional(),
     status: staffAttendanceStatusEnum,
     checkInTime: z.string().max(20).optional(),
     checkOutTime: z.string().max(20).optional(),

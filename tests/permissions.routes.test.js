@@ -316,6 +316,7 @@ describe('permissions routes', () => {
 
     // Create the first request directly in DB
     await PermissionRequest.create({
+      schoolId: school._id,
       userId: teacher._id,
       userName: 'DupReq Teacher',
       module: 'fees',
@@ -386,6 +387,7 @@ describe('permissions routes', () => {
     });
 
     await PermissionRequest.create({
+      schoolId: school._id,
       userId: teacher._id,
       userName: 'ListReq Teacher',
       module: 'academics',
@@ -428,6 +430,7 @@ describe('permissions routes', () => {
 
     await PermissionRequest.create([
       {
+        schoolId: school._id,
         userId: teacher._id,
         userName: 'FilterReq Teacher',
         module: 'fees',
@@ -436,6 +439,7 @@ describe('permissions routes', () => {
         status: 'approved',
       },
       {
+        schoolId: school._id,
         userId: teacher._id,
         userName: 'FilterReq Teacher',
         module: 'attendance',
@@ -498,6 +502,7 @@ describe('permissions routes', () => {
 
     await PermissionRequest.create([
       {
+        schoolId: school._id,
         userId: teacher._id,
         userName: 'CountReq Teacher',
         module: 'fees',
@@ -506,6 +511,7 @@ describe('permissions routes', () => {
         status: 'pending',
       },
       {
+        schoolId: school._id,
         userId: teacher._id,
         userName: 'CountReq Teacher',
         module: 'reports',
@@ -514,6 +520,7 @@ describe('permissions routes', () => {
         status: 'pending',
       },
       {
+        schoolId: school._id,
         userId: teacher._id,
         userName: 'CountReq Teacher',
         module: 'attendance',
@@ -574,6 +581,7 @@ describe('permissions routes', () => {
     });
 
     const permReq = await PermissionRequest.create({
+      schoolId: school._id,
       userId: teacher._id,
       userName: 'Approve Teacher',
       userEmail: 'approve.teacher@example.com',
@@ -627,6 +635,7 @@ describe('permissions routes', () => {
     });
 
     const permReq = await PermissionRequest.create({
+      schoolId: school._id,
       userId: teacher._id,
       userName: 'Reject Teacher',
       module: 'settings',
@@ -665,6 +674,7 @@ describe('permissions routes', () => {
     });
 
     const permReq = await PermissionRequest.create({
+      schoolId: school._id,
       userId: admin._id,
       userName: 'BadStatus Admin',
       module: 'fees',
@@ -724,6 +734,7 @@ describe('permissions routes', () => {
     });
 
     const permReq = await PermissionRequest.create({
+      schoolId: school._id,
       userId: admin._id,
       userName: 'AlreadyReviewed Admin',
       module: 'fees',
@@ -759,6 +770,7 @@ describe('permissions routes', () => {
     });
 
     const permReq = await PermissionRequest.create({
+      schoolId: school._id,
       userId: teacher._id,
       userName: 'NoAdminReview Teacher',
       module: 'fees',

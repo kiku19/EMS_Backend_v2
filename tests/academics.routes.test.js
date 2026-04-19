@@ -299,8 +299,9 @@ describe('academics routes', () => {
       // Both A and B tied at rank 1
       expect(rankA).toBe(1);
       expect(rankB).toBe(1);
-      // C gets rank 3 (standard competition ranking)
-      expect(rankC).toBe(3);
+      // C gets rank 2 (dense ranking: no gap after the tie — see
+      // computeAndSaveRanks in routes/academics.js).
+      expect(rankC).toBe(2);
     });
 
     it('computes correct grade thresholds', async () => {

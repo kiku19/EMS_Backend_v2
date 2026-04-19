@@ -910,6 +910,16 @@ router.post(
   checkPermission('academics', 'publish'),
   async (req, res) => {
     try {
+      // Confirm the exam exists and belongs to the caller's school BEFORE any
+      // other checks — otherwise a bogus id (or a cross-tenant id) falls into
+      // the "no results entered" branch and leaks a misleading 400.
+      const existingExam = await Exam.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      ).select('_id');
+      if (!existingExam) {
+        return res.status(404).json({ error: 'Exam not found' });
+      }
+
       // Verify results exist before publishing — prevents empty notifications
       // to parents. Count ONLY non-deleted results; before this filter,
       // soft-deleted rows counted as "entered" and a truly-empty exam could

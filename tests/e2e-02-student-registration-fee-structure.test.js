@@ -495,15 +495,18 @@ describe('E2E-02: Student registration → class assignment → fee structure au
 
       expect(updateRes.body.class).toBe('9-A');
 
-      // Old fee structure for Class 8 should be gone
-      const oldCheck = await StudentFeeStructure.findById(oldStructure._id).lean();
-      expect(oldCheck).toBeNull();
+      // The existing StudentFeeStructure row is UPDATED in place (classId +
+      // merged fee heads) rather than deleted and re-created, so the original
+      // _id survives the class change. This preserves FeePayment.feeHeads
+      // references across class moves.
+      const updatedStructure = await StudentFeeStructure.findById(oldStructure._id).lean();
+      expect(updatedStructure).toBeTruthy();
+      expect(updatedStructure.classId.toString()).toBe(class2Res.body.id);
+      expect(updatedStructure.schoolId.toString()).toBe(school._id.toString());
 
-      // New fee structure should exist for Class 9
-      const newStructure = await StudentFeeStructure.findOne({ studentId }).lean();
-      expect(newStructure).toBeTruthy();
-      expect(newStructure.classId.toString()).toBe(class2Res.body.id);
-      expect(newStructure.schoolId.toString()).toBe(school._id.toString());
+      // Only one structure row exists per student+year.
+      const structuresForStudent = await StudentFeeStructure.countDocuments({ studentId });
+      expect(structuresForStudent).toBe(1);
     });
 
     it('preserves fee structure when class is not changed on update', async () => {

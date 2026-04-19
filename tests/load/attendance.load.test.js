@@ -89,7 +89,7 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
 
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(teacher, 'teacher');
-    const date = '2026-09-01';
+    const date = '2026-03-01';
 
     // ── Fire all 500 requests concurrently ──────────────────────────────
     const latencies = [];
@@ -177,7 +177,7 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
     );
 
     const { app } = createTestApp();
-    const date = '2026-09-02';
+    const date = '2026-03-02';
 
     // ── Fire all 50 bulk requests concurrently ───────────────────────────
     const latencies = [];
@@ -259,7 +259,7 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
 
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(teacher, 'teacher');
-    const date = '2026-09-03';
+    const date = '2026-03-03';
 
     // First wave: mark all present
     await Promise.all(

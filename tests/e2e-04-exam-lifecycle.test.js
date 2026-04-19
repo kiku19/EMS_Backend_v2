@@ -54,10 +54,12 @@ function createE2EApp() {
 
   initializeSocket(io);
 
-  app.use('/api', academicsRoutes);
-  // Mount auth before /api/parent so login isn't swallowed by parentDataRoutes
+  // Parent routes must mount BEFORE the wildcard `/api` academics router —
+  // academics applies router.use(authenticate) to every matching path, so
+  // otherwise /api/parent/auth/login would be intercepted and return 401.
   app.use('/api/parent/auth', parentAuthRoutes);
   app.use('/api/parent', parentDataRoutes);
+  app.use('/api', academicsRoutes);
 
   return { app };
 }

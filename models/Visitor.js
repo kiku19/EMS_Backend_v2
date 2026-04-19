@@ -179,9 +179,11 @@ const visitorSchema = new mongoose.Schema(
   }
 );
 
-// Pre-save hook to normalize field names (support both old and new naming)
-visitorSchema.pre('save', function (next) {
-  // If new fields are provided, use them; otherwise fall back to old fields
+// Pre-validate hook to normalize field names (support both old and new naming).
+// Runs BEFORE validation so `required: true` checks on the legacy fields
+// (visitorName/phoneNumber/reasonForVisit) pass when callers send the new
+// name/phone/purpose fields.
+visitorSchema.pre('validate', function (next) {
   if (this.visitorName) {
     this.name = this.visitorName;
   } else if (this.name) {

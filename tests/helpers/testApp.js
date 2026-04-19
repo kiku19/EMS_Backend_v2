@@ -28,6 +28,8 @@ import callRoutes from '../../routes/calls.js';
 import messageRoutes from '../../routes/messages.js';
 import mobileRoutes from '../../routes/mobile.js';
 import notificationRoutes from '../../routes/notifications.js';
+import parentAuthRoutes from '../../routes/parentAuth.js';
+import parentDataRoutes from '../../routes/parentData.js';
 import parentManagementRoutes from '../../routes/parentManagement.js';
 import parentMessagingRoutes from '../../routes/parentMessaging.js';
 import pushNotificationsRoutes from '../../routes/pushNotifications.js';
@@ -58,6 +60,7 @@ import bulkImportRoutes from '../../routes/bulkImport.js';
 import ptmRoutes from '../../routes/ptm.js';
 import twoFactorRoutes from '../../routes/twoFactor.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
+import { authenticateParent } from '../../middleware/auth/parentAuth.js';
 
 function createTestIo() {
   return {
@@ -82,10 +85,23 @@ export function createTestApp() {
 
   initializeSocket(io);
 
-  // Mount auth routes BEFORE wildcard `/api` routers so signup/login/refresh
-  // don't get trapped by router-level `authenticate` on routers mounted at `/api`.
+  // Mount auth + public routes BEFORE wildcard `/api` routers so
+  // signup/login/refresh/public-form-access don't get trapped by the
+  // router-level `authenticate` on routers mounted at `/api`.
+  // 2FA routes must mount BEFORE the generic /api/auth router because
+  // authRoutes applies router-level `authenticate`, which would otherwise
+  // block the unauthenticated /api/auth/2fa/verify post-login step.
+  app.use('/api/auth/2fa', twoFactorRoutes);
   app.use('/api/auth', authRoutes);
+  app.use('/api/public', publicRoutes);
   app.use('/api/super-admin', superAdminRoutes);
+  // Parent routes must mount before the wildcard `/api` routers (academics,
+  // examSchedule, etc.) which apply router-level `authenticate` to every
+  // matching path. Without this ordering, /api/parent/auth/login falls
+  // through into the academics router and is blocked with a 401.
+  app.use('/api/parent/auth', parentAuthRoutes);
+  app.use('/api/parent/messages', parentMessagingRoutes);
+  app.use('/api/parent', authenticateParent, parentDataRoutes);
   app.use('/api', academicsRoutes);
   app.use('/api/announcements', announcementRoutes);
   app.use('/api/billing', billingRoutes);
@@ -115,7 +131,6 @@ export function createTestApp() {
   app.use('/api/payroll', payrollRoutes);
   app.use('/api/trash', trashRoutes);
   app.use('/api/upload', uploadRoutes);
-  app.use('/api/public', publicRoutes);
   app.use('/api/mobile', mobileRoutes);
   app.use('/api/validation', validationRoutes);
   app.use('/api', systemConfigRoutes);
@@ -123,7 +138,6 @@ export function createTestApp() {
   app.use('/api', calendarEventsRoutes);
   app.use('/api/ai', aiRoutes);
   app.use('/api/calls', callRoutes);
-  app.use('/api/parent/messages', parentMessagingRoutes);
   app.use('/api/parents', authenticate, parentManagementRoutes);
   app.use('/api/push-notifications', pushNotificationsRoutes);
   app.use('/api/reminders', reminderRoutes);
@@ -138,7 +152,6 @@ export function createTestApp() {
   app.use('/api/backup', backupRoutes);
   app.use('/api/bulk-import', bulkImportRoutes);
   app.use('/api/ptm', ptmRoutes);
-  app.use('/api/auth/2fa', twoFactorRoutes);
 
   // Temporary debug error handler
   app.use((err, req, res, next) => {

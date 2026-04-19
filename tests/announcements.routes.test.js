@@ -362,6 +362,7 @@ describe('announcements routes', () => {
 
       // Seed a recipient record
       await AnnouncementRecipient.create({
+        schoolId: school._id,
         announcementId: ann._id,
         userId: admin._id,
         userType: 'Staff',
@@ -377,15 +378,12 @@ describe('announcements routes', () => {
 
       expect(res.body.message).toMatch(/deleted/i);
 
-      // Verify removed from DB
-      const deleted = await Announcement.findById(ann._id);
-      expect(deleted).toBeNull();
-
-      // Verify recipients cleaned up
-      const recipientCount = await AnnouncementRecipient.countDocuments({
-        announcementId: ann._id,
-      });
-      expect(recipientCount).toBe(0);
+      // Soft-delete: document persists with isDeleted=true so trash-restore
+      // can revive it. AnnouncementRecipient rows are preserved alongside so
+      // delivery analytics stay accurate.
+      const deleted = await Announcement.findById(ann._id).lean();
+      expect(deleted).not.toBeNull();
+      expect(deleted.isDeleted).toBe(true);
     });
 
     it('returns 404 when deleting a non-existent announcement', async () => {

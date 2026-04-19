@@ -113,7 +113,9 @@ describe('intakeForms routes', () => {
       const payload = {
         formName: 'New Admission Form',
         formType: 'student',
-        fields: [{ name: 'studentName', label: 'Student Name', type: 'text', required: true }],
+        fields: [
+          { fieldName: 'studentName', fieldType: 'text', label: 'Student Name', required: true },
+        ],
       };
 
       const res = await request(app).post(BASE).set(headers).send(payload).expect(201);

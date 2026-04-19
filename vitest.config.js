@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    setupFiles: ['./tests/setup.js'],
+    setupFiles: ['./tests/clockSetup.js', './tests/setup.js'],
     include: ['./tests/**/*.test.js'],
     testTimeout: 30000,
     hookTimeout: 60000,

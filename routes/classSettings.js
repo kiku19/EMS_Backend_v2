@@ -102,7 +102,7 @@ router.put('/:id/tag', checkPermission('classes', 'edit'), async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
-        errors: error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+        errors: error.issues.map((e) => ({ field: e.path.join('.'), message: e.message })),
       });
     }
     console.error('Error updating class tag:', error);
@@ -152,7 +152,7 @@ router.put('/:id/subjects', checkPermission('classes', 'edit'), async (req, res)
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
-        errors: error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+        errors: error.issues.map((e) => ({ field: e.path.join('.'), message: e.message })),
       });
     }
     console.error('Error updating subjects:', error);

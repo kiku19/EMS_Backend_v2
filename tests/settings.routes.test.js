@@ -218,14 +218,18 @@ describe('settings routes', () => {
       });
 
       const { app } = createTestApp();
-      const response = await request(app)
-        .put('/api/settings/school')
+      // academicYear is not writable through PUT /school anymore — the dedicated
+      // PUT /academic-year route is the single entry point and syncs
+      // currentSession on the settings document at save time.
+      await request(app)
+        .put('/api/settings/academic-year')
         .set(authHeadersFor(admin, 'admin'))
-        .send({ academicYear: '2026-27' })
+        .send({ academicYear: '2026-27', confirm: true })
         .expect(200);
 
-      expect(response.body.academicYear).toBe('2026-27');
-      expect(response.body.currentSession).toBe('2026-27');
+      const saved = await SchoolSettings.findOne({ schoolId: school._id }).lean();
+      expect(saved.academicYear).toBe('2026-27');
+      expect(saved.currentSession).toBe('2026-27');
     });
   });
 
@@ -285,6 +289,7 @@ describe('settings routes', () => {
           academicYear: '2026-27',
           academicYearStart: '2026-04-01',
           academicYearEnd: '2027-03-31',
+          confirm: true,
         })
         .expect(200);
 
@@ -333,7 +338,7 @@ describe('settings routes', () => {
       const response = await request(app)
         .put('/api/settings/academic-year')
         .set(authHeadersFor(admin, 'admin'))
-        .send({ academicYear: '2025-26' })
+        .send({ academicYear: '2025-26', confirm: true })
         .expect(200);
 
       expect(response.body.academicYear).toBe('2025-26');
@@ -802,9 +807,10 @@ describe('settings routes', () => {
         })
         .expect(200);
 
-      expect(response.body).toBeInstanceOf(Array);
-      expect(response.body).toHaveLength(1);
-      expect(response.body[0]).toMatchObject({
+      const subjects = response.body.subjects || response.body;
+      expect(Array.isArray(subjects)).toBe(true);
+      expect(subjects).toHaveLength(1);
+      expect(subjects[0]).toMatchObject({
         name: 'Mathematics',
         code: 'MATH',
         description: 'Core mathematics subject',
@@ -834,9 +840,10 @@ describe('settings routes', () => {
         })
         .expect(200);
 
-      expect(response.body).toBeInstanceOf(Array);
-      expect(response.body).toHaveLength(1);
-      expect(response.body[0].name).toBe('English');
+      const subjects = response.body.subjects || response.body;
+      expect(Array.isArray(subjects)).toBe(true);
+      expect(subjects).toHaveLength(1);
+      expect(subjects[0].name).toBe('English');
     });
 
     it('PUT /api/settings/subjects/:id updates a subject', async () => {
@@ -866,8 +873,9 @@ describe('settings routes', () => {
         .send({ name: 'General Science', code: 'GSCI' })
         .expect(200);
 
-      expect(response.body).toBeInstanceOf(Array);
-      const updated = response.body.find((s) => s.name === 'General Science');
+      const subjects = response.body.subjects || response.body;
+      expect(Array.isArray(subjects)).toBe(true);
+      const updated = subjects.find((s) => s.name === 'General Science');
       expect(updated).toBeTruthy();
       expect(updated.code).toBe('GSCI');
     });
@@ -928,9 +936,10 @@ describe('settings routes', () => {
         .set(authHeadersFor(admin, 'admin'))
         .expect(200);
 
-      expect(response.body).toBeInstanceOf(Array);
-      expect(response.body).toHaveLength(1);
-      expect(response.body[0].name).toBe('Telugu');
+      const subjects = response.body.subjects || response.body;
+      expect(Array.isArray(subjects)).toBe(true);
+      expect(subjects).toHaveLength(1);
+      expect(subjects[0].name).toBe('Telugu');
     });
   });
 

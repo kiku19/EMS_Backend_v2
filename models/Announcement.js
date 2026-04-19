@@ -112,6 +112,12 @@ const announcementSchema = new mongoose.Schema(
     // Sending timestamps
     sentAt: Date,
     completedAt: Date,
+
+    // Soft-delete: DELETE /:id flips these rather than removing the doc so
+    // trash-restore can revive it with its analytics intact.
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: Date,
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, refPath: 'creatorModel' },
   },
   {
     timestamps: true,

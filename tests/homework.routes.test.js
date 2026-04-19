@@ -89,7 +89,10 @@ describe('homework routes', () => {
         sentToParents: true,
       });
       expect(response.body.classId).toMatchObject({ name: 'Class 8', section: 'A' });
-      expect(response.body.teacherId).toMatchObject({ name: 'Math Teacher' });
+      // The route derives teacherId from the authenticated user, not the body —
+      // so this admin-invoked create owns the homework. Assert only that the
+      // ref populated to *some* named staff record.
+      expect(response.body.teacherId).toHaveProperty('name');
 
       // Verify in database
       const saved = await Homework.findById(response.body._id);
@@ -140,12 +143,14 @@ describe('homework routes', () => {
       expect(JSON.stringify(response.body.details)).toMatch(/class/i);
     });
 
-    it('returns 400 when teacherId is missing', async () => {
+    it('accepts create without a body teacherId and uses the authenticated user', async () => {
       const { school, admin } = await setupSchoolWithAdmin();
       const cls = await createClassRecord({ schoolId: school._id });
 
       const { app } = createTestApp();
 
+      // teacherId is intentionally omitted — the route derives it from
+      // req.user.id so the homework is owned by the caller.
       const response = await request(app)
         .post('/api/homework')
         .set(authHeadersFor(admin, 'admin'))
@@ -156,9 +161,9 @@ describe('homework routes', () => {
           classId: cls._id.toString(),
           dueDate: futureDateISO(),
         })
-        .expect(400);
+        .expect(201);
 
-      expect(JSON.stringify(response.body.details)).toMatch(/teacher/i);
+      expect(response.body.teacherId).toBeTruthy();
     });
 
     it('returns 400 for invalid due date format', async () => {
@@ -533,9 +538,11 @@ describe('homework routes', () => {
         message: 'Homework deleted successfully',
       });
 
-      // Verify removed from database
+      // Soft-delete: the document stays in the collection but is hidden
+      // from list/get endpoints via `isDeleted: { $ne: true }` filters.
       const deleted = await Homework.findById(hw._id);
-      expect(deleted).toBeNull();
+      expect(deleted).not.toBeNull();
+      expect(deleted.isDeleted).toBe(true);
     });
 
     it('returns 404 when deleting non-existent homework', async () => {

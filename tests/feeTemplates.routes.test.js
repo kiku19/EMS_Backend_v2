@@ -97,9 +97,9 @@ describe('fee-templates routes', () => {
       expect(res.body.schoolId.toString()).toBe(school._id.toString());
     });
 
-    it('returns 500 when required fields are missing', async () => {
-      // name and section are required by schema
-      await request(app).post(BASE).set(headers).send({ totalAnnualFee: 10000 }).expect(500);
+    it('returns 400 when required fields are missing', async () => {
+      // name and section are required by Zod → proper 400, not raw 500
+      await request(app).post(BASE).set(headers).send({ totalAnnualFee: 10000 }).expect(400);
     });
   });
 

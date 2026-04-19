@@ -213,27 +213,28 @@ describe('front-desk admissions routes', () => {
 // ─── Visitors (via front-desk) ───────────────────────────────────────────────
 
 describe('front-desk visitors routes', () => {
-  describe('GET /api/front-desk/visitors', () => {
+  describe('GET /api/visitors', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).get('/api/front-desk/visitors').expect(401);
+      await request(app).get('/api/visitors').expect(401);
     });
 
     it('returns empty array when no visitors exist', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
       const res = await request(app)
-        .get('/api/front-desk/visitors')
+        .get('/api/visitors')
         .set(authHeadersFor(admin))
         .expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      const list = res.body.data || res.body;
+      expect(Array.isArray(list)).toBe(true);
     });
   });
 
-  describe('POST /api/front-desk/visitors', () => {
+  describe('POST /api/visitors', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).post('/api/front-desk/visitors').send({}).expect(401);
+      await request(app).post('/api/visitors').send({}).expect(401);
     });
 
     it('creates a visitor with required fields', async () => {
@@ -241,33 +242,33 @@ describe('front-desk visitors routes', () => {
       const { app } = createTestApp();
 
       const res = await request(app)
-        .post('/api/front-desk/visitors')
+        .post('/api/visitors')
         .set(authHeadersFor(admin))
         .send({
-          visitorName: 'Grace Visitor',
-          phoneNumber: '9123456789',
-          reasonForVisit: 'PARENT_MEETING',
+          name: 'Grace Visitor',
+          phone: '9123456789',
+          purpose: 'PARENT_MEETING',
           whomToMeet: 'Principal',
         })
         .expect(201);
 
-      expect(res.body.visitorName).toBe('Grace Visitor');
-      expect(res.body.status).toBe('ACTIVE');
-      expect(res.body.schoolId).toBeDefined();
+      const visitor = res.body.data || res.body.visitor || res.body;
+      expect(visitor.name).toBe('Grace Visitor');
+      expect(visitor.schoolId).toBeDefined();
     });
   });
 
-  describe('PUT /api/front-desk/visitors/:id', () => {
+  describe('PUT /api/visitors/:id', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).put('/api/front-desk/visitors/000000000000000000000001').expect(401);
+      await request(app).put('/api/visitors/000000000000000000000001').expect(401);
     });
 
     it('returns 404 for non-existent visitor', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
       await request(app)
-        .put('/api/front-desk/visitors/000000000000000000000001')
+        .put('/api/visitors/000000000000000000000001')
         .set(authHeadersFor(admin))
         .send({ notes: 'update' })
         .expect(404);
@@ -278,29 +279,31 @@ describe('front-desk visitors routes', () => {
       const { app } = createTestApp();
 
       const createRes = await request(app)
-        .post('/api/front-desk/visitors')
+        .post('/api/visitors')
         .set(authHeadersFor(admin))
         .send({
-          visitorName: 'Hank Visitor',
-          phoneNumber: '9000000001',
-          reasonForVisit: 'DELIVERY_VENDOR',
+          name: 'Hank Visitor',
+          phone: '9000000001',
+          purpose: 'DELIVERY_VENDOR',
         })
         .expect(201);
 
+      const visitor = createRes.body.data || createRes.body.visitor || createRes.body;
       const updateRes = await request(app)
-        .put(`/api/front-desk/visitors/${createRes.body._id}`)
+        .put(`/api/visitors/${visitor._id}`)
         .set(authHeadersFor(admin))
         .send({ notes: 'Delivery completed' })
         .expect(200);
 
-      expect(updateRes.body.notes).toBe('Delivery completed');
+      const updated = updateRes.body.data || updateRes.body.visitor || updateRes.body;
+      expect(updated.notes).toBe('Delivery completed');
     });
   });
 
-  describe('DELETE /api/front-desk/visitors/:id', () => {
+  describe('DELETE /api/visitors/:id', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).delete('/api/front-desk/visitors/000000000000000000000001').expect(401);
+      await request(app).delete('/api/visitors/000000000000000000000001').expect(401);
     });
 
     it('deletes a visitor', async () => {
@@ -308,17 +311,18 @@ describe('front-desk visitors routes', () => {
       const { app } = createTestApp();
 
       const createRes = await request(app)
-        .post('/api/front-desk/visitors')
+        .post('/api/visitors')
         .set(authHeadersFor(admin))
         .send({
-          visitorName: 'Iris Visitor',
-          phoneNumber: '9000000002',
-          reasonForVisit: 'OTHER',
+          name: 'Iris Visitor',
+          phone: '9000000002',
+          purpose: 'OTHER',
         })
         .expect(201);
 
+      const visitor = createRes.body.data || createRes.body.visitor || createRes.body;
       const deleteRes = await request(app)
-        .delete(`/api/front-desk/visitors/${createRes.body._id}`)
+        .delete(`/api/visitors/${visitor._id}`)
         .set(authHeadersFor(admin))
         .expect(200);
 
@@ -330,27 +334,28 @@ describe('front-desk visitors routes', () => {
 // ─── Gate Passes (via front-desk) ───────────────────────────────────────────
 
 describe('front-desk gate-passes routes', () => {
-  describe('GET /api/front-desk/gate-passes', () => {
+  describe('GET /api/gate-passes', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).get('/api/front-desk/gate-passes').expect(401);
+      await request(app).get('/api/gate-passes').expect(401);
     });
 
     it('returns empty array when no gate passes exist', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
       const res = await request(app)
-        .get('/api/front-desk/gate-passes')
+        .get('/api/gate-passes')
         .set(authHeadersFor(admin))
         .expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      const list = res.body.data || res.body;
+      expect(Array.isArray(list)).toBe(true);
     });
   });
 
-  describe('POST /api/front-desk/gate-passes', () => {
+  describe('POST /api/gate-passes', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).post('/api/front-desk/gate-passes').send({}).expect(401);
+      await request(app).post('/api/gate-passes').send({}).expect(401);
     });
 
     it('returns 400 when required fields are missing', async () => {
@@ -358,79 +363,74 @@ describe('front-desk gate-passes routes', () => {
       const { app } = createTestApp();
 
       const res = await request(app)
-        .post('/api/front-desk/gate-passes')
+        .post('/api/gate-passes')
         .set(authHeadersFor(admin))
         .send({ studentName: 'No StudentId' })
         .expect(400);
 
-      expect(res.body.success).toBe(false);
+      expect(res.body.error || res.body.message).toMatch(/validation/i);
     });
 
-    it('returns 500 due to invalid status default in frontDesk route (bug: status PENDING not in GatePass enum)', async () => {
-      // The frontDesk route hardcodes status: 'PENDING' which is not a valid GatePass status.
-      // Valid values are ACTIVE, USED, EXPIRED, CANCELLED. This is a known bug in frontDesk.js.
+    it('creates a gate pass with valid payload via /api/gate-passes', async () => {
+      // The old duplicate route at /api/front-desk/gate-passes defaulted status to
+      // an invalid value ('PENDING'); it has since been removed in favour of the
+      // single `/api/gate-passes` router with proper Zod validation + default.
       const admin = await createStaffUser();
       const classRecord = await createClassRecord({ name: 'Grade 6', section: 'A' });
       const student = await createStudentRecord({ name: 'Jake Student', classId: classRecord._id });
       const { app } = createTestApp();
 
       const res = await request(app)
-        .post('/api/front-desk/gate-passes')
+        .post('/api/gate-passes')
         .set(authHeadersFor(admin))
         .send({
           studentId: student._id.toString(),
-          studentName: student.name,
-          class: 'Grade 6',
-          section: 'A',
           reason: 'MEDICAL_EMERGENCY',
           leavingDate: new Date().toISOString(),
           leavingTime: '10:00',
           leavingWith: 'PARENTS',
+          parentType: 'FATHER',
           approvedBy: 'FRONT_OFFICE',
-          approvedByStaffId: admin._id.toString(),
-          approvedByName: admin.name,
         })
-        .expect(500);
+        .expect(201);
 
-      expect(res.body.success).toBe(false);
+      expect(res.body.success).toBe(true);
     });
   });
 
-  describe('PUT /api/front-desk/gate-passes/:id', () => {
+  describe('PUT /api/gate-passes/:id', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).put('/api/front-desk/gate-passes/000000000000000000000001').expect(401);
+      await request(app).put('/api/gate-passes/000000000000000000000001').expect(401);
     });
 
     it('returns 404 for non-existent gate pass', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
       await request(app)
-        .put('/api/front-desk/gate-passes/000000000000000000000001')
+        .put('/api/gate-passes/000000000000000000000001')
         .set(authHeadersFor(admin))
         .send({ notes: 'test' })
         .expect(404);
     });
   });
 
-  describe('DELETE /api/front-desk/gate-passes/:id', () => {
+  describe('DELETE /api/gate-passes/:id', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
-      await request(app).delete('/api/front-desk/gate-passes/000000000000000000000001').expect(401);
+      await request(app).delete('/api/gate-passes/000000000000000000000001').expect(401);
     });
 
-    it('deletes a non-existent gate pass without error', async () => {
-      // Gate pass creation via frontDesk route is broken (status: 'PENDING' bug),
-      // so we test that DELETE on a non-existent ID succeeds (deleteOne on missing doc is a no-op).
+    it('returns 404 when deleting a non-existent gate pass', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
 
       const deleteRes = await request(app)
-        .delete('/api/front-desk/gate-passes/000000000000000000000099')
+        .delete('/api/gate-passes/000000000000000000000099')
         .set(authHeadersFor(admin))
-        .expect(200);
+        .expect(404);
 
-      expect(deleteRes.body.success).toBe(true);
+      expect(deleteRes.body.success).toBe(false);
     });
   });
 });

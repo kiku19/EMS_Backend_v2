@@ -309,9 +309,9 @@ describe('staff routes', () => {
           role: ['Teacher'],
           email: 'duplicate@example.com',
         })
-        .expect(400);
+        .expect(409);
 
-      expect(response.body.error).toMatch(/email already used/i);
+      expect(response.body.error).toMatch(/email/i);
     });
 
     // ─── Zod validation tests ───────────────────────────────────

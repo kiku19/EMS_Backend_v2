@@ -93,11 +93,13 @@ describe('upload routes', () => {
         })
         .expect(400);
 
-      expect(res.body.error).toMatch(/HTML markup/i);
+      expect(res.body.error).toMatch(/HTML/i);
     });
 
-    it('returns 503 when Cloudinary is not configured', async () => {
-      // In test environment Cloudinary env vars are not set
+    it('returns 400 when image content is faked (MIME mismatch)', async () => {
+      // The route runs MIME-magic validation BEFORE the Cloudinary check, so
+      // a fake-payload "image/jpeg" is rejected at the file-validation layer
+      // with 400 instead of reaching the 503 "not configured" path.
       const res = await request(app)
         .post(BASE)
         .set(headers)
@@ -105,9 +107,9 @@ describe('upload routes', () => {
           filename: 'photo.jpg',
           contentType: 'image/jpeg',
         })
-        .expect(503);
+        .expect(400);
 
-      expect(res.body.error).toMatch(/not configured/i);
+      expect(res.body.error).toMatch(/does not match|declared type|magic/i);
     });
   });
 });

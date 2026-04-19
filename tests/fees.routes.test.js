@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { FeePayment, Student } from '../database.js';
+import { FeePayment, Student, StudentFeeStructure } from '../database.js';
 import {
   authHeadersFor,
   createClassRecord,
@@ -60,6 +60,24 @@ async function seedPayment(app, accountant, student, classRecord, overrides = {}
 // to ObjectId when the schema says so, so the query filter ends up as
 // ObjectId("..."). If we stored a plain string here MongoDB would never match
 // it against an ObjectId query — hence the explicit cast below.
+// Seed a StudentFeeStructure so POST /payments passes the EXCEEDS_BALANCE
+// guard. The route's auto-init only populates totalFee when a matching FeeHead
+// exists for the class — tests that don't seed FeeHeads need an explicit
+// structure row with a nonzero totalBalance.
+async function seedStudentFeeStructure({ studentId, classId, schoolId, totalFee = 1000 }) {
+  return StudentFeeStructure.create({
+    studentId,
+    classId,
+    academicYear: '2025-26',
+    schoolId,
+    feeHeads: [],
+    totalFee,
+    totalPaid: 0,
+    totalBalance: totalFee,
+    overallStatus: 'pending',
+  });
+}
+
 async function insertPaymentDirect(fields) {
   const { schoolId, ...rest } = fields;
   const result = await FeePayment.collection.insertOne({
@@ -281,6 +299,12 @@ describe('POST /api/fees/payments', () => {
       name: 'Auto Receipt Student',
       rollNo: 4,
       classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 0, balanceAmount: 1000 },
+    });
+    await seedStudentFeeStructure({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: student.schoolId,
     });
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
@@ -294,13 +318,19 @@ describe('POST /api/fees/payments', () => {
     expect(res.body.receiptNumber).toMatch(/^RCP-\d{4}-\d+$/);
   });
 
-  it('uses the supplied receipt number when one is provided', async () => {
+  it('ignores a client-supplied receipt number and generates server-side', async () => {
     const accountant = await createAccountant();
     const classRecord = await createClassRecord({ name: 'Class 11', section: 'B' });
     const student = await createStudentRecord({
       name: 'Custom Receipt Student',
       rollNo: 5,
       classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 0, balanceAmount: 1000 },
+    });
+    await seedStudentFeeStructure({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: student.schoolId,
     });
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
@@ -311,7 +341,10 @@ describe('POST /api/fees/payments', () => {
       .send(validPaymentBody(student._id, classRecord._id, { receiptNumber: 'RCP-CUSTOM-001' }))
       .expect(201);
 
-    expect(res.body.receiptNumber).toBe('RCP-CUSTOM-001');
+    // Server-generated receipts follow RCP-YYYY-###### format; any client value
+    // is intentionally ignored to prevent collision + tampering.
+    expect(res.body.receiptNumber).not.toBe('RCP-CUSTOM-001');
+    expect(res.body.receiptNumber).toMatch(/^RCP-\d{4}-\d+$/);
   });
 
   it('marks student feeStatus as paid when payment covers the full fee balance', async () => {
@@ -449,7 +482,7 @@ describe('GET /api/fees/payments', () => {
     const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
     expect(res.body.payments).toHaveLength(2);
-    const amounts = res.body.map((p) => p.amount).sort((a, b) => a - b);
+    const amounts = res.body.payments.map((p) => p.amount).sort((a, b) => a - b);
     expect(amounts).toEqual([100, 200]);
   });
 
@@ -571,9 +604,9 @@ describe('GET /api/fees/payments', () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(completedRes.body).toHaveLength(1);
-    expect(completedRes.body[0].status).toBe('completed');
-    expect(completedRes.body[0].amount).toBe(500);
+    expect(completedRes.body.payments).toHaveLength(1);
+    expect(completedRes.body.payments[0].status).toBe('completed');
+    expect(completedRes.body.payments[0].amount).toBe(500);
 
     const pendingRes = await request(app)
       .get('/api/fees/payments')
@@ -581,9 +614,9 @@ describe('GET /api/fees/payments', () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(pendingRes.body).toHaveLength(1);
-    expect(pendingRes.body[0].status).toBe('pending');
-    expect(pendingRes.body[0].amount).toBe(600);
+    expect(pendingRes.body.payments).toHaveLength(1);
+    expect(pendingRes.body.payments[0].status).toBe('pending');
+    expect(pendingRes.body.payments[0].amount).toBe(600);
   });
 
   it('returns payments sorted by paymentDate descending', async () => {
@@ -663,14 +696,14 @@ describe('GET /api/fees/payments', () => {
     const authHeadersA = authHeadersFor(accountantA, 'accountant');
     const resA = await request(app).get('/api/fees/payments').set(authHeadersA).expect(200);
 
-    expect(resA.body).toHaveLength(0);
+    expect(resA.body.payments).toHaveLength(0);
 
     // School B accountant should see that payment.
     const authHeadersB = authHeadersFor(accountantB, 'accountant');
     const resB = await request(app).get('/api/fees/payments').set(authHeadersB).expect(200);
 
-    expect(resB.body).toHaveLength(1);
-    expect(resB.body[0].amount).toBe(750);
+    expect(resB.body.payments).toHaveLength(1);
+    expect(resB.body.payments[0].amount).toBe(750);
   });
 });
 

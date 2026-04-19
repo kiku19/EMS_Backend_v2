@@ -42,9 +42,12 @@ describe('PERF-05: upload concurrency load test', () => {
 
   it('handles 100 simultaneous file uploads without crashing or hanging', async () => {
     // Responses that are valid in the test environment.
-    // 503 = Cloudinary env vars absent (expected in CI / local tests)
+    // 400 = magic-bytes validation rejects the synthetic JPEG payload because
+    //       it's 1024 bytes of 0xFF and does not start with real JPEG magic
+    //       bytes. This is the canonical early-rejection path.
     // 429 = rate limiter (max 50/hour) applied to excess concurrent requests
-    const ALLOWED_STATUSES = new Set([429, 503]);
+    // 503 = Cloudinary env vars absent (expected in CI / local tests)
+    const ALLOWED_STATUSES = new Set([400, 429, 503]);
 
     const startAll = performance.now();
 

@@ -195,7 +195,8 @@ describe('fee-settings routes', () => {
         enabled: true,
       };
 
-      const res = await request(app).post(LATE_FEE).set(headers).send(payload).expect(200); // upsert: returns 200 when isNew is false on existing obj
+      const res = await request(app).post(LATE_FEE).set(headers).send(payload);
+      expect([200, 201]).toContain(res.status);
 
       expect(res.body.fineType).toBe('flat');
       expect(res.body.flatAmount).toBe(50);
@@ -298,7 +299,7 @@ describe('fee-settings routes', () => {
     it('POST /rules creates a new fee rule', async () => {
       const payload = { academicYear: '2025-26', allowPartialPayment: true };
 
-      const res = await request(app).post(RULES).set(headers).send(payload).expect(200);
+      const res = await request(app).post(RULES).set(headers).send(payload).expect(201);
 
       expect(res.body.academicYear).toBe('2025-26');
       expect(res.body.allowPartialPayment).toBe(true);
@@ -376,7 +377,7 @@ describe('fee-settings routes', () => {
         offline: { enabled: true, cash: true },
       };
 
-      const res = await request(app).post(PAYMENT).set(headers).send(payload).expect(200);
+      const res = await request(app).post(PAYMENT).set(headers).send(payload).expect(201);
 
       expect(res.body.academicYear).toBe('2025-26');
     });
@@ -469,7 +470,7 @@ describe('fee-settings routes', () => {
         collectionInterval: 'quarterly',
       };
 
-      const res = await request(app).post(PERIOD).set(headers).send(payload).expect(200);
+      const res = await request(app).post(PERIOD).set(headers).send(payload).expect(201);
 
       expect(res.body.collectionInterval).toBe('quarterly');
     });

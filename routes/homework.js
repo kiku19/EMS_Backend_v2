@@ -487,7 +487,7 @@ router.post(
         totalMarks,
         sentToParents,
       } = req.body;
-      const teacherId = req.user._id;
+      const teacherId = req.user.id || req.user._id;
 
       // Validate and parse dueDate — default to 7 days from now if omitted
       const parsedDueDate = dueDate

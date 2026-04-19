@@ -591,19 +591,21 @@ describe('messages routes', () => {
       expect(updated.isDeleted).toBe(false);
     });
 
-    it('marks message as fully deleted when all participants delete it', async () => {
+    it('keeps message persistent when all participants hide it (hide-for-me semantics)', async () => {
+      // The DELETE /messages/:id endpoint implements hide-for-me, not global
+      // soft-delete: adding every participant to `deletedFor` intentionally
+      // does NOT flip `isDeleted` so the message stays in the audit log and
+      // stays available to any new participant that joins the conversation.
       const { app, admin1, admin2, headers1, headers2 } = await setupTwoStaffUsers();
       const conversation = await createDirectConversation(admin1, admin2);
       const msg = await createMessage(conversation, admin1, admin2, 'double delete');
 
-      // First user deletes
       await request(app)
         .delete(`/api/messages/${msg._id}`)
         .query({ userId: admin1._id.toString() })
         .set(headers1)
         .expect(200);
 
-      // Second user deletes
       await request(app)
         .delete(`/api/messages/${msg._id}`)
         .query({ userId: admin2._id.toString() })
@@ -611,7 +613,11 @@ describe('messages routes', () => {
         .expect(200);
 
       const updated = await Message.findById(msg._id).lean();
-      expect(updated.isDeleted).toBe(true);
+      expect(updated).not.toBeNull();
+      expect(updated.isDeleted).not.toBe(true);
+      expect(updated.deletedFor.map(String)).toEqual(
+        expect.arrayContaining([admin1._id.toString(), admin2._id.toString()])
+      );
     });
   });
 

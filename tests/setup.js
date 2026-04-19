@@ -1,18 +1,14 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { afterAll, beforeAll, beforeEach, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach } from 'vitest';
 import { resetDefaultSchool } from './helpers/factories.js';
 
-// Freeze the test clock so hardcoded YYYY-MM-DD literals in tests (exam
-// startDates, attendance dates, payroll months, etc.) stay stable across
-// real-world time passing. Chosen date is mid-March 2026 — ahead of most
-// "past attendance" literals (2026-03-06, 2026-03-01) and before "future
-// exam" literals (2026-04-01, 2026-04-15) so both categories of test
-// remain self-consistent.
-//
-// Individual tests that specifically need real time may call
-// vi.useRealTimers() in their own beforeEach.
-vi.useFakeTimers({ now: new Date('2026-03-15T12:00:00Z'), shouldAdvanceTime: true });
+// Note: `vi.useFakeTimers` is set up in ./clockSetup.js, which is listed
+// BEFORE this file in vitest.config.js's setupFiles. That ordering matters
+// because importing factories.js (line above) transitively loads
+// utils/constants.js, which eagerly computes CURRENT_ACADEMIC_YEAR from
+// `new Date()` at module load time. Freezing the clock in a separate
+// earlier-loaded setup file ensures that computation sees the fake clock.
 
 let mongoServer;
 
