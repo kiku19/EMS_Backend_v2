@@ -11,14 +11,15 @@ const router = express.Router();
 router.use(authenticate);
 const logger = createLogger('Upload');
 
-// Strict MIME type whitelist — only allow known safe document/image/audio/video types
+// Strict MIME type whitelist — only allow known safe document/image/audio/video types.
+// image/svg+xml is intentionally excluded: SVG can contain <script> tags and execute
+// JavaScript in the browser, making it functionally equivalent to an HTML file.
 const ALLOWED_MIME_TYPES = new Set([
-  // Images
+  // Images (raster only — no SVG)
   'image/jpeg',
   'image/png',
   'image/gif',
   'image/webp',
-  'image/svg+xml',
   // Documents
   'application/pdf',
   'application/msword',
@@ -40,6 +41,66 @@ const ALLOWED_MIME_TYPES = new Set([
   'video/webm',
   'video/ogg',
 ]);
+
+// Magic byte signatures to verify actual file content matches declared MIME type.
+// This prevents MIME spoofing (e.g., uploading an HTML file with Content-Type: image/jpeg).
+const MAGIC_BYTES = [
+  { mime: 'image/jpeg', bytes: [0xff, 0xd8, 0xff] },
+  { mime: 'image/png', bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  { mime: 'image/gif', bytes: [0x47, 0x49, 0x46, 0x38] },
+  { mime: 'image/webp', bytes: [0x52, 0x49, 0x46, 0x46], offset: 0, extra: { bytes: [0x57, 0x45, 0x42, 0x50], offset: 8 } },
+  { mime: 'application/pdf', bytes: [0x25, 0x50, 0x44, 0x46] },
+];
+
+// Patterns in the first 512 bytes that indicate executable/HTML content regardless of MIME type.
+const DANGEROUS_PATTERNS = [
+  /^\s*<!DOCTYPE\s+html/i,
+  /^\s*<html[\s>]/i,
+  /^\s*<script[\s>]/i,
+  /^\s*<\?xml.*<\s*script/i, // SVG-with-script disguised as XML
+  /^\s*<svg[\s>]/i,
+];
+
+/**
+ * Validates the actual file buffer against its declared MIME type.
+ * Returns an error string if the content looks dangerous or mismatched, null otherwise.
+ */
+function validateFileContent(buffer, mimetype) {
+  const head = buffer.slice(0, 512);
+  // latin1 is byte-accurate for regex matching against ASCII patterns
+  const headStr = head.toString('latin1');
+
+  // Block any file whose content looks like HTML/SVG/script regardless of stated MIME type
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(headStr)) {
+      return `File content appears to be HTML or script, which is not allowed`;
+    }
+  }
+
+  // For MIME types with known magic bytes, verify the actual bytes match
+  const sig = MAGIC_BYTES.find((s) => s.mime === mimetype);
+  if (sig) {
+    const matches = sig.bytes.every((b, i) => buffer[i] === b);
+    if (!matches) {
+      return `File content does not match declared type '${mimetype}'`;
+    }
+    if (sig.extra) {
+      const extraMatches = sig.extra.bytes.every((b, i) => buffer[sig.extra.offset + i] === b);
+      if (!extraMatches) {
+        return `File content does not match declared type '${mimetype}'`;
+      }
+    }
+  }
+
+  // text/plain and text/csv: block if content contains HTML tags
+  if (mimetype === 'text/plain' || mimetype === 'text/csv') {
+    if (/<[a-z][\s\S]*>/i.test(headStr)) {
+      return `File content contains HTML markup, which is not allowed in text files`;
+    }
+  }
+
+  return null;
+}
 
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -66,12 +127,29 @@ const uploadLimiter = rateLimit({
 router.post(
   '/',
   uploadLimiter,
-  upload.single('file'),
+  (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ error: 'File too large. Maximum allowed size is 10 MB.' });
+        }
+        return res.status(400).json({ error: err.message });
+      }
+      if (err) return next(err);
+      next();
+    });
+  },
   planLimitGate('storageMb', (req) => (req.file ? req.file.size / (1024 * 1024) : 0)),
   async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: req.t('common:routes.noFileUploaded') });
+      }
+
+      // Validate actual file content against declared MIME type to prevent spoofing
+      const contentError = validateFileContent(req.file.buffer, req.file.mimetype);
+      if (contentError) {
+        return res.status(400).json({ error: contentError });
       }
 
       // Determine Cloudinary resource type from MIME

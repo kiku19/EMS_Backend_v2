@@ -29,67 +29,74 @@ router.get('/:id/download', downloadTokenAuth, async (req, res) => {
     // Get staff details
     const staff = await Staff.findOne(scopeBySchool(schoolId, { _id: record.employeeId }));
 
-    // Generate PDF
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    // Build PDF into a buffer first so any generation error can be returned as JSON
+    // (once res headers are sent we can no longer send a proper error response)
+    const pdfBuffer = await new Promise((resolve, reject) => {
+      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+      const chunks = [];
+      doc.on('data', (chunk) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
 
-    // Set response headers
+      // PDF Content
+      doc.fontSize(20).text('Payslip', { align: 'center' });
+      doc.moveDown();
+
+      doc.fontSize(12).text('School Management System', { align: 'center' });
+      doc.moveDown();
+
+      if (staff) {
+        doc.fontSize(14).text(`Staff: ${staff.name} (${staff.code})`);
+        doc.text(`Email: ${staff.email || 'N/A'}`);
+      }
+      doc.text(`Month: ${MONTH_NAMES[record.month]} ${record.year}`);
+
+      doc.moveDown();
+      doc.fontSize(10).text('Earnings:', { underline: true });
+      doc.text(`Basic Salary: ${record.baseSalary}`);
+      doc.text(`Allowances: ${record.totalAllowances || 0}`);
+      doc.text(`Gross Pay: ${record.grossPay}`);
+
+      doc.moveDown();
+      doc.text('Deductions:', { underline: true });
+      if (record.deductions && record.deductions.length > 0) {
+        record.deductions.forEach((d) => {
+          doc.text(`  ${d.type}: ${d.amount}`);
+        });
+      }
+      doc.text(`Total Deductions: ${record.totalDeductions || 0}`);
+
+      doc.moveDown();
+      doc.fontSize(12).text(`Net Salary: ${record.netPay}`, { underline: true });
+      doc.moveDown();
+
+      doc.fontSize(10).text(`Payment Status: ${record.status}`);
+      if (record.paymentDate) {
+        doc.text(`Payment Date: ${new Date(record.paymentDate).toLocaleDateString()}`);
+      }
+
+      doc.moveDown(2);
+      doc.fontSize(8).text(`Generated on: ${new Date().toLocaleString()}`, { align: 'right' });
+
+      doc.end();
+    });
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
       `attachment; filename=payslip-${MONTH_NAMES[record.month]}-${record.year}.pdf`
     );
-
-    // Pipe PDF to response
-    doc.pipe(res);
-
-    // PDF Content
-    doc.fontSize(20).text('Payslip', { align: 'center' });
-    doc.moveDown();
-
-    doc.fontSize(12).text('School Management System', { align: 'center' });
-    doc.moveDown();
-
-    if (staff) {
-      doc.fontSize(14).text(`Staff: ${staff.name} (${staff.code})`);
-      doc.text(`Email: ${staff.email || 'N/A'}`);
-    }
-    doc.text(`Month: ${MONTH_NAMES[record.month]} ${record.year}`);
-
-    doc.moveDown();
-    doc.fontSize(10).text('Earnings:', { underline: true });
-    doc.text(`Basic Salary: ${record.baseSalary}`);
-    doc.text(`Allowances: ${record.totalAllowances || 0}`);
-    doc.text(`Gross Pay: ${record.grossPay}`);
-
-    doc.moveDown();
-    doc.text('Deductions:', { underline: true });
-    if (record.deductions && record.deductions.length > 0) {
-      record.deductions.forEach((d) => {
-        doc.text(`  ${d.type}: ${d.amount}`);
-      });
-    }
-    doc.text(`Total Deductions: ${record.totalDeductions || 0}`);
-
-    doc.moveDown();
-    doc.fontSize(12).text(`Net Salary: ${record.netPay}`, { underline: true });
-    doc.moveDown();
-
-    doc.fontSize(10).text(`Payment Status: ${record.status}`);
-    if (record.paymentDate) {
-      doc.text(`Payment Date: ${new Date(record.paymentDate).toLocaleDateString()}`);
-    }
-
-    doc.moveDown(2);
-    doc.fontSize(8).text(`Generated on: ${new Date().toLocaleString()}`, { align: 'right' });
-
-    doc.end();
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.send(pdfBuffer);
   } catch (error) {
     console.error('Error downloading payslip:', error);
-    res.status(500).json({
-      success: false,
-      message: req.t('common:routes.serverError'),
-      error: error.message,
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: req.t('common:routes.serverError'),
+        error: error.message,
+      });
+    }
   }
 });
 router.use(authenticate);

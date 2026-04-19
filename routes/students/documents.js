@@ -7,9 +7,11 @@ import { checkPermission } from '../../middleware/permissions.js';
 import { scopeBySchool } from './helpers.js';
 import { validateZod } from '../../validators/zodHelpers.js';
 import { addDocumentSchema } from '../../validators/studentSchema.js';
+import { objectIdParamHandler } from '../../middleware/validation.js';
 
 const router = express.Router();
 router.use(authenticate);
+router.param('id', objectIdParamHandler);
 
 router.post(
   '/:id/documents',

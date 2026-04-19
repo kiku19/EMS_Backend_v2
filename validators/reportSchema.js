@@ -115,6 +115,15 @@ export const absenteesQuerySchema = z
   })
   .strip();
 
+export const attendanceTrendQuerySchema = z
+  .object({
+    startDate: dateString,
+    endDate: dateString,
+    classId: optionalObjectId,
+    groupBy: z.enum(['day', 'week', 'month']).default('day'),
+  })
+  .strip();
+
 export const lateArrivalsQuerySchema = z
   .object({
     startDate: dateString,

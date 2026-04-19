@@ -245,13 +245,16 @@ describe('Student Create Drawer — Zod Validation', () => {
     expect(res.body.error).toBeTruthy();
   });
 
-  it('rejects invalid feeStatus enum', async () => {
+  it('strips client-supplied feeStatus — server derives it from payment state', async () => {
+    // feeStatus is not client-settable after the audit fix; the Zod schema
+    // strips it, so an invalid value is silently dropped and create
+    // succeeds with the server-seeded default 'pending'.
     const res = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { feeStatus: 'overdue' }))
-      .expect(400);
-    expect(res.body.error).toBeTruthy();
+      .expect(201);
+    expect(res.body.feeStatus).toBe('pending');
   });
 
   it('rejects invalid status enum', async () => {
@@ -323,7 +326,7 @@ describe('Student Create Drawer — Multi-tenancy', () => {
   it('sets schoolId from req.user, not from request body', async () => {
     const school = await createSchoolRecord({ name: 'Tenant School' });
     const admin = await createStaffUser({ schoolId: school._id });
-    const classRecord = await createClassRecord();
+    const classRecord = await createClassRecord({ schoolId: school._id });
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(admin, 'admin');
 
@@ -346,7 +349,7 @@ describe('Student Create Drawer — Multi-tenancy', () => {
     const schoolB = await createSchoolRecord({ name: 'School Beta' });
     const adminA = await createStaffUser({ schoolId: schoolA._id });
     const adminB = await createStaffUser({ schoolId: schoolB._id });
-    const classRecord = await createClassRecord();
+    const classRecord = await createClassRecord({ schoolId: schoolA._id });
     const { app } = createTestApp();
 
     // Create student under school A
@@ -391,7 +394,7 @@ describe('Student Create Drawer — DB Persistence', () => {
   beforeEach(async () => {
     school = await createSchoolRecord({ name: 'Persistence School' });
     const admin = await createStaffUser({ schoolId: school._id });
-    const classRecord = await createClassRecord();
+    const classRecord = await createClassRecord({ schoolId: school._id });
     ({ app } = createTestApp());
     authHeaders = authHeadersFor(admin, 'admin');
     classId = classRecord._id.toString();
@@ -702,7 +705,7 @@ describe('Student Create Drawer — Cross-module Visibility', () => {
   beforeEach(async () => {
     school = await createSchoolRecord({ name: 'Visibility School' });
     const admin = await createStaffUser({ schoolId: school._id });
-    const classRecord = await createClassRecord();
+    const classRecord = await createClassRecord({ schoolId: school._id });
     ({ app } = createTestApp());
     authHeaders = authHeadersFor(admin, 'admin');
     classId = classRecord._id.toString();
@@ -742,7 +745,7 @@ describe('Student Create Drawer — Cross-module Visibility', () => {
   });
 
   it('newly created student is filterable by classId', async () => {
-    const classB = await createClassRecord({ name: 'Class 8', section: 'B' });
+    const classB = await createClassRecord({ name: 'Class 8', section: 'B', schoolId: school._id });
 
     await request(app)
       .post('/api/students')

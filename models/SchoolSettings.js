@@ -250,6 +250,9 @@ const schoolSettingsSchema = new mongoose.Schema(
       },
     },
 
+    // Currency Configuration (ISO 4217 code, e.g. 'INR', 'USD', 'EUR')
+    currency: { type: String, default: 'INR', trim: true, uppercase: true },
+
     // Localization Configuration
     language: {
       defaultLanguage: { type: String, enum: ['en', 'hi', 'ta', 'te', 'kn', 'ur'], default: 'en' },

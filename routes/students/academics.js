@@ -2,13 +2,15 @@ import express from 'express';
 import { Student, Result, Remark, Parent } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
-import { sanitizeQueryStr, sanitizeString } from '../../middleware/validation.js';
+import { sanitizeQueryStr, sanitizeString, objectIdParamHandler } from '../../middleware/validation.js';
 import { validateZod } from '../../validators/index.js';
 import { EVENTS, emitEvent } from '../../utils/socketEvents.js';
 import { scopeBySchool, createRemarkSchema, updateRemarkSchema } from './helpers.js';
 
 const router = express.Router();
 router.use(authenticate);
+router.param('id', objectIdParamHandler);
+router.param('remarkId', objectIdParamHandler);
 
 router.get('/:id/results', authenticate, checkPermission('students', 'view'), async (req, res) => {
   try {

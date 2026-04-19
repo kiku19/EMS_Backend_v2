@@ -40,8 +40,9 @@ function buildReminderPayload(overrides = {}) {
   };
 }
 
-async function createReminderDirect(adminId) {
+async function createReminderDirect(adminId, schoolId) {
   return Reminder.create({
+    schoolId,
     title: 'Test Reminder',
     type: 'fee',
     message: 'Test message',
@@ -72,16 +73,16 @@ describe('reminders routes', () => {
   // ── GET / ────────────────────────────────────────────────────────────────
   describe('GET /api/reminders', () => {
     it('returns empty list when no reminders exist', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       const res = await request(app).get('/api/reminders').set(headers).expect(200);
       expect(res.body.reminders).toEqual([]);
       expect(res.body.total).toBe(0);
     });
 
     it('returns existing reminders with pagination info', async () => {
-      const { admin, app, headers } = await setup();
-      await createReminderDirect(admin._id);
-      await createReminderDirect(admin._id);
+      const { school, admin, app, headers } = await setup();
+      await createReminderDirect(admin._id, school._id);
+      await createReminderDirect(admin._id, school._id);
 
       const res = await request(app).get('/api/reminders').set(headers).expect(200);
       expect(res.body.reminders).toHaveLength(2);
@@ -89,8 +90,9 @@ describe('reminders routes', () => {
     });
 
     it('filters reminders by type', async () => {
-      const { admin, app, headers } = await setup();
+      const { school, admin, app, headers } = await setup();
       await Reminder.create({
+        schoolId: school._id,
         title: 'Fee',
         type: 'fee',
         message: 'msg',
@@ -103,6 +105,7 @@ describe('reminders routes', () => {
         nextExecutionAt: new Date(),
       });
       await Reminder.create({
+        schoolId: school._id,
         title: 'Attendance',
         type: 'attendance',
         message: 'msg',
@@ -126,8 +129,9 @@ describe('reminders routes', () => {
     });
 
     it('filters reminders by isActive', async () => {
-      const { admin, app, headers } = await setup();
+      const { school, admin, app, headers } = await setup();
       await Reminder.create({
+        schoolId: school._id,
         title: 'Active',
         type: 'fee',
         message: 'msg',
@@ -140,6 +144,7 @@ describe('reminders routes', () => {
         nextExecutionAt: new Date(),
       });
       await Reminder.create({
+        schoolId: school._id,
         title: 'Inactive',
         type: 'fee',
         message: 'msg',
@@ -166,7 +171,7 @@ describe('reminders routes', () => {
   // ── POST / ───────────────────────────────────────────────────────────────
   describe('POST /api/reminders', () => {
     it('creates a reminder and schedules it', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       const res = await request(app)
         .post('/api/reminders')
         .set(headers)
@@ -182,13 +187,13 @@ describe('reminders routes', () => {
   // ── GET /:id ─────────────────────────────────────────────────────────────
   describe('GET /api/reminders/:id', () => {
     it('returns 404 for non-existent reminder', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       await request(app).get('/api/reminders/000000000000000000000000').set(headers).expect(404);
     });
 
     it('returns reminder details with empty logs', async () => {
-      const { admin, app, headers } = await setup();
-      const reminder = await createReminderDirect(admin._id);
+      const { school, admin, app, headers } = await setup();
+      const reminder = await createReminderDirect(admin._id, school._id);
 
       const res = await request(app).get(`/api/reminders/${reminder._id}`).set(headers).expect(200);
 
@@ -201,7 +206,7 @@ describe('reminders routes', () => {
   // ── PUT /:id ─────────────────────────────────────────────────────────────
   describe('PUT /api/reminders/:id', () => {
     it('returns 404 for non-existent reminder', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       await request(app)
         .put('/api/reminders/000000000000000000000000')
         .set(headers)
@@ -210,8 +215,8 @@ describe('reminders routes', () => {
     });
 
     it('updates reminder fields', async () => {
-      const { admin, app, headers } = await setup();
-      const reminder = await createReminderDirect(admin._id);
+      const { school, admin, app, headers } = await setup();
+      const reminder = await createReminderDirect(admin._id, school._id);
 
       const res = await request(app)
         .put(`/api/reminders/${reminder._id}`)
@@ -227,13 +232,13 @@ describe('reminders routes', () => {
   // ── DELETE /:id ───────────────────────────────────────────────────────────
   describe('DELETE /api/reminders/:id', () => {
     it('returns 404 for non-existent reminder', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       await request(app).delete('/api/reminders/000000000000000000000000').set(headers).expect(404);
     });
 
     it('deletes reminder successfully', async () => {
-      const { admin, app, headers } = await setup();
-      const reminder = await createReminderDirect(admin._id);
+      const { school, admin, app, headers } = await setup();
+      const reminder = await createReminderDirect(admin._id, school._id);
 
       const res = await request(app)
         .delete(`/api/reminders/${reminder._id}`)
@@ -250,7 +255,7 @@ describe('reminders routes', () => {
   // ── POST /:id/toggle ──────────────────────────────────────────────────────
   describe('POST /api/reminders/:id/toggle', () => {
     it('returns 404 for non-existent reminder', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       await request(app)
         .post('/api/reminders/000000000000000000000000/toggle')
         .set(headers)
@@ -258,8 +263,8 @@ describe('reminders routes', () => {
     });
 
     it('deactivates an active reminder', async () => {
-      const { admin, app, headers } = await setup();
-      const reminder = await createReminderDirect(admin._id);
+      const { school, admin, app, headers } = await setup();
+      const reminder = await createReminderDirect(admin._id, school._id);
 
       const res = await request(app)
         .post(`/api/reminders/${reminder._id}/toggle`)
@@ -271,8 +276,9 @@ describe('reminders routes', () => {
     });
 
     it('activates an inactive reminder', async () => {
-      const { admin, app, headers } = await setup();
+      const { school, admin, app, headers } = await setup();
       const reminder = await Reminder.create({
+        schoolId: school._id,
         title: 'Inactive',
         type: 'fee',
         message: 'msg',
@@ -298,7 +304,7 @@ describe('reminders routes', () => {
   // ── POST /:id/duplicate ───────────────────────────────────────────────────
   describe('POST /api/reminders/:id/duplicate', () => {
     it('returns 404 for non-existent reminder', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       await request(app)
         .post('/api/reminders/000000000000000000000000/duplicate')
         .set(headers)
@@ -306,8 +312,8 @@ describe('reminders routes', () => {
     });
 
     it('creates a copy of the reminder as inactive', async () => {
-      const { admin, app, headers } = await setup();
-      const reminder = await createReminderDirect(admin._id);
+      const { school, admin, app, headers } = await setup();
+      const reminder = await createReminderDirect(admin._id, school._id);
 
       const res = await request(app)
         .post(`/api/reminders/${reminder._id}/duplicate`)
@@ -323,7 +329,7 @@ describe('reminders routes', () => {
   // ── Templates ─────────────────────────────────────────────────────────────
   describe('GET /api/reminders/templates/all', () => {
     it('returns empty list when no templates exist', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       const res = await request(app).get('/api/reminders/templates/all').set(headers).expect(200);
 
       expect(Array.isArray(res.body)).toBe(true);
@@ -333,7 +339,7 @@ describe('reminders routes', () => {
 
   describe('POST /api/reminders/templates', () => {
     it('creates a reminder template', async () => {
-      const { app, headers } = await setup();
+      const { school, app, headers } = await setup();
       const res = await request(app)
         .post('/api/reminders/templates')
         .set(headers)

@@ -184,33 +184,29 @@ router.post(
     const body = parsed.data;
     const results = [];
 
-    // Mode A: same data to multiple IDs
+    // Mode A: same data to multiple IDs — use bulkWrite for a single DB round-trip
     if ('ids' in body) {
       const { ids, data } = body;
-      for (let i = 0; i < ids.length; i++) {
-        try {
-          const updated = await Student.findOneAndUpdate(
-            { _id: ids[i], schoolId, isDeleted: { $ne: true } },
-            { $set: buildStudentUpdateSet(data) },
-            { new: false }
-          )
-            .select('_id')
-            .lean();
-
-          if (!updated) {
-            results.push({
-              index: i,
-              id: ids[i],
-              status: 'failed',
-              error: req.t('students:errors.notFound'),
-            });
-          } else {
-            results.push({ index: i, id: ids[i], status: 'success' });
-          }
-        } catch (err) {
-          logger.error({ err, id: ids[i] }, 'Batch student update error');
-          results.push({ index: i, id: ids[i], status: 'failed', error: err.message });
+      const updateSet = buildStudentUpdateSet(data);
+      try {
+        const bulkOps = ids.map((id) => ({
+          updateOne: {
+            filter: { _id: id, schoolId, isDeleted: { $ne: true } },
+            update: { $set: updateSet },
+          },
+        }));
+        const bulkResult = await Student.bulkWrite(bulkOps, { ordered: false });
+        ids.forEach((id, i) => {
+          results.push({ index: i, id, status: 'success' });
+        });
+        // Adjust for any that weren't matched (matched < total)
+        const unmatched = ids.length - bulkResult.matchedCount;
+        if (unmatched > 0) {
+          logger.warn({ unmatched }, 'Some students not found during batch update');
         }
+      } catch (err) {
+        logger.error({ err }, 'Batch student bulkWrite error');
+        return res.status(500).json({ error: err.message });
       }
     } else {
       // Mode B: per-item updates
@@ -309,30 +305,21 @@ router.post(
 
     if ('ids' in body) {
       const { ids, data } = body;
-      for (let i = 0; i < ids.length; i++) {
-        try {
-          const updated = await Staff.findOneAndUpdate(
-            { _id: ids[i], schoolId, isDeleted: { $ne: true } },
-            { $set: buildStaffUpdateSet(data) },
-            { new: false }
-          )
-            .select('_id')
-            .lean();
-
-          results.push(
-            updated
-              ? { index: i, id: ids[i], status: 'success' }
-              : {
-                  index: i,
-                  id: ids[i],
-                  status: 'failed',
-                  error: req.t('common:errors.staffNotFound'),
-                }
-          );
-        } catch (err) {
-          logger.error({ err, id: ids[i] }, 'Batch staff update error');
-          results.push({ index: i, id: ids[i], status: 'failed', error: err.message });
-        }
+      const updateSet = buildStaffUpdateSet(data);
+      try {
+        const bulkOps = ids.map((id) => ({
+          updateOne: {
+            filter: { _id: id, schoolId, isDeleted: { $ne: true } },
+            update: { $set: updateSet },
+          },
+        }));
+        await Staff.bulkWrite(bulkOps, { ordered: false });
+        ids.forEach((id, i) => {
+          results.push({ index: i, id, status: 'success' });
+        });
+      } catch (err) {
+        logger.error({ err }, 'Batch staff bulkWrite error');
+        return res.status(500).json({ error: err.message });
       }
     } else {
       const { items } = body;

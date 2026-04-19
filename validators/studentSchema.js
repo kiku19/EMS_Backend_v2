@@ -144,10 +144,9 @@ export const createStudentSchema = z
       .max(100, 'Student name must not exceed 100 characters')
       .trim(),
     admissionId: z
-      .string()
+      .string({ required_error: 'Admission ID is required' })
       .min(1, 'Admission ID is required')
-      .max(50, 'Admission ID must not exceed 50 characters')
-      .optional(),
+      .max(50, 'Admission ID must not exceed 50 characters'),
     academicYear: academicYear,
     classId: objectId,
 

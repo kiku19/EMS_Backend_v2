@@ -3,12 +3,15 @@ import { Student, StudentFeeStructure, FeePayment, School, Parent } from '../../
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { resolveAcademicYear } from '../../utils/academicYear.js';
-import { scopeBySchool, sendReminderSchema } from './helpers.js';
+import { scopeBySchool, sendReminderSchema, sendRemindersBulkSchema } from './helpers.js';
 import { createLogger } from '../../utils/logger.js';
+import { objectIdParamHandler } from '../../middleware/validation.js';
 
 const router = express.Router();
 const logger = createLogger('StudentFees');
 router.use(authenticate);
+router.param('id', objectIdParamHandler);
+router.param('classId', objectIdParamHandler);
 
 router.get(
   '/class/:classId/fee-status',
@@ -159,6 +162,63 @@ router.post(
       logger.error('Error sending reminder:', error);
       res.status(500).json({ error: error.message });
     }
+  }
+);
+
+router.post(
+  '/send-reminders-bulk',
+  authenticate,
+  checkPermission('students', 'edit'),
+  async (req, res) => {
+    const parsed = sendRemindersBulkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: parsed.error.errors });
+    }
+    const { studentIds, type, message } = parsed.data;
+    const schoolId = req.user?.schoolId;
+
+    const { sendNotification } = await import('../notifications.js');
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const studentId of studentIds) {
+      try {
+        const student = await Student.findOne(
+          scopeBySchool(schoolId, { _id: studentId })
+        );
+        if (!student) { failed++; continue; }
+
+        const parents = await Parent.find({ 'children.studentId': studentId }).select('_id');
+        if (parents.length === 0) { failed++; continue; }
+
+        const title = type === 'fee' ? `Fee Reminder: ${student.name}` : `Attendance Reminder: ${student.name}`;
+        const body =
+          message ||
+          (type === 'fee'
+            ? `This is a reminder regarding pending fees for ${student.name}.`
+            : `This is a reminder regarding attendance for ${student.name}.`);
+
+        for (const parent of parents) {
+          try {
+            await sendNotification(parent._id, 'Parent', type, title, body, {
+              relatedId: student._id,
+              relatedType: 'Student',
+              priority: 'normal',
+            });
+          } catch (notifError) {
+            logger.error('Error sending bulk reminder notification to parent:', notifError);
+          }
+        }
+        succeeded++;
+      } catch (err) {
+        logger.error('Error processing bulk reminder for student:', studentId, err);
+        failed++;
+      }
+    }
+
+    res.json({ succeeded, failed });
   }
 );
 

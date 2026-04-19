@@ -316,7 +316,7 @@ router.get('/class/:classId', async (req, res) => {
 });
 
 // Get all homework for the school (admin dashboard)
-router.get('/', async (req, res) => {
+router.get('/', checkPermission('homework', 'view'), async (req, res) => {
   try {
     const { status, classId, teacherId, academicYear, page = 1, limit = 50 } = req.query;
 
@@ -356,7 +356,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get homework analytics (completion rate, late submissions)
-router.get('/analytics', async (req, res) => {
+router.get('/analytics', checkPermission('homework', 'view'), async (req, res) => {
   try {
     const { teacherId, classId, academicYear } = req.query;
     const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
@@ -450,7 +450,7 @@ router.get('/analytics', async (req, res) => {
 });
 
 // Get homework by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', checkPermission('homework', 'view'), async (req, res) => {
   try {
     const homework = await Homework.findOne(
       scopeBySchool(req.user.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
@@ -646,6 +646,7 @@ router.put(
 // Submit homework (student — submitted by staff/admin on behalf of student)
 router.post(
   '/:id/submit',
+  checkPermission('homework', 'edit'),
   validateZod(zodSchemas.teacherSubmitHomework),
   async (req, res) => {
     try {
@@ -690,7 +691,7 @@ router.post(
 );
 
 // Grade homework submission (teacher)
-router.post('/:id/grade', validateZod(zodSchemas.gradeHomework), async (req, res) => {
+router.post('/:id/grade', checkPermission('homework', 'edit'), validateZod(zodSchemas.gradeHomework), async (req, res) => {
   try {
     const { studentId, marks, feedback } = req.body;
 

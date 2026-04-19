@@ -8,6 +8,7 @@ import AssetAudit from '../models/AssetAudit.js';
 import Vendor from '../models/Vendor.js';
 import MaintenanceLog from '../models/MaintenanceLog.js';
 import ProcurementRequest from '../models/ProcurementRequest.js';
+import InventoryTransaction from '../models/InventoryTransaction.js';
 import { logToTrash } from '../services/trashService.js';
 import {
   createAssetSchema,
@@ -23,6 +24,7 @@ import {
   updateAssetCategorySchema,
   createAssetAuditSchema,
   updateAssetAuditSchema,
+  stockAdjustSchema,
 } from '../middleware/inventoryValidation.js';
 
 const router = express.Router();
@@ -231,6 +233,62 @@ router.put(
         });
       }
       res.status(400).json({ success: false, error: error.message });
+    }
+  }
+);
+
+router.post(
+  '/assets/:id/stock-adjust',
+  checkPermission('inventory', 'edit'),
+  async (req, res) => {
+    try {
+      const data = stockAdjustSchema.parse(req.body);
+      const schoolId = req.user.schoolId;
+
+      const asset = await Asset.findOne(
+        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+      );
+      if (!asset) return res.status(404).json({ error: req.t('common:routes.assetNotFound') });
+
+      const previousQuantity = asset.quantity;
+      const newQuantity =
+        data.type === 'IN'
+          ? previousQuantity + data.quantity
+          : previousQuantity - data.quantity;
+
+      if (newQuantity < 0) {
+        return res.status(400).json({ success: false, error: 'Stock cannot go below 0' });
+      }
+
+      const [updatedAsset, transaction] = await Promise.all([
+        Asset.findByIdAndUpdate(
+          asset._id,
+          { quantity: newQuantity, updatedBy: req.user._id },
+          { new: true }
+        ),
+        InventoryTransaction.create({
+          schoolId: asset.schoolId,
+          assetId: asset._id,
+          type: data.type,
+          quantity: data.quantity,
+          previousQuantity,
+          newQuantity,
+          reason: data.reason,
+          notes: data.notes,
+          performedBy: req.user._id,
+        }),
+      ]);
+
+      res.json({ asset: updatedAsset, transaction });
+    } catch (error) {
+      if (error.name === 'ZodError') {
+        return res.status(400).json({
+          success: false,
+          error: req.t('common:routes.validationFailed'),
+          details: error.errors,
+        });
+      }
+      res.status(500).json({ success: false, error: error.message });
     }
   }
 );

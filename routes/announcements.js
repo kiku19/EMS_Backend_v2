@@ -839,7 +839,7 @@ router.post('/:id/send', smsRateLimiter, async (req, res) => {
 
     // Import the send function
     const { sendScheduledAnnouncement } = await import('../services/announcementSender.js');
-    await sendScheduledAnnouncement(announcement._id);
+    const sendResult = await sendScheduledAnnouncement(announcement._id);
 
     dispatchWebhookEvent(req.user?.schoolId, 'announcement.sent', {
       id: announcement._id,
@@ -855,7 +855,30 @@ router.post('/:id/send', smsRateLimiter, async (req, res) => {
       targetType: announcement.recipients?.[0]?.type,
     });
 
-    res.json({ message: req.t('common:routes.announcementSentSuccessfully') });
+    const resultStatus = sendResult?.status ?? 'sent';
+    const sent = sendResult?.sent ?? 0;
+    const failed = sendResult?.failed ?? 0;
+    const total = sendResult?.total ?? 0;
+    const pushFailed = sendResult?.pushFailed ?? false;
+
+    if (resultStatus === 'failed') {
+      return res.status(500).json({
+        error: req.t('common:routes.failedToSendAnnouncement'),
+        status: 'failed',
+        sent,
+        failed,
+        total,
+      });
+    }
+
+    res.json({
+      message: req.t('common:routes.announcementSentSuccessfully'),
+      status: resultStatus,
+      sent,
+      failed,
+      total,
+      pushFailed,
+    });
   } catch (error) {
     console.error('Error sending announcement:', error);
     res.status(500).json({ error: req.t('common:routes.failedToSendAnnouncement') });

@@ -6,6 +6,7 @@ import {
   validateZod,
   studentPromoteSchema,
   yearEndPromotionSchema,
+  bulkStudentPromoteSchema,
 } from '../../validators/index.js';
 import { CURRENT_ACADEMIC_YEAR } from '../../utils/constants.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
@@ -179,6 +180,84 @@ router.post(
     } catch (error) {
       console.error('Error in year-end promotion:', error);
       res.status(500).json({ error: req.t('common:routes.yearEndPromotionFailed') });
+    }
+  }
+);
+
+// ─── BULK PROMOTE STUDENTS ───────────────────────────────────────
+// Replaces N sequential /:id/promote calls from the students list action.
+// Static path must be registered before /:id/promote.
+router.post(
+  '/bulk-promote',
+  authenticate,
+  checkPermission('students', 'edit'),
+  validateZod(bulkStudentPromoteSchema),
+  async (req, res) => {
+    try {
+      const schoolId = req.user?.schoolId;
+      const { promotions } = req.body;
+
+      // Fetch all students in a single query
+      const studentIds = promotions.map((p) => p.studentId);
+      const students = await Student.find(
+        scopeBySchool(schoolId, { _id: { $in: studentIds }, isDeleted: { $ne: true } })
+      ).lean();
+      const studentMap = new Map(students.map((s) => [String(s._id), s]));
+
+      const bulkOps = [];
+      let promoted = 0;
+      let graduated = 0;
+      let failed = 0;
+      const errors = [];
+
+      for (const promo of promotions) {
+        const student = studentMap.get(String(promo.studentId));
+        if (!student) {
+          failed++;
+          errors.push({ studentId: promo.studentId, error: 'Student not found' });
+          continue;
+        }
+
+        if (promo.graduate) {
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: student._id },
+              update: { $set: { status: 'graduated' } },
+            },
+          });
+          graduated++;
+        } else {
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: student._id },
+              update: {
+                $set: {
+                  classId: promo.targetClassId,
+                  feeStatus: 'pending',
+                  rollNo: null,
+                  feeDetails: {
+                    totalFee: 0,
+                    paidAmount: 0,
+                    balanceAmount: 0,
+                    discountApplied: 0,
+                    lastPaymentDate: null,
+                  },
+                },
+              },
+            },
+          });
+          promoted++;
+        }
+      }
+
+      if (bulkOps.length > 0) {
+        await Student.bulkWrite(bulkOps, { ordered: false });
+      }
+
+      res.json({ success: true, promoted, graduated, failed, errors });
+    } catch (error) {
+      console.error('Error in bulk promote:', error);
+      res.status(500).json({ error: 'Bulk promote failed' });
     }
   }
 );

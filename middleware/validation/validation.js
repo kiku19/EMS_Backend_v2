@@ -825,6 +825,22 @@ export function isValidObjectId(id) {
 }
 
 /**
+ * Express router.param() callback that rejects non-ObjectId route params with 400.
+ * Use as: router.param('id', objectIdParamHandler)
+ * This prevents Mongoose CastError 500s when invalid IDs reach database queries.
+ */
+export function objectIdParamHandler(req, res, next, value) {
+  if (!isValidObjectId(value)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid ID format',
+      details: { value },
+    });
+  }
+  next();
+}
+
+/**
  * Sanitizes a query param to a plain non-empty string.
  * Prevents type-confusion when qs parses ?foo[$ne]=x into an object.
  */
@@ -917,7 +933,7 @@ const loginSchema = z
     email: z.string().email().optional().nullable(),
     phone: z
       .string()
-      .regex(/^[0-9]{7,15}$/, 'Phone number must be 7-15 digits')
+      .regex(/^\+?[0-9]{7,15}$/, 'Phone number must be 7-15 digits (optional + prefix)')
       .optional()
       .nullable(),
     password: z.string().min(8).max(128),
@@ -1601,6 +1617,31 @@ export const zodSchemas = {
       }
     }),
 };
+
+/**
+ * Middleware factory that validates a single URL route param is a valid MongoDB ObjectId.
+ * Returns 400 with a structured error before the handler is reached,
+ * preventing Mongoose CastError 500 responses.
+ *
+ * @param {string} paramName - The req.params key to validate (e.g. 'studentId', 'classId', 'id')
+ *
+ * @example
+ *   router.get('/:studentId', validateObjectIdParam('studentId'), async (req, res) => { ... });
+ */
+export function validateObjectIdParam(paramName) {
+  return (req, res, next) => {
+    const value = req.params[paramName];
+    if (!value || !isValidObjectId(value)) {
+      return res.status(400).json({
+        success: false,
+        error: req.t ? req.t('common:errors.invalidId') : 'Invalid ID format',
+        statusCode: 400,
+        details: [{ field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` }],
+      });
+    }
+    next();
+  };
+}
 
 /**
  * Zod validation middleware factory

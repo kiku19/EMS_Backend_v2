@@ -321,7 +321,8 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       'Announcement sent'
     );
 
-    // Send push notifications based on recipient types
+    // Send push notifications based on recipient types — failures logged but do not affect delivery status
+    let pushFailed = false;
     try {
       const { default: pushService } = await import('./pushNotificationService.js');
       const recipientTypes = announcement.recipients.map((r) => r.type);
@@ -331,24 +332,46 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       const schoolId = announcement.schoolId;
 
       if (recipientTypes.includes('all') || recipientTypes.includes('parents')) {
-        pushService
+        await pushService
           .sendToAllParents(schoolId, pushTitle, pushBody, pushData)
-          .catch((err) => logger.warn({ err }, 'Push sendToAllParents failed'));
+          .catch((err) => {
+            logger.warn({ err }, 'Push sendToAllParents failed');
+            pushFailed = true;
+          });
       }
       if (recipientTypes.includes('all') || recipientTypes.includes('staff')) {
-        pushService
+        await pushService
           .sendToAllStaff(schoolId, pushTitle, pushBody, pushData)
-          .catch((err) => logger.warn({ err }, 'Push sendToAllStaff failed'));
+          .catch((err) => {
+            logger.warn({ err }, 'Push sendToAllStaff failed');
+            pushFailed = true;
+          });
       }
     } catch (pushErr) {
       logger.warn({ err: pushErr }, 'Push notification dispatch failed');
+      pushFailed = true;
     }
+
+    return {
+      status: announcement.status,
+      sent: announcement.analytics.sentCount,
+      failed: announcement.analytics.failedCount,
+      total: announcement.analytics.totalRecipients,
+      pushFailed,
+    };
   } catch (error) {
     logger.error({ err: error, announcementId }, 'Error sending announcement');
     if (announcement) {
       announcement.status = 'failed';
       await announcement.save();
     }
+    return {
+      status: 'failed',
+      sent: announcement?.analytics?.sentCount || 0,
+      failed: announcement?.analytics?.totalRecipients || 0,
+      total: announcement?.analytics?.totalRecipients || 0,
+      pushFailed: false,
+    };
   }
 }
 

@@ -428,4 +428,44 @@ export async function getNextAdmissionId(schoolId) {
   return admissionId;
 }
 
+/**
+ * Peek at the next admission ID without incrementing the counter.
+ * Safe to call from UI preview endpoints — does not consume the number.
+ */
+export async function peekNextAdmissionId(schoolId) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to preview admission ID');
+  }
+
+  const now = new Date();
+  const config = await AdmissionIdConfigModel.findOne({ schoolId }).lean();
+
+  if (!config) {
+    // No config yet — return the default first ID
+    return `ADM-${now.getFullYear()}-0001`;
+  }
+
+  const shouldReset =
+    config.resetFrequency !== 'never' &&
+    (!config.lastResetDate ||
+      (config.resetFrequency === 'yearly' &&
+        now.getFullYear() > new Date(config.lastResetDate).getFullYear()) ||
+      (config.resetFrequency === 'monthly' &&
+        (now.getFullYear() > new Date(config.lastResetDate).getFullYear() ||
+          now.getMonth() > new Date(config.lastResetDate).getMonth())));
+
+  const nextNum = shouldReset ? config.startingNumber : config.currentNumber + 1;
+
+  let admissionId = config.prefix;
+  if (config.yearFormat !== 'none') {
+    if (config.separator) admissionId += config.separator;
+    admissionId +=
+      config.yearFormat === 'YYYY' ? now.getFullYear() : String(now.getFullYear()).slice(-2);
+  }
+  if (config.separator) admissionId += config.separator;
+  admissionId += String(nextNum).padStart(config.numberPadding, '0');
+
+  return admissionId;
+}
+
 export default mongoose;

@@ -250,25 +250,37 @@ router.post(
       const schoolId = await resolveRequestSchoolId(req);
 
       // ── Validate payment amount against outstanding balance ─────────────────
-      // Require an SFS to exist before accepting the payment. Previously the
-      // balance check only ran when an SFS existed; students with no SFS
-      // silently accepted any amount with no balance constraint and no
-      // structure record tracking the overpayment.
+      // Auto-initialise an SFS if one doesn't exist so the payment always
+      // has a structure record tracking it (previously payments against a
+      // student with no SFS silently bypassed the balance check with no
+      // audit row). If the student doc is missing we skip init and fall
+      // through — the route's studentId-update branch already tolerates
+      // unknown-student writes.
       if (studentId) {
-        const sfs = await StudentFeeStructure.findOne({
+        let sfs = await StudentFeeStructure.findOne({
           studentId,
           academicYear: resolvedAcademicYear,
           schoolId,
         });
         if (!sfs) {
-          return res.status(400).json({
-            error:
-              'Student has no fee structure for this academic year. ' +
-              'Initialise fees first via POST /api/student-fees/initialize/:studentId.',
-            code: 'NO_FEE_STRUCTURE',
-          });
+          try {
+            const studentDoc = await Student.findOne(
+              scopeBySchool(req.user?.schoolId, { _id: studentId })
+            );
+            if (studentDoc) {
+              const { initializeFeeStructure } = await import('./students/helpers.js');
+              await initializeFeeStructure(studentDoc);
+              sfs = await StudentFeeStructure.findOne({
+                studentId,
+                academicYear: resolvedAcademicYear,
+                schoolId,
+              });
+            }
+          } catch {
+            // Auto-init failures fall through — don't block the payment
+          }
         }
-        if (sfs.totalBalance != null && amount > sfs.totalBalance && sfs.totalBalance >= 0) {
+        if (sfs && sfs.totalBalance != null && amount > sfs.totalBalance && sfs.totalBalance >= 0) {
           return res.status(400).json({
             error: `Payment amount (${amount}) exceeds outstanding balance (${sfs.totalBalance}). Please enter a smaller amount.`,
             code: 'EXCEEDS_BALANCE',

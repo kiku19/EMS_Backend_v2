@@ -532,6 +532,76 @@ export async function getAbsenteeReport(schoolId, { startDate, endDate, classId 
 }
 
 /**
+ * Attendance trend — school-wide (or class-scoped) attendance rate grouped by day/week/month.
+ * Returns an array of { period, present, absent, late, leave, halfday, total, rate }.
+ */
+export async function getAttendanceTrend(schoolId, { startDate, endDate, classId, groupBy = 'day' }) {
+  const match = {
+    schoolId: toObjectId(schoolId),
+    date: { $gte: startDate, $lte: endDate },
+  };
+  if (classId) match.classId = toObjectId(classId);
+
+  // Build the grouping expression based on the date string (stored as 'YYYY-MM-DD')
+  let periodExpr;
+  if (groupBy === 'month') {
+    // First 7 chars: 'YYYY-MM'
+    periodExpr = { $substr: ['$date', 0, 7] };
+  } else if (groupBy === 'week') {
+    // ISO week: aggregate pipeline doesn't have direct week-of-year on strings,
+    // so we convert the date string to a Date object and use $isoWeek/$isoWeekYear
+    periodExpr = {
+      $concat: [
+        { $toString: { $isoWeekYear: { $dateFromString: { dateString: '$date' } } } },
+        '-W',
+        {
+          $cond: [
+            { $lt: [{ $isoWeek: { $dateFromString: { dateString: '$date' } } }, 10] },
+            {
+              $concat: [
+                '0',
+                { $toString: { $isoWeek: { $dateFromString: { dateString: '$date' } } } },
+              ],
+            },
+            { $toString: { $isoWeek: { $dateFromString: { dateString: '$date' } } } },
+          ],
+        },
+      ],
+    };
+  } else {
+    // day: use the date string as-is
+    periodExpr = '$date';
+  }
+
+  const results = await Attendance.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: periodExpr,
+        present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
+        absent: { $sum: { $cond: [{ $eq: ['$status', 'absent'] }, 1, 0] } },
+        late: { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
+        leave: { $sum: { $cond: [{ $eq: ['$status', 'leave'] }, 1, 0] } },
+        halfday: { $sum: { $cond: [{ $eq: ['$status', 'halfday'] }, 1, 0] } },
+        total: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  return results.map((r) => ({
+    period: r._id,
+    present: r.present,
+    absent: r.absent,
+    late: r.late,
+    leave: r.leave,
+    halfday: r.halfday,
+    total: r.total,
+    rate: r.total > 0 ? Number((((r.present + r.late) / r.total) * 100).toFixed(1)) : 0,
+  }));
+}
+
+/**
  * Late arrivals report.
  */
 export async function getLateArrivalsReport(schoolId, { startDate, endDate, classId }) {

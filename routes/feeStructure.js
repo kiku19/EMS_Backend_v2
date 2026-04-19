@@ -1,9 +1,42 @@
 import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
+import { z } from 'zod';
 import { FeeStructure, Student, StudentFeeStructure } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
+
+const feeHeadSchema = z.object({
+  feeHeadId: z.string().optional(),
+  name: z.string().optional(),
+  category: z.string().optional(),
+  amount: z.number().min(0, 'Fee amount cannot be negative'),
+  frequency: z.string().optional(),
+  mandatory: z.boolean().optional(),
+  applicableTerms: z.array(z.number()).optional(),
+  dueDay: z.number().optional(),
+  refundable: z.boolean().optional(),
+}).passthrough();
+
+const installmentSchema = z.object({
+  name: z.string().optional(),
+  dueDate: z.string().optional(),
+  amount: z.number().min(0, 'Installment amount cannot be negative'),
+  status: z.enum(['pending', 'partial', 'paid', 'overdue']).optional(),
+}).passthrough();
+
+const feeStructureBodySchema = z.object({
+  classId: z.string().min(1, 'classId is required'),
+  academicYear: z.string().optional(),
+  templateId: z.string().optional(),
+  feeHeads: z.array(feeHeadSchema).optional(),
+  collectionSchedule: z.object({
+    mode: z.enum(['term', 'monthly', 'quarterly', 'yearly', 'custom']).optional(),
+    installments: z.array(installmentSchema).optional(),
+  }).passthrough().optional(),
+  totalAnnualFee: z.number().min(0, 'Total annual fee cannot be negative').optional(),
+});
 
 const router = express.Router();
 router.use(authenticate);
@@ -21,7 +54,7 @@ async function resolveRequestSchoolId(req) {
 }
 
 // Get fee structure for a class (single object)
-router.get('/class/:classId', checkPermission('fees', 'view'), async (req, res) => {
+router.get('/class/:classId', checkPermission('fees', 'view'), validateObjectIdParam('classId'), async (req, res) => {
   try {
     const { classId } = req.params;
     const resolvedAcademicYear = await resolveAcademicYear(
@@ -51,14 +84,18 @@ router.get('/class/:classId', checkPermission('fees', 'view'), async (req, res) 
 // Create or update fee structure for a class (upsert)
 router.post('/', checkPermission('fees', 'create'), async (req, res) => {
   try {
+    const parsed = feeStructureBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: parsed.error.errors.map((e) => ({ field: e.path.join('.'), message: e.message })),
+      });
+    }
+
     const { classId, academicYear, templateId, feeHeads, collectionSchedule, totalAnnualFee } =
-      req.body;
+      parsed.data;
     const resolvedAcademicYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
     const schoolId = await resolveRequestSchoolId(req);
-
-    if (!classId) {
-      return res.status(400).json({ error: req.t('common:routes.classIdIsRequired') });
-    }
 
     const updateData = {
       schoolId,

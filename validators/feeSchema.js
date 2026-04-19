@@ -21,7 +21,6 @@ export const createFeePaymentSchema = z
     studentName: z.string().max(100).nullish().or(z.literal('')),
     classId: objectId,
     academicYear: academicYear.optional(),
-    receiptNumber: z.string().max(50).nullish().or(z.literal('')),
     paymentDate: z.string().optional(),
     amount: z
       .number()
@@ -44,6 +43,17 @@ export const createFeePaymentSchema = z
     {
       message: 'transactionId is required for online, card, and upi payments',
       path: ['transactionId'],
+    }
+  )
+  .refine(
+    (data) => {
+      if (!Array.isArray(data.feeHeads) || data.feeHeads.length === 0) return true;
+      const headSum = data.feeHeads.reduce((s, h) => s + (h.amount || 0), 0);
+      return Math.abs(headSum - data.amount) < 0.01;
+    },
+    {
+      message: 'Sum of fee head amounts must equal the total payment amount',
+      path: ['amount'],
     }
   );
 

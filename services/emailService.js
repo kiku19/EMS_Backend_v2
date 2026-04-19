@@ -2,6 +2,21 @@ import { sendEmail, sendBulkEmails } from '../config/email.js';
 import { getEmailStrings, interp } from '../utils/emailTemplates.js';
 
 /**
+ * Escape special HTML characters to prevent XSS when embedding user content in email templates.
+ * @param {string} str
+ * @returns {string}
+ */
+function escapeHtml(str) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+/**
  * Send welcome email to new user
  * @param {Object} user - User object
  * @param {string} tempPassword - Temporary password (if applicable)
@@ -101,19 +116,19 @@ export const buildAnnouncementEmailHtml = (
     <body>
       <div class="container">
         <div class="header">
-          <h1>📢 ${announcement.title}</h1>
+          <h1>📢 ${escapeHtml(announcement.title)}</h1>
         </div>
         <div class="content">
-          <p>${interp(s.announcement.greeting, { name: recipientName })}</p>
+          <p>${interp(s.announcement.greeting, { name: escapeHtml(recipientName) })}</p>
           <div class="announcement">
-            <p>${announcement.content.replace(/\n/g, '<br>')}</p>
+            <p>${escapeHtml(announcement.content).replace(/\n/g, '<br>')}</p>
           </div>
           ${
             announcement.attachments && announcement.attachments.length > 0
               ? `
             <p><strong>${s.announcement.attachments}</strong></p>
             <ul>
-              ${announcement.attachments.map((att) => `<li><a href="${rewriteUrl(att.url)}">${att.name}</a></li>`).join('')}
+              ${announcement.attachments.map((att) => `<li><a href="${rewriteUrl(att.url)}">${escapeHtml(att.name)}</a></li>`).join('')}
             </ul>
           `
               : ''
@@ -408,7 +423,9 @@ export const sendSchoolWelcomeEmail = async (
  */
 export const sendPasswordResetEmail = async (staff, resetToken) => {
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-  const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+  // Use hash fragment (#) instead of query param (?token=) so the token is
+  // never sent to the server in logs or included in Referer headers.
+  const resetUrl = `${frontendUrl}/reset-password#token=${encodeURIComponent(resetToken)}`;
 
   const html = `
     <!DOCTYPE html>

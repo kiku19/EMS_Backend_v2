@@ -6,14 +6,14 @@ export const createClassSchema = z
   .object({
     name: z
       .string()
+      .trim()
       .min(1, 'Class name is required')
-      .max(50, 'Class name must not exceed 50 characters')
-      .trim(),
+      .max(50, 'Class name must not exceed 50 characters'),
     section: z
       .string()
+      .trim()
       .min(1, 'Section is required')
-      .max(10, 'Section must not exceed 10 characters')
-      .trim(),
+      .max(10, 'Section must not exceed 10 characters'),
     classTeacherId: optionalObjectId,
     subjects: z
       .array(z.string().max(100, 'Subject name must not exceed 100 characters').trim())
@@ -50,11 +50,11 @@ export const updateClassSchema = z
   .object({
     name: z
       .string()
+      .trim()
       .min(1, 'Class name cannot be empty')
       .max(50, 'Class name must not exceed 50 characters')
-      .trim()
       .optional(),
-    section: z.string().max(10, 'Section must not exceed 10 characters').trim().optional(),
+    section: z.string().trim().max(10, 'Section must not exceed 10 characters').optional(),
     classTeacherId: optionalObjectId,
     subjects: z.array(z.string().max(100).trim()).optional(),
     assignedSubjects: z.array(z.string().max(100).trim()).optional(),
@@ -146,6 +146,25 @@ export const studentPromoteSchema = z
   .refine((data) => data.targetClassId || data.graduate, {
     message: 'Either targetClassId or graduate:true must be provided',
   });
+
+// ─── BULK PROMOTE STUDENTS (list-level action) ────────────────────
+export const bulkStudentPromoteSchema = z
+  .object({
+    promotions: z
+      .array(
+        z
+          .object({
+            studentId: objectId,
+            targetClassId: objectId.optional(),
+            graduate: z.boolean().optional().default(false),
+          })
+          .refine((d) => d.targetClassId || d.graduate, {
+            message: 'Each entry needs targetClassId or graduate:true',
+          })
+      )
+      .min(1, 'At least one student is required'),
+  })
+  .strip();
 
 // ─── YEAR-END BULK PROMOTION ──────────────────────────────────────
 export const yearEndPromotionSchema = z

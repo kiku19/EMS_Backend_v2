@@ -404,8 +404,8 @@ describe('GET /api/fees/payments', () => {
 
     const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body).toHaveLength(0);
+    expect(Array.isArray(res.body.payments)).toBe(true);
+    expect(res.body.payments).toHaveLength(0);
   });
 
   it('returns all payments scoped to the authenticated user school', async () => {
@@ -448,7 +448,7 @@ describe('GET /api/fees/payments', () => {
 
     const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
-    expect(res.body).toHaveLength(2);
+    expect(res.body.payments).toHaveLength(2);
     const amounts = res.body.map((p) => p.amount).sort((a, b) => a - b);
     expect(amounts).toEqual([100, 200]);
   });
@@ -494,8 +494,8 @@ describe('GET /api/fees/payments', () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].amount).toBe(150);
+    expect(res.body.payments).toHaveLength(1);
+    expect(res.body.payments[0].amount).toBe(150);
   });
 
   it('filters payments by academicYear', async () => {
@@ -532,9 +532,9 @@ describe('GET /api/fees/payments', () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].amount).toBe(300);
-    expect(res.body[0].academicYear).toBe('2024-25');
+    expect(res.body.payments).toHaveLength(1);
+    expect(res.body.payments[0].amount).toBe(300);
+    expect(res.body.payments[0].academicYear).toBe('2024-25');
   });
 
   it('filters payments by status', async () => {
@@ -624,10 +624,10 @@ describe('GET /api/fees/payments', () => {
 
     const res = await request(app).get('/api/fees/payments').set(authHeaders).expect(200);
 
-    expect(res.body).toHaveLength(3);
-    expect(res.body[0].paymentDate).toBe('2026-03-01');
-    expect(res.body[1].paymentDate).toBe('2026-02-01');
-    expect(res.body[2].paymentDate).toBe('2026-01-01');
+    expect(res.body.payments).toHaveLength(3);
+    expect(res.body.payments[0].paymentDate).toBe('2026-03-01');
+    expect(res.body.payments[1].paymentDate).toBe('2026-02-01');
+    expect(res.body.payments[2].paymentDate).toBe('2026-01-01');
   });
 
   it('multi-tenancy: School A admin cannot see School B payments', async () => {

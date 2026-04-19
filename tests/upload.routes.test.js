@@ -55,6 +55,47 @@ describe('upload routes', () => {
       expect(res.status).not.toBe(200);
     });
 
+    it('rejects SVG files (excluded from allowed types to prevent script execution)', async () => {
+      const svgContent = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+      const res = await request(app)
+        .post(BASE)
+        .set(headers)
+        .attach('file', Buffer.from(svgContent), {
+          filename: 'evil.svg',
+          contentType: 'image/svg+xml',
+        });
+
+      expect(res.status).not.toBe(200);
+    });
+
+    it('rejects HTML content disguised as image/jpeg (MIME spoofing)', async () => {
+      const htmlContent = '<!DOCTYPE html><html><body><script>alert(1)</script></body></html>';
+      const res = await request(app)
+        .post(BASE)
+        .set(headers)
+        .attach('file', Buffer.from(htmlContent), {
+          filename: 'evil.jpg',
+          contentType: 'image/jpeg',
+        })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/HTML|content does not match/i);
+    });
+
+    it('rejects HTML content disguised as text/plain', async () => {
+      const htmlContent = '<html><body>hello</body></html>';
+      const res = await request(app)
+        .post(BASE)
+        .set(headers)
+        .attach('file', Buffer.from(htmlContent), {
+          filename: 'evil.txt',
+          contentType: 'text/plain',
+        })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/HTML markup/i);
+    });
+
     it('returns 503 when Cloudinary is not configured', async () => {
       // In test environment Cloudinary env vars are not set
       const res = await request(app)

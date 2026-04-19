@@ -66,14 +66,17 @@ function expandRecurringEvent(event, rangeStart, rangeEnd) {
   const rec = event.recurrence;
   if (!rec || !rec.freq) return [transformEvent(event)];
 
+  // Guard: skip expansion if base date is missing or invalid
+  if (!event.date) return [transformEvent(event)];
+  const cur = new Date(event.date + 'T00:00:00');
+  if (isNaN(cur.getTime())) return [transformEvent(event)];
+
   const occurrences = [];
   const interval = rec.interval || 1;
   const recEndDate = rec.endDate || rangeEnd;
   const effectiveEnd = recEndDate < rangeEnd ? recEndDate : rangeEnd;
   const maxOccurrences = rec.endCount || 365; // safety cap
 
-  // Start from the event's original date
-  const cur = new Date(event.date + 'T00:00:00');
   let count = 0;
 
   while (count < maxOccurrences) {
@@ -572,6 +575,7 @@ router.get('/calendar/events/export.ics', async (req, res) => {
     ];
 
     for (const event of events) {
+      if (!event.date) continue; // skip events with missing dates
       const dateStr = event.date.replace(/-/g, '');
       let dtStart, dtEnd;
       if (event.allDay) {
@@ -648,10 +652,10 @@ router.get(
         }
       }
 
-      // Sort by date after expansion
+      // Sort by date after expansion — guard against null/undefined dates
       expanded.sort(
         (a, b) =>
-          a.date.localeCompare(b.date) || (a.startTime || '').localeCompare(b.startTime || '')
+          (a.date || '').localeCompare(b.date || '') || (a.startTime || '').localeCompare(b.startTime || '')
       );
 
       res.json(expanded);

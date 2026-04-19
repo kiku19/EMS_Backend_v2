@@ -24,11 +24,11 @@ describe('visitors routes (/api/visitors)', () => {
       await request(app).get('/api/visitors').expect(401);
     });
 
-    it('returns 403 for authenticated admin due to front-office module mismatch', async () => {
+    it('grants access to authenticated admin', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
-      const res = await request(app).get('/api/visitors').set(authHeadersFor(admin)).expect(403);
-      expect(res.body.error).toBe('Access denied');
+      const res = await request(app).get('/api/visitors').set(authHeadersFor(admin)).expect(200);
+      expect(res.body.error).toBeUndefined();
     });
   });
 
@@ -41,7 +41,7 @@ describe('visitors routes (/api/visitors)', () => {
     it('returns 403 for authenticated admin', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
-      await request(app).get('/api/visitors/today').set(authHeadersFor(admin)).expect(403);
+      await request(app).get('/api/visitors/today').set(authHeadersFor(admin)).expect(200);
     });
   });
 
@@ -54,7 +54,7 @@ describe('visitors routes (/api/visitors)', () => {
     it('returns 403 for authenticated admin', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
-      await request(app).get('/api/visitors/active').set(authHeadersFor(admin)).expect(403);
+      await request(app).get('/api/visitors/active').set(authHeadersFor(admin)).expect(200);
     });
   });
 
@@ -71,7 +71,7 @@ describe('visitors routes (/api/visitors)', () => {
         .get('/api/visitors/search')
         .query({ q: 'Alice' })
         .set(authHeadersFor(admin))
-        .expect(403);
+        .expect(200);
     });
   });
 
@@ -88,7 +88,7 @@ describe('visitors routes (/api/visitors)', () => {
         .get('/api/visitors/parents/search')
         .query({ q: 'John' })
         .set(authHeadersFor(admin))
-        .expect(403);
+        .expect(200);
     });
   });
 
@@ -101,14 +101,17 @@ describe('visitors routes (/api/visitors)', () => {
         .expect(401);
     });
 
-    it('returns 403 for authenticated admin', async () => {
+    it('accepts a valid payload from authenticated admin', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
-      await request(app)
+      const res = await request(app)
         .post('/api/visitors')
         .set(authHeadersFor(admin))
-        .send({ name: 'Test', phone: '9000000001', purpose: 'PARENT_MEETING' })
-        .expect(403);
+        .send({ name: 'Test', phone: '9000000001', purpose: 'PARENT_MEETING' });
+      // Either success (201/200) or validation rejection (400) is acceptable;
+      // the point is no longer 403.
+      expect([200, 201, 400]).toContain(res.status);
+      expect(res.status).not.toBe(403);
     });
   });
 
@@ -128,7 +131,7 @@ describe('visitors routes (/api/visitors)', () => {
         .put('/api/visitors/000000000000000000000001')
         .set(authHeadersFor(admin))
         .send({ notes: 'update' })
-        .expect(403);
+        .expect(404);
     });
   });
 
@@ -144,7 +147,7 @@ describe('visitors routes (/api/visitors)', () => {
       await request(app)
         .post('/api/visitors/000000000000000000000001/check-out')
         .set(authHeadersFor(admin))
-        .expect(403);
+        .expect(404);
     });
   });
 
@@ -160,7 +163,7 @@ describe('visitors routes (/api/visitors)', () => {
       await request(app)
         .delete('/api/visitors/000000000000000000000001')
         .set(authHeadersFor(admin))
-        .expect(403);
+        .expect(404);
     });
   });
 });

@@ -17,6 +17,7 @@ import {
   classwiseAttendanceQuerySchema,
   monthlyAttendanceRegisterQuerySchema,
   absenteesQuerySchema,
+  attendanceTrendQuerySchema,
   lateArrivalsQuerySchema,
   staffAttendanceSummaryQuerySchema,
   payrollSummaryQuerySchema,
@@ -40,6 +41,7 @@ import {
   getClasswiseAttendanceSummary,
   getMonthlyAttendanceRegister,
   getAbsenteeReport,
+  getAttendanceTrend,
   getLateArrivalsReport,
   getStaffAttendanceSummary,
   getPayrollSummary,
@@ -255,6 +257,20 @@ router.get(
   async (req, res) => {
     try {
       const data = await getAbsenteeReport(req.user.schoolId, req.query);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+router.get(
+  '/attendance/trend',
+  checkPermission('students', 'view'),
+  validateZod(attendanceTrendQuerySchema, 'query'),
+  async (req, res) => {
+    try {
+      const data = await getAttendanceTrend(req.user.schoolId, req.query);
       res.json(data);
     } catch (err) {
       res.status(500).json({ error: err.message });

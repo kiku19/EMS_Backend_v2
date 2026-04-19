@@ -60,6 +60,20 @@ router.get('/', checkPermission('fees', 'view'), async (req, res) => {
   }
 });
 
+router.get('/:id/usage', checkPermission('fees', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    const structures = await FeeStructure.find(
+      scopeBySchool(schoolId, { templateId: req.params.id })
+    ).select('appliedTo').lean();
+    const structureCount = structures.length;
+    const studentCount = structures.reduce((sum, s) => sum + (s.appliedTo?.length || 0), 0);
+    res.json({ structureCount, studentCount });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/:id', checkPermission('fees', 'view'), async (req, res) => {
   try {
     const template = await FeeTemplate.findOne(

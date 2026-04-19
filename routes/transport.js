@@ -7,6 +7,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { escapeRegex } from './students/helpers.js';
 import { logToTrash } from '../services/trashService.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -509,6 +510,8 @@ router.post(
  */
 router.delete(
   '/routes/:routeId/students/:studentId',
+  validateObjectIdParam('routeId'),
+  validateObjectIdParam('studentId'),
   checkPermission('transport', 'edit'),
   async (req, res) => {
     try {
@@ -544,6 +547,7 @@ router.delete(
  */
 router.get(
   '/students/:studentId/route',
+  validateObjectIdParam('studentId'),
   checkPermission('transport', 'view'),
   async (req, res) => {
     try {

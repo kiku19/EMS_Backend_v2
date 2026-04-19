@@ -3,6 +3,7 @@ import { z } from 'zod';
 import Book from '../models/Book.js';
 import BookIssue from '../models/BookIssue.js';
 import BookCopy from '../models/BookCopy.js';
+import { Student } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
@@ -370,6 +371,12 @@ router.post('/issues', checkPermission('library', 'create'), async (req, res) =>
     if (book.availableCopies < 1)
       return res.status(400).json({ error: req.t('common:routes.noCopiesAvailable') });
 
+    // Validate student exists and belongs to this school
+    const student = await Student.findOne(
+      buildSchoolScopedQuery(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    ).select('name admissionNo');
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+
     // Check student doesn't already have this book issued
     const existing = await BookIssue.findOne(
       buildSchoolScopedQuery(schoolId, {
@@ -394,6 +401,8 @@ router.post('/issues', checkPermission('library', 'create'), async (req, res) =>
       bookTitle: book.title,
       bookIsbn: book.isbn,
       studentId,
+      studentName: student.name,
+      studentAdmissionNo: student.admissionNo,
       issuedBy: req.user._id || req.user.id,
       issuedByName: req.user.name,
       issueDate: new Date(),

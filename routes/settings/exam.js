@@ -84,6 +84,20 @@ router.post(
         });
       } else {
         settings.subjects = settings.subjects || [];
+
+        // Duplicate code check
+        if (req.body.code) {
+          const codeUpper = req.body.code.toUpperCase();
+          if (settings.subjects.some(s => s.code && s.code.toUpperCase() === codeUpper)) {
+            return res.status(409).json({ message: `Subject code "${req.body.code}" is already in use` });
+          }
+        }
+        // Duplicate name check
+        const nameLower = req.body.name.toLowerCase();
+        if (settings.subjects.some(s => s.name.toLowerCase() === nameLower)) {
+          return res.status(409).json({ message: `A subject named "${req.body.name}" already exists` });
+        }
+
         settings.subjects.push(req.body);
         await settings.save();
       }
@@ -117,6 +131,21 @@ router.put(
 
       if (subjectIndex === -1) {
         return res.status(404).json({ error: 'Subject not found' });
+      }
+
+      // Duplicate code check (excluding the subject being updated)
+      if (req.body.code) {
+        const codeUpper = req.body.code.toUpperCase();
+        if (settings.subjects.some((s, i) => i !== subjectIndex && s.code && s.code.toUpperCase() === codeUpper)) {
+          return res.status(409).json({ message: `Subject code "${req.body.code}" is already in use` });
+        }
+      }
+      // Duplicate name check (excluding the subject being updated)
+      if (req.body.name) {
+        const nameLower = req.body.name.toLowerCase();
+        if (settings.subjects.some((s, i) => i !== subjectIndex && s.name.toLowerCase() === nameLower)) {
+          return res.status(409).json({ message: `A subject named "${req.body.name}" already exists` });
+        }
       }
 
       // Merge update into existing subdocument (preserve _id)

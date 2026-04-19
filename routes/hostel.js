@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { logToTrash } from '../services/trashService.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -606,6 +607,7 @@ router.put(
  */
 router.get(
   '/students/:studentId/allocation',
+  validateObjectIdParam('studentId'),
   checkPermission('hostel', 'view'),
   async (req, res) => {
     try {

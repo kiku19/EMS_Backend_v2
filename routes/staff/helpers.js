@@ -134,7 +134,7 @@ export function formatStaffResponse(staff, assignedClass = null) {
     picture: staff.picture,
     photo: staff.photo || staff.picture,
     idDocuments: staff.idDocuments,
-    professionalQualifications: staff.professionalQualifications,
+    professionalQualifications: staff.professionalQualifications || [],
     qualification: staff.professionalQualifications?.map((item) => item.name).join(', ') || '',
     totalExperience: staff.totalExperience,
     experience: staff.experience ?? (parseInt(staff.totalExperience, 10) || 0),

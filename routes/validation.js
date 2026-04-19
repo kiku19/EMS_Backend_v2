@@ -4,11 +4,12 @@ import { authenticate } from '../middleware/auth.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import validationService from '../services/validationService.js';
 import { resolveAcademicYear } from '../utils/academicYear.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
 
 const router = express.Router();
 router.use(authenticate);
 
-router.get('/class/:classId/empty-slots', async (req, res) => {
+router.get('/class/:classId/empty-slots', validateObjectIdParam('classId'), async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const emptySlots = await validationService.identifyEmptySlots(req.params.classId, academicYear);
@@ -29,7 +30,7 @@ router.get('/class/:classId/empty-slots', async (req, res) => {
   }
 });
 
-router.get('/teacher/:teacherId/gaps', async (req, res) => {
+router.get('/teacher/:teacherId/gaps', validateObjectIdParam('teacherId'), async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const gaps = await validationService.identifyTeacherScheduleGaps(
@@ -53,7 +54,7 @@ router.get('/teacher/:teacherId/gaps', async (req, res) => {
   }
 });
 
-router.get('/class/:classId/report', async (req, res) => {
+router.get('/class/:classId/report', validateObjectIdParam('classId'), async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateClassValidationReport(
@@ -71,7 +72,7 @@ router.get('/class/:classId/report', async (req, res) => {
   }
 });
 
-router.get('/teacher/:teacherId/report', async (req, res) => {
+router.get('/teacher/:teacherId/report', validateObjectIdParam('teacherId'), async (req, res) => {
   try {
     const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
     const report = await validationService.generateTeacherValidationReport(

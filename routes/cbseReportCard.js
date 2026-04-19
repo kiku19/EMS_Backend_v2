@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { validateZod } from '../validators/zodHelpers.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
 import {
   createCBSEReportCardSchema,
   updateCBSEReportCardSchema,
@@ -45,6 +46,7 @@ function applyGrading(scholasticGrades) {
 router.get(
   '/student/:studentId',
   checkPermission('students', 'view'),
+  validateObjectIdParam('studentId'),
   async (req, res) => {
     try {
       const { studentId } = req.params;
@@ -93,6 +95,7 @@ router.get(
 router.get(
   '/class/:classId',
   checkPermission('students', 'view'),
+  validateObjectIdParam('classId'),
   async (req, res) => {
     try {
       const { classId } = req.params;
@@ -334,6 +337,7 @@ router.post('/:id/publish', checkPermission('students', 'edit'), async (req, res
 router.post(
   '/class/:classId/publish',
   checkPermission('students', 'edit'),
+  validateObjectIdParam('classId'),
   async (req, res) => {
     try {
       const { classId } = req.params;

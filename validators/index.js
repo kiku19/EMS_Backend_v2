@@ -28,6 +28,7 @@ export {
   promoteClassSchema,
   studentPromoteSchema,
   yearEndPromotionSchema,
+  bulkStudentPromoteSchema,
 } from './classSchema.js';
 export {
   createExamSchema,

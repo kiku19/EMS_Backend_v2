@@ -22,7 +22,11 @@ const salaryTemplateSchema = z
       .array(breakdownItemSchema)
       .min(1, 'At least one salary component is required'),
   })
-  .strict();
+  .strict()
+  .refine(
+    (data) => data.breakdown.reduce((sum, item) => sum + item.amount, 0) > 0,
+    { message: 'Total salary must be greater than 0', path: ['breakdown'] }
+  );
 
 // GET /settings/salary-templates
 router.get('/salary-templates', async (req, res) => {

@@ -168,3 +168,10 @@ export const createAssetAuditSchema = z.object({
 });
 
 export const updateAssetAuditSchema = createAssetAuditSchema.partial();
+
+export const stockAdjustSchema = z.object({
+  type: z.enum(['IN', 'OUT']),
+  quantity: z.number().int('Must be a whole number').min(1, 'Must be at least 1'),
+  reason: z.string().trim().max(500).optional(),
+  notes: z.string().trim().max(1000).optional(),
+});

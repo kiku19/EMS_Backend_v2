@@ -555,13 +555,13 @@ router.get(
           id: s._id,
           name: s.name,
           rollNo: s.rollNo,
-          attendancePercentage: studentAttendance[s._id.toString()]
-            ? Math.round(
+          attendancePercentage: (!studentAttendance[s._id.toString()] || studentAttendance[s._id.toString()].total === 0)
+            ? 0
+            : Math.round(
                 (studentAttendance[s._id.toString()].present /
                   studentAttendance[s._id.toString()].total) *
                   100
-              )
-            : 0,
+              ),
         }));
 
       // Get failed students (from recent results)
