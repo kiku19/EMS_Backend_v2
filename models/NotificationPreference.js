@@ -130,6 +130,11 @@ notificationPreferenceSchema.methods.getChannelPreferences = function (category,
 notificationPreferenceSchema.methods.isQuietHours = function () {
   if (!this.quietHours.enabled) return false;
 
+  const start = this.quietHours.startTime;
+  const end = this.quietHours.endTime;
+  // Missing or identical bounds = treat as inactive (avoid always-on / always-off ambiguity)
+  if (!start || !end || start === end) return false;
+
   // Use the user's configured timezone (falls back to Asia/Kolkata)
   const tz = this.quietHours.timezone || 'Asia/Kolkata';
   let currentTime;
@@ -145,12 +150,13 @@ notificationPreferenceSchema.methods.isQuietHours = function () {
     currentTime = new Date().toTimeString().slice(0, 5);
   }
 
-  // Handle case where quiet hours span midnight (e.g., 22:00 to 08:00)
-  if (this.quietHours.startTime > this.quietHours.endTime) {
-    return currentTime >= this.quietHours.startTime || currentTime <= this.quietHours.endTime;
-  } else {
-    return currentTime >= this.quietHours.startTime && currentTime <= this.quietHours.endTime;
+  // endTime is exclusive so notifications resume exactly at the configured end.
+  if (start > end) {
+    // Wraps midnight (e.g., 22:00 → 08:00): active if >= start OR < end
+    return currentTime >= start || currentTime < end;
   }
+  // Same-day window (e.g., 13:00 → 14:00): active if >= start AND < end
+  return currentTime >= start && currentTime < end;
 };
 
 export default mongoose.model('NotificationPreference', notificationPreferenceSchema);

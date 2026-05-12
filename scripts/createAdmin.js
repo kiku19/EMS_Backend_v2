@@ -34,6 +34,7 @@ async function createAdmin() {
     
     const admin = await Staff.create({
       schoolId: school._id,
+      code: 'ADMIN001',
       name: 'Admin User',
       email: 'admin@school.com',
       phone: '1234567890',

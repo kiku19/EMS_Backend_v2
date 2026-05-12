@@ -7,7 +7,36 @@ import { sendReminderEmail } from './emailService.js';
 import { sendFeeReminderSMS, sendAttendanceAlertSMS, sendAnnouncementSMS } from './smsService.js';
 import { sendFeeReminderWhatsApp, sendAttendanceAlertWhatsApp } from './whatsappService.js';
 import { sendNotification } from '../routes/notifications.js';
+import NotificationPreference from '../models/NotificationPreference.js';
 import { createLogger } from '../utils/logger.js';
+
+// Map reminder.type to NotificationPreference category for channel pref lookup.
+const REMINDER_CATEGORY_MAP = {
+  fee: 'payment',
+  attendance: 'attendance',
+  academic: 'academic',
+  event: 'event',
+  emergency: 'emergency',
+};
+
+// Returns { email, sms, whatsapp, inapp } honoring user prefs.
+// If the user has no preference doc, defaults to allowing all channels so
+// behavior matches the historical broadcast.
+async function getChannelPrefsForRecipient(recipient, reminder) {
+  try {
+    const pref = await NotificationPreference.findOne({
+      userId: recipient.userId,
+      userModel: recipient.userType,
+    });
+    if (!pref) return { email: true, sms: true, whatsapp: true, inapp: true, quiet: false };
+    const category = REMINDER_CATEGORY_MAP[reminder.type] || 'announcement';
+    const channels = pref.getChannelPreferences(category, reminder.type);
+    const quiet = pref.isQuietHours();
+    return { ...channels, quiet };
+  } catch {
+    return { email: true, sms: true, whatsapp: true, inapp: true, quiet: false };
+  }
+}
 
 const logger = createLogger('ReminderProcessor');
 
@@ -359,12 +388,23 @@ async function sendReminderMessages(reminder, recipients) {
         triggerData: recipient.triggerData,
       });
 
+      // Honor per-user notification preferences and quiet hours (priority < urgent
+      // gets quiet-hours suppression for email/SMS/WhatsApp; inapp still delivers).
+      const prefs = await getChannelPrefsForRecipient(recipient, reminder);
+      const allowChannel = (ch) => {
+        if (ch === 'inapp') return prefs.inapp !== false;
+        if (prefs.quiet && reminder.priority !== 'urgent') return false;
+        return prefs[ch] !== false;
+      };
+
       // Send via configured channels
       for (const channel of reminder.channels) {
         if (channel === 'email' && recipient.email) {
+          if (!allowChannel('email')) continue;
           await sendReminderEmail(reminder, recipient, data);
           log.channels.push({ channel: 'email', status: 'sent', sentAt: new Date() });
         } else if (channel === 'sms' && recipient.phone) {
+          if (!allowChannel('sms')) continue;
           if (reminder.type === 'fee') {
             await sendFeeReminderSMS(recipient.phone, recipient.triggerData);
           } else if (reminder.type === 'attendance') {
@@ -374,6 +414,7 @@ async function sendReminderMessages(reminder, recipients) {
           }
           log.channels.push({ channel: 'sms', status: 'sent', sentAt: new Date() });
         } else if (channel === 'whatsapp' && recipient.phone) {
+          if (!allowChannel('whatsapp')) continue;
           if (reminder.type === 'fee') {
             await sendFeeReminderWhatsApp(recipient.phone, recipient.triggerData);
           } else if (reminder.type === 'attendance') {
