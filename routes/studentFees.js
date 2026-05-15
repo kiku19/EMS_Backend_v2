@@ -894,7 +894,7 @@ router.get('/defaulters', checkPermission('fees', 'view'), async (req, res) => {
 
     const [defaulters, total] = await Promise.all([
       StudentFeeStructure.find(filter)
-        .populate('studentId', 'name admissionId rollNo phone parentPhone')
+        .populate('studentId', 'name admissionId rollNo phone parents')
         .populate('classId', 'name section')
         .sort({ totalBalance: -1 })
         .skip(skip)

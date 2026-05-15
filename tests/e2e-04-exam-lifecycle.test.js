@@ -332,7 +332,7 @@ describe('E2E-04: Exam creation → results entry → publish → parent sees re
       rollNo: 2,
       classId: classRecord._id,
       schoolId: school._id,
-      parentPhone: '9800000099',
+      parents: [{ name: 'Parent', relationship: 'Parent', phone: '9800000099', isWhatsapp: true }],
     });
 
     await Parent.create({

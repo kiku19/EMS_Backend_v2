@@ -70,15 +70,7 @@ const studentSchema = new mongoose.Schema(
       },
     },
 
-    // Parent/Guardian Information
-    parentName: String,
-    parentPhone: String,
-    parentEmail: String,
-    parentRelationship: String,
-    parentOccupation: String,
-    alternatePhone: String,
-
-    // Additional Parents (stored as array)
+    // Parents/Guardians (stored as array)
     parents: {
       type: [
         {
@@ -280,9 +272,6 @@ studentSchema.plugin(piiPlugin, {
     'whatsappNumber',
     'address',
     'aadhaarNumber',
-    'parentPhone',
-    'parentEmail',
-    'alternatePhone',
     'emergencyContactName',
     'emergencyContactPhone',
     'alumniEmail',

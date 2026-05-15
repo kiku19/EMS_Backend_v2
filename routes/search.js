@@ -18,8 +18,7 @@
  *           "name": { "type": "string", "analyzer": "lucene.standard" },
  *           "admissionId": { "type": "string" },
  *           "email": { "type": "string" },
- *           "parentName": { "type": "string", "analyzer": "lucene.standard" },
- *           "parentPhone": { "type": "string" }
+ *           "parents.name": { "type": "string", "analyzer": "lucene.standard" }
  *         }
  *       }
  *     }
@@ -94,8 +93,8 @@ function atlasStudentsPipeline(q, schoolId, limit, skip) {
         compound: {
           filter: [{ equals: { path: 'schoolId', value: new mongoose.Types.ObjectId(schoolId) } }],
           should: [
-            { text: { query: q, path: ['name', 'parentName'], fuzzy: { maxEdits: 1 } } },
-            { text: { query: q, path: ['admissionId', 'email', 'parentPhone'] } },
+            { text: { query: q, path: ['name', 'parents.name'], fuzzy: { maxEdits: 1 } } },
+            { text: { query: q, path: ['admissionId', 'email'] } },
           ],
           minimumShouldMatch: 1,
         },
@@ -193,8 +192,7 @@ async function regexSearchStudents(q, schoolId, limit, skip, academicYear) {
       { name: regex },
       { admissionId: regex },
       { email: regex },
-      { parentName: regex },
-      { parentPhone: regex },
+
     ],
   };
   if (academicYear) match.academicYear = academicYear;

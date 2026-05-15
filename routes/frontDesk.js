@@ -323,9 +323,14 @@ router.post(
         classId: admission.classApplyingFor,
         section: '',
         rollNo: String(classCount + 1),
-        parentName: admission.parentName,
-        parentPhone: admission.phoneNumber,
-        parentEmail: admission.email,
+        parents: [
+          {
+            name: admission.parentName,
+            phone: admission.phoneNumber,
+            email: admission.email,
+            relationship: 'Parent',
+          },
+        ],
         admissionDate: new Date().toISOString().split('T')[0],
         status: 'active',
         hscGroup: admission.hscGroup || '',

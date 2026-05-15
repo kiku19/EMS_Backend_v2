@@ -82,7 +82,7 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
           name: `Load Student A-${i + 1}`,
           rollNo: i + 1,
           classId: classRecord._id,
-          parentPhone: `8${String(i).padStart(9, '0')}`,
+          parents: [{ name: 'Parent', relationship: 'Parent', phone: `8${String(i).padStart(9, '0')}`, isWhatsapp: true }],
         })
       )
     );
@@ -169,7 +169,7 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
               rollNo: studentIdx + 1,
               classId: cls._id,
               schoolId: school._id,
-              parentPhone: `7${String(classIdx * 100 + studentIdx).padStart(9, '0')}`,
+              parents: [{ name: 'Parent', relationship: 'Parent', phone: `7${String(classIdx * 100 + studentIdx).padStart(9, '0')}`, isWhatsapp: true }],
             })
           )
         )
@@ -252,7 +252,7 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
           name: `Load Student C-${i + 1}`,
           rollNo: i + 1,
           classId: classRecord._id,
-          parentPhone: `6${String(i).padStart(9, '0')}`,
+          parents: [{ name: 'Parent', relationship: 'Parent', phone: `6${String(i).padStart(9, '0')}`, isWhatsapp: true }],
         })
       )
     );

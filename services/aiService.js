@@ -64,12 +64,10 @@ const TOOL_DEFINITIONS = [
         rollNo: { type: 'number', description: 'Roll number if already known' },
         gender: { type: 'string', enum: ['Male', 'Female', 'Other'] },
         dateOfBirth: { type: 'string', description: 'YYYY-MM-DD' },
-        parentName: { type: 'string' },
-        parentPhone: { type: 'string' },
-        parentEmail: { type: 'string' },
+        parents: { type: 'array', description: 'Array of parent/guardian objects with name, phone, email, relationship' },
         academicYear: { type: 'string', description: 'Academic year in YYYY-YY format' },
       },
-      required: ['name', 'classId', 'parentName', 'parentPhone'],
+      required: ['name', 'classId', 'parents'],
     },
   },
   {
@@ -293,9 +291,9 @@ async function initializeFeeStructure(student) {
 async function createStudentTool(args, context) {
   await requirePermission(context.userId, 'students', 'create');
 
-  if (!args.name || !args.classId || !args.parentName || !args.parentPhone) {
+  if (!args.name || !args.classId || !args.parents || args.parents.length === 0) {
     throw new AiRequestError(
-      'name, classId, parentName, and parentPhone are required to create a student.'
+      'name, classId, and at least one parent are required to create a student.'
     );
   }
 
@@ -307,16 +305,14 @@ async function createStudentTool(args, context) {
   const academicYear = args.academicYear || CURRENT_ACADEMIC_YEAR;
   const admissionId = args.admissionId || (await getNextAdmissionId(context.schoolId));
   const rollNo = args.rollNo || (await getNextRollNumber(args.classId, context.schoolId));
-  const parents = [
-    {
-      name: args.parentName,
-      relationship: args.parentRelationship || 'Guardian',
-      phone: args.parentPhone,
-      email: args.parentEmail || '',
-      occupation: args.parentOccupation || '',
-      isWhatsapp: true,
-    },
-  ];
+  const parents = args.parents.map((p) => ({
+    name: p.name,
+    relationship: p.relationship || 'Guardian',
+    phone: p.phone || '',
+    email: p.email || '',
+    occupation: p.occupation || '',
+    isWhatsapp: true,
+  }));
 
   const student = new Student({
     name: args.name,
@@ -327,11 +323,6 @@ async function createStudentTool(args, context) {
     schoolId: context.schoolId,
     gender: args.gender || '',
     dateOfBirth: args.dateOfBirth || '',
-    parentName: args.parentName,
-    parentPhone: args.parentPhone,
-    parentEmail: args.parentEmail || '',
-    parentRelationship: args.parentRelationship || 'Guardian',
-    parentOccupation: args.parentOccupation || '',
     parents,
     feeStatus: 'pending',
     status: 'active',
@@ -381,15 +372,16 @@ async function sendFormTool(args, context) {
   if (recipientType === 'staff') {
     recipient = await Staff.findById(args.recipientId).select('name email phone');
   } else {
-    recipient = await Student.findById(args.recipientId).select('name parentEmail parentPhone');
+    recipient = await Student.findById(args.recipientId).select('name parents');
   }
 
   if (!recipient) {
     throw new AiRequestError(`The ${recipientType} recipient was not found.`);
   }
 
-  const assignedToEmail = recipientType === 'staff' ? recipient.email : recipient.parentEmail;
-  const assignedToPhone = recipientType === 'staff' ? recipient.phone : recipient.parentPhone;
+  const firstParent = recipient.parents?.[0];
+  const assignedToEmail = recipientType === 'staff' ? recipient.email : firstParent?.email;
+  const assignedToPhone = recipientType === 'staff' ? recipient.phone : firstParent?.phone;
 
   if (!assignedToEmail && !assignedToPhone) {
     throw new AiRequestError(
@@ -560,7 +552,7 @@ async function getStudentsTool(args, context) {
   }
   if (args.name) {
     const regex = buildRegex(args.name);
-    query.$or = [{ name: regex }, { parentName: regex }];
+    query.$or = [{ name: regex }, { 'parents.name': regex }];
   }
 
   const students = await Student.find(query)
@@ -577,8 +569,8 @@ async function getStudentsTool(args, context) {
       admissionId: student.admissionId,
       rollNo: student.rollNo,
       className: student.classId ? `${student.classId.name} ${student.classId.section}` : '',
-      parentName: student.parentName || '',
-      parentPhone: student.parentPhone || '',
+      parentName: student.parents?.[0]?.name || '',
+      parentPhone: student.parents?.[0]?.phone || '',
       status: student.status || '',
       feeStatus: student.feeStatus || '',
     })),
@@ -609,9 +601,9 @@ async function getStudentDetailsTool(args, context) {
       className: student.classId ? `${student.classId.name} ${student.classId.section}` : '',
       gender: student.gender || '',
       dateOfBirth: student.dateOfBirth || '',
-      parentName: student.parentName || '',
-      parentPhone: student.parentPhone || '',
-      parentEmail: student.parentEmail || '',
+      parentName: student.parents?.[0]?.name || '',
+      parentPhone: student.parents?.[0]?.phone || '',
+      parentEmail: student.parents?.[0]?.email || '',
       address: student.address || '',
       previousSchool: student.previousSchool || '',
       transportRequired: Boolean(student.transportRequired),

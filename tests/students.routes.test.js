@@ -44,8 +44,6 @@ describe('students routes', () => {
         rollNo: 7,
         classId: classRecord._id.toString(),
         dateOfBirth: '2010-05-15',
-        parentName: 'Mary Parent',
-        parentPhone: '9876543210',
         parents: [
           {
             name: 'Mary Parent',
@@ -85,14 +83,25 @@ describe('students routes', () => {
       .put(`/api/students/${studentId}`)
       .set(authHeaders)
       .send({
-        parentName: 'Updated Parent',
+        parents: [
+          {
+            name: 'Updated Parent',
+            relationship: 'mother',
+            phone: '9876543210',
+            isWhatsapp: true,
+          },
+        ],
         status: 'inactive',
       })
       .expect(200);
 
     expect(updateResponse.body).toMatchObject({
       id: studentId,
-      parentName: 'Updated Parent',
+      parents: [
+        expect.objectContaining({
+          name: 'Updated Parent',
+        }),
+      ],
       status: 'inactive',
     });
 
@@ -191,8 +200,6 @@ describe('students routes', () => {
         rollNo: 8,
         classId: classRecord._id.toString(),
         dateOfBirth: '2011-07-22',
-        parentName: 'Old Parent',
-        parentPhone: '9876543211',
         parents: [
           {
             name: 'Old Parent',
@@ -210,9 +217,6 @@ describe('students routes', () => {
       .put(`/api/students/${studentId}`)
       .set(authHeaders)
       .send({
-        parentName: 'New Parent',
-        parentPhone: '9876543222',
-        parentEmail: 'new.parent@example.com',
         parents: [
           {
             name: 'New Parent',
@@ -724,7 +728,7 @@ describe('students routes', () => {
   });
 
   describe('PUT /api/students/:id — Update student', () => {
-    it('updates allowed fields (parentName, status) and returns the updated student', async () => {
+    it('updates allowed fields (parents, status) and returns the updated student', async () => {
       const admin = await createStaffUser();
       const classRecord = await createClassRecord();
       const { app } = createTestApp();
@@ -739,7 +743,6 @@ describe('students routes', () => {
           academicYear: CURRENT_ACADEMIC_YEAR,
           rollNo: 5,
           classId: classRecord._id.toString(),
-          parentName: 'Original Parent',
           parents: defaultParent,
         })
         .expect(201);
@@ -750,7 +753,14 @@ describe('students routes', () => {
         .put(`/api/students/${studentId}`)
         .set(authHeaders)
         .send({
-          parentName: 'Updated Guardian',
+          parents: [
+            {
+              name: 'Updated Guardian',
+              relationship: 'mother',
+              phone: '9876543210',
+              isWhatsapp: true,
+            },
+          ],
           status: 'inactive',
           medicalConditions: 'None known',
         })
@@ -758,7 +768,11 @@ describe('students routes', () => {
 
       expect(updateResponse.body).toMatchObject({
         id: studentId,
-        parentName: 'Updated Guardian',
+        parents: [
+          expect.objectContaining({
+            name: 'Updated Guardian',
+          }),
+        ],
         status: 'inactive',
         medicalConditions: 'None known',
       });
@@ -773,7 +787,7 @@ describe('students routes', () => {
       await request(app)
         .put(`/api/students/${nonExistentId}`)
         .set(authHeaders)
-        .send({ parentName: 'Ghost Parent' })
+        .send({ status: 'active' })
         .expect(404);
     });
 
@@ -798,7 +812,7 @@ describe('students routes', () => {
       await request(app)
         .put(`/api/students/${schoolBStudent._id.toString()}`)
         .set(authHeadersA)
-        .send({ parentName: 'Intruder Parent' })
+        .send({ status: 'active' })
         .expect(404);
     });
 
@@ -809,7 +823,7 @@ describe('students routes', () => {
 
       await request(app)
         .put(`/api/students/${student._id.toString()}`)
-        .send({ parentName: 'No Auth Parent' })
+        .send({ status: 'active' })
         .expect(401);
     });
 

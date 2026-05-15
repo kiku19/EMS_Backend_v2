@@ -754,19 +754,7 @@ router.get(
         }
       });
 
-      // Handle legacy parent fields if parents array is empty
-      let parents = student.parents || [];
-
-      if (!parents || parents.length === 0) {
-        parents = [
-          {
-            name: student.parentName,
-            phone: student.parentPhone,
-            email: student.parentEmail,
-            relationship: student.parentRelationship || 'Parent',
-          },
-        ];
-      }
+      const parents = student.parents || [];
 
       res.json({
         student: {

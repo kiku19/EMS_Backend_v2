@@ -164,13 +164,17 @@ describe('academics routes', () => {
         name: 'Bob',
         rollNo: 2,
         classId: classRecord._id,
-        parentPhone: '9000000001',
+        parents: [
+          { name: 'Bob Parent', relationship: 'father', phone: '9000000001', isWhatsapp: true },
+        ],
       });
       const studentC = await createStudentRecord({
         name: 'Charlie',
         rollNo: 3,
         classId: classRecord._id,
-        parentPhone: '9000000002',
+        parents: [
+          { name: 'Charlie Parent', relationship: 'father', phone: '9000000002', isWhatsapp: true },
+        ],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
@@ -249,13 +253,17 @@ describe('academics routes', () => {
         name: 'Tied Student B',
         rollNo: 2,
         classId: classRecord._id,
-        parentPhone: '9100000001',
+        parents: [
+          { name: 'Tied Parent B', relationship: 'father', phone: '9100000001', isWhatsapp: true },
+        ],
       });
       const studentC = await createStudentRecord({
         name: 'Lower Student C',
         rollNo: 3,
         classId: classRecord._id,
-        parentPhone: '9100000002',
+        parents: [
+          { name: 'Lower Parent C', relationship: 'father', phone: '9100000002', isWhatsapp: true },
+        ],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
@@ -327,7 +335,9 @@ describe('academics routes', () => {
           name: `Grade Student ${i}`,
           rollNo: i + 1,
           classId: classRecord._id,
-          parentPhone: `920000000${i}`,
+          parents: [
+            { name: 'Grade Parent', relationship: 'father', phone: `920000000${i}`, isWhatsapp: true },
+          ],
         });
         students.push(student);
       }

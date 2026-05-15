@@ -196,15 +196,7 @@ export const createStudentSchema = z
     isWhatsapp: z.boolean().nullish(),
     whatsappNumber: optionalPhoneIntl,
 
-    // Parent Information (legacy single parent)
-    parentName: optionalString(100),
-    parentPhone: optionalPhoneIntl,
-    parentEmail: optionalEmail,
-    parentRelationship: optionalString(50),
-    parentOccupation: optionalString(100),
-    alternatePhone: optionalPhoneIntl,
-
-    // Parents array (new)
+    // Parents/Guardians array
     parents: z.array(parentSchema).min(1, 'At least one parent or guardian is required'),
 
     // Siblings

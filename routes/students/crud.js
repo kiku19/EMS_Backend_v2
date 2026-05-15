@@ -100,7 +100,7 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
       // First run aggregation to get sorted + paginated Student._id list —
       // we can't return Student.aggregate() directly because it bypasses
       // the piiPlugin post('find') hook and returns encrypted ciphertext
-      // for phone/email/aadhaarNumber/address/parentPhone.
+      // for phone/email/aadhaarNumber/address/parents.phone.
       const pipeline = [
         { $match: query },
         {
@@ -245,12 +245,6 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
         phone: student.phone,
         email: student.email,
         address: student.address,
-        parentName: student.parentName,
-        parentPhone: student.parentPhone,
-        parentEmail: student.parentEmail,
-        parentRelationship: student.parentRelationship,
-        parentOccupation: student.parentOccupation,
-        alternatePhone: student.alternatePhone,
         parents: student.parents,
         siblings: student.siblings,
         previousSchool: student.previousSchool,

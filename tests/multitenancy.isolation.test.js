@@ -153,8 +153,6 @@ describe('Multi-tenant isolation (E2E-10)', () => {
           rollNo: 99,
           classId: classA._id.toString(),
           dateOfBirth: '2010-01-01',
-          parentName: 'Parent X',
-          parentPhone: '9000000099',
           parents: [
             { name: 'Parent X', relationship: 'father', phone: '9000000099', isWhatsapp: false },
           ],

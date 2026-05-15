@@ -76,7 +76,7 @@ router.get(
           admissionNo: student.admissionNumber || student.admissionNo,
           rollNo: student.rollNo,
           dob: student.dob,
-          fatherName: student.fatherName || student.guardianName,
+          fatherName: student.parents?.find(p => p.relationship?.toLowerCase().includes('father'))?.name || student.parents?.[0]?.name || '',
           className: student.classId?.name
             ? `${student.classId.name}${student.classId.section ? ' ' + student.classId.section : ''}`
             : null,
@@ -130,7 +130,7 @@ router.get('/:id', checkPermission('students', 'view'), async (req, res) => {
     const reportCard = await CBSEReportCard.findOne(
       scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
     )
-      .populate('studentId', 'name admissionNumber admissionNo rollNo dob fatherName guardianName')
+      .populate('studentId', 'name admissionNumber admissionNo rollNo dob parents')
       .populate('classId', 'name section')
       .lean();
 

@@ -35,7 +35,7 @@ describe('attendance routes', () => {
         admissionId: 'ADM7002',
         rollNo: 2,
         classId: classRecord._id,
-        parentPhone: '9876543211',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9876543211', isWhatsapp: true }],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -96,13 +96,13 @@ describe('attendance routes', () => {
         name: 'Student Beta',
         rollNo: 2,
         classId: classRecord._id,
-        parentPhone: '9000000001',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9000000001', isWhatsapp: true }],
       });
       const studentC = await createStudentRecord({
         name: 'Student Gamma',
         rollNo: 3,
         classId: classRecord._id,
-        parentPhone: '9000000002',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9000000002', isWhatsapp: true }],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -152,13 +152,13 @@ describe('attendance routes', () => {
         name: 'Absent Student',
         rollNo: 2,
         classId: classRecord._id,
-        parentPhone: '9100000001',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9100000001', isWhatsapp: true }],
       });
       const lateStudent = await createStudentRecord({
         name: 'Late Student',
         rollNo: 3,
         classId: classRecord._id,
-        parentPhone: '9100000002',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9100000002', isWhatsapp: true }],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -541,7 +541,7 @@ describe('attendance routes', () => {
         name: 'Snap Student Two',
         rollNo: 2,
         classId: classRecord._id,
-        parentPhone: '9200000001',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9200000001', isWhatsapp: true }],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -631,7 +631,7 @@ describe('attendance routes', () => {
         name: 'MT Student B',
         rollNo: 1,
         classId: classB._id,
-        parentPhone: '9300000001',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9300000001', isWhatsapp: true }],
       });
       const date = '2026-03-11';
 
@@ -689,7 +689,7 @@ describe('attendance routes', () => {
         name: 'Cross Student B',
         rollNo: 1,
         classId: classB._id,
-        parentPhone: '9400000001',
+        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9400000001', isWhatsapp: true }],
       });
       const date = '2026-03-12';
 

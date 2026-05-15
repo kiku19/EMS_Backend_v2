@@ -76,19 +76,12 @@ function collectStudentParents(studentDoc) {
     }
   }
 
-  upsertParent({
-    name: studentDoc.parentName || `${studentDoc.name}'s Parent`,
-    phone: studentDoc.parentPhone,
-    email: studentDoc.parentEmail,
-    relationship: studentDoc.parentRelationship,
-  });
-
   return Array.from(parentMap.values());
 }
 
 /**
  * Create or update parent accounts for a student.
- * For each parent in the student's parents array (or top-level parentName/parentPhone),
+ * For each parent in the student's parents array,
  * find or create a Parent record, link the child, and set password.
  */
 export async function createOrUpdateParentAccount(studentDoc) {

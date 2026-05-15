@@ -603,9 +603,10 @@ router.get(
 
         if (percentage < threshold && total >= 10) {
           // Mask parent PII — only show last 4 digits of phone and domain-masked email
-          const maskedPhone = student.parentPhone ? '****' + student.parentPhone.slice(-4) : null;
-          const maskedEmail = student.parentEmail
-            ? student.parentEmail.replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
+          const firstParent = student.parents?.[0];
+          const maskedPhone = firstParent?.phone ? '****' + firstParent.phone.slice(-4) : null;
+          const maskedEmail = firstParent?.email
+            ? firstParent.email.replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
             : null;
           chronicAbsentees.push({
             studentId: student._id,
@@ -614,7 +615,7 @@ router.get(
             percentage,
             parentPhone: maskedPhone,
             parentEmail: maskedEmail,
-            hasParentContact: Boolean(student.parentPhone || student.parentEmail),
+            hasParentContact: Boolean(firstParent?.phone || firstParent?.email),
           });
         }
       }

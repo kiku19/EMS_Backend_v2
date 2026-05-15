@@ -423,11 +423,6 @@ describe('Student Create Drawer — DB Persistence', () => {
       zipCode: '110001',
       isWhatsapp: true,
       whatsappNumber: '9876543210',
-      parentName: 'Rajesh Sharma',
-      parentPhone: '9876543211',
-      parentEmail: 'rajesh@example.com',
-      parentRelationship: 'Father',
-      parentOccupation: 'Engineer',
       parents: [
         {
           name: 'Rajesh Sharma',
@@ -468,10 +463,10 @@ describe('Student Create Drawer — DB Persistence', () => {
     expect(student.state).toBe('Delhi');
     expect(student.zipCode).toBe('110001');
     expect(student.isWhatsapp).toBe(true);
-    expect(student.parentName).toBe('Rajesh Sharma');
-    expect(student.parentPhone).toBe('9876543211');
-    expect(student.parentEmail).toBe('rajesh@example.com');
-    expect(student.parentRelationship).toBe('Father');
+    expect(student.parents[0].name).toBe('Rajesh Sharma');
+    expect(student.parents[0].phone).toBe('9876543211');
+    expect(student.parents[0].email).toBe('rajesh@example.com');
+    expect(student.parents[0].relationship).toBe('Father');
     expect(student.previousSchool).toBe('ABC Public School');
     expect(student.tcNumber).toBe('TC-2025-001');
     expect(student.medicalConditions).toBe('None');
@@ -547,8 +542,6 @@ describe('Student Create Drawer — Parent Account Sync', () => {
       .set(authHeaders)
       .send(
         validStudentPayload(classRecord._id, {
-          parentName: 'Auto Parent',
-          parentPhone: uniquePhone,
           parents: [
             {
               name: 'Auto Parent',
@@ -587,7 +580,6 @@ describe('Student Create Drawer — Parent Account Sync', () => {
       .send(
         validStudentPayload(classRecord._id, {
           admissionId: 'ADM-SIB-001',
-          parentPhone: sharedPhone,
           parents: [
             { name: 'Shared Parent', relationship: 'father', phone: sharedPhone, isWhatsapp: true },
           ],
@@ -603,7 +595,6 @@ describe('Student Create Drawer — Parent Account Sync', () => {
         validStudentPayload(classRecord._id, {
           admissionId: 'ADM-SIB-002',
           rollNo: 2,
-          parentPhone: sharedPhone,
           parents: [
             { name: 'Shared Parent', relationship: 'father', phone: sharedPhone, isWhatsapp: true },
           ],
@@ -924,12 +915,6 @@ describe('Student Create Drawer — Edge Cases', () => {
           zipCode: '400001',
           isWhatsapp: true,
           whatsappNumber: '9111111111',
-          parentName: 'Full Parent',
-          parentPhone: '9222222222',
-          parentEmail: 'parent@example.com',
-          parentRelationship: 'Mother',
-          parentOccupation: 'Doctor',
-          alternatePhone: '9333333333',
           previousSchool: 'Old School',
           tcNumber: 'TC-FULL-001',
           medicalConditions: 'Asthma',

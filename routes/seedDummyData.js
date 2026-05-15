@@ -413,10 +413,6 @@ export async function seedStudents(schoolId, classes) {
         city: loc.city,
         state: loc.state,
         zipCode: loc.zip,
-        parentName,
-        parentPhone,
-        parentRelationship,
-        parentOccupation: pick(OCCUPATIONS),
         parents: [
           {
             name: parentName,

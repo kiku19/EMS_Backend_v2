@@ -28,8 +28,7 @@ describe('E2E-34: PTM Scheduler', () => {
       name: 'Arjun Kumar',
       classId: cls._id,
       schoolId: admin.schoolId,
-      parentName: 'Raj Kumar',
-      parentPhone: '9876543210',
+      parents: [{ name: 'Raj Kumar', relationship: 'Parent', phone: '9876543210', isWhatsapp: true }],
     });
     return { admin, teacher, cls, student };
   }

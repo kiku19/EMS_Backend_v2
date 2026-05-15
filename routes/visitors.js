@@ -190,31 +190,30 @@ router.get(
 
       const searchRegex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
-      // Search in parent fields of students (scoped to school)
+      // Search in parents array of students (scoped to school)
       const students = await Student.find({
         schoolId: req.user.schoolId,
         isDeleted: { $ne: true },
-        $or: [
-          { parentName: searchRegex },
-          { parentPhone: searchRegex },
-          { parentEmail: searchRegex },
-        ],
+        'parents.name': searchRegex,
       })
-        .select('name admissionId parentName parentPhone parentEmail classId')
+        .select('name admissionId parents classId')
         .populate('classId', 'name section')
         .limit(20);
 
       // Format results
-      const parents = students.map((student) => ({
-        studentId: student._id,
-        studentName: student.name,
-        admissionId: student.admissionId,
-        parentName: student.parentName,
-        parentPhone: student.parentPhone,
-        parentEmail: student.parentEmail,
-        class: student.classId?.name,
-        section: student.classId?.section,
-      }));
+      const parents = students.map((student) => {
+        const firstParent = student.parents?.[0];
+        return {
+          studentId: student._id,
+          studentName: student.name,
+          admissionId: student.admissionId,
+          parentName: firstParent?.name,
+          parentPhone: firstParent?.phone,
+          parentEmail: firstParent?.email,
+          class: student.classId?.name,
+          section: student.classId?.section,
+        };
+      });
 
       res.json({
         success: true,

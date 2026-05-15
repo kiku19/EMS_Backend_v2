@@ -155,8 +155,6 @@ export async function createStudentRecord({
     rollNo,
     classId,
     schoolId,
-    parentName,
-    parentPhone,
     parents: normalizedParents,
     dateOfBirth,
     feeStatus,

@@ -117,7 +117,7 @@ async function resolveParentRecipients(criteria, schoolId) {
   }
 
   const students = await Student.find(studentQuery)
-    .select('_id name parentEmail parentName parents classId')
+    .select('_id name parents classId')
     .lean();
 
   const seen = new Set();
@@ -126,14 +126,6 @@ async function resolveParentRecipients(criteria, schoolId) {
   for (const student of students) {
     // Collect all parent emails for this student (de-duplicated per email)
     const parentEntries = [];
-
-    // Primary parent fields
-    if (student.parentEmail) {
-      parentEntries.push({
-        email: student.parentEmail.toLowerCase(),
-        name: student.parentName || 'Parent',
-      });
-    }
 
     // parents array
     if (Array.isArray(student.parents)) {

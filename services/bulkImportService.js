@@ -183,9 +183,6 @@ export async function processBulkStudentImport(jobId, schoolId, rows) {
             isWhatsapp: false,
           },
         ],
-        parentName: data.parentName,
-        parentPhone: data.parentPhone || undefined,
-        parentEmail: data.parentEmail || undefined,
         phone: data.phone || undefined,
         email: data.email || undefined,
         address: data.address || undefined,
@@ -360,8 +357,8 @@ export async function processBulkNotification(schoolId, students, message, chann
 
   if (channel === 'sms' || channel === 'both') {
     const smsList = students
-      .filter((s) => s.parentPhone)
-      .map((s) => ({ to: s.parentPhone, message }));
+      .filter((s) => s.parents?.[0]?.phone)
+      .map((s) => ({ to: s.parents[0].phone, message }));
     if (smsList.length > 0) {
       try {
         await sendBulkSMS(smsList);

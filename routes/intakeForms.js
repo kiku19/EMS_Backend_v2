@@ -1172,21 +1172,14 @@ async function createStudentFromSubmission(submissionData, form, schoolId = null
       state: submissionData.state,
       zipCode: submissionData.zipCode || submissionData.pincode,
 
-      // Parent/Guardian Information
-      parentName: submissionData.parentName || submissionData.fatherName,
-      parentPhone: submissionData.parentPhone,
-      parentEmail: submissionData.parentEmail,
-      parentRelationship: submissionData.parentRelationship || 'Father',
-      parentOccupation: submissionData.parentOccupation,
-      alternatePhone: submissionData.alternatePhone,
-
-      // Additional Parents
+      // Parents/Guardians
       parents: submissionData.parents || [
         {
           name: submissionData.parentName || submissionData.fatherName,
           relationship: submissionData.parentRelationship || 'Father',
           phone: submissionData.parentPhone,
           email: submissionData.parentEmail,
+          occupation: submissionData.parentOccupation,
           isWhatsapp: submissionData.isWhatsapp !== undefined ? submissionData.isWhatsapp : true,
         },
       ],

@@ -126,8 +126,8 @@ router.get(
           dob: s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString() : '',
           phone: s.phone || '',
           email: s.email || '',
-          parentName: s.parentName || s.fatherName || s.guardianName || '',
-          parentPhone: s.parentPhone || s.fatherPhone || '',
+          parentName: s.parents?.[0]?.name || '',
+          parentPhone: s.parents?.[0]?.phone || '',
           address: [s.address, s.city, s.state].filter(Boolean).join(', '),
           status: s.status || '',
           admissionDate: s.admissionDate ? new Date(s.admissionDate).toLocaleDateString() : '',
@@ -905,7 +905,7 @@ router.get(
             gender: s.gender || '',
             category: s.category || 'General',
             aadhaar: s.aadhaarNumber || '',
-            fatherName: father?.name || s.parentName || '',
+            fatherName: father?.name || s.parents?.[0]?.name || '',
             motherName: mother?.name || '',
             class: s.classId
               ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
@@ -971,7 +971,7 @@ router.get(
             gender: (s.gender || '').charAt(0).toUpperCase() || '',
             category: s.category || 'General',
             aadhaar: s.aadhaarNumber || '',
-            guardianName: s.parentName || s.parents?.[0]?.name || '',
+            guardianName: s.parents?.[0]?.name || '',
             class: s.classId
               ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
               : '',
@@ -1037,7 +1037,7 @@ router.get(
             gender: s.gender || '',
             category: s.category || 'General',
             aadhaar: s.aadhaarNumber || '',
-            parentName: s.parentName || s.parents?.[0]?.name || '',
+            parentName: s.parents?.[0]?.name || '',
             class: s.classId
               ? `${s.classId.name}${s.classId.section ? ' - ' + s.classId.section : ''}`
               : '',

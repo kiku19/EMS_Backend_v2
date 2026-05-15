@@ -120,9 +120,6 @@ router.post(
           rollNo: item.rollNo || undefined,
           gender: item.gender || undefined,
           dateOfBirth: item.dateOfBirth || undefined,
-          parentName: item.parentName,
-          parentPhone: item.parentPhone || undefined,
-          parentEmail: item.parentEmail || undefined,
           parents: [
             {
               name: item.parentName,
@@ -551,9 +548,6 @@ function buildStudentUpdateSet(data) {
   if (data.address !== undefined) set.address = data.address;
   if (data.phone !== undefined) set.phone = data.phone;
   if (data.email !== undefined) set.email = data.email;
-  if (data.parentName !== undefined) set.parentName = data.parentName;
-  if (data.parentPhone !== undefined) set.parentPhone = data.parentPhone;
-  if (data.parentEmail !== undefined) set.parentEmail = data.parentEmail;
   return set;
 }
 

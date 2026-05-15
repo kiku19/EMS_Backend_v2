@@ -139,8 +139,6 @@ describe('PERF-03: 50 schools × 2000 students load test', () => {
             status: s < STUDENTS_PER_SCHOOL * 0.85 ? 'active' : pick(STATUSES),
             feeStatus: pick(FEE_STATUSES),
             isDeleted: false,
-            parentName: `Parent ${globalIdx}`,
-            parentPhone: `9${String(globalIdx).padStart(9, '0')}`,
             parents: [
               {
                 name: `Parent ${globalIdx}`,

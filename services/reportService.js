@@ -525,7 +525,7 @@ export async function getAbsenteeReport(schoolId, { startDate, endDate, classId 
   if (classId) match.classId = toObjectId(classId);
 
   return Attendance.find(match)
-    .populate('studentId', 'name rollNo admissionId parentPhone')
+    .populate('studentId', 'name rollNo admissionId parents')
     .populate('classId', 'name section')
     .sort({ date: -1 })
     .select('studentId classId date status');

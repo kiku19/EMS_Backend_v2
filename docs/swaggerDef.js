@@ -158,8 +158,6 @@ const commonComponents = {
         phone: { type: 'string' },
         email: { type: 'string', format: 'email' },
         address: { type: 'string' },
-        parentName: { type: 'string' },
-        parentPhone: { type: 'string' },
         parents: { type: 'array', items: { $ref: '#/components/schemas/ParentInfo' } },
         feeStatus: { type: 'string', enum: ['paid', 'partial', 'pending', 'overdue'] },
         schoolId: { $ref: '#/components/schemas/ObjectId' },

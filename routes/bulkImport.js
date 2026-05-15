@@ -485,9 +485,6 @@ router.post(
                 isWhatsapp: false,
               },
             ],
-            parentName: data.parentName,
-            parentPhone: data.parentPhone || undefined,
-            parentEmail: data.parentEmail || undefined,
             phone: data.phone || undefined,
             email: data.email || undefined,
             address: data.address || undefined,
@@ -1244,7 +1241,7 @@ router.post('/bulk-notify', checkPermission('students', 'read'), async (req, res
     }
 
     const students = await Student.find(query)
-      .select('name parentPhone parentEmail parentName')
+      .select('name parents')
       .lean();
     if (!students.length)
       return res.status(404).json({ error: 'No students found matching criteria' });
@@ -1255,8 +1252,8 @@ router.post('/bulk-notify', checkPermission('students', 'read'), async (req, res
       students: students.map((s) => ({
         studentId: s._id.toString(),
         name: s.name,
-        parentPhone: s.parentPhone,
-        parentEmail: s.parentEmail,
+        parentPhone: s.parents?.[0]?.phone,
+        parentEmail: s.parents?.[0]?.email,
       })),
       message: message.trim(),
       channel,

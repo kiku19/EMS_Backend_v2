@@ -266,7 +266,7 @@ router.post('/bulk-create', requireAdmin, async (req, res) => {
       })
     )
       .select(
-        'name admissionId dateOfBirth parentName parentPhone parentEmail parentRelationship parents schoolId'
+        'name admissionId dateOfBirth parents schoolId'
       )
       .lean();
 
