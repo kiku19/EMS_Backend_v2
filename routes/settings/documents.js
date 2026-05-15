@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import { SchoolSettings } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/auth/permissions.js';
@@ -177,6 +178,87 @@ router.put(
     } catch (error) {
       console.error('Error bulk updating document configs:', error);
       res.status(500).json({ error: 'Failed to bulk update document configurations' });
+    }
+  }
+);
+
+// Atomic save document configurations — replaces the entire school-scoped set in one transaction
+router.put(
+  '/document-config/atomic',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const { DocumentConfig } = await import('../../database.js');
+      const { configs } = req.body;
+
+      if (!Array.isArray(configs)) {
+        return res.status(400).json({ error: 'configs must be an array' });
+      }
+
+      // Cap at 50 to prevent abuse
+      if (configs.length > 50) {
+        return res.status(400).json({ error: 'Maximum 50 configurations can be saved at once' });
+      }
+
+      const schoolId = req.user?.schoolId;
+      if (!schoolId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Validate every item has a documentName
+      const invalidIndex = configs.findIndex(
+        (cfg) => !cfg.documentName || typeof cfg.documentName !== 'string'
+      );
+      if (invalidIndex !== -1) {
+        return res.status(400).json({
+          error: `Validation failed: documentName is required at index ${invalidIndex}`,
+        });
+      }
+
+      const mongoSession = await mongoose.startSession();
+      let savedConfigs = [];
+
+      try {
+        await mongoSession.withTransaction(async () => {
+          // 1. Delete all existing document configs for this school
+          await DocumentConfig.deleteMany({ schoolId }).session(mongoSession);
+
+          // 2. Prepare clean documents — strip any injected fields and enforce types
+          const docsToInsert = configs.map((cfg, index) => ({
+            documentName: cfg.documentName.trim(),
+            isRequired: !!cfg.isRequired,
+            uploadType: ['single', 'multiple', 'front-back'].includes(cfg.uploadType)
+              ? cfg.uploadType
+              : 'single',
+            allowedFormats: Array.isArray(cfg.allowedFormats)
+              ? cfg.allowedFormats.filter((f) => typeof f === 'string')
+              : ['pdf', 'jpg', 'png'],
+            maxFileSize:
+              typeof cfg.maxFileSize === 'number' && cfg.maxFileSize > 0
+                ? cfg.maxFileSize
+                : 5242880,
+            displayOrder: typeof cfg.displayOrder === 'number' ? cfg.displayOrder : index + 1,
+            description: typeof cfg.description === 'string' ? cfg.description.trim() : '',
+            schoolId,
+          }));
+
+          // 3. Insert the new set atomically inside the transaction
+          if (docsToInsert.length > 0) {
+            savedConfigs = await DocumentConfig.insertMany(docsToInsert, {
+              session: mongoSession,
+              ordered: true,
+            });
+          }
+        });
+      } finally {
+        mongoSession.endSession();
+      }
+
+      res.json(savedConfigs);
+    } catch (error) {
+      console.error('Error atomic saving document configs:', error);
+      res.status(500).json({ error: 'Failed to save document configurations' });
     }
   }
 );

@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { SchoolSettings } from '../database.js';
+import { SchoolSettings, DocumentConfig } from '../database.js';
 import { authHeadersFor, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
@@ -54,6 +54,14 @@ describe('settings routes', () => {
     it('returns 401 for GET /api/settings/subjects without auth', async () => {
       const { app } = createTestApp();
       await request(app).get('/api/settings/subjects').expect(401);
+    });
+
+    it('returns 401 for PUT /api/settings/document-config/atomic without auth', async () => {
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/document-config/atomic')
+        .send({ configs: [] })
+        .expect(401);
     });
   });
 
@@ -940,6 +948,214 @@ describe('settings routes', () => {
       expect(Array.isArray(subjects)).toBe(true);
       expect(subjects).toHaveLength(1);
       expect(subjects[0].name).toBe('Telugu');
+    });
+  });
+
+  // ============================================================
+  // DOCUMENT CONFIG ATOMIC SAVE
+  // ============================================================
+
+  describe('PUT /api/settings/document-config/atomic', () => {
+    it('replaces all existing document configs atomically', async () => {
+      const school = await createSchoolRecord({
+        name: 'Doc Atomic School',
+        code: 'DOCATOM',
+      });
+      const admin = await createStaffUser({
+        name: 'Doc Atomic Admin',
+        email: 'doc.atomic@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      // Seed some existing configs
+      await DocumentConfig.create([
+        {
+          schoolId: school._id,
+          documentName: 'Old Doc 1',
+          isRequired: true,
+          uploadType: 'single',
+          allowedFormats: ['pdf'],
+          maxFileSize: 5242880,
+          displayOrder: 1,
+          description: 'old',
+        },
+        {
+          schoolId: school._id,
+          documentName: 'Old Doc 2',
+          isRequired: false,
+          uploadType: 'multiple',
+          allowedFormats: ['pdf'],
+          maxFileSize: 5242880,
+          displayOrder: 2,
+          description: 'old',
+        },
+      ]);
+
+      const { app } = createTestApp();
+      const response = await request(app)
+        .put('/api/settings/document-config/atomic')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({
+          configs: [
+            {
+              documentName: 'Birth Certificate',
+              isRequired: true,
+              uploadType: 'single',
+              allowedFormats: ['pdf', 'jpg'],
+              maxFileSize: 5242880,
+              displayOrder: 1,
+              description: 'New desc',
+            },
+            {
+              documentName: 'Transfer Certificate',
+              isRequired: false,
+              uploadType: 'single',
+              allowedFormats: ['pdf'],
+              maxFileSize: 2097152,
+              displayOrder: 2,
+            },
+          ],
+        })
+        .expect(200);
+
+      expect(response.body).toBeInstanceOf(Array);
+      expect(response.body).toHaveLength(2);
+      expect(response.body[0].documentName).toBe('Birth Certificate');
+      expect(response.body[1].documentName).toBe('Transfer Certificate');
+
+      // Verify old docs are gone
+      const remaining = await DocumentConfig.find({ schoolId: school._id }).lean();
+      expect(remaining).toHaveLength(2);
+      const names = remaining.map((r) => r.documentName);
+      expect(names).not.toContain('Old Doc 1');
+      expect(names).not.toContain('Old Doc 2');
+    });
+
+    it('clears all configs when sent an empty array', async () => {
+      const school = await createSchoolRecord({
+        name: 'Doc Clear School',
+        code: 'DOCCLEAR',
+      });
+      const admin = await createStaffUser({
+        name: 'Doc Clear Admin',
+        email: 'doc.clear@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      await DocumentConfig.create({
+        schoolId: school._id,
+        documentName: 'To Be Deleted',
+        isRequired: true,
+        uploadType: 'single',
+        allowedFormats: ['pdf'],
+        maxFileSize: 5242880,
+        displayOrder: 1,
+      });
+
+      const { app } = createTestApp();
+      const response = await request(app)
+        .put('/api/settings/document-config/atomic')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ configs: [] })
+        .expect(200);
+
+      expect(response.body).toBeInstanceOf(Array);
+      expect(response.body).toHaveLength(0);
+
+      const remaining = await DocumentConfig.find({ schoolId: school._id }).lean();
+      expect(remaining).toHaveLength(0);
+    });
+
+    it('returns 400 when configs is not an array', async () => {
+      const school = await createSchoolRecord({
+        name: 'Doc BadReq School',
+        code: 'DOCBAD',
+      });
+      const admin = await createStaffUser({
+        name: 'Doc BadReq Admin',
+        email: 'doc.badreq@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/document-config/atomic')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ configs: 'not-an-array' })
+        .expect(400);
+    });
+
+    it('returns 400 when a config is missing documentName', async () => {
+      const school = await createSchoolRecord({
+        name: 'Doc MissingName School',
+        code: 'DOCMISS',
+      });
+      const admin = await createStaffUser({
+        name: 'Doc MissingName Admin',
+        email: 'doc.missingname@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/document-config/atomic')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({
+          configs: [
+            { documentName: 'Valid Doc', isRequired: true },
+            { isRequired: false }, // missing documentName
+          ],
+        })
+        .expect(400);
+    });
+
+    it('does not affect document configs of another school', async () => {
+      const schoolA = await createSchoolRecord({
+        name: 'Doc Atomic School A',
+        code: 'DOCATA',
+      });
+      const schoolB = await createSchoolRecord({
+        name: 'Doc Atomic School B',
+        code: 'DOCATB',
+      });
+      const adminA = await createStaffUser({
+        name: 'Doc Atomic Admin A',
+        email: 'doc.atomic.a@example.com',
+        schoolId: schoolA._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      await DocumentConfig.create({
+        schoolId: schoolB._id,
+        documentName: 'School B Doc',
+        isRequired: true,
+        uploadType: 'single',
+        allowedFormats: ['pdf'],
+        maxFileSize: 5242880,
+        displayOrder: 1,
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/document-config/atomic')
+        .set(authHeadersFor(adminA, 'admin'))
+        .send({
+          configs: [{ documentName: 'School A Doc', isRequired: false }],
+        })
+        .expect(200);
+
+      const schoolBDocs = await DocumentConfig.find({ schoolId: schoolB._id }).lean();
+      expect(schoolBDocs).toHaveLength(1);
+      expect(schoolBDocs[0].documentName).toBe('School B Doc');
     });
   });
 
