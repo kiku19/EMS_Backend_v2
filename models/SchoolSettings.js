@@ -135,6 +135,22 @@ const schoolSettingsSchema = new mongoose.Schema(
       payrollCycle: { type: String, default: 'monthly', enum: ['weekly', 'biweekly', 'monthly'] },
     },
 
+    // Salary Component Definitions (earnings / deductions templates)
+    salaryComponents: {
+      earnings: [
+        {
+          id: { type: String, required: true },
+          name: { type: String, required: true },
+        },
+      ],
+      deductions: [
+        {
+          id: { type: String, required: true },
+          name: { type: String, required: true },
+        },
+      ],
+    },
+
     // Transfer Certificate Configuration
     tc: {
       prefix: { type: String, default: 'TC' },

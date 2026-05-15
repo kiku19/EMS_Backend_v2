@@ -86,4 +86,84 @@ router.put(
   }
 );
 
+// ─── Salary Components ───────────────────────────────────────────
+
+const componentItemSchema = z.object({
+  id: z.string().trim().min(1, 'Component id is required'),
+  name: z.string().trim().min(1, 'Component name is required').max(100),
+});
+
+const salaryComponentsSchema = z
+  .object({
+    earnings: z.array(componentItemSchema).optional(),
+    deductions: z.array(componentItemSchema).optional(),
+  })
+  .strict();
+
+// GET /settings/salary-components
+router.get('/salary-components', authenticate, async (req, res) => {
+  try {
+    await ensureSchoolSettings(req.user?.schoolId);
+    const settings = await SchoolSettings.findOne(
+      buildSchoolScopedQuery(req.user?.schoolId)
+    ).lean();
+
+    const defaultComponents = {
+      earnings: [
+        { id: 'basic', name: 'Basic Salary' },
+        { id: 'hra', name: 'HRA' },
+        { id: 'transport', name: 'Transport Allowance' },
+        { id: 'special', name: 'Special Allowance' },
+      ],
+      deductions: [
+        { id: 'pf', name: 'Provident Fund' },
+        { id: 'pt', name: 'Professional Tax' },
+        { id: 'tds', name: 'TDS' },
+      ],
+    };
+
+    const components = settings?.salaryComponents || defaultComponents;
+    res.json({ data: components });
+  } catch (error) {
+    console.error('Error fetching salary components:', error);
+    res.status(500).json({ error: 'Failed to fetch salary components' });
+  }
+});
+
+// PUT /settings/salary-components
+router.put(
+  '/salary-components',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  validateZod(salaryComponentsSchema),
+  async (req, res) => {
+    try {
+      await ensureSchoolSettings(req.user?.schoolId);
+
+      const { earnings, deductions } = req.body;
+      const update = {};
+      if (earnings !== undefined) {
+        update['salaryComponents.earnings'] = earnings;
+      }
+      if (deductions !== undefined) {
+        update['salaryComponents.deductions'] = deductions;
+      }
+
+      const settings = await SchoolSettings.findOneAndUpdate(
+        buildSchoolScopedQuery(req.user?.schoolId),
+        { $set: update },
+        { new: true }
+      );
+
+      res.json({
+        data: settings?.salaryComponents || { earnings: [], deductions: [] },
+        message: 'Salary components updated successfully',
+      });
+    } catch (error) {
+      console.error('Error updating salary components:', error);
+      res.status(500).json({ error: 'Failed to update salary components' });
+    }
+  }
+);
+
 export default router;
