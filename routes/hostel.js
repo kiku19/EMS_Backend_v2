@@ -4,6 +4,7 @@ import { z } from 'zod';
 import Hostel from '../models/Hostel.js';
 import HostelRoom from '../models/HostelRoom.js';
 import HostelAllocation from '../models/HostelAllocation.js';
+import { Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
@@ -18,9 +19,7 @@ router.use(authenticate);
 const hostelSchema = z.object({
   name: z.string().min(1).max(200).trim(),
   type: z.enum(['boys', 'girls', 'mixed']),
-  wardenName: z.string().trim().optional(),
-  wardenPhone: z.string().trim().optional(),
-  wardenEmail: z.string().email().optional().or(z.literal('')),
+  wardenId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid wardenId format').optional().or(z.literal('')),
   address: z.string().trim().optional(),
   description: z.string().trim().optional(),
 });
@@ -61,6 +60,35 @@ const vacateSchema = z.object({
   notes: z.string().trim().optional(),
 });
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a wardenId to a Staff member and validate school-scoping.
+ * Returns denormalized warden fields or null if wardenId is empty.
+ */
+async function resolveWarden(wardenId, schoolId) {
+  if (!wardenId) return null;
+
+  const staff = await Staff.findOne({
+    _id: wardenId,
+    schoolId,
+    isDeleted: { $ne: true },
+  }).lean();
+
+  if (!staff) {
+    const error = new Error('Warden not found or does not belong to this school');
+    error.status = 404;
+    throw error;
+  }
+
+  return {
+    wardenId: staff._id,
+    wardenName: staff.name || '',
+    wardenPhone: staff.phone || '',
+    wardenEmail: staff.email || '',
+  };
+}
+
 // ─── Hostels: CRUD ────────────────────────────────────────────────────────────
 
 /**
@@ -80,7 +108,11 @@ router.get('/hostels', checkPermission('hostel', 'view'), async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [hostels, total] = await Promise.all([
-      Hostel.find(query).sort({ name: 1 }).skip(skip).limit(parseInt(limit)),
+      Hostel.find(query)
+        .populate('wardenId', 'name phone email')
+        .sort({ name: 1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
       Hostel.countDocuments(query),
     ]);
 
@@ -103,7 +135,8 @@ router.get('/hostels', checkPermission('hostel', 'view'), async (req, res) => {
 router.get('/hostels/:id', checkPermission('hostel', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    const hostel = await Hostel.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
+    const hostel = await Hostel.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }))
+      .populate('wardenId', 'name phone email');
     if (!hostel) return res.status(404).json({ error: 'Hostel not found' });
     res.json({ hostel });
   } catch (error) {
@@ -119,6 +152,13 @@ router.post('/hostels', checkPermission('hostel', 'create'), async (req, res) =>
     const data = hostelSchema.parse(req.body);
     const schoolId = req.user.schoolId;
 
+    // Resolve warden reference if provided
+    let wardenFields = {};
+    if (data.wardenId) {
+      const resolved = await resolveWarden(data.wardenId, schoolId);
+      wardenFields = resolved;
+    }
+
     // Check for duplicate hostel name within same school
     const existing = await Hostel.findOne(
       buildSchoolScopedQuery(schoolId, { name: data.name, isActive: true })
@@ -127,14 +167,15 @@ router.post('/hostels', checkPermission('hostel', 'create'), async (req, res) =>
       return res.status(409).json({ error: 'A hostel with this name already exists' });
     }
 
-    const hostel = new Hostel({ ...data, schoolId });
+    const hostel = new Hostel({ ...data, ...wardenFields, schoolId });
     await hostel.save();
     res.status(201).json({ hostel });
   } catch (error) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ error: 'Validation failed', details: error.errors });
     }
-    res.status(500).json({ error: error.message });
+    const status = error.status || error.statusCode || 500;
+    res.status(status).json({ error: error.message });
   }
 });
 
@@ -149,14 +190,34 @@ router.put('/hostels/:id', checkPermission('hostel', 'edit'), async (req, res) =
     const hostel = await Hostel.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
     if (!hostel) return res.status(404).json({ error: 'Hostel not found' });
 
-    Object.assign(hostel, data);
+    // Resolve warden reference if provided; clear denormalized fields when wardenId is explicitly removed
+    if ('wardenId' in data) {
+      if (data.wardenId) {
+        const resolved = await resolveWarden(data.wardenId, schoolId);
+        Object.assign(hostel, resolved);
+      } else {
+        hostel.wardenId = undefined;
+        hostel.wardenName = undefined;
+        hostel.wardenPhone = undefined;
+        hostel.wardenEmail = undefined;
+      }
+    }
+
+    // Apply remaining non-warden fields
+    Object.keys(data).forEach((key) => {
+      if (key !== 'wardenId') {
+        hostel[key] = data[key];
+      }
+    });
+
     await hostel.save();
     res.json({ hostel });
   } catch (error) {
     if (error.name === 'ZodError') {
       return res.status(400).json({ error: 'Validation failed', details: error.errors });
     }
-    res.status(500).json({ error: error.message });
+    const status = error.status || error.statusCode || 500;
+    res.status(status).json({ error: error.message });
   }
 });
 
@@ -616,7 +677,11 @@ router.get(
         buildSchoolScopedQuery(schoolId, { studentId: req.params.studentId, status: 'active' })
       )
         .populate('roomId', 'roomNumber floor type capacity amenities')
-        .populate('hostelId', 'name type wardenName wardenPhone');
+        .populate({
+          path: 'hostelId',
+          select: 'name type wardenId',
+          populate: { path: 'wardenId', select: 'name phone email' },
+        });
 
       // Return empty object if not allocated (avoid 404 breaking the frontend)
       res.json({ allocation: allocation || null });

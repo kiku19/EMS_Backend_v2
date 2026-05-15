@@ -11,7 +11,8 @@ const hostelSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Warden details
+    // Warden details — wardenId is the source of truth; wardenName is denormalized for search
+    wardenId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
     wardenName: { type: String, trim: true },
     wardenPhone: { type: String, trim: true },
     wardenEmail: { type: String, trim: true },

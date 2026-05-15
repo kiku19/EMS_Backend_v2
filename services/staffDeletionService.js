@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Class, Conversation, Message, Staff, TeacherTimetable, Timetable } from '../database.js';
 import ActivityLog from '../models/ActivityLog.js';
+import Hostel from '../models/Hostel.js';
 import ChapterProgress from '../models/ChapterProgress.js';
 import ClassAnnouncement from '../models/ClassAnnouncement.js';
 import ConsentRecord from '../models/ConsentRecord.js';
@@ -100,6 +101,12 @@ export async function cascadeDeleteStaffReferences(staffId) {
     ClassAnnouncement.updateMany({ sentBy: normalizedStaffId }, { $unset: { sentBy: 1 } }).then(
       (r) => (deleted.classAnnouncementsUnlinked = getModifiedCount(r))
     ),
+
+    // Clear warden reference from hostels
+    Hostel.updateMany(
+      { wardenId: normalizedStaffId },
+      { $unset: { wardenId: 1, wardenName: 1, wardenPhone: 1, wardenEmail: 1 } }
+    ).then((r) => (deleted.hostelWardensCleared = getModifiedCount(r))),
   ]);
 
   // ActivityLog.performedBy is intentionally NOT cleaned — audit trail must be preserved.
