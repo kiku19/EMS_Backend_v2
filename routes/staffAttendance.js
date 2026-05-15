@@ -794,6 +794,7 @@ router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (re
 
 // Apply for leave (from mobile app)
 router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, validateZod(mobileLeaveApplySchema), async (req, res) => {
+  let numberOfDays;
   try {
     const { leaveType, startDate, endDate } = req.body;
     const reason = sanitizeString(req.body.reason);
@@ -806,7 +807,7 @@ router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, valida
     // Calculate number of days (use UTC to avoid timezone off-by-one)
     const start = new Date(startDate + 'T00:00:00Z');
     const end = new Date(endDate + 'T00:00:00Z');
-    const numberOfDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+    numberOfDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
 
     const leaveSchoolId = await resolveRequestSchoolId(req);
 
