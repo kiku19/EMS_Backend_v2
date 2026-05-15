@@ -88,7 +88,7 @@ router.get('/students/:id/transport', validateParentChildAccess, async (req, res
       'students.studentId': studentId,
     }).populate(
       'vehicleId',
-      'registrationNumber make model capacity color driver conductor lastLocation lastGpsUpdate'
+      'registrationNumber make model capacity color driverId conductorId lastLocation lastGpsUpdate'
     );
 
     if (!route) {

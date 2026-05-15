@@ -1,8 +1,9 @@
 import express from 'express';
 import { z } from 'zod';
+import mongoose from 'mongoose';
 import Vehicle from '../models/Vehicle.js';
 import TransportRoute from '../models/TransportRoute.js';
-import { Student } from '../database.js';
+import { Student, Staff } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { escapeRegex } from './students/helpers.js';
@@ -14,20 +15,6 @@ router.use(authenticate);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
-const driverSchema = z.object({
-  name: z.string().optional(),
-  phone: z.string().optional(),
-  licenseNumber: z.string().optional(),
-  licenseExpiry: z.string().optional(),
-  photo: z.string().optional(),
-});
-
-const conductorSchema = z.object({
-  name: z.string().optional(),
-  phone: z.string().optional(),
-  photo: z.string().optional(),
-});
-
 const createVehicleSchema = z.object({
   registrationNumber: z.string().min(1),
   make: z.string().optional(),
@@ -36,8 +23,10 @@ const createVehicleSchema = z.object({
   capacity: z.number().int().min(1).optional(),
   color: z.string().optional(),
   status: z.enum(['active', 'inactive', 'maintenance']).optional(),
-  driver: driverSchema.optional(),
-  conductor: conductorSchema.optional(),
+  driverId: z.string().optional().nullable(),
+  conductorId: z.string().optional().nullable(),
+  driverLicenseNumber: z.string().optional(),
+  driverLicenseExpiry: z.string().optional(),
   gpsDeviceId: z.string().optional(),
   notes: z.string().optional(),
 });
@@ -87,6 +76,49 @@ function validateBody(schema) {
   };
 }
 
+// ─── Staff validation helper ─────────────────────────────────────────────────
+
+function isValidObjectId(id) {
+  return mongoose.isValidObjectId(id) && String(id).length === 24;
+}
+
+async function validateStaffRefs(data, schoolId) {
+  const errors = [];
+  for (const field of ['driverId', 'conductorId']) {
+    const id = data[field];
+    if (id === null || id === undefined || id === '') continue;
+    if (!isValidObjectId(id)) {
+      errors.push(`${field} must be a valid ObjectId`);
+      continue;
+    }
+    const staff = await Staff.findOne({
+      _id: id,
+      schoolId,
+      isDeleted: { $ne: true },
+    }).lean();
+    if (!staff) {
+      errors.push(`${field} references a staff member that does not exist or has been deleted`);
+    }
+  }
+  return errors;
+}
+
+function buildVehicleUpdateOps(data) {
+  const set = {};
+  const unset = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === null || value === '') {
+      unset[key] = '';
+    } else {
+      set[key] = value;
+    }
+  }
+  const ops = {};
+  if (Object.keys(set).length) ops.$set = set;
+  if (Object.keys(unset).length) ops.$unset = unset;
+  return ops;
+}
+
 // ─── Vehicle Routes ───────────────────────────────────────────────────────────
 
 /**
@@ -101,15 +133,27 @@ router.get('/vehicles', checkPermission('transport', 'view'), async (req, res) =
     if (status) query.status = status;
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');
+      // Search across vehicle fields and matched staff names
+      const staffMatches = await Staff.find({
+        schoolId: req.user.schoolId,
+        name: regex,
+        isDeleted: { $ne: true },
+      }).select('_id').lean();
+      const staffIds = staffMatches.map((s) => s._id.toString());
+
       query.$or = [
         { registrationNumber: regex },
         { make: regex },
         { model: regex },
-        { 'driver.name': regex },
+        { driverId: { $in: staffIds } },
+        { conductorId: { $in: staffIds } },
       ];
     }
 
-    const vehicles = await Vehicle.find(query).sort({ createdAt: -1 });
+    const vehicles = await Vehicle.find(query)
+      .populate('driverId', 'name phone picture code status')
+      .populate('conductorId', 'name phone picture code status')
+      .sort({ createdAt: -1 });
     res.json({ data: vehicles });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -139,9 +183,23 @@ router.post(
           .json({ error: req.t('common:routes.aVehicleWithThisRegistrationNumberAlreadyExists') });
       }
 
-      const vehicle = new Vehicle({ ...data, schoolId: req.user.schoolId });
+      const staffErrors = await validateStaffRefs(data, req.user.schoolId);
+      if (staffErrors.length) {
+        return res.status(400).json({ error: req.t('common:routes.validationFailed'), details: staffErrors });
+      }
+
+      // Remove null/empty fields before creation so Mongoose doesn't store them
+      const createData = {};
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== null && value !== '') createData[key] = value;
+      }
+      const vehicle = new Vehicle({ ...createData, schoolId: req.user.schoolId });
       await vehicle.save();
-      res.status(201).json({ data: vehicle });
+
+      const populated = await Vehicle.findById(vehicle._id)
+        .populate('driverId', 'name phone picture code status')
+        .populate('conductorId', 'name phone picture code status');
+      res.status(201).json({ data: populated });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -161,7 +219,9 @@ router.get(
         _id: req.params.id,
         schoolId: req.user.schoolId,
         isDeleted: { $ne: true },
-      });
+      })
+        .populate('driverId', 'name phone picture code status')
+        .populate('conductorId', 'name phone picture code status');
       if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
       res.json({ data: vehicle });
     } catch (err) {
@@ -196,11 +256,19 @@ router.put(
         }
       }
 
+      const staffErrors = await validateStaffRefs(data, req.user.schoolId);
+      if (staffErrors.length) {
+        return res.status(400).json({ error: req.t('common:routes.validationFailed'), details: staffErrors });
+      }
+
+      const updateOps = buildVehicleUpdateOps(data);
       const vehicle = await Vehicle.findOneAndUpdate(
         { _id: req.params.id, schoolId: req.user.schoolId, isDeleted: { $ne: true } },
-        { $set: data },
+        updateOps,
         { new: true }
-      );
+      )
+        .populate('driverId', 'name phone picture code status')
+        .populate('conductorId', 'name phone picture code status');
       if (!vehicle) return res.status(404).json({ error: req.t('common:routes.vehicleNotFound') });
       res.json({ data: vehicle });
     } catch (err) {
@@ -291,7 +359,7 @@ router.get('/routes', checkPermission('transport', 'view'), async (req, res) => 
     const routes = await TransportRoute.find(query)
       .populate(
         'vehicleId',
-        'registrationNumber make model capacity driver conductor lastLocation lastGpsUpdate'
+        'registrationNumber make model capacity driverId conductorId lastLocation lastGpsUpdate'
       )
       .sort({ routeNumber: 1 });
 
@@ -347,7 +415,7 @@ router.get('/routes/:id', checkPermission('transport', 'view'), async (req, res)
     })
       .populate(
         'vehicleId',
-        'registrationNumber make model capacity driver conductor lastLocation lastGpsUpdate'
+        'registrationNumber make model capacity driverId conductorId lastLocation lastGpsUpdate'
       )
       .populate('students.studentId', 'name admissionId rollNo classId');
 
@@ -398,7 +466,7 @@ router.put(
         { _id: req.params.id, schoolId: req.user.schoolId, isDeleted: { $ne: true } },
         { $set: data },
         { new: true }
-      ).populate('vehicleId', 'registrationNumber make model capacity driver conductor');
+      ).populate('vehicleId', 'registrationNumber make model capacity driverId conductorId');
 
       if (!route) return res.status(404).json({ error: req.t('common:routes.routeNotFound') });
       res.json({ data: route });
@@ -557,7 +625,7 @@ router.get(
         'students.studentId': req.params.studentId,
       }).populate(
         'vehicleId',
-        'registrationNumber make model capacity driver conductor lastLocation lastGpsUpdate'
+        'registrationNumber make model capacity driverId conductorId lastLocation lastGpsUpdate'
       );
 
       if (!route) return res.json({ data: null });

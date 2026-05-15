@@ -15,21 +15,13 @@ const vehicleSchema = new mongoose.Schema(
       default: 'active',
     },
 
-    // Driver profile
-    driver: {
-      name: String,
-      phone: String,
-      licenseNumber: String,
-      licenseExpiry: Date,
-      photo: String,
-    },
+    // Staff references
+    driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', index: true },
+    conductorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', index: true },
 
-    // Conductor profile
-    conductor: {
-      name: String,
-      phone: String,
-      photo: String,
-    },
+    // Driver license info (preserved from legacy embedded driver object)
+    driverLicenseNumber: String,
+    driverLicenseExpiry: Date,
 
     // GPS integration ready
     gpsDeviceId: String,
