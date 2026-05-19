@@ -15,7 +15,7 @@ export async function up(db, { dryRun }) {
   // Find hostels that have wardenName but no wardenId
   const hostels = await hostelsColl
     .find({
-      wardenName: { $exists: true, $ne: null, $ne: '' },
+      wardenName: { $exists: true, $nin: [null, ''] },
       $or: [{ wardenId: { $exists: false } }, { wardenId: null }],
     })
     .toArray();
