@@ -11,7 +11,7 @@
  *   growth   → 500   (paid mid-tier)
  *   scale    → 2000  (high-volume)
  *
- * Auth-endpoint limits (per IP, per minute): 20
+ * Auth-endpoint limits (per IP, per 15 min): 10
  *   — applied on top of the tenant limiter to prevent credential-stuffing.
  *
  * Alerting: a Redis counter `rl:violations:{schoolId}` is incremented on
@@ -43,8 +43,8 @@ export const PLAN_RATE_LIMITS = {
   scale: 2000,
 };
 
-/** Requests per minute for auth endpoints (keyed by IP) */
-const AUTH_LIMIT_PER_MIN = 20;
+/** Requests per 15-minute window for auth endpoints (keyed by IP) */
+const AUTH_LIMIT = 10;
 
 /** How many violations within the alert window trigger a log warning */
 const ALERT_THRESHOLD = 5;
@@ -257,8 +257,8 @@ export function createSmsRateLimiter() {
  */
 export function createAuthRateLimiter() {
   return rateLimit({
-    windowMs: 60 * 1000,
-    limit: AUTH_LIMIT_PER_MIN,
+    windowMs: 15 * 60 * 1000,
+    limit: AUTH_LIMIT,
     keyGenerator: (req) => `auth:${req.ip}`,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
