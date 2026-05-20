@@ -109,15 +109,6 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
       authorName: admin.name,
     });
 
-    // StudentFeeStructure
-    await StudentFeeStructure.create({
-      studentId: sid,
-      classId: classRecord._id,
-      academicYear: '2025-26',
-      feeHeads: [],
-      schoolId: school._id,
-    });
-
     // FeePayment
     await FeePayment.create({
       schoolId: school._id,
