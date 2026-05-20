@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { afterAll, beforeAll, beforeEach } from 'vitest';
 import { resetDefaultSchool } from './helpers/factories.js';
 
@@ -8,9 +7,7 @@ import { resetDefaultSchool } from './helpers/factories.js';
 // because importing factories.js (line above) transitively loads
 // utils/constants.js, which eagerly computes CURRENT_ACADEMIC_YEAR from
 // `new Date()` at module load time. Freezing the clock in a separate
-// earlier-loaded setup file ensures that computation sees the fake clock.
-
-let mongoServer;
+// earlier-loaded setup file ensures that that computation sees the fake clock.
 
 process.env.NODE_ENV = 'test';
 process.env.PORT = process.env.PORT || '3001';
@@ -29,13 +26,20 @@ process.env.SUPER_ADMIN_NAME = process.env.SUPER_ADMIN_NAME || 'Master User';
 // mode rejects transactions with "Transaction numbers are only allowed on a
 // replica set member or mongos", failing ~160 tests. Production MongoDB
 // also runs as a replica set (see EMS-backend/CLAUDE.md Database section).
+
 beforeAll(async () => {
-  mongoServer = await MongoMemoryReplSet.create({
-    replSet: { count: 1, storageEngine: 'wiredTiger' },
-    instanceOpts: [{ launchTimeout: 60000 }],
-  });
-  await mongoose.connect(mongoServer.getUri(), {
-    dbName: 'ems-test',
+  if (!process.env.MONGO_TEST_URI) {
+    throw new Error(
+      'MONGO_TEST_URI is not set. Ensure globalSetup (tests/globalSetup.js) is configured in vitest.config.js.'
+    );
+  }
+
+  // Use a unique database name per test file so parallel workers and
+  // sequential test files don't collide.
+  const dbName = `ems-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  await mongoose.connect(process.env.MONGO_TEST_URI, {
+    dbName,
   });
 }, 120000);
 
@@ -51,9 +55,5 @@ afterAll(async () => {
   if (mongoose.connection.readyState !== 0) {
     await mongoose.connection.dropDatabase();
     await mongoose.disconnect();
-  }
-
-  if (mongoServer) {
-    await mongoServer.stop();
   }
 });

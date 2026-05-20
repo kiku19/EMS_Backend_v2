@@ -128,8 +128,9 @@ describe('backup routes', () => {
       const { app } = createTestApp();
       const { school, admin } = await setupSchoolAndAdmin();
 
-      // Create two backups
+      // Create two backups with a small delay so createdAt timestamps differ
       await request(app).post('/api/backup/create').set(headers(admin)).send({ label: 'first' });
+      await new Promise((r) => setTimeout(r, 50));
       await request(app).post('/api/backup/create').set(headers(admin)).send({ label: 'second' });
 
       const res = await request(app).get('/api/backup/list').set(headers(admin)).expect(200);

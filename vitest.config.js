@@ -4,8 +4,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    globalSetup: ['./tests/globalSetup.js'],
     setupFiles: ['./tests/clockSetup.js', './tests/setup.js'],
     include: ['./tests/**/*.test.js'],
+    maxWorkers: 4,
     testTimeout: 30000,
     hookTimeout: 60000,
     coverage: {
