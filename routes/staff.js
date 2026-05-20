@@ -152,12 +152,14 @@
  */
 
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 import miscRouter from './staff/misc.js';
 import timetableRouter from './staff/timetable.js';
 import authRouter from './staff/auth.js';
 import coreRouter from './staff/core.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Order matters: specific paths (/public, /me, /validate/:id) must be mounted before generic /:id
 router.use('/', miscRouter);

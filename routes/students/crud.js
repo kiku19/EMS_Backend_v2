@@ -22,9 +22,11 @@ import {
   buildStudentListQuery,
   getStudentListSort,
 } from './helpers.js';
+import { authenticate } from '../../middleware/auth.js';
 import { objectIdParamHandler } from '../../middleware/validation.js';
 
 const router = express.Router();
+router.use(authenticate);
 router.param('id', objectIdParamHandler);
 
 router.get('/', checkPermission('students', 'view'), async (req, res) => {

@@ -1,4 +1,5 @@
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 import schoolRouter from './settings/school.js';
 import calendarRouter from './settings/calendar.js';
 import examRouter from './settings/exam.js';
@@ -16,7 +17,13 @@ import salaryTemplatesRouter from './settings/salaryTemplates.js';
 
 const router = express.Router();
 
+// Mount schoolRouter first — it contains the public /public-branding endpoint
+// used by the login page before authentication.
 router.use('/', schoolRouter);
+
+// All remaining sub-routers require authentication.
+router.use(authenticate);
+
 router.use('/', calendarRouter);
 router.use('/', examRouter);
 router.use('/', feeHeadsRouter);

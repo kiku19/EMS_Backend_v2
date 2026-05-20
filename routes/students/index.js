@@ -1,4 +1,5 @@
 import express from 'express';
+import { authenticate } from '../../middleware/auth.js';
 import documentsRouter from './documents.js';
 import feesRouter from './fees.js';
 import academicsRouter from './academics.js';
@@ -8,6 +9,7 @@ import promotionsRouter from './promotions.js';
 import transferCertificateRouter from './transferCertificate.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // Sub-routers are mounted in this order to preserve correct route matching:
 // 1. TransferCertificate — static /tc/next-number before /:id routes

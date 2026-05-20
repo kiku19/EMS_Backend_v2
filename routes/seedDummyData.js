@@ -33,6 +33,7 @@ import Parent from '../models/Parent.js';
 import Visitor from '../models/Visitor.js';
 
 const router = express.Router();
+router.use(authenticate);
 
 // ─── Validation ───────────────────────────────────────────────
 const SEED_CATEGORIES = [
