@@ -32,11 +32,12 @@ process.env.SUPER_ADMIN_NAME = process.env.SUPER_ADMIN_NAME || 'Master User';
 beforeAll(async () => {
   mongoServer = await MongoMemoryReplSet.create({
     replSet: { count: 1, storageEngine: 'wiredTiger' },
+    instanceOpts: [{ launchTimeout: 60000 }],
   });
   await mongoose.connect(mongoServer.getUri(), {
     dbName: 'ems-test',
   });
-}, 60000);
+}, 120000);
 
 beforeEach(async () => {
   const collections = Object.values(mongoose.connection.collections);
