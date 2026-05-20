@@ -43,7 +43,7 @@ export const optionalUri = z.string().url('Must be a valid URL').nullish().or(z.
 // Academic year pattern YYYY-YY
 export const academicYear = z
   .string()
-  .regex(/^\d{4}-\d{2}$/, 'Academic year must be in YYYY-YY format (e.g. 2024-25)');
+  .regex(/^\d{4}-\d{2}$/, 'Academic year must be in YYYY-YY format (e.g. 2025-26)');
 
 // Date string YYYY-MM-DD
 export const dateString = z

@@ -201,7 +201,7 @@ router.get('/calendar/templates', async (req, res) => {
 
 // ─── POST /calendar/templates/:templateId/import ─────────────────────────────
 // Import a template's events for a given academic start year.
-// `year` = the April-start year (e.g., 2024 for the 2024-25 academic year).
+// `year` = the April-start year (e.g., 2025 for the 2025-26 academic year).
 router.post(
   '/calendar/templates/:templateId/import',
   checkPermission('timetable', 'create'),

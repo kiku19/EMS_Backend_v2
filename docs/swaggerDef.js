@@ -10,6 +10,7 @@ import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import swaggerJsdoc from 'swagger-jsdoc';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
@@ -41,7 +42,7 @@ const commonComponents = {
     AcademicYear: {
       type: 'string',
       pattern: '^\\d{4}-\\d{2}$',
-      example: '2024-25',
+      example: CURRENT_ACADEMIC_YEAR,
     },
     Error: {
       type: 'object',
@@ -627,7 +628,7 @@ const commonComponents = {
       name: 'academicYear',
       in: 'query',
       schema: { $ref: '#/components/schemas/AcademicYear' },
-      description: 'Filter by academic year (e.g. 2024-25)',
+      description: `Filter by academic year (e.g. ${CURRENT_ACADEMIC_YEAR})`,
     },
     PageQuery: {
       name: 'page',
