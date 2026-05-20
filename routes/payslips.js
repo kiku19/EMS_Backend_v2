@@ -4,6 +4,7 @@ import Payslip from '../models/Payslip.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import { Staff } from '../database.js';
 import { authenticate, extractTokenFromRequest } from '../middleware/auth.js';
+import { getRequiredSecret } from '../config/environment.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import PDFDocument from 'pdfkit';
 
@@ -107,7 +108,7 @@ function downloadTokenAuth(req, res, next) {
   const queryToken = req.query.token;
   if (queryToken && !extractTokenFromRequest(req)) {
     try {
-      const jwtSecret = process.env.JWT_SECRET;
+      const jwtSecret = getRequiredSecret('JWT_SECRET');
       const payload = jwt.verify(queryToken, jwtSecret);
       if (payload.purpose !== 'payslip-download') {
         return res
@@ -299,12 +300,7 @@ router.get('/staff/:employeeId/summary', async (req, res) => {
  */
 router.post('/:id/download-token', async (req, res) => {
   try {
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      return res
-        .status(500)
-        .json({ success: false, message: req.t('common:routes.serverMisconfiguration') });
-    }
+    const jwtSecret = getRequiredSecret('JWT_SECRET');
     const downloadToken = jwt.sign(
       {
         purpose: 'payslip-download',

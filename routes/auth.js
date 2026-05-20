@@ -538,18 +538,16 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
     const subscription = await syncUsageMetrics(school._id);
 
     // Fire-and-forget: send welcome email with email verification link
-    const jwtSecret = process.env.JWT_SECRET;
-    const verificationToken = jwtSecret
-      ? jwt.sign(
-          {
-            purpose: 'email-verification',
-            schoolId: school._id.toString(),
-            email: normalizedEmail,
-          },
-          jwtSecret,
-          { expiresIn: '48h' }
-        )
-      : null;
+    const jwtSecret = getRequiredSecret('JWT_SECRET');
+    const verificationToken = jwt.sign(
+      {
+        purpose: 'email-verification',
+        schoolId: school._id.toString(),
+        email: normalizedEmail,
+      },
+      jwtSecret,
+      { expiresIn: '48h' }
+    );
 
     sendSchoolWelcomeEmail(
       { name: name.trim(), email: normalizedEmail },
@@ -586,10 +584,7 @@ async function handleVerifyEmail(token, req, res) {
     return res.status(400).json({ error: req.t('auth:errors.verificationTokenRequired') });
   }
 
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret) {
-    return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
-  }
+  const jwtSecret = getRequiredSecret('JWT_SECRET');
 
   let payload;
   try {
@@ -674,10 +669,7 @@ router.post('/resend-verification', resendVerificationLimiter, authenticate, asy
       });
     }
 
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
-    }
+    const jwtSecret = getRequiredSecret('JWT_SECRET');
 
     const email = school.contactEmail || school.billingEmail;
     if (!email) {
@@ -1157,12 +1149,7 @@ router.post(
         return res.json(GENERIC_RESPONSE);
       }
 
-      const jwtSecret = process.env.JWT_SECRET;
-      if (!jwtSecret) {
-        logger.error('JWT_SECRET not configured — cannot generate reset token');
-        return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
-      }
-
+      const jwtSecret = getRequiredSecret('JWT_SECRET');
       const resetToken = jwt.sign(
         {
           purpose: 'password-reset',
@@ -1194,10 +1181,7 @@ router.post(
   async (req, res) => {
     const { token, newPassword } = req.body;
 
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      return res.status(500).json({ error: req.t('common:errors.serverMisconfiguration') });
-    }
+    const jwtSecret = getRequiredSecret('JWT_SECRET');
 
     let payload;
     try {
