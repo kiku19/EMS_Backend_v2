@@ -123,7 +123,7 @@ const cbseReportCardSchema = new mongoose.Schema(
 // One report card per student per term per academic year
 cbseReportCardSchema.index(
   { schoolId: 1, studentId: 1, academicYear: 1, term: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 cbseReportCardSchema.index({ schoolId: 1, classId: 1, academicYear: 1, term: 1 });
 

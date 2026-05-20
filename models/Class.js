@@ -51,7 +51,7 @@ const classSchema = new mongoose.Schema(
 // partialFilterExpression excludes soft-deleted classes so a new class can reuse the same name
 classSchema.index(
   { schoolId: 1, name: 1, section: 1, academicYear: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 /**
@@ -110,7 +110,8 @@ classSchema.statics.updateAverageAttendance = async function updateAverageAttend
 
   let averageAttendance = 0;
   if (result && result.totalRecords > 0) {
-    const effectivePresent = result.presentCount + result.lateCount * lateW + result.halfdayCount * 0.5;
+    const effectivePresent =
+      result.presentCount + result.lateCount * lateW + result.halfdayCount * 0.5;
     averageAttendance = Math.round((effectivePresent / result.totalRecords) * 100);
   }
 

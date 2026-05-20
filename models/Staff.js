@@ -246,20 +246,20 @@ staffSchema.plugin(piiPlugin, {
 
 staffSchema.index(
   { schoolId: 1, code: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 staffSchema.index(
   { schoolId: 1, username: 1 },
   {
     unique: true,
-    partialFilterExpression: { username: { $exists: true }, isDeleted: { $ne: true } },
+    partialFilterExpression: { username: { $exists: true }, isDeleted: false },
   }
 );
 staffSchema.index(
   { schoolId: 1, phone: 1 },
   {
     unique: true,
-    partialFilterExpression: { phone: { $type: 'string' }, isDeleted: { $ne: true } },
+    partialFilterExpression: { phone: { $type: 'string' }, isDeleted: false },
   }
 );
 staffSchema.index({ schoolId: 1, status: 1, isDeleted: 1 });

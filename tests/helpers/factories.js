@@ -123,7 +123,7 @@ export async function createStudentRecord({
   name = 'Student One',
   admissionId,
   academicYear = CURRENT_ACADEMIC_YEAR,
-  rollNo = 1,
+  rollNo = nextSequence(),
   classId,
   schoolId,
   parentName = 'Parent One',

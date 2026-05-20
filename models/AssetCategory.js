@@ -14,7 +14,7 @@ const assetCategorySchema = new mongoose.Schema(
 
 assetCategorySchema.index(
   { schoolId: 1, name: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 const AssetCategory = mongoose.model('AssetCategory', assetCategorySchema);

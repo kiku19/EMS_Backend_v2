@@ -172,6 +172,10 @@ describe('PERF-03: 50 schools × 2000 students load test', () => {
       const actualCount = await Student.countDocuments();
       expect(actualCount).toBe(total);
 
+      // Ensure indexes are fully built before benchmarking (perf-03: list_paginated
+      // relies on the schoolId + isDeleted + name compound index).
+      await Student.init();
+
       // ── PHASE 2: BENCHMARK ──────────────────────────────────────────────
       const results = {};
 
