@@ -14,7 +14,7 @@ export function getDefaultAcademicYear(referenceDate = new Date()) {
 /**
  * Current Academic Year
  * Can be updated annually or fetched from school settings
- * Format: 'YYYY-YY' (e.g., '2024-25' for 2024-2025 academic year)
+ * Format: 'YYYY-YY' (e.g., '2025-26' for 2025-2026 academic year)
  */
 export const CURRENT_ACADEMIC_YEAR = getDefaultAcademicYear();
 

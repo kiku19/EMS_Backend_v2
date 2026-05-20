@@ -329,7 +329,7 @@ async function regexSearchAnnouncements(q, schoolId, limit, skip) {
  *         schema: { type: integer, minimum: 1, default: 1 }
  *       - in: query
  *         name: academicYear
- *         schema: { type: string, example: "2024-25" }
+ *         schema: { type: string, example: "YYYY-YY" }
  *     responses:
  *       200:
  *         description: Search results grouped by entity type

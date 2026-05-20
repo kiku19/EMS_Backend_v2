@@ -13,7 +13,7 @@ export function normalizeAcademicYear(value) {
 /**
  * Validates that a string is a well-formed academic year in YYYY-YY format
  * where the YY suffix is exactly the last two digits of (YYYY + 1).
- * Examples: "2024-25" ✓, "2024-26" ✗, "2024-5" ✗
+ * Examples: "2025-26" ✓, "2025-27" ✗, "2025-6" ✗
  */
 export function isValidAcademicYear(value) {
   if (typeof value !== 'string') return false;
