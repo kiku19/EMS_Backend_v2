@@ -52,7 +52,7 @@ const transportRouteSchema = new mongoose.Schema(
 
 transportRouteSchema.index(
   { schoolId: 1, routeNumber: 1, academicYear: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 export default mongoose.model('TransportRoute', transportRouteSchema);

@@ -56,7 +56,7 @@ const cceConfigSchema = new mongoose.Schema(
 
 cceConfigSchema.index(
   { schoolId: 1, academicYear: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 export default mongoose.model('CCEConfig', cceConfigSchema);

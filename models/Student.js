@@ -290,14 +290,14 @@ studentSchema.plugin(piiPlugin, {
 
 studentSchema.index(
   { schoolId: 1, admissionId: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 studentSchema.index({ classId: 1, status: 1 });
 studentSchema.index(
   { schoolId: 1, rollNo: 1, classId: 1, academicYear: 1 },
   {
     unique: true,
-    partialFilterExpression: { rollNo: { $exists: true, $ne: null }, isDeleted: { $ne: true } },
+    partialFilterExpression: { rollNo: { $type: 'number' }, isDeleted: false },
   }
 );
 studentSchema.index({ isPinned: 1, pinnedAt: -1 });
@@ -308,5 +308,6 @@ studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
 studentSchema.index({ schoolId: 1, isDeleted: 1, name: 1 });
 studentSchema.index({ schoolId: 1, classId: 1, isDeleted: 1 });
 studentSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1 });
+studentSchema.index({ schoolId: 1, isDeleted: 1, name: 1 });
 
 export default mongoose.model('Student', studentSchema);

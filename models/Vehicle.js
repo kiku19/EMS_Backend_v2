@@ -42,7 +42,7 @@ const vehicleSchema = new mongoose.Schema(
 
 vehicleSchema.index(
   { schoolId: 1, registrationNumber: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 export default mongoose.model('Vehicle', vehicleSchema);

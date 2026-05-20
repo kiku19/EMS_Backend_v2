@@ -20,7 +20,7 @@ const vendorSchema = new mongoose.Schema(
 
 vendorSchema.index(
   { schoolId: 1, name: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 const Vendor = mongoose.model('Vendor', vendorSchema);

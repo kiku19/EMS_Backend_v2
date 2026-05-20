@@ -38,7 +38,7 @@ const attendanceSchema = new mongoose.Schema(
 // record doesn't collide with a new one marked after the deletion.
 attendanceSchema.index(
   { schoolId: 1, studentId: 1, date: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 attendanceSchema.index({ classId: 1, date: 1 });
 attendanceSchema.index({ studentId: 1, date: 1 });

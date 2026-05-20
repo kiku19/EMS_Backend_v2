@@ -45,7 +45,7 @@ const examScheduleSchema = new mongoose.Schema(
 examScheduleSchema.index({ schoolId: 1, academicYear: 1 });
 examScheduleSchema.index(
   { schoolId: 1, name: 1, academicYear: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 export default mongoose.model('ExamSchedule', examScheduleSchema);

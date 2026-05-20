@@ -92,7 +92,7 @@ resultSchema.pre('save', function (next) {
 
 resultSchema.index(
   { schoolId: 1, examId: 1, studentId: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 resultSchema.index({ studentId: 1, academicYear: 1 });
 resultSchema.index({ examId: 1, classId: 1 });

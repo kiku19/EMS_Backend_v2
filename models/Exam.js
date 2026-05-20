@@ -46,7 +46,11 @@ const examSchema = new mongoose.Schema(
         passingMarks: { type: Number, default: 35 },
       },
     ],
-    status: { type: String, enum: ['scheduled', 'ongoing', 'completed', 'results_published'], default: 'scheduled' },
+    status: {
+      type: String,
+      enum: ['scheduled', 'ongoing', 'completed', 'results_published'],
+      default: 'scheduled',
+    },
     isPublished: { type: Boolean, default: false },
     publishedAt: { type: Date },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
@@ -60,7 +64,7 @@ const examSchema = new mongoose.Schema(
 examSchema.index({ schoolId: 1, classId: 1, academicYear: 1 });
 examSchema.index(
   { schoolId: 1, classId: 1, name: 1, academicYear: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 examSchema.pre('save', function (next) {

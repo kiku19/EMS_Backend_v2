@@ -32,7 +32,7 @@ const hostelRoomSchema = new mongoose.Schema(
 hostelRoomSchema.index({ schoolId: 1, hostelId: 1, isActive: 1 });
 hostelRoomSchema.index(
   { schoolId: 1, hostelId: 1, roomNumber: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { isDeleted: false } }
 );
 
 export default mongoose.model('HostelRoom', hostelRoomSchema);
