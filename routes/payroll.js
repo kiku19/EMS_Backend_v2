@@ -30,6 +30,7 @@ const Staff = mongoose.model('Staff');
 
 // Helper function to log audit entries
 async function logAudit({
+  schoolId,
   entityType,
   entityId,
   action,
@@ -43,6 +44,7 @@ async function logAudit({
 }) {
   try {
     const log = new PayrollAuditLog({
+      schoolId,
       entityType,
       entityId,
       action,
@@ -416,6 +418,7 @@ router.post('/fix-salaries', requireAdmin, async (req, res) => {
 
     // Log audit
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'PayrollRun',
       entityId: null,
       action: 'payroll_run_failed',
@@ -545,6 +548,7 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
 
     // Log audit
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'PayrollRun',
       entityId: payrollRun._id,
       action: 'payroll_run_started',
@@ -746,6 +750,7 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
           }
 
           await logAudit({
+            schoolId: req.user.schoolId,
             entityType: 'PayrollRecord',
             entityId: record._id,
             action: 'record_updated',
@@ -775,6 +780,7 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
           record.status = 'generated';
 
           await logAudit({
+            schoolId: req.user.schoolId,
             entityType: 'PayrollRecord',
             entityId: record._id,
             action: 'record_created',
@@ -852,6 +858,7 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
     await payrollRun.save();
 
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'PayrollRun',
       entityId: payrollRun._id,
       action: results.success.length > 0 ? 'payroll_run_completed' : 'payroll_run_failed',
@@ -933,6 +940,7 @@ router.put(
 
       // Log audit
       await logAudit({
+        schoolId: req.user.schoolId,
         entityType: 'PayrollRecord',
         entityId: record._id,
         action: 'payment_logged',
@@ -1012,6 +1020,7 @@ router.put(
 
       // Log audit
       await logAudit({
+        schoolId: req.user.schoolId,
         entityType: 'PayrollRecord',
         entityId: record._id,
         action: 'payment_reversed',
@@ -1092,6 +1101,7 @@ router.post(
 
           // Log audit for each record
           await logAudit({
+            schoolId: req.user.schoolId,
             entityType: 'PayrollRecord',
             entityId: record._id,
             action: 'payment_logged',
@@ -1116,6 +1126,7 @@ router.post(
 
       // Log bulk operation
       await logAudit({
+        schoolId: req.user.schoolId,
         entityType: 'PayrollRun',
         entityId: null,
         action: 'bulk_payment_logged',
@@ -1173,6 +1184,7 @@ router.put('/records/:id', requireAdmin, validateZod(updatePayrollRecordSchema),
 
     // Log audit
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'PayrollRecord',
       entityId: record._id,
       action: 'record_updated',
@@ -1274,6 +1286,7 @@ router.get(
 
       // Log export
       await logAudit({
+        schoolId: req.user.schoolId,
         entityType: 'PayrollRun',
         entityId: null,
         action: 'payroll_exported',
@@ -1413,6 +1426,7 @@ router.get('/payslips/:employeeId/:month/:year', async (req, res) => {
 
     // Log audit
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'Payslip',
       entityId: payslip._id,
       action: 'payslip_downloaded',
@@ -1508,6 +1522,7 @@ router.post('/adjustments', requireAdmin, async (req, res) => {
 
     // Log audit
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'SalaryAdjustment',
       entityId: adjustment._id,
       action: 'adjustment_created',
@@ -1541,6 +1556,7 @@ router.delete('/adjustments/:id', requireAdmin, async (req, res) => {
 
     // Log audit
     await logAudit({
+      schoolId: req.user.schoolId,
       entityType: 'SalaryAdjustment',
       entityId: id,
       action: 'adjustment_deleted',
