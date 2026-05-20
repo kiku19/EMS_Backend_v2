@@ -55,7 +55,7 @@
     "mongoose": "^8.9.3",
     "multer": "^2.0.2",
     "node-fetch": "^2.7.0",
-    "nodemailer": "^7.0.12",
+    "nodemailer": "^8.0.7",
     "otplib": "^13.3.0",
     "pdfkit": "^0.17.2",
     "peer": "^1.0.2",
@@ -75,7 +75,10 @@
     "tar": "^7.5.11",
     "socket.io-parser": ">=4.2.6",
     "flatted": ">=3.4.2",
-    "fast-xml-parser": ">=5.5.7"
+    "fast-xml-parser": ">=5.5.7",
+    "@tootallnate/once": "^3.0.1",
+    "http-proxy-agent": "^7.0.0",
+    "teeny-request": "^10.1.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
