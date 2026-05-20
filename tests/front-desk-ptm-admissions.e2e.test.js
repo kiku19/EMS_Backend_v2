@@ -28,7 +28,9 @@ describe('E2E-34: PTM Scheduler', () => {
       name: 'Arjun Kumar',
       classId: cls._id,
       schoolId: admin.schoolId,
-      parents: [{ name: 'Raj Kumar', relationship: 'Parent', phone: '9876543210', isWhatsapp: true }],
+      parents: [
+        { name: 'Raj Kumar', relationship: 'Parent', phone: '9876543210', isWhatsapp: true },
+      ],
     });
     return { admin, teacher, cls, student };
   }
@@ -475,23 +477,21 @@ describe('E2E-34: Admission Tracker', () => {
       .send({ status: 'fee-paid' })
       .expect(200);
 
-    // Convert to student — currently returns 500 because the route does not populate
-    // the `parents` array required by the Student schema (it sets parentName/parentPhone
-    // as top-level fields but Student.parents[] validator requires at least one entry).
-    // This is a known bug in POST /admissions/:id/convert-to-student.
+    // Convert to student — route now correctly populates the `parents` array
+    // from admission.parentName / admission.phoneNumber.
     const convertRes = await request(app)
       .post(`/api/front-desk/admissions/${id}/convert-to-student`)
       .set(headers)
-      .expect(500);
+      .expect(201);
 
-    expect(convertRes.body.success).toBe(false);
-    expect(convertRes.body.error).toMatch(/parents/i);
+    expect(convertRes.body.success).toBe(true);
+    expect(convertRes.body.student).toBeDefined();
 
-    // Verify admission NOT yet admitted — only conversion failed, status unchanged
+    // Verify admission status updated to student-admitted
     const admission = await request(app).get('/api/front-desk/admissions').set(headers).expect(200);
 
     const current = admission.body.find((a) => a._id === id);
-    expect(current.status).toBe('fee-paid');
+    expect(current.status).toBe('student-admitted');
   });
 
   // 12) Filter admissions by stage and class applied
