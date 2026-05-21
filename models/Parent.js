@@ -135,7 +135,10 @@ parentSchema.plugin(piiPlugin, {
 
 // Index for frequently queried fields
 parentSchema.index({ schoolId: 1, phone: 1 }, { unique: true });
-parentSchema.index({ schoolId: 1, email: 1 }, { unique: true, sparse: true });
+parentSchema.index(
+  { schoolId: 1, email: 1 },
+  { unique: true, partialFilterExpression: { email: { $exists: true, $ne: null } } }
+);
 parentSchema.index({ 'children.studentId': 1 });
 parentSchema.index({ createdAt: -1 });
 
