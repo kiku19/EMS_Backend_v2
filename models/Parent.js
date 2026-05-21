@@ -137,7 +137,7 @@ parentSchema.plugin(piiPlugin, {
 parentSchema.index({ schoolId: 1, phone: 1 }, { unique: true });
 parentSchema.index(
   { schoolId: 1, email: 1 },
-  { unique: true, partialFilterExpression: { email: { $exists: true, $ne: null } } }
+  { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
 );
 parentSchema.index({ 'children.studentId': 1 });
 parentSchema.index({ createdAt: -1 });
