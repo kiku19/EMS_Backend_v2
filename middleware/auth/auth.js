@@ -116,6 +116,7 @@ async function buildAuthenticatedUser(decoded) {
   if (decoded.userType === 'super-admin' || isSuperAdminUser(decoded)) {
     return {
       id: decoded.userId || 'super-admin',
+      _id: decoded.userId || 'super-admin',
       userId: decoded.userId || 'super-admin',
       role: decoded.role || ['Super Admin'],
       userType: 'super-admin',
@@ -129,6 +130,7 @@ async function buildAuthenticatedUser(decoded) {
   if (decoded.userType === 'group-admin') {
     return {
       id: decoded.userId,
+      _id: decoded.userId,
       userId: decoded.userId,
       role: decoded.role || ['Group Admin'],
       userType: 'group-admin',
@@ -151,6 +153,7 @@ async function buildAuthenticatedUser(decoded) {
 
   return {
     id: decoded.userId,
+    _id: decoded.userId,
     userId: decoded.userId,
     role: decoded.role,
     userType: decoded.userType || 'staff',
