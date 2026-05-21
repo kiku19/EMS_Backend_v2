@@ -393,7 +393,7 @@ router.get(
               scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
             ).populate('feeHeads.feeHeadId');
             if (!feeStructure) {
-              throw new Error('Fee structure creation raced but neither version found');
+              throw new Error('Fee structure creation raced but neither version found', { cause: saveError });
             }
           } else {
             throw saveError;

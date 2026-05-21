@@ -717,7 +717,7 @@ router.post('/run', requireAdmin, validateZod(runPayrollSchema), async (req, res
         const netPay = grossPay - totalDeductions;
 
         // Atomic check-and-lock: use findOneAndUpdate to prevent race conditions (AUDIT-208)
-        let record = await PayrollRecord.findOneAndUpdate(
+        const record = await PayrollRecord.findOneAndUpdate(
           { schoolId, employeeId: empId, month, year },
           { $setOnInsert: { schoolId, employeeId: empId, month, year, status: 'not_generated' } },
           { upsert: true, new: true, setDefaultsOnInsert: true }

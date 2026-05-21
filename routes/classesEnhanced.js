@@ -777,7 +777,7 @@ router.post(
       };
 
       // Batch-fetch attendance stats upfront to avoid N+1 queries per student
-      let attendanceMap = new Map(); // studentId -> { present, total }
+      const attendanceMap = new Map(); // studentId -> { present, total }
       if (!skipAttendanceCheck) {
         const normalizedSchoolId = extractSchoolId(schoolId);
         const studentIds = students.map((s) => s._id);
