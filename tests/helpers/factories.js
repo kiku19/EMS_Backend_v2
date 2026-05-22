@@ -48,6 +48,7 @@ export async function createStaffUser({
   permissionRole = 'admin',
   status = 'active',
   schoolId,
+  department,
 } = {}) {
   const id = nextSequence();
   if (!schoolId) {
@@ -63,6 +64,7 @@ export async function createStaffUser({
     password,
     role: Array.isArray(staffRole) ? staffRole : [staffRole],
     status,
+    ...(department ? { department } : {}),
   });
 
   await UserPermission.create({
@@ -104,6 +106,7 @@ export async function createClassRecord({
   subjects = ['Math'],
   academicYear = CURRENT_ACADEMIC_YEAR,
   schoolId,
+  classTag,
 } = {}) {
   if (!schoolId) {
     const school = await getDefaultSchool();
@@ -116,6 +119,7 @@ export async function createClassRecord({
     subjects,
     academicYear,
     schoolId,
+    ...(classTag ? { classTag } : {}),
   });
 }
 
@@ -133,6 +137,7 @@ export async function createStudentRecord({
   status = 'active',
   parents,
   feeDetails = undefined,
+  email,
 } = {}) {
   const id = nextSequence();
   if (!schoolId) {
@@ -159,6 +164,7 @@ export async function createStudentRecord({
     dateOfBirth,
     feeStatus,
     status,
+    ...(email ? { email } : {}),
     ...(feeDetails ? { feeDetails } : {}),
   });
 }

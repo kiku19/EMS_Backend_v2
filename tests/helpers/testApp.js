@@ -35,6 +35,7 @@ import parentMessagingRoutes from '../../routes/parentMessaging.js';
 import pushNotificationsRoutes from '../../routes/pushNotifications.js';
 import reminderRoutes from '../../routes/reminders.js';
 import payrollRoutes from '../../routes/payroll.js';
+import searchRoutes from '../../routes/search.js';
 import permissionRoutes from '../../routes/permissions.js';
 import publicRoutes from '../../routes/public.js';
 import settingsRoutes from '../../routes/settings.js';
@@ -152,6 +153,7 @@ export function createTestApp() {
   app.use('/api/backup', backupRoutes);
   app.use('/api/bulk-import', bulkImportRoutes);
   app.use('/api/ptm', ptmRoutes);
+  app.use('/api/search', searchRoutes);
 
   // Temporary debug error handler
   app.use((err, req, res, next) => {
