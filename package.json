@@ -78,7 +78,8 @@
     "fast-xml-parser": ">=5.5.7",
     "@tootallnate/once": "^3.0.1",
     "http-proxy-agent": "^7.0.0",
-    "teeny-request": "^10.1.2"
+    "teeny-request": "^10.1.2",
+    "uuid": ">=11.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
