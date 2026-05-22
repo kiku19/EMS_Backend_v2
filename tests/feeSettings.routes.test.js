@@ -6,6 +6,7 @@ import LateFeeRule from '../models/LateFeeRule.js';
 import FeeRule from '../models/FeeRule.js';
 import PaymentMethodConfig from '../models/PaymentMethodConfig.js';
 import FeeCollectionPeriod from '../models/FeeCollectionPeriod.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import { authHeadersFor, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
@@ -79,7 +80,7 @@ describe('fee-settings routes', () => {
         name: 'Old Discount',
         discountType: 'flat',
         discountValue: 200,
-        academicYear: '2024-25',
+        academicYear: CURRENT_ACADEMIC_YEAR,
         schoolId: school._id,
       });
       await FeeConsession.create({

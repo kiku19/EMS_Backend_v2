@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { FeePayment, Student, StudentFeeStructure } from '../database.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
   authHeadersFor,
   createClassRecord,
@@ -545,7 +546,7 @@ describe('GET /api/fees/payments', () => {
       studentId: student._id,
       classId: classRecord._id,
       schoolId: school._id,
-      academicYear: '2024-25',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       amount: 300,
     });
     await insertPaymentDirect({
@@ -561,13 +562,13 @@ describe('GET /api/fees/payments', () => {
 
     const res = await request(app)
       .get('/api/fees/payments')
-      .query({ academicYear: '2024-25' })
+      .query({ academicYear: CURRENT_ACADEMIC_YEAR })
       .set(authHeaders)
       .expect(200);
 
     expect(res.body.payments).toHaveLength(1);
     expect(res.body.payments[0].amount).toBe(300);
-    expect(res.body.payments[0].academicYear).toBe('2024-25');
+    expect(res.body.payments[0].academicYear).toBe(CURRENT_ACADEMIC_YEAR);
   });
 
   it('filters payments by status', async () => {

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Student } from '../database.js';
 import FeeHead from '../models/FeeHead.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
+import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
   authHeadersFor,
   createClassRecord,
@@ -470,8 +471,8 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     // `StudentFeeStructure.findOne({ studentId })` which could return a
     // doc from a prior academic year or (if studentIds ever collided
     // across tenants) from a different school. Force the duplicate
-    // condition for school A by seeding a fee structure for year
-    // 2024-25, then request an initialize that somehow clashes on the
+    // condition for school A by seeding a fee structure for the current
+    // academic year, then request an initialize that somehow clashes on the
     // unique index; the recovery MUST return the exact (student,
     // school, year) tuple.
     const schoolA = await createSchoolRecord({ name: 'Scope School', code: 'SSC-01', isDefault: true });
@@ -494,7 +495,7 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     await insertFeeStructureDirect({
       studentId: student._id,
       classId: classRecord._id,
-      academicYear: '2024-25',
+      academicYear: CURRENT_ACADEMIC_YEAR,
       schoolId: schoolA._id,
       feeHeads: [],
       totalFee: 1111,
@@ -506,8 +507,8 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    // Happy path: request 2025-26 → new structure created, NOT the 2024-25
-    // row the buggy recovery would have returned.
+    // Happy path: request 2025-26 → new structure created, NOT the current
+    // academic year row the buggy recovery would have returned.
     const res = await request(app)
       .post(`/api/student-fees/initialize/${student._id}`)
       .set(authHeaders)
@@ -522,7 +523,7 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     const rows = await StudentFeeStructure.find({ studentId: student._id }).lean();
     expect(rows).toHaveLength(2);
     const years = rows.map((r) => r.academicYear).sort();
-    expect(years).toEqual(['2024-25', '2025-26']);
+    expect(years).toEqual([CURRENT_ACADEMIC_YEAR, '2025-26']);
   });
 });
 

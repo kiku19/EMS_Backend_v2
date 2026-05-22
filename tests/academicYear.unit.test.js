@@ -55,8 +55,8 @@ describe('isValidAcademicYear', () => {
     expect(isValidAcademicYear('2025-26')).toBe(true);
   });
 
-  it('returns true for 2024-25', () => {
-    expect(isValidAcademicYear('2024-25')).toBe(true);
+  it('returns true for CURRENT_ACADEMIC_YEAR', () => {
+    expect(isValidAcademicYear(CURRENT_ACADEMIC_YEAR)).toBe(true);
   });
 
   it('returns true for 2099-00 (century boundary)', () => {
