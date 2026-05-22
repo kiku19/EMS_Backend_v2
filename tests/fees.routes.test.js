@@ -553,7 +553,7 @@ describe('GET /api/fees/payments', () => {
       studentId: student._id,
       classId: classRecord._id,
       schoolId: school._id,
-      academicYear: '2025-26',
+      academicYear: '2024-25',
       amount: 400,
     });
 
