@@ -10,6 +10,11 @@ import {
   authHeadersFor,
 } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
+import {
+  atlasStudentsPipeline,
+  atlasStaffPipeline,
+  atlasClassesPipeline,
+} from '../routes/search.js';
 
 describe('search routes', () => {
   // ─── Auth & Validation ──────────────────────────────────────────────
@@ -752,6 +757,142 @@ describe('search routes', () => {
   });
 
   // ─── Atlas Search Mode (mocked) ─────────────────────────────────────
+
+  it('filters exams by academicYear', async () => {
+    const admin = await createStaffUser();
+    const cls = await createClassRecord({ schoolId: admin.schoolId });
+
+    await Exam.create({
+      schoolId: admin.schoolId,
+      name: 'Year Exam 2024',
+      type: 'unit_test',
+      classId: cls._id,
+      subjectName: 'History',
+      academicYear: '2024-25',
+      status: 'scheduled',
+    });
+    await Exam.create({
+      schoolId: admin.schoolId,
+      name: 'Year Exam 2025',
+      type: 'unit_test',
+      classId: cls._id,
+      subjectName: 'History',
+      academicYear: '2025-26',
+      status: 'scheduled',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=Year Exam&types=exams&academicYear=2024-25')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.exams.results).toHaveLength(1);
+    expect(response.body.exams.results[0].name).toBe('Year Exam 2024');
+  });
+
+  it('returns 500 when search throws an unexpected error', async () => {
+    const admin = await createStaffUser();
+    const { Student } = await import('../database.js');
+    const spy = vi.spyOn(Student, 'find').mockReturnValue({
+      select: () => ({
+        skip: () => ({
+          limit: () => ({
+            lean: () => Promise.reject(new Error('DB exploded')),
+          }),
+        }),
+      }),
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=test&types=students')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(500);
+
+    expect(response.body.error).toBeDefined();
+    spy.mockRestore();
+  });
+
+  it('returns 500 when analytics aggregation throws', async () => {
+    const admin = await createStaffUser();
+    const SearchAnalytics = mongoose.model('SearchAnalytics');
+    const spy = vi
+      .spyOn(SearchAnalytics, 'aggregate')
+      .mockRejectedValue(new Error('Aggregation failed'));
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search/analytics')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(500);
+
+    expect(response.body.error).toBeDefined();
+    spy.mockRestore();
+  });
+
+  it('survives analytics write failure without affecting search results', async () => {
+    const admin = await createStaffUser();
+    const cls = await createClassRecord({ schoolId: admin.schoolId });
+    await createStudentRecord({
+      name: 'AnalyticsFail',
+      classId: cls._id,
+      schoolId: admin.schoolId,
+    });
+
+    const SearchAnalytics = mongoose.model('SearchAnalytics');
+    const spy = vi
+      .spyOn(SearchAnalytics, 'create')
+      .mockRejectedValue(new Error(' analytics write failed'));
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=AnalyticsFail&types=students')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.students.results).toHaveLength(1);
+    spy.mockRestore();
+  });
+
+  it('uses default 30 days for analytics when days param is omitted', async () => {
+    const admin = await createStaffUser();
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .get('/api/search/analytics')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.days).toBe(30);
+  });
+
+  // ─── Atlas pipeline unit tests ──────────────────────────────────────
+
+  it('atlasStudentsPipeline returns a valid aggregation pipeline', () => {
+    const pipeline = atlasStudentsPipeline('Alice', '507f1f77bcf86cd799439011', 10, 0);
+    expect(Array.isArray(pipeline)).toBe(true);
+    expect(pipeline[0].$search.index).toBe('ems_students_search');
+    expect(pipeline[1].$match.isDeleted.$ne).toBe(true);
+    expect(pipeline[3].$limit).toBe(10);
+  });
+
+  it('atlasStaffPipeline returns a valid aggregation pipeline', () => {
+    const pipeline = atlasStaffPipeline('Bob', '507f1f77bcf86cd799439011', 5, 0);
+    expect(Array.isArray(pipeline)).toBe(true);
+    expect(pipeline[0].$search.index).toBe('ems_staff_search');
+    expect(pipeline[3].$limit).toBe(5);
+  });
+
+  it('atlasClassesPipeline includes academicYear filter when provided', () => {
+    const pipeline = atlasClassesPipeline('Class 10', '507f1f77bcf86cd799439011', 10, 0, '2025-26');
+    expect(pipeline[1].$match.academicYear).toBe('2025-26');
+  });
+
+  it('atlasClassesPipeline omits academicYear filter when not provided', () => {
+    const pipeline = atlasClassesPipeline('Class 10', '507f1f77bcf86cd799439011', 10, 0);
+    expect(pipeline[1].$match.academicYear).toBeUndefined();
+  });
 
   // Atlas search mode is controlled by the ENABLE_ATLAS_SEARCH env var.
   // We do not integration-test atlas mode here because:

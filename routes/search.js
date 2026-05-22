@@ -86,7 +86,7 @@ function escapeRegex(str) {
 
 // ─── Atlas Search pipelines ───────────────────────────────────────────────────
 
-function atlasStudentsPipeline(q, schoolId, limit, skip) {
+export function atlasStudentsPipeline(q, schoolId, limit, skip) {
   return [
     {
       $search: {
@@ -119,7 +119,7 @@ function atlasStudentsPipeline(q, schoolId, limit, skip) {
   ];
 }
 
-function atlasStaffPipeline(q, schoolId, limit, skip) {
+export function atlasStaffPipeline(q, schoolId, limit, skip) {
   return [
     {
       $search: {
@@ -152,7 +152,7 @@ function atlasStaffPipeline(q, schoolId, limit, skip) {
   ];
 }
 
-function atlasClassesPipeline(q, schoolId, limit, skip, academicYear) {
+export function atlasClassesPipeline(q, schoolId, limit, skip, academicYear) {
   const filter = [{ equals: { path: 'schoolId', value: new mongoose.Types.ObjectId(schoolId) } }];
   return [
     {

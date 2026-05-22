@@ -1,6 +1,6 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
-import { UserPermission } from '../database.js';
+import { describe, expect, it, vi } from 'vitest';
+import { UserPermission, Staff } from '../database.js';
 import PermissionRequest from '../models/PermissionRequest.js';
 import { authHeadersFor, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
@@ -791,5 +791,565 @@ describe('permissions routes', () => {
       .expect(403);
 
     expect(response.body).toMatchObject({ error: 'Admin access required' });
+  });
+
+  // ── GET /api/permissions/me ─────────────────────────────────────────
+
+  it('returns own permissions for authenticated user', async () => {
+    const school = await createSchoolRecord({ name: 'MePerm School', code: 'MEPERM' });
+    const teacher = await createStaffUser({
+      name: 'MePerm Teacher',
+      email: 'meperm.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/permissions/me')
+      .set(authHeadersFor(teacher, 'teacher'))
+      .expect(200);
+
+    expect(response.body.userId.toString()).toBe(teacher._id.toString());
+    expect(response.body.role).toBe('teacher');
+  });
+
+  it('auto-creates permissions on /me when none exist', async () => {
+    const school = await createSchoolRecord({ name: 'MeAuto School', code: 'MEPERMA' });
+    const teacher = await createStaffUser({
+      name: 'MeAuto Teacher',
+      email: 'meauto.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    await UserPermission.deleteOne({ userId: teacher._id });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/permissions/me')
+      .set(authHeadersFor(teacher, 'teacher'))
+      .expect(200);
+
+    expect(response.body.userId.toString()).toBe(teacher._id.toString());
+    expect(response.body.role).toBe('teacher');
+  });
+
+  it('returns 404 on /me when staff record is missing', async () => {
+    const school = await createSchoolRecord({ name: 'Me404 School', code: 'ME404' });
+    const fakeUser = await Staff.create({
+      schoolId: school._id,
+      code: 'FAKE001',
+      name: 'Fake',
+      email: 'fake@example.com',
+      phone: '9000000001',
+      password: 'pass',
+      role: ['Teacher'],
+      status: 'active',
+    });
+    await UserPermission.deleteOne({ userId: fakeUser._id });
+    await Staff.deleteOne({ _id: fakeUser._id });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/permissions/me')
+      .set(authHeadersFor(fakeUser, 'teacher'))
+      .expect(404);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  // ── GET /api/permissions/user/:userId/requests ──────────────────────
+
+  it('returns own permission requests', async () => {
+    const school = await createSchoolRecord({ name: 'OwnReq School', code: 'OWNREQ' });
+    const teacher = await createStaffUser({
+      name: 'OwnReq Teacher',
+      email: 'ownreq.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    await PermissionRequest.create({
+      schoolId: school._id,
+      userId: teacher._id,
+      userName: 'OwnReq Teacher',
+      module: 'fees',
+      permissions: ['view'],
+      reason: 'Need fee access',
+      status: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get(`/api/permissions/user/${teacher._id}/requests`)
+      .set(authHeadersFor(teacher, 'teacher'))
+      .expect(200);
+
+    expect(Array.isArray(response.body)).toBe(true);
+    expect(response.body.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('allows admin to view another user requests', async () => {
+    const school = await createSchoolRecord({ name: 'AdminReq School', code: 'ADMREQ' });
+    const admin = await createStaffUser({
+      name: 'AdminReq Admin',
+      email: 'admreq.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+    const teacher = await createStaffUser({
+      name: 'AdminReq Teacher',
+      email: 'admreq.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    await PermissionRequest.create({
+      schoolId: school._id,
+      userId: teacher._id,
+      userName: 'AdminReq Teacher',
+      module: 'reports',
+      permissions: ['view'],
+      reason: 'Need reports',
+      status: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get(`/api/permissions/user/${teacher._id}/requests`)
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(Array.isArray(response.body)).toBe(true);
+    expect(response.body.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('filters user requests by status', async () => {
+    const school = await createSchoolRecord({ name: 'FilterReq School', code: 'FILTREQ2' });
+    const teacher = await createStaffUser({
+      name: 'FilterReq Teacher',
+      email: 'filtreq2.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    await PermissionRequest.create([
+      {
+        schoolId: school._id,
+        userId: teacher._id,
+        userName: 'FilterReq Teacher',
+        module: 'fees',
+        permissions: ['view'],
+        reason: 'Pending',
+        status: 'pending',
+      },
+      {
+        schoolId: school._id,
+        userId: teacher._id,
+        userName: 'FilterReq Teacher',
+        module: 'reports',
+        permissions: ['view'],
+        reason: 'Approved',
+        status: 'approved',
+      },
+    ]);
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get(`/api/permissions/user/${teacher._id}/requests?status=pending`)
+      .set(authHeadersFor(teacher, 'teacher'))
+      .expect(200);
+
+    for (const req of response.body) {
+      expect(req.status).toBe('pending');
+    }
+  });
+
+  it('rejects non-admin from viewing another user requests', async () => {
+    const school = await createSchoolRecord({ name: 'BlockReq School', code: 'BLKREQ' });
+    const teacher1 = await createStaffUser({
+      name: 'BlockReq Teacher1',
+      email: 'blkreq.teacher1@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+    const teacher2 = await createStaffUser({
+      name: 'BlockReq Teacher2',
+      email: 'blkreq.teacher2@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get(`/api/permissions/user/${teacher2._id}/requests`)
+      .set(authHeadersFor(teacher1, 'teacher'))
+      .expect(403);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  // ── Custom Roles ────────────────────────────────────────────────────
+
+  it('lists custom roles for the school', async () => {
+    const school = await createSchoolRecord({ name: 'CR School', code: 'CRSCH' });
+    const admin = await createStaffUser({
+      name: 'CR Admin',
+      email: 'cr.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(Array.isArray(response.body)).toBe(true);
+  });
+
+  it('creates a custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRC School', code: 'CRCSCH' });
+    const admin = await createStaffUser({
+      name: 'CRC Admin',
+      email: 'crc.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .post('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .send({
+        name: 'Librarian Custom',
+        description: 'Can manage library',
+        permissions: [{ module: 'students', view: true, create: false }],
+      })
+      .expect(201);
+
+    expect(response.body.name).toBe('Librarian Custom');
+  });
+
+  it('rejects duplicate custom role name', async () => {
+    const school = await createSchoolRecord({ name: 'CRDup School', code: 'CRDUP' });
+    const admin = await createStaffUser({
+      name: 'CRDup Admin',
+      email: 'crdup.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const { app } = createTestApp();
+    await request(app)
+      .post('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'DuplicateRole', permissions: [] })
+      .expect(201);
+
+    const response = await request(app)
+      .post('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'duplicaterole', permissions: [] })
+      .expect(400);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('rejects invalid custom role payload', async () => {
+    const school = await createSchoolRecord({ name: 'CRInv School', code: 'CRINV' });
+    const admin = await createStaffUser({
+      name: 'CRInv Admin',
+      email: 'crinv.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .post('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: '', permissions: [] })
+      .expect(400);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('updates a custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRU School', code: 'CRU' });
+    const admin = await createStaffUser({
+      name: 'CRU Admin',
+      email: 'cru.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const createRes = await request(createTestApp().app)
+      .post('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'Updatable', permissions: [] });
+
+    const roleId = createRes.body._id;
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .put(`/api/permissions/custom-roles/${roleId}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'Updated Name', description: 'New desc' })
+      .expect(200);
+
+    expect(response.body.name).toBe('Updated Name');
+    expect(response.body.description).toBe('New desc');
+  });
+
+  it('returns 404 when updating non-existent custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRU404 School', code: 'CRU404' });
+    const admin = await createStaffUser({
+      name: 'CRU404 Admin',
+      email: 'cru404.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const fakeId = '000000000000000000000000';
+    const { app } = createTestApp();
+    const response = await request(app)
+      .put(`/api/permissions/custom-roles/${fakeId}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'Ghost' })
+      .expect(404);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('returns 403 when updating a system custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRSys School', code: 'CRSYS' });
+    const admin = await createStaffUser({
+      name: 'CRSys Admin',
+      email: 'crsys.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const CustomRole = (await import('../models/CustomRole.js')).default;
+    const role = await CustomRole.create({
+      schoolId: school._id,
+      name: 'SystemRole',
+      permissions: [],
+      isSystem: true,
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .put(`/api/permissions/custom-roles/${role._id}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'Hacked' })
+      .expect(403);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('returns 400 when updating to a duplicate custom role name', async () => {
+    const school = await createSchoolRecord({ name: 'CRDupU School', code: 'CRDUPU' });
+    const admin = await createStaffUser({
+      name: 'CRDupU Admin',
+      email: 'crdupu.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const CustomRole = (await import('../models/CustomRole.js')).default;
+    await CustomRole.create({ schoolId: school._id, name: 'RoleA', permissions: [] });
+    const roleB = await CustomRole.create({ schoolId: school._id, name: 'RoleB', permissions: [] });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .put(`/api/permissions/custom-roles/${roleB._id}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .send({ name: 'RoleA' })
+      .expect(400);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('deletes a custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRD School', code: 'CRD' });
+    const admin = await createStaffUser({
+      name: 'CRD Admin',
+      email: 'crd.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const CustomRole = (await import('../models/CustomRole.js')).default;
+    const role = await CustomRole.create({
+      schoolId: school._id,
+      name: 'Deletable',
+      permissions: [],
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .delete(`/api/permissions/custom-roles/${role._id}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.message).toBeDefined();
+  });
+
+  it('returns 404 when deleting non-existent custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRD404 School', code: 'CRD404' });
+    const admin = await createStaffUser({
+      name: 'CRD404 Admin',
+      email: 'crd404.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const fakeId = '000000000000000000000000';
+    const { app } = createTestApp();
+    const response = await request(app)
+      .delete(`/api/permissions/custom-roles/${fakeId}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(404);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('returns 403 when deleting a system custom role', async () => {
+    const school = await createSchoolRecord({ name: 'CRDelSys School', code: 'CRDELSYS' });
+    const admin = await createStaffUser({
+      name: 'CRDelSys Admin',
+      email: 'crdelsys.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const CustomRole = (await import('../models/CustomRole.js')).default;
+    const role = await CustomRole.create({
+      schoolId: school._id,
+      name: 'SystemDel',
+      permissions: [],
+      isSystem: true,
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .delete(`/api/permissions/custom-roles/${role._id}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(403);
+
+    expect(response.body.error).toBeDefined();
+  });
+
+  it('returns 400 when deleting a custom role with assigned users', async () => {
+    const school = await createSchoolRecord({ name: 'CRDelAss School', code: 'CRDELASS' });
+    const admin = await createStaffUser({
+      name: 'CRDelAss Admin',
+      email: 'crdelass.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+    const teacher = await createStaffUser({
+      name: 'CRDelAss Teacher',
+      email: 'crdelass.teacher@example.com',
+      schoolId: school._id,
+      staffRole: ['Teacher'],
+      permissionRole: 'teacher',
+    });
+
+    const CustomRole = (await import('../models/CustomRole.js')).default;
+    const role = await CustomRole.create({
+      schoolId: school._id,
+      name: 'AssignedRole',
+      permissions: [],
+    });
+
+    await UserPermission.findOneAndUpdate(
+      { userId: teacher._id, schoolId: school._id },
+      { customRoleId: role._id }
+    );
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .delete(`/api/permissions/custom-roles/${role._id}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(400);
+
+    expect(response.body.error).toContain('Cannot delete role');
+  });
+
+  // ── Error handlers ──────────────────────────────────────────────────
+
+  it('returns 500 on /me when an unexpected error occurs', async () => {
+    const school = await createSchoolRecord({ name: 'Me500 School', code: 'ME500' });
+    const admin = await createStaffUser({
+      name: 'Me500 Admin',
+      email: 'me500.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const { UserPermission } = await import('../database.js');
+    const spy = vi.spyOn(UserPermission, 'findOne').mockImplementation(() => {
+      throw new Error('DB down');
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/permissions/me')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(500);
+
+    expect(response.body.error).toBeDefined();
+    spy.mockRestore();
+  });
+
+  it('returns 500 on custom-roles list when DB errors', async () => {
+    const school = await createSchoolRecord({ name: 'CR500 School', code: 'CR500' });
+    const admin = await createStaffUser({
+      name: 'CR500 Admin',
+      email: 'cr500.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+
+    const CustomRole = (await import('../models/CustomRole.js')).default;
+    const spy = vi.spyOn(CustomRole, 'find').mockImplementation(() => {
+      throw new Error('DB down');
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/permissions/custom-roles')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(500);
+
+    expect(response.body.error).toBeDefined();
+    spy.mockRestore();
   });
 });
