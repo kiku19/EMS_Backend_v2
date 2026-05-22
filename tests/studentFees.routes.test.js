@@ -475,7 +475,11 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     // academic year, then request an initialize that somehow clashes on the
     // unique index; the recovery MUST return the exact (student,
     // school, year) tuple.
-    const schoolA = await createSchoolRecord({ name: 'Scope School', code: 'SSC-01', isDefault: true });
+    const schoolA = await createSchoolRecord({
+      name: 'Scope School',
+      code: 'SSC-01',
+      isDefault: true,
+    });
     const accountant = await createAccountant({ schoolId: schoolA._id });
     const classRecord = await createClassRecord({
       name: 'Class 10',
@@ -495,7 +499,7 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     await insertFeeStructureDirect({
       studentId: student._id,
       classId: classRecord._id,
-      academicYear: CURRENT_ACADEMIC_YEAR,
+      academicYear: '2024-25',
       schoolId: schoolA._id,
       feeHeads: [],
       totalFee: 1111,
@@ -523,7 +527,7 @@ describe('POST /api/student-fees/initialize/:studentId', () => {
     const rows = await StudentFeeStructure.find({ studentId: student._id }).lean();
     expect(rows).toHaveLength(2);
     const years = rows.map((r) => r.academicYear).sort();
-    expect(years).toEqual([CURRENT_ACADEMIC_YEAR, '2025-26']);
+    expect(years).toEqual(['2024-25', '2025-26']);
   });
 });
 
