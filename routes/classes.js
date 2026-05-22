@@ -213,17 +213,17 @@ async function resolveRequestSchoolId(req) {
 async function syncClassTeacherStaff({ oldTeacherId, newTeacherId, classDoc }) {
   const schoolId = classDoc.schoolId;
   if (oldTeacherId && String(oldTeacherId) !== String(newTeacherId)) {
-    await Staff.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: oldTeacherId }),
-      { classTeacherOf: null, isClassTeacher: false }
-    );
+    await Staff.findOneAndUpdate(scopeBySchool(schoolId, { _id: oldTeacherId }), {
+      classTeacherOf: null,
+      isClassTeacher: false,
+    });
   }
 
   if (newTeacherId) {
-    await Staff.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: newTeacherId }),
-      { classTeacherOf: `${classDoc.name}-${classDoc.section}`, isClassTeacher: true }
-    );
+    await Staff.findOneAndUpdate(scopeBySchool(schoolId, { _id: newTeacherId }), {
+      classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+      isClassTeacher: true,
+    });
   }
 }
 
@@ -274,7 +274,9 @@ router.get('/public', async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
-    const classes = await Class.find(scopeBySchool(schoolId, { isDeleted: { $ne: true }, academicYear })).sort({
+    const classes = await Class.find(
+      scopeBySchool(schoolId, { isDeleted: { $ne: true }, academicYear })
+    ).sort({
       name: 1,
       section: 1,
     });
@@ -407,7 +409,18 @@ router.post(
   validateZod(createClassSchema),
   async (req, res) => {
     try {
-      const { name, section, classTeacherId, subjects, academicYear, strengthLimit, room, block, classTag, assignedSubjects } = req.body;
+      const {
+        name,
+        section,
+        classTeacherId,
+        subjects,
+        academicYear,
+        strengthLimit,
+        room,
+        block,
+        classTag,
+        assignedSubjects,
+      } = req.body;
       const schoolId = await resolveRequestSchoolId(req);
       if (!schoolId) {
         return res.status(400).json({ error: 'School context is required' });
@@ -477,7 +490,11 @@ router.put(
             const prevOldTeacherId = prevClass.classTeacherId;
             prevClass.classTeacherId = null;
             await prevClass.save();
-            await syncClassTeacherStaff({ oldTeacherId: prevOldTeacherId, newTeacherId: null, classDoc: prevClass });
+            await syncClassTeacherStaff({
+              oldTeacherId: prevOldTeacherId,
+              newTeacherId: null,
+              classDoc: prevClass,
+            });
 
             // Emit update for the previous class so frontend clears it
             const io = req.app.get('io');
@@ -494,7 +511,11 @@ router.put(
             }
           }
           // Re-validate — teacher is now available
-          validation = await ensureTeacherAvailable(classTeacherId, req.params.id, req.user?.schoolId);
+          validation = await ensureTeacherAvailable(
+            classTeacherId,
+            req.params.id,
+            req.user?.schoolId
+          );
         } else {
           return res.status(validation.error.status).json(validation.error.body);
         }
@@ -515,7 +536,7 @@ router.put(
           'class_teacher',
           'Class Teacher Unassigned',
           `You have been unassigned as class teacher of ${className}.`,
-          { relatedId: classDoc._id, relatedType: 'Class' }
+          { schoolId: classDoc.schoolId, relatedId: classDoc._id, relatedType: 'Class' }
         ).catch((err) => console.error('Notification error (old teacher):', err));
       }
       if (classTeacherId) {
@@ -525,7 +546,7 @@ router.put(
           'class_teacher',
           'Class Teacher Assigned',
           `You have been assigned as class teacher of ${className}.`,
-          { relatedId: classDoc._id, relatedType: 'Class' }
+          { schoolId: classDoc.schoolId, relatedId: classDoc._id, relatedType: 'Class' }
         ).catch((err) => console.error('Notification error (new teacher):', err));
       }
 
@@ -629,9 +650,13 @@ router.put(
         return res.status(404).json({ error: req.t('common:errors.classNotFound') });
       }
 
-      const prevSubjects = new Set((prevClass.assignedSubjects || []).map(s => typeof s === 'string' ? s : s.name));
-      const newSubjects = new Set(assignedSubjects.map(s => typeof s === 'string' ? s : s.name));
-      const removedSubjects = [...prevSubjects].filter(s => !newSubjects.has(s));
+      const prevSubjects = new Set(
+        (prevClass.assignedSubjects || []).map((s) => (typeof s === 'string' ? s : s.name))
+      );
+      const newSubjects = new Set(
+        assignedSubjects.map((s) => (typeof s === 'string' ? s : s.name))
+      );
+      const removedSubjects = [...prevSubjects].filter((s) => !newSubjects.has(s));
 
       const classDoc = await Class.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
@@ -643,7 +668,11 @@ router.put(
       if (removedSubjects.length > 0) {
         try {
           const timetable = await Timetable.findOne(
-            scopeBySchool(req.user?.schoolId, { classId: req.params.id, academicYear: CURRENT_ACADEMIC_YEAR, isDeleted: { $ne: true } })
+            scopeBySchool(req.user?.schoolId, {
+              classId: req.params.id,
+              academicYear: CURRENT_ACADEMIC_YEAR,
+              isDeleted: { $ne: true },
+            })
           );
           if (timetable) {
             let modified = false;
@@ -653,7 +682,13 @@ router.put(
               for (let i = 0; i < timetable.schedule[day].length; i++) {
                 const slot = timetable.schedule[day][i];
                 if (slot.subject && removedSubjects.includes(slot.subject)) {
-                  timetable.schedule[day][i] = { subject: '', teacherId: null, room: '', lastModified: new Date(), modifiedBy: req.user?.id };
+                  timetable.schedule[day][i] = {
+                    subject: '',
+                    teacherId: null,
+                    room: '',
+                    lastModified: new Date(),
+                    modifiedBy: req.user?.id,
+                  };
                   modified = true;
                 }
               }
@@ -719,19 +754,15 @@ router.get('/:id/students', checkPermission('classes', 'view'), async (req, res)
   }
 });
 
-router.get(
-  '/:id/next-roll-number',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const rollNumber = await getNextRollNumber(req.params.id, req.user?.schoolId);
-      res.json({ rollNumber });
-    } catch (error) {
-      console.error('Error getting next roll number:', error);
-      res.status(500).json({ error: 'Failed to get next roll number' });
-    }
+router.get('/:id/next-roll-number', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const rollNumber = await getNextRollNumber(req.params.id, req.user?.schoolId);
+    res.json({ rollNumber });
+  } catch (error) {
+    console.error('Error getting next roll number:', error);
+    res.status(500).json({ error: 'Failed to get next roll number' });
   }
-);
+});
 
 router.get('/:id/capacity', checkPermission('classes', 'view'), async (req, res) => {
   try {
@@ -799,7 +830,18 @@ router.put(
   validateZod(updateClassSchema),
   async (req, res) => {
     try {
-      const { name, section, classTeacherId, subjects, assignedSubjects, academicYear, classTag, room, block, strengthLimit } = req.body;
+      const {
+        name,
+        section,
+        classTeacherId,
+        subjects,
+        assignedSubjects,
+        academicYear,
+        classTag,
+        room,
+        block,
+        strengthLimit,
+      } = req.body;
       const validation = await ensureTeacherAvailable(
         classTeacherId,
         req.params.id,

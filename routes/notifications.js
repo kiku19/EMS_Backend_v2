@@ -734,14 +734,25 @@ export async function sendNotification(userId, userModel, type, title, message, 
           userDoc = await Parent.findById(userId).select('schoolId').lean();
         else userDoc = await Student.findById(userId).select('schoolId').lean();
         schoolId = userDoc?.schoolId;
-      } catch {
-        /* best-effort */
+      } catch (err) {
+        // Log lookup failures so invalid IDs or DB issues are visible
+        console.error(
+          `[sendNotification] schoolId lookup failed for ${userModel} ${userId}:`,
+          err.message
+        );
       }
+    }
+
+    if (!schoolId) {
+      throw new Error(
+        `sendNotification requires schoolId for user ${userId} (${userModel}). ` +
+          `Pass options.schoolId explicitly or ensure the user document has a valid schoolId.`
+      );
     }
 
     // Create in-app notification
     const notification = new Notification({
-      ...(schoolId && { schoolId }),
+      schoolId,
       userId,
       userModel,
       type,
