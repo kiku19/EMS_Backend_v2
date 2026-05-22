@@ -269,6 +269,7 @@ export function getConfig() {
           'http://localhost:5173', // Vite dev server
           'http://localhost:5174', // Alternative Vite port
           'http://localhost:5175', // Alternative Vite port
+          'https://lol-sch-draven.vercel.app', // school-dashboard production
         ].concat(process.env.PARENT_APP_URL ? [process.env.PARENT_APP_URL] : []),
 
     // Cloudinary
