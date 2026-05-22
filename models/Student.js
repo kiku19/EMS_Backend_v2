@@ -308,6 +308,5 @@ studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
 studentSchema.index({ schoolId: 1, isDeleted: 1, name: 1 });
 studentSchema.index({ schoolId: 1, classId: 1, isDeleted: 1 });
 studentSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1 });
-studentSchema.index({ schoolId: 1, isDeleted: 1, name: 1 });
 
 export default mongoose.model('Student', studentSchema);

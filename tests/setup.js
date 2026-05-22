@@ -34,13 +34,25 @@ beforeAll(async () => {
     );
   }
 
-  // Use a unique database name per test file so parallel workers and
-  // sequential test files don't collide.
-  const dbName = `ems-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  if (mongoose.connection.readyState === 0) {
+    // Use one database per worker so tests in the same worker can reuse
+    // the connection, eliminating connect/disconnect overhead per file.
+    const workerId = process.env.VITEST_WORKER_ID || '0';
+    const dbName = `ems-test-worker-${workerId}`;
 
-  await mongoose.connect(process.env.MONGO_TEST_URI, {
-    dbName,
-  });
+    await mongoose.connect(process.env.MONGO_TEST_URI, {
+      dbName,
+      autoIndex: false,
+      autoCreate: false,
+    });
+  }
+
+  // Ensure a clean slate for this test file even when reusing a connection.
+  const collections = Object.values(mongoose.connection.collections);
+  for (const collection of collections) {
+    await collection.deleteMany({});
+  }
+  resetDefaultSchool();
 }, 120000);
 
 beforeEach(async () => {
@@ -52,8 +64,8 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  if (mongoose.connection.readyState !== 0) {
-    await mongoose.connection.dropDatabase();
-    await mongoose.disconnect();
-  }
+  // Intentionally do NOT disconnect here.  Keeping the connection open
+  // lets subsequent test files in the same worker reuse it, shaving
+  // ~4-6s of connect/disconnect overhead per file.  The globalSetup
+  // teardown will stop the MongoMemoryReplSet after all tests finish.
 });
