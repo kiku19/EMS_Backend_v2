@@ -27,7 +27,7 @@ const FAILOVER_CONNECTION_OPTIONS = {
   connectTimeoutMS: 10000, // Hard connection timeout per socket
 
   // Connection pool
-  maxPoolSize: 50,
+  maxPoolSize: 100,
   minPoolSize: 5,
   socketTimeoutMS: 45000,
 

@@ -176,7 +176,8 @@ describe('PERF-03: 50 schools × 2000 students load test', () => {
 
       // Ensure indexes are fully built before benchmarking (perf-03: list_paginated
       // relies on the schoolId + isDeleted + name compound index).
-      await Student.init();
+      // syncIndexes() is required because the test connection uses autoIndex: false.
+      await Student.syncIndexes();
 
       // ── PHASE 2: BENCHMARK ──────────────────────────────────────────────
       const results = {};

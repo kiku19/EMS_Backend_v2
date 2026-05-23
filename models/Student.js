@@ -308,5 +308,10 @@ studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
 studentSchema.index({ schoolId: 1, isDeleted: 1, name: 1 });
 studentSchema.index({ schoolId: 1, classId: 1, isDeleted: 1 });
 studentSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1 });
+// PERF-571: Compact index for school-scoped count queries (countDocuments,
+// dashboard totals, etc.). Smaller than the 3-field compounds above so it
+// stays hotter in cache and gives covered counts for the common
+// { schoolId, isDeleted } filter.
+studentSchema.index({ schoolId: 1, isDeleted: 1 });
 
 export default mongoose.model('Student', studentSchema);

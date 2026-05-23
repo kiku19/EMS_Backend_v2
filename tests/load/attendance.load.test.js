@@ -17,7 +17,7 @@
  */
 
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
   authHeadersFor,
   createClassRecord,
@@ -26,6 +26,7 @@ import {
   createStudentRecord,
 } from '../helpers/factories.js';
 import { createTestApp } from '../helpers/testApp.js';
+import { Student, Attendance } from '../../database.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,6 +62,13 @@ function reportMetrics(label, latencies, totalMs) {
 // ---------------------------------------------------------------------------
 
 describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
+  beforeAll(async () => {
+    // The test connection uses autoIndex: false for speed, but load tests
+    // benchmark query performance so indexes must exist.
+    await Student.syncIndexes();
+    await Attendance.syncIndexes();
+  });
+
   it('Scenario A — 500 concurrent POST /api/attendance: zero errors, P95 < 2000 ms', async () => {
     const CONCURRENT = 500;
 
@@ -82,7 +90,14 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
           name: `Load Student A-${i + 1}`,
           rollNo: i + 1,
           classId: classRecord._id,
-          parents: [{ name: 'Parent', relationship: 'Parent', phone: `8${String(i).padStart(9, '0')}`, isWhatsapp: true }],
+          parents: [
+            {
+              name: 'Parent',
+              relationship: 'Parent',
+              phone: `8${String(i).padStart(9, '0')}`,
+              isWhatsapp: true,
+            },
+          ],
         })
       )
     );
@@ -169,7 +184,14 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
               rollNo: studentIdx + 1,
               classId: cls._id,
               schoolId: school._id,
-              parents: [{ name: 'Parent', relationship: 'Parent', phone: `7${String(classIdx * 100 + studentIdx).padStart(9, '0')}`, isWhatsapp: true }],
+              parents: [
+                {
+                  name: 'Parent',
+                  relationship: 'Parent',
+                  phone: `7${String(classIdx * 100 + studentIdx).padStart(9, '0')}`,
+                  isWhatsapp: true,
+                },
+              ],
             })
           )
         )
@@ -252,7 +274,14 @@ describe('PERF-02: 500 concurrent attendance submissions at peak hour', () => {
           name: `Load Student C-${i + 1}`,
           rollNo: i + 1,
           classId: classRecord._id,
-          parents: [{ name: 'Parent', relationship: 'Parent', phone: `6${String(i).padStart(9, '0')}`, isWhatsapp: true }],
+          parents: [
+            {
+              name: 'Parent',
+              relationship: 'Parent',
+              phone: `6${String(i).padStart(9, '0')}`,
+              isWhatsapp: true,
+            },
+          ],
         })
       )
     );
