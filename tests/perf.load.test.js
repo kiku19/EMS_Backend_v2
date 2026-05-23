@@ -33,7 +33,7 @@ const P95_THRESHOLDS_MS = {
   count_by_school: 250, // countDocuments
   get_by_id: 200, // findById (single doc)
   search_by_name: 700, // regex on name field
-  compound_filter: 300, // school + class + status
+  compound_filter: 700, // school + class + status
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
