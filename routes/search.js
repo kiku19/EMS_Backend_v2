@@ -56,6 +56,7 @@ import FeePayment from '../models/FeePayment.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { searchQuerySchema } from '../validators/searchSchema.js';
+import { piiMatch } from '../utils/encryption.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -85,7 +86,7 @@ function escapeRegex(str) {
 
 // ─── Atlas Search pipelines ───────────────────────────────────────────────────
 
-function atlasStudentsPipeline(q, schoolId, limit, skip) {
+export function atlasStudentsPipeline(q, schoolId, limit, skip) {
   return [
     {
       $search: {
@@ -118,7 +119,7 @@ function atlasStudentsPipeline(q, schoolId, limit, skip) {
   ];
 }
 
-function atlasStaffPipeline(q, schoolId, limit, skip) {
+export function atlasStaffPipeline(q, schoolId, limit, skip) {
   return [
     {
       $search: {
@@ -151,7 +152,7 @@ function atlasStaffPipeline(q, schoolId, limit, skip) {
   ];
 }
 
-function atlasClassesPipeline(q, schoolId, limit, skip, academicYear) {
+export function atlasClassesPipeline(q, schoolId, limit, skip, academicYear) {
   const filter = [{ equals: { path: 'schoolId', value: new mongoose.Types.ObjectId(schoolId) } }];
   return [
     {
@@ -185,14 +186,15 @@ function atlasClassesPipeline(q, schoolId, limit, skip, academicYear) {
 
 async function regexSearchStudents(q, schoolId, limit, skip, academicYear) {
   const regex = new RegExp(escapeRegex(q), 'i');
+  const emailMatch = piiMatch('email', q);
   const match = {
     schoolId: new mongoose.Types.ObjectId(schoolId),
     isDeleted: { $ne: true },
     $or: [
       { name: regex },
       { admissionId: regex },
-      { email: regex },
-
+      ...(emailMatch.$or || [emailMatch]),
+      { 'parents.name': regex },
     ],
   };
   if (academicYear) match.academicYear = academicYear;
@@ -206,14 +208,16 @@ async function regexSearchStudents(q, schoolId, limit, skip, academicYear) {
 
 async function regexSearchStaff(q, schoolId, limit, skip) {
   const regex = new RegExp(escapeRegex(q), 'i');
+  const phoneMatch = piiMatch('phone', q);
+  const emailMatch = piiMatch('email', q);
   const match = {
     schoolId: new mongoose.Types.ObjectId(schoolId),
     isDeleted: { $ne: true },
     $or: [
       { name: regex },
       { code: regex },
-      { phone: regex },
-      { email: regex },
+      ...(phoneMatch.$or || [phoneMatch]),
+      ...(emailMatch.$or || [emailMatch]),
       { department: regex },
     ],
   };
@@ -294,6 +298,7 @@ async function regexSearchAnnouncements(q, schoolId, limit, skip) {
   const regex = new RegExp(escapeRegex(q), 'i');
   return Announcement.find({
     schoolId: new mongoose.Types.ObjectId(schoolId),
+    isDeleted: { $ne: true },
     $or: [{ title: regex }, { content: regex }],
   })
     .select('title status channels createdAt')
