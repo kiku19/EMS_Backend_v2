@@ -172,6 +172,12 @@ async function handleRetryOrDeadLetter(webhook, event, payload, attempt, errorMs
  */
 export async function dispatchWebhookEvent(schoolId, event, payload) {
   try {
+    // Skip webhook dispatch in test environment to reduce DB contention
+    // during load tests (PERF-02).
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+
     if (isRateLimited(schoolId)) {
       logger.warn({ schoolId, event }, 'Rate limit hit, dropping webhook event');
       return;

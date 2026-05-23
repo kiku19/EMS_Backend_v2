@@ -27,8 +27,8 @@ const FAILOVER_CONNECTION_OPTIONS = {
   connectTimeoutMS: 10000, // Hard connection timeout per socket
 
   // Connection pool
-  maxPoolSize: 10,
-  minPoolSize: 2,
+  maxPoolSize: 50,
+  minPoolSize: 5,
   socketTimeoutMS: 45000,
 
   // OBS-05: Enable MongoDB APM command events for slow query monitoring
