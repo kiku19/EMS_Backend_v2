@@ -40,5 +40,6 @@ const admissionSchema = new mongoose.Schema(
 );
 
 admissionSchema.index({ schoolId: 1, status: 1, createdAt: -1 });
+admissionSchema.index({ schoolId: 1, source: 1, createdAt: -1 });
 
 export default mongoose.model('Admission', admissionSchema);

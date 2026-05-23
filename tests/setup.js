@@ -42,7 +42,7 @@ beforeAll(async () => {
 
     await mongoose.connect(process.env.MONGO_TEST_URI, {
       dbName,
-      autoIndex: false,
+      autoIndex: true,
       autoCreate: false,
     });
   }

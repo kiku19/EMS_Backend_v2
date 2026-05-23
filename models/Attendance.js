@@ -27,7 +27,7 @@ const attendanceSchema = new mongoose.Schema(
     // Soft-delete support: admins can now retract an accidental mass mark
     // (via trash restore) instead of hard-deleting rows which left no audit
     // trail and couldn't be undone.
-    isDeleted: { type: Boolean, default: false, index: true },
+    isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   },

@@ -126,7 +126,8 @@ import { rateLimit } from 'express-rate-limit';
 const notifyParentsLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 3,
-  keyGenerator: (req) => `${req.user?.id || req.ip}:${req.body?.classId || ''}:${req.body?.date || ''}`,
+  keyGenerator: (req) =>
+    `${req.user?.id || req.ip}:${req.body?.classId || ''}:${req.body?.date || ''}`,
   handler: (req, res) =>
     res.status(429).json({
       error:
@@ -184,7 +185,9 @@ async function notifyParentsOfAbsent(absentStudentIds, date, schoolId) {
     const { sendAttendanceAlertWhatsApp } = await import('../services/whatsappService.js');
 
     // Batch load all students upfront to avoid N+1 query (PERF fix)
-    const students = await Student.find({ _id: { $in: absentStudentIds } }).select('name').lean();
+    const students = await Student.find({ _id: { $in: absentStudentIds } })
+      .select('name')
+      .lean();
     const studentMap = {};
     for (const s of students) studentMap[String(s._id)] = s.name || 'your child';
 
@@ -237,50 +240,48 @@ async function resolveRequestSchoolId(req) {
 // Replaces the dashboard's N+1 pattern of calling GET /:classId/:date for
 // every class individually — a school with 20 classes now needs 1 request
 // instead of 20.
-router.get(
-  '/today-snapshot',
-  checkPermission('attendance', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      // "Today" must be the local date, not UTC. Attendance.date is stored
-      // as a YYYY-MM-DD string in the school's local timezone, so a UTC
-      // comparison flips to "yesterday" for IST users after ~5:30 IST the
-      // next morning (and vice-versa after ~6:30pm IST the prior evening).
-      const today = localTodayString();
+router.get('/today-snapshot', checkPermission('attendance', 'view'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    // "Today" must be the local date, not UTC. Attendance.date is stored
+    // as a YYYY-MM-DD string in the school's local timezone, so a UTC
+    // comparison flips to "yesterday" for IST users after ~5:30 IST the
+    // next morning (and vice-versa after ~6:30pm IST the prior evening).
+    const today = localTodayString();
 
-      const records = await Attendance.find(scopeBySchool(schoolId, { date: today }))
-        .select('classId studentId status')
-        .lean();
+    const records = await Attendance.find(scopeBySchool(schoolId, { date: today }))
+      .select('classId studentId status')
+      .lean();
 
-      // AUDIT-457: Exclude attendance records for soft-deleted students
-      const studentIds = [...new Set(records.map(r => r.studentId?.toString()).filter(Boolean))];
-      const activeStudents = studentIds.length
-        ? await Student.find({ _id: { $in: studentIds }, isDeleted: { $ne: true } }).select('_id').lean()
-        : [];
-      const activeStudentIds = new Set(activeStudents.map(s => String(s._id)));
+    // AUDIT-457: Exclude attendance records for soft-deleted students
+    const studentIds = [...new Set(records.map((r) => r.studentId?.toString()).filter(Boolean))];
+    const activeStudents = studentIds.length
+      ? await Student.find({ _id: { $in: studentIds }, isDeleted: { $ne: true } })
+          .select('_id')
+          .lean()
+      : [];
+    const activeStudentIds = new Set(activeStudents.map((s) => String(s._id)));
 
-      // Group by classId → { present, absent, late, leave, halfday, total }
-      const byClass = {};
-      for (const record of records) {
-        if (!activeStudentIds.has(String(record.studentId))) continue;
-        const classKey = String(record.classId);
-        if (!byClass[classKey]) {
-          byClass[classKey] = { present: 0, absent: 0, late: 0, leave: 0, halfday: 0, total: 0 };
-        }
-        const status = String(record.status || '').toLowerCase();
-        if (byClass[classKey][status] !== undefined) {
-          byClass[classKey][status] += 1;
-        }
-        byClass[classKey].total += 1;
+    // Group by classId → { present, absent, late, leave, halfday, total }
+    const byClass = {};
+    for (const record of records) {
+      if (!activeStudentIds.has(String(record.studentId))) continue;
+      const classKey = String(record.classId);
+      if (!byClass[classKey]) {
+        byClass[classKey] = { present: 0, absent: 0, late: 0, leave: 0, halfday: 0, total: 0 };
       }
-
-      res.json({ date: today, classes: byClass });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+      const status = String(record.status || '').toLowerCase();
+      if (byClass[classKey][status] !== undefined) {
+        byClass[classKey][status] += 1;
+      }
+      byClass[classKey].total += 1;
     }
+
+    res.json({ date: today, classes: byClass });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 router.get(
   '/student/:studentId',
@@ -296,7 +297,9 @@ router.get(
       // AUDIT-457: Verify student is not soft-deleted before querying attendance
       const studentDoc = await Student.findOne(
         scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-      ).select('_id').lean();
+      )
+        .select('_id')
+        .lean();
       if (!studentDoc) {
         res.set('X-Total-Count', '0');
         res.set('X-Has-More', 'false');
@@ -342,42 +345,38 @@ router.get(
   }
 );
 
-router.get(
-  '/class/:classId/:date',
-  checkPermission('attendance', 'view'),
-  async (req, res) => {
-    try {
-      const { classId, date } = req.params;
-      const resolved = await resolveClassId(classId, req.user?.schoolId);
+router.get('/class/:classId/:date', checkPermission('attendance', 'view'), async (req, res) => {
+  try {
+    const { classId, date } = req.params;
+    const resolved = await resolveClassId(classId, req.user?.schoolId);
 
-      if (!resolved) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
-
-      const attendance = await Attendance.find(
-        scopeBySchool(req.user?.schoolId, { classId: resolved.classId, date })
-      ).populate({
-        path: 'studentId',
-        select: 'name rollNo admissionId',
-        match: { isDeleted: { $ne: true } },
-      });
-
-      const attendanceObj = {};
-      attendance.forEach((record) => {
-        if (record.studentId) {
-          attendanceObj[record.studentId._id.toString()] = {
-            status: record.status,
-            markedBy: record.markedBy,
-          };
-        }
-      });
-
-      res.json(attendanceObj);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+    if (!resolved) {
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
+
+    const attendance = await Attendance.find(
+      scopeBySchool(req.user?.schoolId, { classId: resolved.classId, date })
+    ).populate({
+      path: 'studentId',
+      select: 'name rollNo admissionId',
+      match: { isDeleted: { $ne: true } },
+    });
+
+    const attendanceObj = {};
+    attendance.forEach((record) => {
+      if (record.studentId) {
+        attendanceObj[record.studentId._id.toString()] = {
+          status: record.status,
+          markedBy: record.markedBy,
+        };
+      }
+    });
+
+    res.json(attendanceObj);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // Issue #50 Fix: Shared helper for bulk attendance marking (used by POST /class and POST /bulk)
 async function markBulkAttendance(req, res) {
@@ -457,11 +456,17 @@ async function markBulkAttendance(req, res) {
   const skipped = [];
 
   // AUDIT-344: Verify all submitted students belong to this class
-  const submittedStudentIds = attendance.map(r => r.studentId).filter(Boolean);
+  const submittedStudentIds = attendance.map((r) => r.studentId).filter(Boolean);
   const validStudents = await Student.find(
-    scopeBySchool(schoolId, { _id: { $in: submittedStudentIds }, classId: resolved.classId, isDeleted: { $ne: true } })
-  ).select('_id').lean();
-  const validStudentIdSet = new Set(validStudents.map(s => s._id.toString()));
+    scopeBySchool(schoolId, {
+      _id: { $in: submittedStudentIds },
+      classId: resolved.classId,
+      isDeleted: { $ne: true },
+    })
+  )
+    .select('_id')
+    .lean();
+  const validStudentIdSet = new Set(validStudents.map((s) => s._id.toString()));
 
   // Pre-filter valid records vs skipped before the transaction
   const validRecords = [];
@@ -470,7 +475,11 @@ async function markBulkAttendance(req, res) {
     if (!studentId || !status || !validStatuses.includes(status)) {
       skipped.push({
         studentId: studentId || 'missing',
-        reason: !studentId ? 'Missing studentId' : !status ? 'Missing status' : `Invalid status: ${status}`,
+        reason: !studentId
+          ? 'Missing studentId'
+          : !status
+            ? 'Missing status'
+            : `Invalid status: ${status}`,
       });
       continue;
     }
@@ -497,9 +506,7 @@ async function markBulkAttendance(req, res) {
   )
     .select('studentId status')
     .lean();
-  const priorStatusByStudent = new Map(
-    priorDocs.map((d) => [d.studentId.toString(), d.status])
-  );
+  const priorStatusByStudent = new Map(priorDocs.map((d) => [d.studentId.toString(), d.status]));
 
   // AUDIT-443: Use a transaction so bulk attendance is atomic — all succeed or none
   const mongoSession = await mongoose.startSession();
@@ -556,7 +563,9 @@ async function markBulkAttendance(req, res) {
 
   res.json({
     success: true,
-    message: `Attendance marked for ${results.length} students` + (skipped.length > 0 ? `, ${skipped.length} skipped` : ''),
+    message:
+      `Attendance marked for ${results.length} students` +
+      (skipped.length > 0 ? `, ${skipped.length} skipped` : ''),
     results,
     ...(skipped.length > 0 && { skipped }),
   });
@@ -575,221 +584,219 @@ router.post(
   }
 );
 
-router.get(
-  '/history/:classId',
-  checkPermission('attendance', 'view'),
-  async (req, res) => {
-    try {
-      const { classId } = req.params;
-      const { start, end, academicYear } = req.query;
-
-      const resolved = await resolveClassId(classId, req.user?.schoolId);
-      if (!resolved) {
-        return res.json([]);
-      }
-
-      const schoolId = await resolveRequestSchoolId(req);
-      const query = scopeBySchool(schoolId, { classId: resolved.classId });
-      if (start && end) {
-        query.date = { $gte: start, $lte: end };
-      } else if (start) {
-        query.date = { $gte: start };
-      } else if (end) {
-        query.date = { $lte: end };
-      } else if (academicYear) {
-        // Scope to academic year date range when no explicit dates provided
-        const dateRange = await getAcademicYearDateRange(academicYear, schoolId);
-        if (dateRange) query.date = dateRange;
-      }
-
-      const attendance = await Attendance.find(query)
-        .populate({
-          path: 'studentId',
-          select: 'name rollNo admissionId',
-          match: { isDeleted: { $ne: true } },
-        })
-        .sort({ date: -1 });
-
-      // Filter out records where student was deleted
-      res.json(attendance.filter((r) => r.studentId != null));
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-);
-
-router.get(
-  '/report/:classId',
-  checkPermission('attendance', 'view'),
-  async (req, res) => {
-    try {
-      const { classId } = req.params;
-      const { startDate, endDate } = req.query;
-
-      if (!startDate || !endDate) {
-        return res.status(400).json({ error: 'startDate and endDate are required' });
-      }
-
-      const resolved = await resolveClassId(classId, req.user?.schoolId);
-      if (!resolved) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
-
-      const attendance = await Attendance.find(
-        scopeBySchool(req.user?.schoolId, {
-          classId: resolved.classId,
-          date: { $gte: startDate, $lte: endDate },
-        })
-      ).populate({
-        path: 'studentId',
-        select: 'name rollNo admissionId',
-        match: { isDeleted: { $ne: true } },
-      });
-
-      const summary = {};
-      attendance.forEach((record) => {
-        if (!record.studentId) {
-          return;
-        }
-
-        const studentKey = record.studentId._id.toString();
-        if (!summary[studentKey]) {
-          summary[studentKey] = {
-            studentId: record.studentId._id,
-            studentName: record.studentId.name,
-            rollNo: record.studentId.rollNo,
-            admissionId: record.studentId.admissionId,
-            present: 0,
-            absent: 0,
-            late: 0,
-            leave: 0,
-            halfday: 0,
-            total: 0,
-          };
-        }
-
-        summary[studentKey][record.status] += 1;
-        summary[studentKey].total += 1;
-      });
-
-      // AUDIT-456: Use configurable late weight from school settings
-      const settings = await SchoolSettings.findOne({ schoolId: req.user?.schoolId }).lean();
-      const lateW = (settings?.attendanceRules?.lateWeight ?? 100) / 100;
-
-      const report = Object.values(summary).map((studentSummary) => ({
-        ...studentSummary,
-        percentage:
-          studentSummary.total > 0
-            ? (
-                ((studentSummary.present + studentSummary.late * lateW + studentSummary.halfday * 0.5) / studentSummary.total) *
-                100
-              ).toFixed(2)
-            : 0,
-      }));
-
-      res.json(report);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-);
-
-// IMPORTANT: /:classId/:date must be registered BEFORE /:studentId to avoid
-// the single-param route shadowing two-param requests.
-router.get(
-  '/:classId/:date',
-  checkPermission('attendance', 'view'),
-  async (req, res) => {
-    try {
-      const { classId, date } = req.params;
-      const resolved = await resolveClassId(classId, req.user?.schoolId);
-
-      if (!resolved) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
-
-      const schoolId = await resolveRequestSchoolId(req);
-      const attendance = await Attendance.find(
-        scopeBySchool(schoolId, { classId: resolved.classId, date })
-      ).populate({
-        path: 'studentId',
-        select: 'name rollNo admissionId',
-        match: { isDeleted: { $ne: true } },
-      });
-
-      // Return same shape as GET /class/:classId/:date for consistency
-      const attendanceObj = {};
-      attendance.forEach((record) => {
-        if (record.studentId) {
-          attendanceObj[record.studentId._id.toString()] = {
-            status: record.status,
-            markedBy: record.markedBy,
-          };
-        }
-      });
-
-      res.json(attendanceObj);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-);
-
-router.get('/:studentId', validateObjectIdParam('studentId'), checkPermission('attendance', 'view'), async (req, res) => {
+router.get('/history/:classId', checkPermission('attendance', 'view'), async (req, res) => {
   try {
-    const { studentId } = req.params;
-    const { startDate, endDate, academicYear } = req.query;
+    const { classId } = req.params;
+    const { start, end, academicYear } = req.query;
 
-    const schoolId = req.user?.schoolId;
-
-    // AUDIT-457: Verify student is not soft-deleted before querying attendance
-    const studentDoc = await Student.findOne(
-      scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-    ).select('_id').lean();
-    if (!studentDoc) {
-      res.set('X-Total-Count', '0');
-      res.set('X-Has-More', 'false');
-      return res.json({});
+    const resolved = await resolveClassId(classId, req.user?.schoolId);
+    if (!resolved) {
+      return res.json([]);
     }
 
-    const query = scopeBySchool(schoolId, { studentId });
-    if (startDate || endDate) {
-      query.date = {};
-      if (startDate) {
-        query.date.$gte = startDate;
-      }
-      if (endDate) {
-        query.date.$lte = endDate;
-      }
+    const schoolId = await resolveRequestSchoolId(req);
+    const query = scopeBySchool(schoolId, { classId: resolved.classId });
+    if (start && end) {
+      query.date = { $gte: start, $lte: end };
+    } else if (start) {
+      query.date = { $gte: start };
+    } else if (end) {
+      query.date = { $lte: end };
     } else if (academicYear) {
       // Scope to academic year date range when no explicit dates provided
       const dateRange = await getAcademicYearDateRange(academicYear, schoolId);
       if (dateRange) query.date = dateRange;
     }
 
-    // AUDIT-66: Add pagination support
-    const skip = parseInt(req.query.skip) || 0;
-    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
-    const total = await Attendance.countDocuments(query);
+    const attendance = await Attendance.find(query)
+      .populate({
+        path: 'studentId',
+        select: 'name rollNo admissionId',
+        match: { isDeleted: { $ne: true } },
+      })
+      .sort({ date: -1 });
 
-    const attendance = await Attendance.find(query).sort({ date: -1 }).skip(skip).limit(limit);
-    const attendanceObj = {};
+    // Filter out records where student was deleted
+    res.json(attendance.filter((r) => r.studentId != null));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    attendance.forEach((record) => {
-      attendanceObj[record.date] = {
-        status: record.status,
-        markedBy: record.markedBy,
-        classId: record.classId,
-      };
+router.get('/report/:classId', checkPermission('attendance', 'view'), async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    const resolved = await resolveClassId(classId, req.user?.schoolId);
+    if (!resolved) {
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+    }
+
+    const attendance = await Attendance.find(
+      scopeBySchool(req.user?.schoolId, {
+        classId: resolved.classId,
+        date: { $gte: startDate, $lte: endDate },
+      })
+    ).populate({
+      path: 'studentId',
+      select: 'name rollNo admissionId',
+      match: { isDeleted: { $ne: true } },
     });
 
-    res.set('X-Total-Count', String(total));
-    res.set('X-Has-More', String(skip + attendance.length < total));
+    const summary = {};
+    attendance.forEach((record) => {
+      if (!record.studentId) {
+        return;
+      }
+
+      const studentKey = record.studentId._id.toString();
+      if (!summary[studentKey]) {
+        summary[studentKey] = {
+          studentId: record.studentId._id,
+          studentName: record.studentId.name,
+          rollNo: record.studentId.rollNo,
+          admissionId: record.studentId.admissionId,
+          present: 0,
+          absent: 0,
+          late: 0,
+          leave: 0,
+          halfday: 0,
+          total: 0,
+        };
+      }
+
+      summary[studentKey][record.status] += 1;
+      summary[studentKey].total += 1;
+    });
+
+    // AUDIT-456: Use configurable late weight from school settings
+    const settings = await SchoolSettings.findOne({ schoolId: req.user?.schoolId }).lean();
+    const lateW = (settings?.attendanceRules?.lateWeight ?? 100) / 100;
+
+    const report = Object.values(summary).map((studentSummary) => ({
+      ...studentSummary,
+      percentage:
+        studentSummary.total > 0
+          ? (
+              ((studentSummary.present +
+                studentSummary.late * lateW +
+                studentSummary.halfday * 0.5) /
+                studentSummary.total) *
+              100
+            ).toFixed(2)
+          : 0,
+    }));
+
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// IMPORTANT: /:classId/:date must be registered BEFORE /:studentId to avoid
+// the single-param route shadowing two-param requests.
+router.get('/:classId/:date', checkPermission('attendance', 'view'), async (req, res) => {
+  try {
+    const { classId, date } = req.params;
+    const resolved = await resolveClassId(classId, req.user?.schoolId);
+
+    if (!resolved) {
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+    }
+
+    const schoolId = await resolveRequestSchoolId(req);
+    const attendance = await Attendance.find(
+      scopeBySchool(schoolId, { classId: resolved.classId, date })
+    ).populate({
+      path: 'studentId',
+      select: 'name rollNo admissionId',
+      match: { isDeleted: { $ne: true } },
+    });
+
+    // Return same shape as GET /class/:classId/:date for consistency
+    const attendanceObj = {};
+    attendance.forEach((record) => {
+      if (record.studentId) {
+        attendanceObj[record.studentId._id.toString()] = {
+          status: record.status,
+          markedBy: record.markedBy,
+        };
+      }
+    });
+
     res.json(attendanceObj);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+router.get(
+  '/:studentId',
+  validateObjectIdParam('studentId'),
+  checkPermission('attendance', 'view'),
+  async (req, res) => {
+    try {
+      const { studentId } = req.params;
+      const { startDate, endDate, academicYear } = req.query;
+
+      const schoolId = req.user?.schoolId;
+
+      // AUDIT-457: Verify student is not soft-deleted before querying attendance
+      const studentDoc = await Student.findOne(
+        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+      )
+        .select('_id')
+        .lean();
+      if (!studentDoc) {
+        res.set('X-Total-Count', '0');
+        res.set('X-Has-More', 'false');
+        return res.json({});
+      }
+
+      const query = scopeBySchool(schoolId, { studentId });
+      if (startDate || endDate) {
+        query.date = {};
+        if (startDate) {
+          query.date.$gte = startDate;
+        }
+        if (endDate) {
+          query.date.$lte = endDate;
+        }
+      } else if (academicYear) {
+        // Scope to academic year date range when no explicit dates provided
+        const dateRange = await getAcademicYearDateRange(academicYear, schoolId);
+        if (dateRange) query.date = dateRange;
+      }
+
+      // AUDIT-66: Add pagination support
+      const skip = parseInt(req.query.skip) || 0;
+      const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+      const total = await Attendance.countDocuments(query);
+
+      const attendance = await Attendance.find(query).sort({ date: -1 }).skip(skip).limit(limit);
+      const attendanceObj = {};
+
+      attendance.forEach((record) => {
+        attendanceObj[record.date] = {
+          status: record.status,
+          markedBy: record.markedBy,
+          classId: record.classId,
+        };
+      });
+
+      res.set('X-Total-Count', String(total));
+      res.set('X-Has-More', String(skip + attendance.length < total));
+      res.json(attendanceObj);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 router.post(
   '/',
@@ -805,7 +812,9 @@ router.post(
       if (classId && studentId) {
         const studentDoc = await Student.findOne(
           scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-        ).select('classId').lean();
+        )
+          .select('classId')
+          .lean();
         if (!studentDoc) {
           return res.status(404).json({ error: 'Student not found' });
         }
@@ -844,7 +853,7 @@ router.post(
           schoolId,
         },
         { new: true, upsert: true }
-      );
+      ).lean();
 
       dispatchWebhookEvent(schoolId, 'attendance.marked', {
         studentId,
