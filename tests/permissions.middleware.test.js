@@ -152,6 +152,9 @@ describe('ensurePermissionDocument', () => {
       permissionRole: 'teacher',
     });
 
+    // Remove auto-created UserPermission so we can create a custom one
+    await UserPermission.deleteOne({ userId: staff._id, schoolId: school._id });
+
     const userPermission = await UserPermission.create({
       schoolId: school._id,
       userId: staff._id,
@@ -183,6 +186,9 @@ describe('ensurePermissionDocument', () => {
       permissionRole: 'teacher',
     });
 
+    // Remove auto-created UserPermission so we can create a custom one
+    await UserPermission.deleteOne({ userId: staff._id, schoolId: school._id });
+
     const userPermission = await UserPermission.create({
       schoolId: school._id,
       userId: staff._id,
@@ -211,6 +217,9 @@ describe('ensurePermissionDocument', () => {
       permissionRole: 'teacher',
     });
 
+    // Remove auto-created UserPermission so we can create a custom one
+    await UserPermission.deleteOne({ userId: staff._id, schoolId: school._id });
+
     // Create a valid document then manually unset the role to simulate corruption
     let userPermission = await UserPermission.create({
       schoolId: school._id,
@@ -234,6 +243,9 @@ describe('ensurePermissionDocument', () => {
       staffRole: ['Teacher'],
       permissionRole: 'teacher',
     });
+
+    // Remove auto-created UserPermission so we can create a custom one
+    await UserPermission.deleteOne({ userId: staff._id, schoolId: school._id });
 
     let userPermission = await UserPermission.create({
       schoolId: school._id,
