@@ -67,12 +67,18 @@ export async function createStaffUser({
     ...(department ? { department } : {}),
   });
 
-  await UserPermission.create({
-    schoolId,
-    userId: staff._id,
-    role: permissionRole,
-    permissions: toPermissionsArray(PERMISSION_TEMPLATES[permissionRole]),
-  });
+  // Upsert guards against duplicate-key races when the same worker/database
+  // is reused across test files or when a previous test left a row behind.
+  await UserPermission.findOneAndUpdate(
+    { schoolId, userId: staff._id },
+    {
+      schoolId,
+      userId: staff._id,
+      role: permissionRole,
+      permissions: toPermissionsArray(PERMISSION_TEMPLATES[permissionRole]),
+    },
+    { upsert: true }
+  );
 
   return staff;
 }

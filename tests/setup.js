@@ -34,24 +34,25 @@ beforeAll(async () => {
     );
   }
 
-  if (mongoose.connection.readyState === 0) {
-    // Use one database per worker so tests in the same worker can reuse
-    // the connection, eliminating connect/disconnect overhead per file.
-    const workerId = process.env.VITEST_WORKER_ID || '0';
-    const dbName = `ems-test-worker-${workerId}`;
-
-    await mongoose.connect(process.env.MONGO_TEST_URI, {
-      dbName,
-      autoIndex: true,
-      autoCreate: false,
-    });
+  // Disconnect from any previous database to guarantee isolation.
+  // Vitest may reuse the worker process (threads pool) or recycle forks,
+  // in which case the connection is still open and points to stale data.
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.connection.dropDatabase();
+    await mongoose.disconnect();
   }
 
-  // Ensure a clean slate for this test file even when reusing a connection.
-  const collections = Object.values(mongoose.connection.collections);
-  for (const collection of collections) {
-    await collection.deleteMany({});
-  }
+  // Use a unique database name per test file so parallel workers and
+  // sequential test files cannot collide.
+  const workerId = process.env.VITEST_WORKER_ID || '0';
+  const dbName = `ems-test-${workerId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  await mongoose.connect(process.env.MONGO_TEST_URI, {
+    dbName,
+    autoIndex: true,
+    autoCreate: false,
+  });
+
   resetDefaultSchool();
 }, 120000);
 
@@ -64,8 +65,11 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  // Intentionally do NOT disconnect here.  Keeping the connection open
-  // lets subsequent test files in the same worker reuse it, shaving
-  // ~4-6s of connect/disconnect overhead per file.  The globalSetup
-  // teardown will stop the MongoMemoryReplSet after all tests finish.
+  // Drop the test database and disconnect so the next test file (or retry)
+  // starts from a completely clean slate.  connect/disconnect overhead is
+  // negligible compared to the time saved by avoiding flaky isolation bugs.
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.connection.dropDatabase();
+    await mongoose.disconnect();
+  }
 });

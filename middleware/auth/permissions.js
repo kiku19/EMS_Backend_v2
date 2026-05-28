@@ -123,17 +123,37 @@ export const checkPermission = (module, action) => {
         const role = determineRole(user.role);
         const defaultPermissions = PERMISSION_TEMPLATES[role] || PERMISSION_TEMPLATES.teacher;
 
-        userPermission = await UserPermission.findOneAndUpdate(
-          { userId, schoolId },
-          {
-            schoolId,
-            userId,
-            role,
-            permissions: buildPermissionsArray(defaultPermissions),
-            customPermissions: false,
-          },
-          { upsert: true, new: true }
-        );
+        // Upsert with retry: under concurrent workers two operations may race
+        // to insert the same (userId, schoolId) row, causing E11000.  A single
+        // retry is usually sufficient because the winner will have created the
+        // document by the time the loser retries.
+        let upsertAttempts = 0;
+        const maxUpsertAttempts = 3;
+        while (upsertAttempts < maxUpsertAttempts) {
+          upsertAttempts += 1;
+          try {
+            userPermission = await UserPermission.findOneAndUpdate(
+              { userId, schoolId },
+              {
+                schoolId,
+                userId,
+                role,
+                permissions: buildPermissionsArray(defaultPermissions),
+                customPermissions: false,
+              },
+              { upsert: true, new: true }
+            );
+            break;
+          } catch (err) {
+            if (err.code === 11000 && upsertAttempts < maxUpsertAttempts) {
+              // Race lost: the other worker created the row.  Re-fetch and continue.
+              userPermission = await UserPermission.findOne({ userId, schoolId });
+              if (userPermission) break;
+              continue;
+            }
+            throw err;
+          }
+        }
       } else {
         await ensurePermissionDocument(userPermission, userPermission.role);
       }
