@@ -11,7 +11,9 @@ import authRoutes from '../../routes/auth.js';
 import attendanceRoutes from '../../routes/attendance.js';
 import announcementRoutes from '../../routes/announcements.js';
 import billingRoutes from '../../routes/billing.js';
+import dashboardRoutes from '../../routes/dashboard.js';
 import calendarEventsRoutes from '../../routes/calendarEvents.js';
+import emailCampaignsRoutes from '../../routes/emailCampaigns.js';
 import classesRoutes from '../../routes/classes.js';
 import classesEnhancedRoutes from '../../routes/classesEnhanced.js';
 import classSettingsRoutes from '../../routes/classSettings.js';
@@ -44,6 +46,7 @@ import staffAttendanceRoutes from '../../routes/staffAttendance.js';
 import studentFeesRoutes from '../../routes/studentFees.js';
 import studentsRoutes from '../../routes/students.js';
 import superAdminRoutes from '../../routes/superAdmin.js';
+import transportRoutes from '../../routes/transport.js';
 import systemConfigRoutes from '../../routes/systemConfig.js';
 import timetableRoutes from '../../routes/timetable.js';
 import timetableCleanupRoutes from '../../routes/timetableCleanup.js';
@@ -154,6 +157,9 @@ export function createTestApp() {
   app.use('/api/bulk-import', bulkImportRoutes);
   app.use('/api/ptm', ptmRoutes);
   app.use('/api/search', searchRoutes);
+  app.use('/api/dashboard', dashboardRoutes);
+  app.use('/api/transport', transportRoutes);
+  app.use('/api/email-campaigns', emailCampaignsRoutes);
 
   // Temporary debug error handler
   app.use((err, req, res, next) => {
