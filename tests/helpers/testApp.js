@@ -47,6 +47,9 @@ import studentFeesRoutes from '../../routes/studentFees.js';
 import studentsRoutes from '../../routes/students.js';
 import superAdminRoutes from '../../routes/superAdmin.js';
 import transportRoutes from '../../routes/transport.js';
+import hostelRoutes from '../../routes/hostel.js';
+import libraryRoutes from '../../routes/library.js';
+import inventoryRoutes from '../../routes/inventory.js';
 import systemConfigRoutes from '../../routes/systemConfig.js';
 import timetableRoutes from '../../routes/timetable.js';
 import timetableCleanupRoutes from '../../routes/timetableCleanup.js';
@@ -159,6 +162,9 @@ export function createTestApp() {
   app.use('/api/search', searchRoutes);
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/api/transport', transportRoutes);
+  app.use('/api/hostel', hostelRoutes);
+  app.use('/api/library', libraryRoutes);
+  app.use('/api/inventory', inventoryRoutes);
   app.use('/api/email-campaigns', emailCampaignsRoutes);
 
   // Temporary debug error handler
