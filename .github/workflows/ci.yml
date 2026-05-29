@@ -54,8 +54,8 @@ jobs:
         run: npm audit --audit-level=high
         continue-on-error: true
 
-      - name: Run tests
-        run: npm test
+      - name: Run tests with coverage
+        run: npm run test:coverage
         env:
           MONGO_URI: mongodb://localhost:27017/ems_test
 
@@ -67,6 +67,22 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+          verbose: true
 
   build-check:
     name: Build Check

@@ -16,6 +16,8 @@ logs/
 dist/
 .playwright-artifacts/
 playwright-report/
+coverage/
+test-results/
 
 # Claude Code worktrees
 .claude/worktrees/
