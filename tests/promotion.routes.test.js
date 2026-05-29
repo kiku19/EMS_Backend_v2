@@ -23,7 +23,7 @@ async function setupSchoolWithAdmin(schoolName = 'Promotion School') {
 describe('promotion routes', () => {
   // ─── AUTH ──────────────────────────────────────────────────────────────
 
-  describe('authentication', () => {
+  describe('authentication & authorization', () => {
     it('returns 401 when no token is provided', async () => {
       const { app } = createTestApp();
       const fakeId = new mongoose.Types.ObjectId().toString();
@@ -37,6 +37,49 @@ describe('promotion routes', () => {
       await request(app).get('/api/promotions/rules').expect(401);
       await request(app).put('/api/promotions/rules').send({}).expect(401);
       await request(app).get('/api/promotions/check-year').expect(401);
+    });
+
+    it('returns 403 for edit endpoints when user lacks students edit permission', async () => {
+      const { school } = await setupSchoolWithAdmin();
+      const accountant = await createStaffUser({
+        name: 'Accountant',
+        staffRole: ['Accountant'],
+        permissionRole: 'accountant',
+        schoolId: school._id,
+      });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(accountant, 'accountant');
+      const fakeId = new mongoose.Types.ObjectId().toString();
+
+      await request(app).post('/api/promotions/execute').set(headers).send({}).expect(403);
+      await request(app)
+        .post(`/api/promotions/rollback/${fakeId}`)
+        .set(headers)
+        .send({})
+        .expect(403);
+      await request(app)
+        .post('/api/promotions/new-academic-year')
+        .set(headers)
+        .send({})
+        .expect(403);
+      await request(app).put('/api/promotions/rules').set(headers).send({}).expect(403);
+      await request(app).post('/api/promotions/execute-all').set(headers).send({}).expect(403);
+    });
+
+    it('allows view endpoints for accountant with students view permission', async () => {
+      const { school } = await setupSchoolWithAdmin();
+      const accountant = await createStaffUser({
+        name: 'Accountant',
+        staffRole: ['Accountant'],
+        permissionRole: 'accountant',
+        schoolId: school._id,
+      });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(accountant, 'accountant');
+
+      const res = await request(app).get('/api/promotions/rules').set(headers);
+
+      expect(res.status).toBe(200);
     });
   });
 

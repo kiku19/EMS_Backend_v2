@@ -277,6 +277,36 @@ describe('reports routes', () => {
 
       expect(Array.isArray(res.body)).toBe(true);
     });
+
+    it('fee-head-collection returns data when feature is enabled', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      await enableAdvancedReports(school._id);
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .get('/api/reports/financial/fee-head-collection')
+        .set(headers)
+        .query({ academicYear: '2025-26', startDate: '2026-01-01', endDate: '2026-03-31' })
+        .expect(200);
+
+      expect(res.body).toBeDefined();
+    });
+
+    it('payment-mode-summary returns data when feature is enabled', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      await enableAdvancedReports(school._id);
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .get('/api/reports/financial/payment-mode-summary')
+        .set(headers)
+        .query({ academicYear: '2025-26', startDate: '2026-01-01', endDate: '2026-03-31' })
+        .expect(200);
+
+      expect(res.body).toBeDefined();
+    });
   });
 
   // ─── ATTENDANCE REPORTS ────────────────────────────────────────────────
@@ -330,6 +360,54 @@ describe('reports routes', () => {
         .get('/api/reports/attendance/absentees')
         .set(headers)
         .query({ classId: cls._id.toString(), startDate: '2026-03-01', endDate: '2026-03-31' })
+        .expect(200);
+
+      expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('monthly-register returns data when feature is enabled', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      await enableAdvancedReports(school._id);
+      const cls = await createClassRecord({ schoolId: school._id });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .get('/api/reports/attendance/monthly-register')
+        .set(headers)
+        .query({ classId: cls._id.toString(), month: '2026-03' })
+        .expect(200);
+
+      expect(res.body).toBeDefined();
+    });
+
+    it('trend returns data when feature is enabled', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      await enableAdvancedReports(school._id);
+      const cls = await createClassRecord({ schoolId: school._id });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .get('/api/reports/attendance/trend')
+        .set(headers)
+        .query({ classId: cls._id.toString(), startDate: '2026-01-01', endDate: '2026-03-31' })
+        .expect(200);
+
+      expect(res.body).toBeDefined();
+    });
+
+    it('late-arrivals returns data when feature is enabled', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      await enableAdvancedReports(school._id);
+      const cls = await createClassRecord({ schoolId: school._id });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .get('/api/reports/attendance/late-arrivals')
+        .set(headers)
+        .query({ classId: cls._id.toString(), startDate: '2026-01-01', endDate: '2026-03-31' })
         .expect(200);
 
       expect(Array.isArray(res.body)).toBe(true);
@@ -430,6 +508,21 @@ describe('reports routes', () => {
         .expect(200);
 
       expect(res.body).toBeDefined();
+    });
+
+    it('tc-issued returns data when feature is enabled', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      await enableAdvancedReports(school._id);
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      const res = await request(app)
+        .get('/api/reports/operational/tc-issued')
+        .set(headers)
+        .query({ academicYear: '2025-26' })
+        .expect(200);
+
+      expect(Array.isArray(res.body)).toBe(true);
     });
   });
 

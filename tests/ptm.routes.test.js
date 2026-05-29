@@ -44,7 +44,7 @@ function sessionPayload(classId, staffId, overrides = {}) {
 describe('ptm routes', () => {
   // ─── AUTH ──────────────────────────────────────────────────────────────
 
-  describe('authentication', () => {
+  describe('authentication & authorization', () => {
     it('returns 401 when no token is provided', async () => {
       const { app } = createTestApp();
       const fakeId = new mongoose.Types.ObjectId().toString();
@@ -55,6 +55,26 @@ describe('ptm routes', () => {
       await request(app).put(`/api/ptm/${fakeId}`).send({}).expect(401);
       await request(app).delete(`/api/ptm/${fakeId}`).expect(401);
       await request(app).post(`/api/ptm/${fakeId}/slots`).send({}).expect(401);
+    });
+
+    it('returns 403 when user lacks ptm permission', async () => {
+      const { school } = await setupSchoolWithAdmin();
+      const teacher = await createStaffUser({
+        name: 'NoPTM Teacher',
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+        schoolId: school._id,
+      });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(teacher, 'teacher');
+      const fakeId = new mongoose.Types.ObjectId().toString();
+
+      await request(app).get('/api/ptm').set(headers).expect(403);
+      await request(app).get(`/api/ptm/${fakeId}`).set(headers).expect(403);
+      await request(app).post('/api/ptm').set(headers).send({}).expect(403);
+      await request(app).put(`/api/ptm/${fakeId}`).set(headers).send({}).expect(403);
+      await request(app).delete(`/api/ptm/${fakeId}`).set(headers).expect(403);
+      await request(app).post(`/api/ptm/${fakeId}/slots`).set(headers).send({}).expect(403);
     });
   });
 
