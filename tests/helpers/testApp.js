@@ -62,6 +62,8 @@ import substitutionAlertsRoutes from '../../routes/substitutionAlerts.js';
 import backupRoutes from '../../routes/backup.js';
 import bulkImportRoutes from '../../routes/bulkImport.js';
 import ptmRoutes from '../../routes/ptm.js';
+import reportsRoutes from '../../routes/reports.js';
+import promotionRoutes from '../../routes/promotion.js';
 import twoFactorRoutes from '../../routes/twoFactor.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
 import { authenticateParent } from '../../middleware/auth/parentAuth.js';
@@ -156,6 +158,8 @@ export function createTestApp() {
   app.use('/api/backup', backupRoutes);
   app.use('/api/bulk-import', bulkImportRoutes);
   app.use('/api/ptm', ptmRoutes);
+  app.use('/api/reports', reportsRoutes);
+  app.use('/api/promotions', promotionRoutes);
   app.use('/api/search', searchRoutes);
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/api/transport', transportRoutes);
