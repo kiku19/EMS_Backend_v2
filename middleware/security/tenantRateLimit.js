@@ -276,6 +276,45 @@ export function createAuthRateLimiter() {
   });
 }
 
+/**
+ * Global safety-net rate limiter — caps any single IP regardless of auth status.
+ * Applied before the tenant limiter so that a malicious actor cannot exhaust
+ * server resources even if they rotate schoolIds or hit unauthenticated paths.
+ *
+ * Limit: 500 requests per 15-minute window per IP.
+ * Skips health checks, static files, docs, and internal ops endpoints.
+ */
+export function createGlobalRateLimiter() {
+  return rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    limit: 500,
+    keyGenerator: (req) => `global:${req.ip}`,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    store: buildRedisStore(),
+    skip: (req) =>
+      req.path === '/health' ||
+      req.path === '/api/health' ||
+      req.path === '/healthz' ||
+      req.path === '/readyz' ||
+      req.path === '/startupz' ||
+      req.path.startsWith('/static') ||
+      req.path.startsWith('/api/docs') ||
+      req.path.startsWith('/api/ops') ||
+      req.path.startsWith('/api/metrics'),
+    handler: (req, res, _next, options) => {
+      res
+        .status(429)
+        .set('Retry-After', String(Math.ceil(options.windowMs / 1000)))
+        .json({
+          error: req.t('common:errors.tooManyRequests'),
+          message: req.t('common:errors.rateLimitExceeded'),
+          retryAfter: Math.ceil(options.windowMs / 1000),
+        });
+    },
+  });
+}
+
 // ─── Admin visibility ─────────────────────────────────────────────────────────
 
 /**

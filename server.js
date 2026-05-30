@@ -103,7 +103,11 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerSpec from './docs/swaggerDef.js';
 import { addApiVersionHeader, deprecationWarning } from './middleware/apiVersion.js';
 import { auditLogMiddleware } from './middleware/auditLog.js';
-import { createTenantRateLimiter, createAuthRateLimiter } from './middleware/tenantRateLimit.js';
+import {
+  createTenantRateLimiter,
+  createAuthRateLimiter,
+  createGlobalRateLimiter,
+} from './middleware/tenantRateLimit.js';
 import auditLogsRoutes from './routes/auditLogs.js';
 import dashboardRoutes from './routes/dashboard.js';
 import webhooksRoutes from './routes/webhooks.js';
@@ -597,6 +601,9 @@ v1Router.use('/ai', aiRoutes);
 v1Router.use('/upload', uploadRoutes);
 v1Router.use('/validation', validationRoutes);
 v1Router.use('/seed-data', seedDummyDataRoutes);
+
+// Global safety-net rate limiter — caps any single IP before per-tenant logic
+app.use('/api', createGlobalRateLimiter());
 
 // Mount versioned router — canonical going forward
 app.use('/api/v1', v1Router);
