@@ -67,7 +67,10 @@ feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
 feePaymentSchema.index({ studentId: 1, academicYear: 1 });
 feePaymentSchema.index({ classId: 1, academicYear: 1 });
 feePaymentSchema.index({ schoolId: 1, receiptNumber: 1 }, { unique: true });
-feePaymentSchema.index({ schoolId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
+feePaymentSchema.index(
+  { schoolId: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $exists: true, $ne: null } } }
+);
 feePaymentSchema.index({ schoolId: 1, paymentDate: -1 });
 
 export default mongoose.model('FeePayment', feePaymentSchema);
