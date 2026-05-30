@@ -17,6 +17,7 @@
     "test:all": "vitest run --config vitest.all.config.js",
     "test:e2e": "vitest run --config vitest.e2e.config.js",
     "test:load": "vitest run --config vitest.load.config.js",
+    "test:smoke": "vitest run --config vitest.smoke.config.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:socket-load": "node tests/socket-load-test.js",
