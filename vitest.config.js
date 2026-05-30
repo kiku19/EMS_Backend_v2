@@ -8,7 +8,7 @@ export default defineConfig({
     setupFiles: ['./tests/clockSetup.js', './tests/setup.js'],
     include: ['./tests/**/*.test.js'],
     exclude: ['**/e2e-*.test.js', '**/*.e2e.test.js', '**/load/*.test.js', '**/*.load.test.js'],
-    maxWorkers: 8,
+    maxWorkers: 2,
     testTimeout: 30000,
     hookTimeout: 60000,
     coverage: {
