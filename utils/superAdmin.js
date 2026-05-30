@@ -1,8 +1,10 @@
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
 function normalizeEmail(value) {
-  return String(value || '').trim().toLowerCase();
+  return String(value || '')
+    .trim()
+    .toLowerCase();
 }
 
 export function getSuperAdminConfig() {
@@ -21,7 +23,11 @@ export function getSuperAdminConfig() {
 export function isSuperAdminRole(roleValue) {
   const roles = Array.isArray(roleValue) ? roleValue : [roleValue];
   return roles
-    .map((role) => String(role || '').trim().toLowerCase())
+    .map((role) =>
+      String(role || '')
+        .trim()
+        .toLowerCase()
+    )
     .some((role) => role === 'super admin' || role === 'superadmin');
 }
 
@@ -48,7 +54,7 @@ function timingSafeEqual(a, b) {
  * Verify super admin credentials.
  * Supports both bcrypt hashes (recommended) and plaintext (legacy dev-only) passwords.
  * Set SUPER_ADMIN_PASSWORD to a bcrypt hash for production use:
- *   node -e "const b=require('bcrypt');b.hash('mypassword',12).then(console.log)"
+ *   node -e "const b=require('bcryptjs');b.hash('mypassword',12).then(console.log)"
  */
 export async function isSuperAdminLogin({ email, password }) {
   const config = getSuperAdminConfig();

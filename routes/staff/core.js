@@ -298,10 +298,7 @@ router.post(
 
       // AUDIT-312: Send auto-generated credentials to new staff via email/SMS
       if (staff.email) {
-        sendWelcomeEmail(
-          { name: staff.name, email: staff.email },
-          password
-        ).catch(() => {});
+        sendWelcomeEmail({ name: staff.name, email: staff.email }, password).catch(() => {});
       }
       if (phone) {
         sendSMS(
@@ -319,9 +316,7 @@ router.post(
       // classes whose names contain hyphens. Fall back to "find by full
       // string" then "split on last hyphen" so we handle those too.
       if (isClassTeacher && classTeacherOf) {
-        let targetClass = await Class.findOne(
-          scopeBySchool(schoolId, { name: classTeacherOf })
-        );
+        let targetClass = await Class.findOne(scopeBySchool(schoolId, { name: classTeacherOf }));
         if (!targetClass) {
           const lastDash = classTeacherOf.lastIndexOf('-');
           if (lastDash > 0) {
@@ -534,7 +529,7 @@ router.put(
 
       let passwordReset = false;
       if (password) {
-        const bcrypt = await import('bcrypt');
+        const bcrypt = await import('bcryptjs');
         const salt = await bcrypt.genSalt(10);
         updateData.password = await bcrypt.hash(password, salt);
         passwordReset = true;

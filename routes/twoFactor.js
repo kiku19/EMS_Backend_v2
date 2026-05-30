@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import express from 'express';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { TOTP, NobleCryptoPlugin, ScureBase32Plugin, generateURI } from 'otplib';
 
 const _totp = new TOTP({ crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() });
@@ -285,81 +285,73 @@ router.get('/setup', async (req, res) => {
  * Confirm enrollment by verifying a TOTP code from the authenticator app.
  * Enables 2FA and returns backup codes.
  */
-router.post(
-  '/confirm',
-  validateZod(zodSchemas.twoFactorConfirmSetup),
-  async (req, res) => {
-    try {
-      const { code } = req.body;
-      const staff = await Staff.findById(req.user.id).select('+twoFactorSecret');
-      if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
-      if (!staff.twoFactorSecret) {
-        return res.status(400).json({ error: 'Run 2FA setup first before confirming' });
-      }
-
-      const secret = decryptSecret(staff.twoFactorSecret);
-      const isValid = await authenticator.verify({ token: code, secret });
-      if (!isValid) {
-        return res
-          .status(400)
-          .json({ error: 'Invalid verification code. Please check your authenticator app.' });
-      }
-
-      const backupCodes = generateBackupCodes();
-      const hashedCodes = await hashBackupCodes(backupCodes);
-
-      await Staff.findByIdAndUpdate(staff._id, {
-        twoFactorEnabled: true,
-        twoFactorEnrolledAt: new Date(),
-        twoFactorBackupCodes: hashedCodes,
-      });
-
-      res.json({
-        success: true,
-        message: '2FA enabled successfully',
-        backupCodes, // shown only once — user must save these
-      });
-    } catch (err) {
-      logger.error({ err }, '2FA confirm error');
-      res.status(500).json({ error: 'Failed to confirm 2FA setup' });
+router.post('/confirm', validateZod(zodSchemas.twoFactorConfirmSetup), async (req, res) => {
+  try {
+    const { code } = req.body;
+    const staff = await Staff.findById(req.user.id).select('+twoFactorSecret');
+    if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
+    if (!staff.twoFactorSecret) {
+      return res.status(400).json({ error: 'Run 2FA setup first before confirming' });
     }
+
+    const secret = decryptSecret(staff.twoFactorSecret);
+    const isValid = await authenticator.verify({ token: code, secret });
+    if (!isValid) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid verification code. Please check your authenticator app.' });
+    }
+
+    const backupCodes = generateBackupCodes();
+    const hashedCodes = await hashBackupCodes(backupCodes);
+
+    await Staff.findByIdAndUpdate(staff._id, {
+      twoFactorEnabled: true,
+      twoFactorEnrolledAt: new Date(),
+      twoFactorBackupCodes: hashedCodes,
+    });
+
+    res.json({
+      success: true,
+      message: '2FA enabled successfully',
+      backupCodes, // shown only once — user must save these
+    });
+  } catch (err) {
+    logger.error({ err }, '2FA confirm error');
+    res.status(500).json({ error: 'Failed to confirm 2FA setup' });
   }
-);
+});
 
 /**
  * POST /auth/2fa/disable
  * Disable 2FA. Requires current password confirmation.
  */
-router.post(
-  '/disable',
-  validateZod(zodSchemas.twoFactorDisable),
-  async (req, res) => {
-    try {
-      const { password } = req.body;
-      const staff = await Staff.findById(req.user.id);
-      if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
+router.post('/disable', validateZod(zodSchemas.twoFactorDisable), async (req, res) => {
+  try {
+    const { password } = req.body;
+    const staff = await Staff.findById(req.user.id);
+    if (!staff) return res.status(404).json({ error: req.t('common:errors.staffNotFound') });
 
-      const passwordValid = await staff.comparePassword(password);
-      if (!passwordValid) {
-        return res.status(401).json({ error: 'Incorrect password' });
-      }
-
-      await Staff.findByIdAndUpdate(staff._id, {
-        twoFactorEnabled: false,
-        twoFactorSecret: null,
-        twoFactorEnrolledAt: null,
-        twoFactorBackupCodes: [],
-        trustedDevices: [],
-      });
-
-      res.clearCookie(DEVICE_COOKIE_NAME, { ...getDeviceCookieOptions(), maxAge: undefined });
-      res.json({ success: true, message: '2FA has been disabled' });
-    } catch (err) {
-      logger.error({ err }, '2FA disable error');
-      res.status(500).json({ error: 'Failed to disable 2FA' });
+    const passwordValid = await staff.comparePassword(password);
+    if (!passwordValid) {
+      return res.status(401).json({ error: 'Incorrect password' });
     }
+
+    await Staff.findByIdAndUpdate(staff._id, {
+      twoFactorEnabled: false,
+      twoFactorSecret: null,
+      twoFactorEnrolledAt: null,
+      twoFactorBackupCodes: [],
+      trustedDevices: [],
+    });
+
+    res.clearCookie(DEVICE_COOKIE_NAME, { ...getDeviceCookieOptions(), maxAge: undefined });
+    res.json({ success: true, message: '2FA has been disabled' });
+  } catch (err) {
+    logger.error({ err }, '2FA disable error');
+    res.status(500).json({ error: 'Failed to disable 2FA' });
   }
-);
+});
 
 /**
  * GET /auth/2fa/status

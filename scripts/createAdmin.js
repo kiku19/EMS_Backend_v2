@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import mongoose, { connectDB } from '../database.js';
 import { Staff } from '../database.js';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { ensureDefaultSchool } from '../utils/schoolContext.js';
 
 dotenv.config();
@@ -16,9 +16,9 @@ async function createAdmin() {
     console.log('✅ School ensured:', school.name);
 
     // Check if admin already exists
-    const existingAdmin = await Staff.findOne({ 
+    const existingAdmin = await Staff.findOne({
       email: 'admin@school.com',
-      schoolId: school._id 
+      schoolId: school._id,
     });
 
     if (existingAdmin) {
@@ -31,7 +31,7 @@ async function createAdmin() {
 
     // Create admin user
     const hashedPassword = await bcrypt.hash('admin123', 10);
-    
+
     const admin = await Staff.create({
       schoolId: school._id,
       code: 'ADMIN001',

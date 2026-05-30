@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { Staff } from '../database.js';
 import { authHeadersFor, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';

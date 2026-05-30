@@ -110,7 +110,7 @@ router.put('/:id/change-password', async (req, res) => {
       return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
     }
 
-    const bcrypt = await import('bcrypt');
+    const bcrypt = await import('bcryptjs');
     const isMatch = await bcrypt.compare(currentPassword, staff.password);
     if (!isMatch) {
       return res.status(400).json({ error: req.t('common:routes.currentPasswordIsIncorrect') });
