@@ -50,7 +50,8 @@ function getOrCreateSyncRecord(schoolId) {
 }
 
 function isAdmin(req) {
-  return req.user?.role === 'Admin' || req.user?.roles?.includes('Admin');
+  const roles = Array.isArray(req.user?.role) ? req.user.role : [req.user?.role];
+  return roles.some((r) => typeof r === 'string' && r.toLowerCase() === 'admin');
 }
 
 function requireAdmin(req, res, next) {
@@ -474,12 +475,10 @@ router.post('/sync', requireAdmin, async (req, res) => {
     }
 
     if (record.classMappings.length === 0) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: 'No class mappings configured. Add at least one mapping before syncing.',
-        });
+      return res.status(400).json({
+        success: false,
+        error: 'No class mappings configured. Add at least one mapping before syncing.',
+      });
     }
 
     // Import models lazily to avoid circular dependency issues

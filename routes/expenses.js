@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { createExpenseSchema, updateExpenseSchema } from '../validators/expenseSchema.js';
 import Expense from '../models/Expense.js';
+import mongoose from 'mongoose';
 
 router.use(authenticate);
 
@@ -39,7 +40,7 @@ router.get('/summary', async (req, res) => {
   try {
     const { academicYear, from, to } = req.query;
     const match = {
-      schoolId: req.user.schoolId,
+      schoolId: new mongoose.Types.ObjectId(req.user.schoolId),
       isDeleted: { $ne: true },
       status: { $ne: 'rejected' },
     };

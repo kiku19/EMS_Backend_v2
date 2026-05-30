@@ -68,6 +68,13 @@ import ptmRoutes from '../../routes/ptm.js';
 import reportsRoutes from '../../routes/reports.js';
 import promotionRoutes from '../../routes/promotion.js';
 import twoFactorRoutes from '../../routes/twoFactor.js';
+import expensesRoutes from '../../routes/expenses.js';
+import gdprRoutes from '../../routes/gdpr.js';
+import webhooksRoutes from '../../routes/webhooks.js';
+import featureFlagsRoutes from '../../routes/featureFlags.js';
+import googleClassroomRoutes from '../../routes/googleClassroom.js';
+import ssoRoutes from '../../routes/sso.js';
+import apiKeysRoutes from '../../routes/apiKeys.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
 import { authenticateParent } from '../../middleware/auth/parentAuth.js';
 
@@ -101,6 +108,7 @@ export function createTestApp() {
   // authRoutes applies router-level `authenticate`, which would otherwise
   // block the unauthenticated /api/auth/2fa/verify post-login step.
   app.use('/api/auth/2fa', twoFactorRoutes);
+  app.use('/api/auth/sso', ssoRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/public', publicRoutes);
   app.use('/api/super-admin', superAdminRoutes);
@@ -170,6 +178,12 @@ export function createTestApp() {
   app.use('/api/library', libraryRoutes);
   app.use('/api/inventory', inventoryRoutes);
   app.use('/api/email-campaigns', emailCampaignsRoutes);
+  app.use('/api/expenses', expensesRoutes);
+  app.use('/api/gdpr', gdprRoutes);
+  app.use('/api/webhooks', webhooksRoutes);
+  app.use('/api/feature-flags', featureFlagsRoutes);
+  app.use('/api/google-classroom', googleClassroomRoutes);
+  app.use('/api/api-keys', apiKeysRoutes);
 
   // Temporary debug error handler
   app.use((err, req, res, next) => {
