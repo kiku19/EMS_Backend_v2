@@ -59,6 +59,7 @@ import uploadRoutes from '../../routes/upload.js';
 import validationRoutes from '../../routes/validation.js';
 import payslipsRoutes from '../../routes/payslips.js';
 import teacherLeavesRoutes from '../../routes/teacherLeaves.js';
+import studentLeavesRoutes from '../../routes/studentLeaves.js';
 import teacherAssignmentsRoutes from '../../routes/teacherAssignments.js';
 import substitutionsRoutes from '../../routes/substitutions.js';
 import substitutionAlertsRoutes from '../../routes/substitutionAlerts.js';
@@ -163,6 +164,7 @@ export function createTestApp() {
   app.use('/api/visitors', visitorsRoutes);
   app.use('/api/payslips', payslipsRoutes);
   app.use('/api/teacher-leaves', teacherLeavesRoutes);
+  app.use('/api/student-leaves', studentLeavesRoutes);
   app.use('/api/teacher-assignments', teacherAssignmentsRoutes);
   app.use('/api/substitutions', substitutionsRoutes);
   app.use('/api/substitution-alerts', substitutionAlertsRoutes);

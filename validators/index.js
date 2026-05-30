@@ -108,3 +108,11 @@ export {
   bulkAssignSchema,
   substitutionDateQuerySchema,
 } from './substitutionSchema.js';
+export {
+  applyLeaveSchema,
+  updateLeaveStatusSchema,
+  createStudentLeaveSchema,
+  updateStudentLeaveSchema,
+  updateStudentLeaveStatusSchema,
+  studentLeaveQuerySchema,
+} from './leaveSchema.js';

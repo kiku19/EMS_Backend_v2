@@ -35,5 +35,8 @@ const studentLeaveSchema = new mongoose.Schema(
 
 studentLeaveSchema.index({ schoolId: 1, studentId: 1, status: 1, appliedAt: -1 });
 studentLeaveSchema.index({ schoolId: 1, appliedByParentId: 1, appliedAt: -1 });
+studentLeaveSchema.index({ schoolId: 1, status: 1, startDate: -1 });
+studentLeaveSchema.index({ schoolId: 1, leaveType: 1, status: 1, appliedAt: -1 });
+studentLeaveSchema.index({ schoolId: 1, studentId: 1, startDate: -1 });
 
 export default mongoose.model('StudentLeave', studentLeaveSchema);

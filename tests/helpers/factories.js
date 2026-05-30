@@ -3,6 +3,7 @@ import { generateToken } from '../../middleware/auth.js';
 import { PERMISSION_TEMPLATES } from '../../models/UserPermission.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
 import { CURRENT_ACADEMIC_YEAR } from '../../utils/constants.js';
+import Parent from '../../models/Parent.js';
 
 let sequence = 0;
 let defaultSchool = null;
@@ -88,6 +89,42 @@ export function authHeadersFor(staff, jwtRole = 'admin') {
     Authorization: `Bearer ${generateToken(staff._id.toString(), jwtRole, {
       schoolId: extractSchoolId(staff.schoolId),
       userType: 'staff',
+    })}`,
+  };
+}
+
+export async function createParentUser({
+  name = 'Parent User',
+  phone,
+  email,
+  schoolId,
+  status = 'active',
+  children = [],
+} = {}) {
+  const id = nextSequence();
+  if (!schoolId) {
+    const school = await getDefaultSchool();
+    schoolId = school._id;
+  }
+  const normalizedChildren = children.map((child) => ({
+    relationship: 'father',
+    ...child,
+  }));
+  return Parent.create({
+    schoolId,
+    name: name || `Parent ${id}`,
+    phone: phone || `7${String(id).padStart(9, '0')}`,
+    email: email || `parent${id}@example.com`,
+    status,
+    children: normalizedChildren,
+  });
+}
+
+export function parentAuthHeadersFor(parent) {
+  return {
+    Authorization: `Bearer ${generateToken(parent._id.toString(), 'parent', {
+      schoolId: extractSchoolId(parent.schoolId),
+      userType: 'parent',
     })}`,
   };
 }
