@@ -76,6 +76,7 @@ export const studentFeePaymentSchema = z
     paymentMode: paymentModeEnum.default('cash'),
     remarks: optionalString(500),
     academicYear: academicYear.optional(),
+    idempotencyKey: z.string().max(100).optional(),
   })
   .strip();
 

@@ -14,15 +14,15 @@ import { StudentFeeStructure } from '../database.js';
  * Returns the saved doc, or null when no doc matched the filter.
  * Throws if the mutator rejects or if the retries are exhausted.
  */
-export async function updateFeeStructureWithRetry(filter, mutator, { maxRetries = 5 } = {}) {
+export async function updateFeeStructureWithRetry(filter, mutator, { maxRetries = 5, session } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const doc = await StudentFeeStructure.findOne(filter);
+    const doc = await StudentFeeStructure.findOne(filter).session(session || null);
     if (!doc) return null;
 
     await mutator(doc);
     try {
-      return await doc.save();
+      return await doc.save({ session: session || undefined });
     } catch (err) {
       // Only retry on the optimistic-concurrency conflict. Anything else —
       // ValidationError, duplicate-key, etc. — the caller should handle.

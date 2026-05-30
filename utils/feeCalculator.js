@@ -77,15 +77,19 @@ export function computeFeeHeadStatus(head) {
  * @param {string|import('mongoose').Types.ObjectId} studentId
  * @param {{ totalFee: number, totalPaid: number, totalBalance: number, discountApplied?: number, overallStatus: string, lastPaymentDate?: Date }} feeStructure
  */
-export async function syncStudentFeeDetails(studentId, feeStructure) {
-  await Student.findByIdAndUpdate(studentId, {
-    feeStatus: feeStructure.overallStatus,
-    feeDetails: {
-      totalFee: feeStructure.totalFee,
-      paidAmount: feeStructure.totalPaid,
-      balanceAmount: feeStructure.totalBalance,
-      discountApplied: feeStructure.discountApplied || 0,
-      lastPaymentDate: feeStructure.lastPaymentDate || null,
+export async function syncStudentFeeDetails(studentId, feeStructure, session) {
+  await Student.findByIdAndUpdate(
+    studentId,
+    {
+      feeStatus: feeStructure.overallStatus,
+      feeDetails: {
+        totalFee: feeStructure.totalFee,
+        paidAmount: feeStructure.totalPaid,
+        balanceAmount: feeStructure.totalBalance,
+        discountApplied: feeStructure.discountApplied || 0,
+        lastPaymentDate: feeStructure.lastPaymentDate || null,
+      },
     },
-  });
+    { session: session || undefined }
+  );
 }

@@ -130,6 +130,11 @@ router.post(
               classResult.graduated.push({ studentId: student._id, studentName: student.name });
               summary.graduated++;
             } else {
+              const oldFeeStructure = await StudentFeeStructure.findOne(
+                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
+              );
+              const unpaidBalance = oldFeeStructure?.totalBalance || 0;
+
               student.classId = toClassId;
               student.academicYear = academicYear;
               student.rollNo = null;
@@ -153,7 +158,11 @@ router.post(
                   feeError
                 );
               }
-              classResult.promoted.push({ studentId: student._id, studentName: student.name });
+              const promotedEntry = { studentId: student._id, studentName: student.name };
+              if (unpaidBalance > 0) {
+                promotedEntry.warning = `Unpaid balance of ₹${unpaidBalance} was cleared due to class promotion.`;
+              }
+              classResult.promoted.push(promotedEntry);
               summary.promoted++;
             }
           } catch (err) {
@@ -356,6 +365,16 @@ router.post(
 
       const oldAcademicYear = fromClass?.academicYear || CURRENT_ACADEMIC_YEAR;
 
+      // Check for unpaid fees before deleting the old structure
+      const oldFeeStructure = await StudentFeeStructure.findOne(
+        scopeBySchool(schoolId, { studentId: id, academicYear: oldAcademicYear })
+      );
+      const unpaidBalance = oldFeeStructure?.totalBalance || 0;
+      const warning =
+        unpaidBalance > 0
+          ? `Unpaid balance of ₹${unpaidBalance} was cleared due to class promotion.`
+          : undefined;
+
       // Promote student
       student.classId = targetClassId;
       student.academicYear = academicYear;
@@ -396,6 +415,7 @@ router.post(
       res.json({
         success: true,
         message: `${student.name} promoted to ${targetClass.name}-${targetClass.section}`,
+        warning,
         student: { _id: student._id, name: student.name, classId: targetClassId, academicYear },
       });
     } catch (error) {

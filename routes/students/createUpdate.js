@@ -157,10 +157,16 @@ router.post(
         await incrementUsageMetric(req.user.schoolId, 'students', 1);
       }
 
+      const warnings = [];
+
       try {
         await initializeFeeStructure(student);
       } catch (feeError) {
         console.error('Error auto-initializing fee structure:', feeError);
+        warnings.push({
+          operation: 'initializeFeeStructure',
+          message: feeError.message || 'Failed to initialize fee structure',
+        });
       }
 
       // Re-fetch to get decrypted PII fields (pre-save encrypts in-place)
@@ -173,6 +179,10 @@ router.post(
         await createOrUpdateParentAccount(populatedStudent);
       } catch (parentError) {
         console.error('Error auto-creating parent accounts:', parentError);
+        warnings.push({
+          operation: 'createOrUpdateParentAccount',
+          message: parentError.message || 'Failed to create parent account',
+        });
       }
       const classInfo = formatStudentClass(populatedStudent);
 
@@ -197,6 +207,7 @@ router.post(
         feeStatus: populatedStudent.feeStatus || 'pending',
         photo: populatedStudent.photo,
         documents: populatedStudent.documents || [],
+        warnings,
         ...populatedStudent.toObject(),
       });
     } catch (error) {
@@ -403,9 +414,18 @@ router.put(
         console.error('Error auto-syncing parent accounts:', parentError);
       }
 
+      let feeWarning = null;
       try {
         if (classChanged || academicYearChanged) {
           const resolvedYear = await resolveAcademicYear(student.academicYear);
+
+          // Check for unpaid balance before modifying fee structure
+          const currentFeeStructure = await StudentFeeStructure.findOne({
+            studentId: student._id,
+            academicYear: resolvedYear,
+            schoolId: extractSchoolId(req.user?.schoolId),
+          });
+          const unpaidBalance = currentFeeStructure?.totalBalance || 0;
 
           // Migrate attendance and result records to the new class so they remain
           // visible in new-class-scoped queries (fixes AUDIT-343 / AUDIT-15)
@@ -450,6 +470,10 @@ router.put(
           } else {
             await resyncFeeStructureForClassChange(student);
           }
+
+          if (unpaidBalance > 0) {
+            feeWarning = `Unpaid balance of ₹${unpaidBalance} was affected by the class/academic-year change.`;
+          }
         }
 
         // feeStatus is no longer client-settable so the previous sync block
@@ -463,11 +487,16 @@ router.put(
         ? `${student.classId.name.replace('Class ', '')}-${student.classId.section}`
         : student.class || null;
 
-      res.json({
+      const response = {
         id: student._id,
         ...student.toObject(),
         class: classFormatted,
-      });
+      };
+      if (feeWarning) {
+        response.warning = feeWarning;
+      }
+
+      res.json(response);
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
