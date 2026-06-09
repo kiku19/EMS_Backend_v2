@@ -260,7 +260,7 @@ router.post('/admin', async (req, res) => {
     });
 
     await entry.save();
-    res.status(201).json(entry);
+    res.status(201).json({ entry });
   } catch (error) {
     console.error('Error creating changelog entry:', error);
     res.status(500).json({ error: 'Failed to create changelog entry' });
@@ -290,7 +290,7 @@ router.put('/admin/:id', async (req, res) => {
       return res.status(404).json({ error: 'Changelog entry not found' });
     }
 
-    res.json(entry);
+    res.json({ entry });
   } catch (error) {
     console.error('Error updating changelog entry:', error);
     res.status(500).json({ error: 'Failed to update changelog entry' });

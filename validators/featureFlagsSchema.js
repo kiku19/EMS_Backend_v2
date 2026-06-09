@@ -15,7 +15,7 @@ export const createFeatureFlagSchema = z
         'Key must start with a letter and contain only alphanumeric characters or underscores'
       )
       .trim(),
-    name: z.string().min(1).max(200).trim(),
+    name: z.string().min(1).max(200).trim().optional(),
     description: z.string().max(500).optional().default(''),
     status: statusEnum.default('disabled'),
     minimumPlan: planEnum.default('starter'),
@@ -23,8 +23,29 @@ export const createFeatureFlagSchema = z
     availableFrom: z.coerce.date().nullable().optional(),
     availableUntil: z.coerce.date().nullable().optional(),
     tags: z.array(z.string().trim()).default([]),
+    // Frontend aliases (super-admin panel uses these field names)
+    defaultEnabled: z.boolean().optional(),
+    plan: planEnum.optional(),
   })
-  .strip();
+  .strip()
+  .transform((data) => {
+    const transformed = { ...data };
+    // Use key as fallback name when not provided (frontend super-admin panel omits name)
+    if (!transformed.name) {
+      transformed.name = transformed.key;
+    }
+    // Map frontend defaultEnabled → backend status
+    if (transformed.defaultEnabled !== undefined) {
+      transformed.status = transformed.defaultEnabled ? 'enabled' : 'disabled';
+      delete transformed.defaultEnabled;
+    }
+    // Map frontend plan → backend minimumPlan
+    if (transformed.plan !== undefined) {
+      transformed.minimumPlan = transformed.plan;
+      delete transformed.plan;
+    }
+    return transformed;
+  });
 
 export const updateFeatureFlagSchema = z
   .object({
@@ -36,8 +57,25 @@ export const updateFeatureFlagSchema = z
     availableFrom: z.coerce.date().nullable().optional(),
     availableUntil: z.coerce.date().nullable().optional(),
     tags: z.array(z.string().trim()).optional(),
+    // Frontend aliases (super-admin panel uses these field names)
+    defaultEnabled: z.boolean().optional(),
+    plan: planEnum.optional(),
   })
-  .strip();
+  .strip()
+  .transform((data) => {
+    const transformed = { ...data };
+    // Map frontend defaultEnabled → backend status
+    if (transformed.defaultEnabled !== undefined) {
+      transformed.status = transformed.defaultEnabled ? 'enabled' : 'disabled';
+      delete transformed.defaultEnabled;
+    }
+    // Map frontend plan → backend minimumPlan
+    if (transformed.plan !== undefined) {
+      transformed.minimumPlan = transformed.plan;
+      delete transformed.plan;
+    }
+    return transformed;
+  });
 
 export const schoolOverrideSchema = z
   .object({

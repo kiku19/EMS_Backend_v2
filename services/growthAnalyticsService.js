@@ -239,6 +239,7 @@ export async function getAllSchoolsGrowthReport() {
         return {
           ...report,
           name: school.name,
+          schoolName: school.name,
           code: school.code,
           plan: school.plan,
           planStatus: school.planStatus,

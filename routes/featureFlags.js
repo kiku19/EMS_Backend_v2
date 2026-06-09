@@ -24,6 +24,26 @@ function getActor(req) {
   return { id: String(req.user?.id || req.user?._id || 'unknown'), email: req.user?.email || null };
 }
 
+// Transform a feature-flag document for the super-admin frontend panel.
+// The UI uses defaultEnabled, plan, and schoolOverrides instead of status,
+// minimumPlan, and overrideSchools.
+function serializeFlagForAdmin(flag) {
+  if (!flag) return flag;
+  const plain = flag.toObject ? flag.toObject() : flag;
+  const serialized = { ...plain };
+  serialized.defaultEnabled = serialized.status === 'enabled';
+  serialized.plan = serialized.minimumPlan || 'starter';
+  serialized.schoolOverrides = (serialized.overrideSchools || []).map((o) => ({
+    schoolId: String(o.schoolId || o._id),
+    enabled: o.enabled,
+  }));
+  return serialized;
+}
+
+function serializeFlagsForAdmin(flags) {
+  return flags.map(serializeFlagForAdmin);
+}
+
 // ─── School-Scoped ────────────────────────────────────────────────────────────
 // GET /feature-flags
 // Returns the merged feature map for the authenticated school.
@@ -46,7 +66,7 @@ router.get('/', async (req, res) => {
 router.get('/admin/all', requireSuperAdmin, async (req, res) => {
   try {
     const flags = await listFlags();
-    res.json({ flags });
+    res.json({ flags: serializeFlagsForAdmin(flags) });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to list flags' });
   }
@@ -67,22 +87,18 @@ router.get('/admin/audit-logs', requireSuperAdmin, async (req, res) => {
 });
 
 // POST /feature-flags/admin
-router.post(
-  '/admin',
-  requireSuperAdmin,
-  validateZod(createFeatureFlagSchema),
-  async (req, res) => {
-    try {
-      const flag = await createFlag(req.body, getActor(req));
-      res.status(201).json(flag);
-    } catch (error) {
-      if (error.code === 11000) {
-        return res.status(409).json({ error: 'A flag with this key already exists' });
-      }
-      res.status(error.status || 500).json({ error: error.message || 'Failed to create flag' });
+router.post('/admin', requireSuperAdmin, validateZod(createFeatureFlagSchema), async (req, res) => {
+  try {
+    const flag = await createFlag(req.body, getActor(req));
+    const serialized = serializeFlagForAdmin(flag);
+    res.status(201).json({ flag: serialized, ...serialized });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'A flag with this key already exists' });
     }
+    res.status(error.status || 500).json({ error: error.message || 'Failed to create flag' });
   }
-);
+});
 
 // PUT /feature-flags/admin/:key
 router.put(
@@ -92,7 +108,8 @@ router.put(
   async (req, res) => {
     try {
       const flag = await updateFlag(req.params.key, req.body, getActor(req));
-      res.json(flag);
+      const serialized = serializeFlagForAdmin(flag);
+      res.json({ flag: serialized, ...serialized });
     } catch (error) {
       res.status(error.status || 500).json({ error: error.message || 'Failed to update flag' });
     }
@@ -118,7 +135,8 @@ router.post(
     try {
       const { schoolId, enabled } = req.body;
       const flag = await setSchoolOverride(req.params.key, schoolId, enabled, getActor(req));
-      res.json(flag);
+      const serialized = serializeFlagForAdmin(flag);
+      res.json({ flag: serialized, ...serialized });
     } catch (error) {
       res.status(error.status || 500).json({ error: error.message || 'Failed to set override' });
     }
@@ -126,24 +144,16 @@ router.post(
 );
 
 // DELETE /feature-flags/admin/:key/override/:schoolId — remove a per-school override
-router.delete(
-  '/admin/:key/override/:schoolId',
-  requireSuperAdmin,
-  async (req, res) => {
-    try {
-      const flag = await setSchoolOverride(
-        req.params.key,
-        req.params.schoolId,
-        null,
-        getActor(req)
-      );
-      res.json(flag);
-    } catch (error) {
-      res.status(error.status || 500).json({
-        error: error.message || 'Failed to remove override',
-      });
-    }
+router.delete('/admin/:key/override/:schoolId', requireSuperAdmin, async (req, res) => {
+  try {
+    const flag = await setSchoolOverride(req.params.key, req.params.schoolId, null, getActor(req));
+    const serialized = serializeFlagForAdmin(flag);
+    res.json({ flag: serialized, ...serialized });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      error: error.message || 'Failed to remove override',
+    });
   }
-);
+});
 
 export default router;
