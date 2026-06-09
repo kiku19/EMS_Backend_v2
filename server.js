@@ -467,8 +467,24 @@ v1Router.use(createTenantRateLimiter());
 // ─── Public / Unauthenticated Routes ────────────────────────────────────────
 // These routes contain public endpoints (login, signup, OAuth callbacks,
 // webhooks, tracking pixels, etc.) and manage auth internally per-handler.
-// Auth endpoints get a stricter per-IP limiter to block credential-stuffing
-v1Router.use('/auth', createAuthRateLimiter());
+// Auth endpoints get a stricter per-IP limiter to block credential-stuffing.
+v1Router.use(
+  '/auth',
+  createAuthRateLimiter({
+    skip: (req) => {
+      // Outside production, skip auth limiting entirely so local dev and the
+      // test runner aren't locked out while iterating. Production MUST set
+      // NODE_ENV=production (matches the codebase's non-prod gating elsewhere).
+      if (process.env.NODE_ENV !== 'production') return true;
+      // In production, exempt the benign session check: GET /auth/session is
+      // polled on every dashboard load to read the current session. It carries
+      // no credentials, so it must not share the credential-stuffing budget
+      // that protects POST /auth/login, /signup, /refresh, etc. (req.path is
+      // relative to the /auth mount here, so it is just '/session').
+      return req.method === 'GET' && req.path === '/session';
+    },
+  })
+);
 v1Router.use('/auth', authRoutes);
 v1Router.use('/auth/sso', ssoRoutes);
 v1Router.use('/auth/2fa', twoFactorRoutes);

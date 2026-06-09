@@ -324,6 +324,13 @@ const TOKEN_EXPIRES_IN_MS = 8 * 60 * 60 * 1000; // Must match JWT_EXPIRES_IN in 
 
 const getJwtRefreshSecret = () => getRequiredSecret('JWT_REFRESH_SECRET');
 
+// The auth/credential rate limiters below relax outside production (covers
+// local dev and the test runner) so iterating locally isn't locked out after a
+// handful of attempts. Production (NODE_ENV=production) enforces every limit.
+// Mirrors the codebase convention of gating non-prod behaviour on
+// `NODE_ENV !== 'production'` (see parentAuth.js, billingService.js).
+const skipAuthRateLimitOutsideProd = () => process.env.NODE_ENV !== 'production';
+
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
@@ -331,7 +338,7 @@ const signupLimiter = rateLimit({
     res.status(429).json({ error: req.t('auth:errors.tooManySignupAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: skipAuthRateLimitOutsideProd,
 });
 
 const staffRefreshLimiter = rateLimit({
@@ -341,7 +348,7 @@ const staffRefreshLimiter = rateLimit({
     res.status(429).json({ error: req.t('auth:errors.tooManyRefreshAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: skipAuthRateLimitOutsideProd,
 });
 
 const authLimiter = rateLimit({
@@ -351,7 +358,7 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: skipAuthRateLimitOutsideProd,
 });
 
 async function authenticateStaff(req, { phone, email, password, schoolId, schoolCode }) {
@@ -649,7 +656,7 @@ const resendVerificationLimiter = rateLimit({
     res.status(429).json({ error: req.t('auth:errors.tooManyResendAttempts') }),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: skipAuthRateLimitOutsideProd,
 });
 
 router.post('/resend-verification', resendVerificationLimiter, authenticate, async (req, res) => {
@@ -1122,7 +1129,7 @@ const forgotPasswordLimiter = rateLimit({
   message: 'Too many password reset requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => process.env.NODE_ENV === 'test',
+  skip: skipAuthRateLimitOutsideProd,
 });
 
 // POST /api/auth/forgot-password

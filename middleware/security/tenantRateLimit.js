@@ -254,8 +254,13 @@ export function createSmsRateLimiter() {
 /**
  * Stricter rate limiter for auth endpoints (login, signup, password reset).
  * Keyed by IP to defend against credential-stuffing before a session exists.
+ *
+ * @param {object}   [opts]
+ * @param {(req, res) => boolean} [opts.skip] Predicate to bypass the limiter for
+ *   certain requests — e.g. the benign `GET /auth/session` poll, which carries
+ *   no credentials and should not share the credential-stuffing budget.
  */
-export function createAuthRateLimiter() {
+export function createAuthRateLimiter({ skip } = {}) {
   return rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: AUTH_LIMIT,
@@ -263,6 +268,7 @@ export function createAuthRateLimiter() {
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     store: buildRedisStore(),
+    ...(skip ? { skip } : {}),
     handler: (req, res, _next, options) => {
       res
         .status(429)
