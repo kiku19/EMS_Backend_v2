@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import mongoose from 'mongoose';
 import School from '../models/School.js';
 import { Staff } from '../database.js';
-import { createSchoolRecord, createStaffUser } from './helpers/factories.js';
+import { createSchoolRecord, createStaffUser, authHeadersFor } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
 const BASE = '/api/auth/sso';
@@ -130,6 +130,164 @@ describe('sso routes', () => {
         .get(`${BASE}/microsoft/initiate?schoolCode=${school.code}`)
         .expect(302);
       expect(res.headers.location).toContain('login.microsoftonline.com');
+    });
+  });
+
+  // ── Authenticated SSO config routes ──────────────────────────────────────
+  describe('GET /auth/sso/config', () => {
+    it('returns 401 without authentication', async () => {
+      const { app } = await setup();
+      const res = await request(app).get(`${BASE}/config`).expect(401);
+      expect(res.body.error).toMatch(/Authentication required/i);
+    });
+
+    it('returns 403 for non-admin (teacher) without settings.view permission', async () => {
+      const { school, app } = await setup();
+      const teacher = await createStaffUser({
+        name: 'Teacher',
+        email: 'teacher@example.com',
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+      });
+      const res = await request(app).get(`${BASE}/config`).set(authHeadersFor(teacher)).expect(403);
+      expect(res.body.hasPermission).toBe(false);
+    });
+
+    it('returns SSO config for admin with settings.view permission', async () => {
+      const { school, admin, app } = await setup();
+      await School.findByIdAndUpdate(school._id, {
+        ssoConfig: {
+          google: { enabled: true, clientId: 'client123' },
+          allowedDomains: ['example.com'],
+        },
+      });
+      const res = await request(app).get(`${BASE}/config`).set(authHeadersFor(admin)).expect(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.ssoConfig.google.enabled).toBe(true);
+    });
+  });
+
+  describe('PUT /auth/sso/config', () => {
+    it('returns 401 without authentication', async () => {
+      const { app } = await setup();
+      const res = await request(app).put(`${BASE}/config`).send({}).expect(401);
+      expect(res.body.error).toMatch(/Authentication required/i);
+    });
+
+    it('returns 403 for teacher without settings.edit permission', async () => {
+      const { school, app } = await setup();
+      const teacher = await createStaffUser({
+        name: 'Teacher',
+        email: 'teacher2@example.com',
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+      });
+      const res = await request(app)
+        .put(`${BASE}/config`)
+        .set(authHeadersFor(teacher))
+        .send({ google: { enabled: true, clientId: 'new-id' } })
+        .expect(403);
+      expect(res.body.hasPermission).toBe(false);
+    });
+
+    it('updates SSO config for admin with settings.edit permission', async () => {
+      const { school, admin, app } = await setup();
+      const res = await request(app)
+        .put(`${BASE}/config`)
+        .set(authHeadersFor(admin))
+        .send({
+          google: { enabled: true, clientId: 'updated-client-id' },
+          allowedDomains: ['updated.com'],
+        })
+        .expect(200);
+      expect(res.body.success).toBe(true);
+
+      const updated = await School.findById(school._id).select('ssoConfig');
+      expect(updated.ssoConfig.google.clientId).toBe('updated-client-id');
+      expect(updated.ssoConfig.allowedDomains).toContain('updated.com');
+    });
+  });
+
+  describe('GET /auth/sso/scim/token', () => {
+    it('returns 401 without authentication', async () => {
+      const { app } = await setup();
+      const res = await request(app).get(`${BASE}/scim/token`).expect(401);
+      expect(res.body.error).toMatch(/Authentication required/i);
+    });
+
+    it('returns 403 for teacher without settings.view permission', async () => {
+      const { school, app } = await setup();
+      const teacher = await createStaffUser({
+        name: 'Teacher',
+        email: 'teacher3@example.com',
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+      });
+      const res = await request(app)
+        .get(`${BASE}/scim/token`)
+        .set(authHeadersFor(teacher))
+        .expect(403);
+      expect(res.body.hasPermission).toBe(false);
+    });
+
+    it('returns masked SCIM token for admin', async () => {
+      const { school, admin, app } = await setup();
+      await School.findByIdAndUpdate(school._id, {
+        ssoConfig: { scim: { enabled: true, token: 'secret-token-1234' } },
+      });
+      const res = await request(app)
+        .get(`${BASE}/scim/token`)
+        .set(authHeadersFor(admin))
+        .expect(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.hasToken).toBe(true);
+      expect(res.body.token).toContain('1234');
+    });
+  });
+
+  describe('POST /auth/sso/scim/regenerate-token', () => {
+    it('returns 401 without authentication', async () => {
+      const { app } = await setup();
+      const res = await request(app).post(`${BASE}/scim/regenerate-token`).send({}).expect(401);
+      expect(res.body.error).toMatch(/Authentication required/i);
+    });
+
+    it('returns 403 for teacher without settings.edit permission', async () => {
+      const { school, app } = await setup();
+      const teacher = await createStaffUser({
+        name: 'Teacher',
+        email: 'teacher4@example.com',
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+      });
+      const res = await request(app)
+        .post(`${BASE}/scim/regenerate-token`)
+        .set(authHeadersFor(teacher))
+        .send({})
+        .expect(403);
+      expect(res.body.hasPermission).toBe(false);
+    });
+
+    it('regenerates SCIM token for admin', async () => {
+      const { school, admin, app } = await setup();
+      await School.findByIdAndUpdate(school._id, {
+        ssoConfig: { scim: { enabled: true, token: 'old-token' } },
+      });
+      const res = await request(app)
+        .post(`${BASE}/scim/regenerate-token`)
+        .set(authHeadersFor(admin))
+        .send({})
+        .expect(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.token).toBeTruthy();
+      expect(res.body.token).not.toBe('old-token');
+
+      const updated = await School.findById(school._id).select('ssoConfig');
+      expect(updated.ssoConfig.scim.token).toBe(res.body.token);
     });
   });
 
