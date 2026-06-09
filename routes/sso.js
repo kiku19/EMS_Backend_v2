@@ -27,6 +27,7 @@ import School from '../models/School.js';
 import AuditTrail from '../models/AuditTrail.js';
 import { authenticate } from '../middleware/auth.js';
 import { generateToken } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/auth/permissions.js';
 import { validateZod, zodSchemas } from '../middleware/validation.js';
 import { getRequiredSecret } from '../config/environment.js';
 import { createLogger } from '../utils/logger.js';
@@ -232,7 +233,7 @@ router.get('/check', async (req, res) => {
  * GET /auth/sso/config
  * Returns the school's SSO configuration (client secrets redacted).
  */
-router.get('/config', async (req, res) => {
+router.get('/config', authenticate, checkPermission('settings', 'view'), async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId).select('ssoConfig name code');
     if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
@@ -282,62 +283,96 @@ router.get('/config', async (req, res) => {
  * PUT /auth/sso/config
  * Update school's SSO configuration.
  */
-router.put('/config', validateZod(zodSchemas.updateSsoConfig), async (req, res) => {
-  try {
-    const {
-      google,
-      microsoft,
-      saml,
-      groupRoleMappings,
-      allowedDomains,
-      autoProvision,
-      defaultRole,
-      ssoOnly,
-      scim,
-    } = req.body;
+router.put(
+  '/config',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  validateZod(zodSchemas.updateSsoConfig),
+  async (req, res) => {
+    try {
+      const {
+        google,
+        microsoft,
+        saml,
+        groupRoleMappings,
+        allowedDomains,
+        autoProvision,
+        defaultRole,
+        ssoOnly,
+        scim,
+      } = req.body;
 
-    const school = await School.findById(req.user.schoolId);
-    if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
+      const school = await School.findById(req.user.schoolId);
+      if (!school) return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
 
-    const cfg = school.ssoConfig || {};
+      const cfg = school.ssoConfig || {};
 
-    if (google !== undefined) {
-      cfg.google = {
-        enabled: google.enabled ?? cfg.google?.enabled ?? false,
-        clientId: google.clientId ?? cfg.google?.clientId ?? null,
-        // Only overwrite secret if a new value is explicitly provided
-        clientSecret: google.clientSecret || cfg.google?.clientSecret || null,
-      };
-    }
+      if (google !== undefined) {
+        cfg.google = {
+          enabled: google.enabled ?? cfg.google?.enabled ?? false,
+          clientId: google.clientId ?? cfg.google?.clientId ?? null,
+          // Only overwrite secret if a new value is explicitly provided
+          clientSecret: google.clientSecret || cfg.google?.clientSecret || null,
+        };
+      }
 
-    if (microsoft !== undefined) {
-      cfg.microsoft = {
-        enabled: microsoft.enabled ?? cfg.microsoft?.enabled ?? false,
-        clientId: microsoft.clientId ?? cfg.microsoft?.clientId ?? null,
-        tenantId: microsoft.tenantId ?? cfg.microsoft?.tenantId ?? null,
-        clientSecret: microsoft.clientSecret || cfg.microsoft?.clientSecret || null,
-      };
-    }
+      if (microsoft !== undefined) {
+        cfg.microsoft = {
+          enabled: microsoft.enabled ?? cfg.microsoft?.enabled ?? false,
+          clientId: microsoft.clientId ?? cfg.microsoft?.clientId ?? null,
+          tenantId: microsoft.tenantId ?? cfg.microsoft?.tenantId ?? null,
+          clientSecret: microsoft.clientSecret || cfg.microsoft?.clientSecret || null,
+        };
+      }
 
-    if (saml !== undefined) {
-      cfg.saml = {
-        enabled: saml.enabled ?? cfg.saml?.enabled ?? false,
-        entryPoint: saml.entryPoint ?? cfg.saml?.entryPoint ?? null,
-        issuer: saml.issuer ?? cfg.saml?.issuer ?? null,
-        cert: saml.cert || cfg.saml?.cert || null,
-        emailAttribute: saml.emailAttribute ?? cfg.saml?.emailAttribute ?? 'email',
-        nameAttribute: saml.nameAttribute ?? cfg.saml?.nameAttribute ?? 'displayName',
-        groupAttribute: saml.groupAttribute ?? cfg.saml?.groupAttribute ?? null,
-      };
-    }
+      if (saml !== undefined) {
+        cfg.saml = {
+          enabled: saml.enabled ?? cfg.saml?.enabled ?? false,
+          entryPoint: saml.entryPoint ?? cfg.saml?.entryPoint ?? null,
+          issuer: saml.issuer ?? cfg.saml?.issuer ?? null,
+          cert: saml.cert || cfg.saml?.cert || null,
+          emailAttribute: saml.emailAttribute ?? cfg.saml?.emailAttribute ?? 'email',
+          nameAttribute: saml.nameAttribute ?? cfg.saml?.nameAttribute ?? 'displayName',
+          groupAttribute: saml.groupAttribute ?? cfg.saml?.groupAttribute ?? null,
+        };
+      }
 
-    if (groupRoleMappings !== undefined) cfg.groupRoleMappings = groupRoleMappings;
-    if (allowedDomains !== undefined) cfg.allowedDomains = allowedDomains;
-    if (autoProvision !== undefined) cfg.autoProvision = autoProvision;
-    if (defaultRole !== undefined) cfg.defaultRole = defaultRole;
-    if (ssoOnly !== undefined) {
-      // Prevent enabling SSO-only mode if no provider is fully configured
-      if (ssoOnly === true) {
+      if (groupRoleMappings !== undefined) cfg.groupRoleMappings = groupRoleMappings;
+      if (allowedDomains !== undefined) cfg.allowedDomains = allowedDomains;
+      if (autoProvision !== undefined) cfg.autoProvision = autoProvision;
+      if (defaultRole !== undefined) cfg.defaultRole = defaultRole;
+      if (ssoOnly !== undefined) {
+        // Prevent enabling SSO-only mode if no provider is fully configured
+        if (ssoOnly === true) {
+          const googleReady =
+            cfg.google?.enabled && cfg.google?.clientId && cfg.google?.clientSecret;
+          const microsoftReady =
+            cfg.microsoft?.enabled &&
+            cfg.microsoft?.clientId &&
+            cfg.microsoft?.clientSecret &&
+            cfg.microsoft?.tenantId;
+          const samlReady =
+            cfg.saml?.enabled && cfg.saml?.entryPoint && cfg.saml?.issuer && cfg.saml?.cert;
+
+          if (!googleReady && !microsoftReady && !samlReady) {
+            return res.status(400).json({
+              error:
+                'Cannot enable SSO-only mode: at least one SSO provider (Google, Microsoft, or SAML) must be fully configured and enabled first.',
+            });
+          }
+        }
+        cfg.ssoOnly = ssoOnly;
+      }
+
+      if (scim !== undefined) {
+        cfg.scim = {
+          enabled: scim.enabled ?? cfg.scim?.enabled ?? false,
+          token: scim.token || cfg.scim?.token || null,
+        };
+      }
+
+      // Guard: if ssoOnly is (still) enabled, ensure at least one provider remains fully configured
+      if (cfg.ssoOnly) {
         const googleReady = cfg.google?.enabled && cfg.google?.clientId && cfg.google?.clientSecret;
         const microsoftReady =
           cfg.microsoft?.enabled &&
@@ -350,49 +385,22 @@ router.put('/config', validateZod(zodSchemas.updateSsoConfig), async (req, res) 
         if (!googleReady && !microsoftReady && !samlReady) {
           return res.status(400).json({
             error:
-              'Cannot enable SSO-only mode: at least one SSO provider (Google, Microsoft, or SAML) must be fully configured and enabled first.',
+              'Cannot disable the last SSO provider while SSO-only mode is active. Disable SSO-only mode first, or configure another provider.',
           });
         }
       }
-      cfg.ssoOnly = ssoOnly;
+
+      school.ssoConfig = cfg;
+      school.markModified('ssoConfig');
+      await school.save();
+
+      return res.json({ success: true, message: 'SSO configuration updated successfully' });
+    } catch (err) {
+      logger.error({ err }, 'Failed to update SSO config');
+      return res.status(500).json({ error: 'Failed to update SSO configuration' });
     }
-
-    if (scim !== undefined) {
-      cfg.scim = {
-        enabled: scim.enabled ?? cfg.scim?.enabled ?? false,
-        token: scim.token || cfg.scim?.token || null,
-      };
-    }
-
-    // Guard: if ssoOnly is (still) enabled, ensure at least one provider remains fully configured
-    if (cfg.ssoOnly) {
-      const googleReady = cfg.google?.enabled && cfg.google?.clientId && cfg.google?.clientSecret;
-      const microsoftReady =
-        cfg.microsoft?.enabled &&
-        cfg.microsoft?.clientId &&
-        cfg.microsoft?.clientSecret &&
-        cfg.microsoft?.tenantId;
-      const samlReady =
-        cfg.saml?.enabled && cfg.saml?.entryPoint && cfg.saml?.issuer && cfg.saml?.cert;
-
-      if (!googleReady && !microsoftReady && !samlReady) {
-        return res.status(400).json({
-          error:
-            'Cannot disable the last SSO provider while SSO-only mode is active. Disable SSO-only mode first, or configure another provider.',
-        });
-      }
-    }
-
-    school.ssoConfig = cfg;
-    school.markModified('ssoConfig');
-    await school.save();
-
-    return res.json({ success: true, message: 'SSO configuration updated successfully' });
-  } catch (err) {
-    logger.error({ err }, 'Failed to update SSO config');
-    return res.status(500).json({ error: 'Failed to update SSO configuration' });
   }
-});
+);
 
 /**
  * GET /auth/sso/scim/token
@@ -400,7 +408,7 @@ router.put('/config', validateZod(zodSchemas.updateSsoConfig), async (req, res) 
  * The full token is never returned — only the last 4 characters are visible.
  * Use the regenerate-token endpoint to obtain the full token (shown only once).
  */
-router.get('/scim/token', async (req, res) => {
+router.get('/scim/token', authenticate, checkPermission('settings', 'view'), async (req, res) => {
   try {
     const school = await School.findById(req.user.schoolId).select('ssoConfig');
     if (!school) return res.status(404).json({ error: 'School not found' });
@@ -418,25 +426,30 @@ router.get('/scim/token', async (req, res) => {
  * Generates a new cryptographically random SCIM bearer token, saves it, and returns it.
  * The token is only shown once — admins must copy it immediately.
  */
-router.post('/scim/regenerate-token', async (req, res) => {
-  try {
-    const school = await School.findById(req.user.schoolId);
-    if (!school) return res.status(404).json({ error: 'School not found' });
+router.post(
+  '/scim/regenerate-token',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const school = await School.findById(req.user.schoolId);
+      if (!school) return res.status(404).json({ error: 'School not found' });
 
-    const newToken = randomBytes(32).toString('hex');
-    if (!school.ssoConfig) school.ssoConfig = {};
-    if (!school.ssoConfig.scim) school.ssoConfig.scim = {};
-    school.ssoConfig.scim.token = newToken;
-    school.markModified('ssoConfig');
-    await school.save();
+      const newToken = randomBytes(32).toString('hex');
+      if (!school.ssoConfig) school.ssoConfig = {};
+      if (!school.ssoConfig.scim) school.ssoConfig.scim = {};
+      school.ssoConfig.scim.token = newToken;
+      school.markModified('ssoConfig');
+      await school.save();
 
-    logger.info({ schoolId: school._id }, 'SCIM token regenerated');
-    return res.json({ success: true, token: newToken });
-  } catch (err) {
-    logger.error({ err }, 'Failed to regenerate SCIM token');
-    return res.status(500).json({ error: 'Failed to regenerate SCIM token' });
+      logger.info({ schoolId: school._id }, 'SCIM token regenerated');
+      return res.json({ success: true, token: newToken });
+    } catch (err) {
+      logger.error({ err }, 'Failed to regenerate SCIM token');
+      return res.status(500).json({ error: 'Failed to regenerate SCIM token' });
+    }
   }
-});
+);
 
 /**
  * GET /auth/sso/saml/metadata?schoolCode=SCHOOL_CODE
