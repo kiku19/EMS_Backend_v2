@@ -76,6 +76,7 @@ import featureFlagsRoutes from '../../routes/featureFlags.js';
 import googleClassroomRoutes from '../../routes/googleClassroom.js';
 import ssoRoutes from '../../routes/sso.js';
 import apiKeysRoutes from '../../routes/apiKeys.js';
+import auditLogsRoutes from '../../routes/auditLogs.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
 import { authenticateParent } from '../../middleware/auth/parentAuth.js';
 
@@ -186,6 +187,7 @@ export function createTestApp() {
   app.use('/api/feature-flags', featureFlagsRoutes);
   app.use('/api/google-classroom', googleClassroomRoutes);
   app.use('/api/api-keys', apiKeysRoutes);
+  app.use('/api/audit-logs', auditLogsRoutes);
 
   // Temporary debug error handler
   app.use((err, req, res, next) => {
