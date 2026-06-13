@@ -2,6 +2,7 @@ import express from 'express';
 import { Staff, Student } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
 import { i18nMiddleware } from '../../middleware/i18n.js';
+import { addApiVersionHeader, deprecationWarning } from '../../middleware/apiVersion.js';
 import academicsRoutes from '../../routes/academics.js';
 import frontDeskRoutes from '../../routes/frontDesk.js';
 import gatePassesRoutes from '../../routes/gatePasses.js';
@@ -103,91 +104,105 @@ export function createTestApp() {
 
   initializeSocket(io);
 
-  // Mount auth + public routes BEFORE wildcard `/api` routers so
-  // signup/login/refresh/public-form-access don't get trapped by the
-  // router-level `authenticate` on routers mounted at `/api`.
-  // 2FA routes must mount BEFORE the generic /api/auth router because
-  // authRoutes applies router-level `authenticate`, which would otherwise
-  // block the unauthenticated /api/auth/2fa/verify post-login step.
-  app.use('/api/auth/2fa', twoFactorRoutes);
-  app.use('/api/auth/sso', ssoRoutes);
-  app.use('/api/auth', authRoutes);
-  app.use('/api/public', publicRoutes);
-  app.use('/api/super-admin', superAdminRoutes);
-  // Parent routes must mount before the wildcard `/api` routers (academics,
-  // examSchedule, etc.) which apply router-level `authenticate` to every
-  // matching path. Without this ordering, /api/parent/auth/login falls
-  // through into the academics router and is blocked with a 401.
-  app.use('/api/parent/auth', parentAuthRoutes);
-  app.use('/api/parent/messages', parentMessagingRoutes);
-  app.use('/api/parent', authenticateParent, parentDataRoutes);
-  app.use('/api', academicsRoutes);
-  app.use('/api/announcements', announcementRoutes);
-  app.use('/api/billing', billingRoutes);
-  app.use('/api/classes', classesRoutes);
-  app.use('/api/classes-enhanced', classesEnhancedRoutes);
-  app.use('/api/class-settings', classSettingsRoutes);
-  app.use('/api', examScheduleRoutes);
-  app.use('/api/hall-tickets', hallTicketsRoutes);
-  app.use('/api/fee-heads', feeHeadsRoutes);
-  app.use('/api/fees', feesRoutes);
-  app.use('/api/fee-structure', feeStructureRoutes);
-  app.use('/api/homework', homeworkRoutes);
-  app.use('/api/messages', messageRoutes);
-  app.use('/api/notifications', notificationRoutes);
-  app.use('/api/permissions', permissionRoutes);
-  app.use('/api/settings', settingsRoutes);
-  app.use('/api/staff', staffRoutes);
-  app.use('/api/staff-attendance', staffAttendanceRoutes);
-  app.use('/api/student-fees', studentFeesRoutes);
-  app.use('/api/students', studentsRoutes);
-  app.use('/api/attendance', attendanceRoutes);
-  app.use('/api/timetable', timetableRoutes);
-  app.use('/api/timetable-cleanup', timetableCleanupRoutes);
-  app.use('/api/teacher-timetable', teacherTimetableRoutes);
-  app.use('/api/fee-settings', feeSettingsRoutes);
-  app.use('/api/fee-templates', feeTemplatesRoutes);
-  app.use('/api/payroll', payrollRoutes);
-  app.use('/api/trash', trashRoutes);
-  app.use('/api/upload', uploadRoutes);
-  app.use('/api/mobile', mobileRoutes);
-  app.use('/api/validation', validationRoutes);
-  app.use('/api', systemConfigRoutes);
-  app.use('/api', intakeFormsRoutes);
-  app.use('/api', calendarEventsRoutes);
-  app.use('/api/ai', aiRoutes);
-  app.use('/api/calls', callRoutes);
-  app.use('/api/parents', authenticate, parentManagementRoutes);
-  app.use('/api/push-notifications', pushNotificationsRoutes);
-  app.use('/api/reminders', reminderRoutes);
-  app.use('/api/front-desk', frontDeskRoutes);
-  app.use('/api/gate-passes', gatePassesRoutes);
-  app.use('/api/visitors', visitorsRoutes);
-  app.use('/api/payslips', payslipsRoutes);
-  app.use('/api/teacher-leaves', teacherLeavesRoutes);
-  app.use('/api/student-leaves', studentLeavesRoutes);
-  app.use('/api/teacher-assignments', teacherAssignmentsRoutes);
-  app.use('/api/substitutions', substitutionsRoutes);
-  app.use('/api/substitution-alerts', substitutionAlertsRoutes);
-  app.use('/api/backup', backupRoutes);
-  app.use('/api/bulk-import', bulkImportRoutes);
-  app.use('/api/ptm', ptmRoutes);
-  app.use('/api/reports', reportsRoutes);
-  app.use('/api/promotions', promotionRoutes);
-  app.use('/api/search', searchRoutes);
-  app.use('/api/dashboard', dashboardRoutes);
-  app.use('/api/transport', transportRoutes);
-  app.use('/api/hostel', hostelRoutes);
-  app.use('/api/library', libraryRoutes);
-  app.use('/api/inventory', inventoryRoutes);
-  app.use('/api/email-campaigns', emailCampaignsRoutes);
-  app.use('/api/expenses', expensesRoutes);
-  app.use('/api/gdpr', gdprRoutes);
-  app.use('/api/webhooks', webhooksRoutes);
-  app.use('/api/feature-flags', featureFlagsRoutes);
-  app.use('/api/google-classroom', googleClassroomRoutes);
-  app.use('/api/api-keys', apiKeysRoutes);
-  app.use('/api/audit-logs', auditLogsRoutes);
+  // ─── API v1 Router ──────────────────────────────────────────────────────────
+  // Mirrors server.js: all routes are registered once on v1Router and mounted at
+  // both /api/v1 (canonical) and /api (legacy, backward-compatible). Tests can
+  // therefore verify versioned paths and legacy paths using the same app.
+  const v1Router = express.Router();
+
+  v1Router.use(addApiVersionHeader);
+
+  // Mount auth + public routes BEFORE wildcard routers so signup/login/refresh/
+  // public-form-access don't get trapped by router-level `authenticate`.
+  // 2FA routes must mount BEFORE the generic /auth router because authRoutes
+  // applies router-level `authenticate`, which would otherwise block the
+  // unauthenticated /auth/2fa/verify post-login step.
+  v1Router.use('/auth/2fa', twoFactorRoutes);
+  v1Router.use('/auth/sso', ssoRoutes);
+  v1Router.use('/auth', authRoutes);
+  v1Router.use('/public', publicRoutes);
+  v1Router.use('/super-admin', superAdminRoutes);
+  // Parent routes must mount before wildcard routers (academics, examSchedule,
+  // etc.) which apply router-level `authenticate`. Without this ordering,
+  // /parent/auth/login falls through into the academics router and is blocked.
+  v1Router.use('/parent/auth', parentAuthRoutes);
+  v1Router.use('/parent/messages', parentMessagingRoutes);
+  v1Router.use('/parent', authenticateParent, parentDataRoutes);
+  v1Router.use('/', academicsRoutes);
+  v1Router.use('/announcements', announcementRoutes);
+  v1Router.use('/billing', billingRoutes);
+  v1Router.use('/classes', classesRoutes);
+  v1Router.use('/classes-enhanced', classesEnhancedRoutes);
+  v1Router.use('/class-settings', classSettingsRoutes);
+  v1Router.use('/', examScheduleRoutes);
+  v1Router.use('/hall-tickets', hallTicketsRoutes);
+  v1Router.use('/fee-heads', feeHeadsRoutes);
+  v1Router.use('/fees', feesRoutes);
+  v1Router.use('/fee-structure', feeStructureRoutes);
+  v1Router.use('/homework', homeworkRoutes);
+  v1Router.use('/messages', messageRoutes);
+  v1Router.use('/notifications', notificationRoutes);
+  v1Router.use('/permissions', permissionRoutes);
+  v1Router.use('/settings', settingsRoutes);
+  v1Router.use('/staff', staffRoutes);
+  v1Router.use('/staff-attendance', staffAttendanceRoutes);
+  v1Router.use('/student-fees', studentFeesRoutes);
+  v1Router.use('/students', studentsRoutes);
+  v1Router.use('/attendance', attendanceRoutes);
+  v1Router.use('/timetable', timetableRoutes);
+  v1Router.use('/timetable-cleanup', timetableCleanupRoutes);
+  v1Router.use('/teacher-timetable', teacherTimetableRoutes);
+  v1Router.use('/fee-settings', feeSettingsRoutes);
+  v1Router.use('/fee-templates', feeTemplatesRoutes);
+  v1Router.use('/payroll', payrollRoutes);
+  v1Router.use('/trash', trashRoutes);
+  v1Router.use('/upload', uploadRoutes);
+  v1Router.use('/mobile', mobileRoutes);
+  v1Router.use('/validation', validationRoutes);
+  v1Router.use('/', systemConfigRoutes);
+  v1Router.use('/', intakeFormsRoutes);
+  v1Router.use('/', calendarEventsRoutes);
+  v1Router.use('/ai', aiRoutes);
+  v1Router.use('/calls', callRoutes);
+  v1Router.use('/parents', authenticate, parentManagementRoutes);
+  v1Router.use('/push-notifications', pushNotificationsRoutes);
+  v1Router.use('/reminders', reminderRoutes);
+  v1Router.use('/front-desk', frontDeskRoutes);
+  v1Router.use('/gate-passes', gatePassesRoutes);
+  v1Router.use('/visitors', visitorsRoutes);
+  v1Router.use('/payslips', payslipsRoutes);
+  v1Router.use('/teacher-leaves', teacherLeavesRoutes);
+  v1Router.use('/student-leaves', studentLeavesRoutes);
+  v1Router.use('/teacher-assignments', teacherAssignmentsRoutes);
+  v1Router.use('/substitutions', substitutionsRoutes);
+  v1Router.use('/substitution-alerts', substitutionAlertsRoutes);
+  v1Router.use('/backup', backupRoutes);
+  v1Router.use('/bulk-import', bulkImportRoutes);
+  v1Router.use('/ptm', ptmRoutes);
+  v1Router.use('/reports', reportsRoutes);
+  v1Router.use('/promotions', promotionRoutes);
+  v1Router.use('/search', searchRoutes);
+  v1Router.use('/dashboard', dashboardRoutes);
+  v1Router.use('/transport', transportRoutes);
+  v1Router.use('/hostel', hostelRoutes);
+  v1Router.use('/library', libraryRoutes);
+  v1Router.use('/inventory', inventoryRoutes);
+  v1Router.use('/email-campaigns', emailCampaignsRoutes);
+  v1Router.use('/expenses', expensesRoutes);
+  v1Router.use('/gdpr', gdprRoutes);
+  v1Router.use('/webhooks', webhooksRoutes);
+  v1Router.use('/feature-flags', featureFlagsRoutes);
+  v1Router.use('/google-classroom', googleClassroomRoutes);
+  v1Router.use('/api-keys', apiKeysRoutes);
+  v1Router.use('/audit-logs', auditLogsRoutes);
+
+  // Canonical versioned mount
+  app.use('/api/v1', v1Router);
+
+  // Legacy /api mount — keeps existing mobile apps and test fixtures working.
+  // Responses include Deprecation + Sunset + Link headers nudging clients to
+  // migrate to /api/v1.
+  app.use('/api', deprecationWarning, v1Router);
 
   // Temporary debug error handler
   app.use((err, req, res, next) => {
