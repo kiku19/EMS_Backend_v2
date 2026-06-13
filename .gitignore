@@ -19,8 +19,8 @@ playwright-report/
 coverage/
 test-results/
 
-# Claude Code worktrees
-.claude/worktrees/
+# Claude Code workspace files (may contain secrets / session data)
+.claude/
 
 # Firebase service account keys
 *.firebase-adminsdk*.json
