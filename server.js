@@ -354,6 +354,20 @@ app.get('/healthz', (_req, res) => {
 // OBS-06: Readiness probe — answers "is the service ready to handle traffic?"
 // Returns 503 if DB is not connected or startup tasks haven't completed.
 // Used by load balancers and container orchestrators (K8s readinessProbe).
+app.get('/ready', (_req, res) => {
+  const db = getDatabaseStatus();
+  const redisConfigured = !!process.env.REDIS_URL;
+  const redis = redisConfigured ? (isRedisReady() ? 'ready' : 'unavailable') : 'disabled';
+  const ready = db === 'connected' && serverReady;
+  res.status(ready ? 200 : 503).json({
+    status: ready ? 'ready' : 'not_ready',
+    db,
+    redis,
+    serverReady,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.get('/readyz', (_req, res) => {
   const db = getDatabaseStatus();
   const redisConfigured = !!process.env.REDIS_URL;
