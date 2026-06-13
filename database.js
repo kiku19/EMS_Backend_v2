@@ -157,6 +157,7 @@ import FeeTemplateModel from './models/FeeTemplate.js';
 import FeeStructureModel from './models/FeeStructure.js';
 import FeePaymentModel from './models/FeePayment.js';
 import FeeRefundModel from './models/FeeRefund.js';
+import FeePaymentAuditModel from './models/FeePaymentAudit.js';
 import SubstitutionModel from './models/Substitution.js';
 
 // Chat / messaging models
@@ -235,6 +236,7 @@ export const FeeTemplate = FeeTemplateModel;
 export const FeeStructure = FeeStructureModel;
 export const FeePayment = FeePaymentModel;
 export const FeeRefund = FeeRefundModel;
+export const FeePaymentAudit = FeePaymentAuditModel;
 export const Substitution = SubstitutionModel;
 export const Vehicle = VehicleModel;
 export const TransportRoute = TransportRouteModel;

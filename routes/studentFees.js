@@ -297,6 +297,7 @@ import { createLogger } from '../utils/logger.js';
 import { validateObjectIdParam } from '../middleware/validation.js';
 import { updateFeeStructureWithRetry } from '../utils/sfsConcurrency.js';
 import { classNameTokens } from './students/helpers.js';
+import { createFeePaymentAuditEntry } from '../utils/feePaymentAudit.js';
 
 const logger = createLogger('StudentFees');
 const router = express.Router();
@@ -622,6 +623,14 @@ router.put(
       const { discountAmount, discountReason, academicYear } = req.body;
       const resolvedYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
 
+      // Snapshot for audit trail
+      const beforeSnapshot = await StudentFeeStructure.findOne(
+        scopeBySchool(req.user?.schoolId, {
+          studentId: req.params.studentId,
+          academicYear: resolvedYear,
+        })
+      ).lean();
+
       let feeStructure = null;
       try {
         feeStructure = await updateFeeStructureWithRetry(
@@ -664,6 +673,43 @@ router.put(
       // Sync fee data to Student model for consistent reads
       await syncStudentFeeDetails(req.params.studentId, feeStructure);
 
+      // Audit trail — record discount change
+      try {
+        await createFeePaymentAuditEntry({
+          schoolId: extractSchoolId(req.user?.schoolId),
+          entityType: 'StudentFeeStructure',
+          entityId: feeStructure._id,
+          action: 'discount_applied',
+          performedBy: req.user?._id || req.user?.id,
+          performedByName: req.user?.name || req.user?.email || null,
+          studentId: req.params.studentId,
+          changes: {
+            before: beforeSnapshot
+              ? {
+                  discountApplied: beforeSnapshot.discountApplied,
+                  discountReason: beforeSnapshot.discountReason,
+                  totalBalance: beforeSnapshot.totalBalance,
+                  overallStatus: beforeSnapshot.overallStatus,
+                }
+              : undefined,
+            after: {
+              discountApplied: feeStructure.discountApplied,
+              discountReason: feeStructure.discountReason,
+              totalBalance: feeStructure.totalBalance,
+              overallStatus: feeStructure.overallStatus,
+            },
+          },
+          context: {
+            amount: discountAmount,
+            academicYear: resolvedYear,
+            reason: discountReason,
+          },
+          req,
+        });
+      } catch {
+        // Audit failures must never block the main request
+      }
+
       // Get student details for socket event
       const student = await Student.findById(req.params.studentId).select('name');
 
@@ -693,7 +739,6 @@ router.post(
     try {
       const { amount, feeHeadPayments, academicYear } = req.body;
       idempotencyKey = req.body.idempotencyKey;
-
       const resolvedAcademicYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
 
       // Pre-flight balance check against the current snapshot — the
@@ -846,6 +891,40 @@ router.post(
         throw txError;
       } finally {
         await session.endSession();
+      }
+
+      // Audit trail — record WHO paid WHAT for WHICH student
+      try {
+        await createFeePaymentAuditEntry({
+          schoolId,
+          entityType: 'FeePayment',
+          entityId: feePaymentDoc._id,
+          action: 'payment_recorded',
+          performedBy: req.user?._id || req.user?.id,
+          performedByName: req.user?.name || req.user?.email || null,
+          studentId: req.params.studentId,
+          changes: {
+            before: {
+              totalPaid: preflight.totalPaid,
+              totalBalance: preflight.totalBalance,
+              overallStatus: preflight.overallStatus,
+            },
+            after: {
+              totalPaid: feeStructure.totalPaid,
+              totalBalance: feeStructure.totalBalance,
+              overallStatus: feeStructure.overallStatus,
+            },
+          },
+          context: {
+            receiptNumber: feePaymentDoc.receiptNumber,
+            amount,
+            academicYear: resolvedAcademicYear,
+            paymentMode: req.body.paymentMode || 'cash',
+          },
+          req,
+        });
+      } catch {
+        // Audit failures must never block the main request
       }
 
       // Get student details for socket event (outside transaction)
@@ -1025,6 +1104,27 @@ router.post('/reconcile/:studentId', checkPermission('fees', 'edit'), async (req
 
     const changed = JSON.stringify(before) !== JSON.stringify(after);
 
+    // Audit trail — record reconciliation
+    try {
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(schoolId),
+        entityType: 'StudentFeeStructure',
+        entityId: feeStructure._id,
+        action: 'structure_reconciled',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: req.params.studentId,
+        changes: changed ? { before, after } : undefined,
+        context: {
+          academicYear,
+          amount: actualTotalPaid,
+          reason: `Reconciled from ${payments.length} payment records`,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
+    }
     res.json({
       studentId: req.params.studentId,
       academicYear,

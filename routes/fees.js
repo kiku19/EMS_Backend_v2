@@ -127,6 +127,7 @@ import {
   Class,
   FeePayment,
   FeeRefund,
+  FeePaymentAudit,
   getNextRefundNumber,
   getNextReceiptNumber,
 } from '../database.js';
@@ -146,6 +147,7 @@ import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { getFeePaymentGateway } from '../services/paymentGateway/index.js';
 import { logToTrash } from '../services/trashService.js';
 import { updateFeeStructureWithRetry } from '../utils/sfsConcurrency.js';
+import { createFeePaymentAuditEntry } from '../utils/feePaymentAudit.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -209,6 +211,54 @@ router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
   } catch (error) {
     logger.error({ err: error }, 'Error fetching payments');
     res.status(500).json({ error: 'Failed to fetch payments' });
+  }
+});
+
+// Get fee payment audit trail (paginated)
+router.get('/audit', checkPermission('fees', 'view'), async (req, res) => {
+  try {
+    const { studentId, action, entityType, startDate, endDate } = req.query;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const skip = (page - 1) * limit;
+
+    const filter = scopeBySchool(req.user?.schoolId, {});
+    if (studentId) filter.studentId = studentId;
+    if (action) filter.action = action;
+    if (entityType) filter.entityType = entityType;
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = end;
+      }
+    }
+
+    const [logs, total] = await Promise.all([
+      FeePaymentAudit.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('performedBy', 'name email role')
+        .populate('studentId', 'name admissionId')
+        .lean(),
+      FeePaymentAudit.countDocuments(filter),
+    ]);
+
+    res.json({
+      logs,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    logger.error({ err: error }, 'Error fetching fee payment audit logs');
+    res.status(500).json({ error: 'Failed to fetch fee payment audit logs' });
   }
 });
 
@@ -366,7 +416,9 @@ router.post(
               [
                 {
                   $set: {
-                    'feeDetails.paidAmount': { $add: [{ $ifNull: ['$feeDetails.paidAmount', 0] }, amount] },
+                    'feeDetails.paidAmount': {
+                      $add: [{ $ifNull: ['$feeDetails.paidAmount', 0] }, amount],
+                    },
                     'feeDetails.lastPaymentDate': payment.paymentDate,
                   },
                 },
@@ -377,7 +429,12 @@ router.post(
                         {
                           $subtract: [
                             { $ifNull: ['$feeDetails.totalFee', 0] },
-                            { $add: [{ $ifNull: ['$feeDetails.paidAmount', 0] }, { $ifNull: ['$feeDetails.discountApplied', 0] }] },
+                            {
+                              $add: [
+                                { $ifNull: ['$feeDetails.paidAmount', 0] },
+                                { $ifNull: ['$feeDetails.discountApplied', 0] },
+                              ],
+                            },
                           ],
                         },
                         0,
@@ -399,7 +456,9 @@ router.post(
                   totalPaid: paidAmount,
                   discountApplied,
                 });
-                await Student.findByIdAndUpdate(student._id, { $set: { feeStatus: overallStatus } });
+                await Student.findByIdAndUpdate(student._id, {
+                  $set: { feeStatus: overallStatus },
+                });
               }
             }
 
@@ -428,17 +487,27 @@ router.post(
                   // raw requested amount caused over-reversal when the request
                   // asked for more than the head's outstanding balance.
                   distributedHeads = [];
-                  if (Array.isArray(feeHeads) && feeHeads.length > 0 && Array.isArray(sfs.feeHeads)) {
+                  if (
+                    Array.isArray(feeHeads) &&
+                    feeHeads.length > 0 &&
+                    Array.isArray(sfs.feeHeads)
+                  ) {
                     for (const paymentHead of feeHeads) {
                       const matchingHead = sfs.feeHeads.find(
                         (h) =>
                           (paymentHead.feeHeadId &&
                             h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
-                          (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
+                          (!paymentHead.feeHeadId &&
+                            paymentHead.name &&
+                            h.name === paymentHead.name)
                       );
                       if (matchingHead) {
-                        const headBalance = (matchingHead.amount || 0) - (matchingHead.paidAmount || 0);
-                        const safePayment = Math.min(paymentHead.amount || 0, Math.max(0, headBalance));
+                        const headBalance =
+                          (matchingHead.amount || 0) - (matchingHead.paidAmount || 0);
+                        const safePayment = Math.min(
+                          paymentHead.amount || 0,
+                          Math.max(0, headBalance)
+                        );
                         matchingHead.paidAmount = (matchingHead.paidAmount || 0) + safePayment;
                         const headResult = computeFeeHeadStatus(matchingHead);
                         matchingHead.balanceAmount = headResult.balanceAmount;
@@ -512,11 +581,50 @@ router.post(
         }
       }
 
+      // Audit trail — record payment creation
+      try {
+        await createFeePaymentAuditEntry({
+          schoolId,
+          entityType: 'FeePayment',
+          entityId: payment._id,
+          action: 'payment_recorded',
+          performedBy: req.user?._id || req.user?.id,
+          performedByName: req.user?.name || req.user?.email || null,
+          studentId: studentId || null,
+          changes: {
+            after: {
+              amount: payment.amount,
+              paymentMode: payment.paymentMode,
+              paymentDate: payment.paymentDate,
+              receiptNumber: payment.receiptNumber,
+              status: payment.status,
+            },
+          },
+          context: {
+            receiptNumber: payment.receiptNumber,
+            amount: payment.amount,
+            academicYear: payment.academicYear,
+            paymentMode: payment.paymentMode,
+          },
+          req,
+        });
+      } catch {
+        // Audit failures must never block the main request
+      }
+
       res.status(201).json(payment);
     } catch (error) {
       if (error.code === 11000) {
-        logger.warn({ err: error }, 'Duplicate receipt number on concurrent payment — retried automatically');
-        return res.status(409).json({ error: 'A payment was already recorded concurrently. Please refresh and try again.', code: 'DUPLICATE_RECEIPT' });
+        logger.warn(
+          { err: error },
+          'Duplicate receipt number on concurrent payment — retried automatically'
+        );
+        return res
+          .status(409)
+          .json({
+            error: 'A payment was already recorded concurrently. Please refresh and try again.',
+            code: 'DUPLICATE_RECEIPT',
+          });
       }
       logger.error({ err: error }, 'Error creating payment');
       res.status(500).json({ error: 'Failed to create payment' });
@@ -543,151 +651,170 @@ router.get('/payments/:id', checkPermission('fees', 'view'), async (req, res) =>
 });
 
 // Delete (cancel) a payment and reverse the student's fee balances
-router.delete(
-  '/payments/:id',
-  checkPermission('fees', 'delete'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
+router.delete('/payments/:id', checkPermission('fees', 'delete'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
 
-      const payment = await FeePayment.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+    const payment = await FeePayment.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
-      if (!payment) {
-        return res.status(404).json({ error: 'Payment not found' });
-      }
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
 
-      if (payment.status === 'cancelled') {
-        return res.status(400).json({ error: 'Payment is already cancelled' });
-      }
+    if (payment.status === 'cancelled') {
+      return res.status(400).json({ error: 'Payment is already cancelled' });
+    }
 
-      // Refund referential integrity: if there's a pending/approved refund
-      // pointing at this payment, cancelling the source payment would leave
-      // the refund dangling — processable against a voided source. Block it.
-      const blockingRefund = await FeeRefund.findOne(
-        scopeBySchool(schoolId, {
-          paymentId: payment._id,
-          status: { $in: ['pending', 'approved'] },
-        })
-      );
-      if (blockingRefund) {
-        return res.status(409).json({
-          error:
-            'Payment has an active refund attached — cancel or process the refund first.',
-          code: 'REFUND_PENDING',
-          refundId: blockingRefund._id,
-        });
-      }
+    // Refund referential integrity: if there's a pending/approved refund
+    // pointing at this payment, cancelling the source payment would leave
+    // the refund dangling — processable against a voided source. Block it.
+    const blockingRefund = await FeeRefund.findOne(
+      scopeBySchool(schoolId, {
+        paymentId: payment._id,
+        status: { $in: ['pending', 'approved'] },
+      })
+    );
+    if (blockingRefund) {
+      return res.status(409).json({
+        error: 'Payment has an active refund attached — cancel or process the refund first.',
+        code: 'REFUND_PENDING',
+        refundId: blockingRefund._id,
+      });
+    }
 
-      const cancelledAmount = payment.amount || 0;
-      const previousStatus = payment.status;
+    const cancelledAmount = payment.amount || 0;
+    const previousStatus = payment.status;
 
-      // Mark payment as cancelled (soft-delete)
-      payment.status = 'cancelled';
-      payment.cancelledAt = new Date();
-      payment.cancelledBy = req.user?._id;
-      await payment.save();
+    // Mark payment as cancelled (soft-delete)
+    payment.status = 'cancelled';
+    payment.cancelledAt = new Date();
+    payment.cancelledBy = req.user?._id;
+    await payment.save();
 
-      // Only reverse balances if the payment was previously completed
-      if (previousStatus === 'completed' && payment.studentId && cancelledAmount > 0) {
-        // Reverse StudentFeeStructure balances
-        try {
-          const resolvedYear = payment.academicYear || (await resolveAcademicYear(null, schoolId));
-          await updateFeeStructureWithRetry(
-            scopeBySchool(schoolId, {
-              studentId: payment.studentId,
-              academicYear: resolvedYear,
-            }),
-            async (sfs) => {
-              // Reverse per-fee-head amounts if breakdown was recorded
-              if (
-                Array.isArray(payment.feeHeads) &&
-                payment.feeHeads.length > 0 &&
-                Array.isArray(sfs.feeHeads)
-              ) {
-                for (const paymentHead of payment.feeHeads) {
-                  const matchingHead = sfs.feeHeads.find(
-                    (h) =>
-                      (paymentHead.feeHeadId &&
-                        h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
-                      (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
+    // Only reverse balances if the payment was previously completed
+    if (previousStatus === 'completed' && payment.studentId && cancelledAmount > 0) {
+      // Reverse StudentFeeStructure balances
+      try {
+        const resolvedYear = payment.academicYear || (await resolveAcademicYear(null, schoolId));
+        await updateFeeStructureWithRetry(
+          scopeBySchool(schoolId, {
+            studentId: payment.studentId,
+            academicYear: resolvedYear,
+          }),
+          async (sfs) => {
+            // Reverse per-fee-head amounts if breakdown was recorded
+            if (
+              Array.isArray(payment.feeHeads) &&
+              payment.feeHeads.length > 0 &&
+              Array.isArray(sfs.feeHeads)
+            ) {
+              for (const paymentHead of payment.feeHeads) {
+                const matchingHead = sfs.feeHeads.find(
+                  (h) =>
+                    (paymentHead.feeHeadId &&
+                      h.feeHeadId?.toString() === paymentHead.feeHeadId.toString()) ||
+                    (!paymentHead.feeHeadId && paymentHead.name && h.name === paymentHead.name)
+                );
+                if (matchingHead) {
+                  matchingHead.paidAmount = Math.max(
+                    (matchingHead.paidAmount || 0) - (paymentHead.amount || 0),
+                    0
                   );
-                  if (matchingHead) {
-                    matchingHead.paidAmount = Math.max(
-                      (matchingHead.paidAmount || 0) - (paymentHead.amount || 0),
-                      0
-                    );
-                    const headResult = computeFeeHeadStatus(matchingHead);
-                    matchingHead.balanceAmount = headResult.balanceAmount;
-                    matchingHead.status = headResult.status;
-                  }
+                  const headResult = computeFeeHeadStatus(matchingHead);
+                  matchingHead.balanceAmount = headResult.balanceAmount;
+                  matchingHead.status = headResult.status;
                 }
               }
-
-              sfs.totalPaid = Math.max((sfs.totalPaid || 0) - cancelledAmount, 0);
-              const { totalBalance, overallStatus } = computeFeeBalance(sfs);
-              sfs.totalBalance = totalBalance;
-              sfs.overallStatus = overallStatus;
             }
-          );
-        } catch (sfsError) {
-          logger.warn(
-            { err: sfsError, paymentId: payment._id },
-            'Could not reverse StudentFeeStructure after payment cancellation'
-          );
-        }
 
-        // Reverse Student.feeDetails balances
-        try {
-          const student = await Student.findOne(
-            scopeBySchool(schoolId, { _id: payment.studentId })
-          );
-          if (student) {
-            // Clamp paidAmount floor at 0 — $inc alone would let it go
-            // negative if the payment was somehow reversed twice, which
-            // would then overstate balanceAmount computation.
-            const currentPaid = student.feeDetails?.paidAmount || 0;
-            const newPaid = Math.max(0, currentPaid - cancelledAmount);
-            await Student.findByIdAndUpdate(student._id, {
-              $set: { 'feeDetails.paidAmount': newPaid },
-            });
-            const updated = await Student.findById(student._id);
-            if (updated) {
-              const totalFee = updated.feeDetails?.totalFee || 0;
-              const discountApplied = updated.feeDetails?.discountApplied || 0;
-              const paidAmount = updated.feeDetails?.paidAmount || 0;
-              const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
-              const { overallStatus } = computeFeeBalance({
-                totalFee,
-                totalPaid: paidAmount,
-                discountApplied,
-              });
-              await Student.findByIdAndUpdate(student._id, {
-                $set: {
-                  'feeDetails.balanceAmount': balanceAmount,
-                  feeStatus: overallStatus,
-                },
-              });
-            }
+            sfs.totalPaid = Math.max((sfs.totalPaid || 0) - cancelledAmount, 0);
+            const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+            sfs.totalBalance = totalBalance;
+            sfs.overallStatus = overallStatus;
           }
-        } catch (studentError) {
-          logger.warn(
-            { err: studentError, paymentId: payment._id },
-            'Could not reverse Student feeDetails after payment cancellation'
-          );
-        }
+        );
+      } catch (sfsError) {
+        logger.warn(
+          { err: sfsError, paymentId: payment._id },
+          'Could not reverse StudentFeeStructure after payment cancellation'
+        );
       }
 
-      res.json({
-        success: true,
-        message: 'Payment cancelled successfully',
-        payment,
-      });
-    } catch (error) {
-      logger.error({ err: error }, 'Error cancelling payment');
-      res.status(500).json({ error: 'Failed to cancel payment' });
+      // Reverse Student.feeDetails balances
+      try {
+        const student = await Student.findOne(scopeBySchool(schoolId, { _id: payment.studentId }));
+        if (student) {
+          // Clamp paidAmount floor at 0 — $inc alone would let it go
+          // negative if the payment was somehow reversed twice, which
+          // would then overstate balanceAmount computation.
+          const currentPaid = student.feeDetails?.paidAmount || 0;
+          const newPaid = Math.max(0, currentPaid - cancelledAmount);
+          await Student.findByIdAndUpdate(student._id, {
+            $set: { 'feeDetails.paidAmount': newPaid },
+          });
+          const updated = await Student.findById(student._id);
+          if (updated) {
+            const totalFee = updated.feeDetails?.totalFee || 0;
+            const discountApplied = updated.feeDetails?.discountApplied || 0;
+            const paidAmount = updated.feeDetails?.paidAmount || 0;
+            const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
+            const { overallStatus } = computeFeeBalance({
+              totalFee,
+              totalPaid: paidAmount,
+              discountApplied,
+            });
+            await Student.findByIdAndUpdate(student._id, {
+              $set: {
+                'feeDetails.balanceAmount': balanceAmount,
+                feeStatus: overallStatus,
+              },
+            });
+          }
+        }
+      } catch (studentError) {
+        logger.warn(
+          { err: studentError, paymentId: payment._id },
+          'Could not reverse Student feeDetails after payment cancellation'
+        );
+      }
     }
+
+    // Audit trail — record payment cancellation
+    try {
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(schoolId),
+        entityType: 'FeePayment',
+        entityId: payment._id,
+        action: 'payment_cancelled',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: payment.studentId || null,
+        changes: {
+          before: { status: previousStatus },
+          after: { status: 'cancelled', cancelledAt: payment.cancelledAt },
+        },
+        context: {
+          receiptNumber: payment.receiptNumber,
+          amount: cancelledAmount,
+          academicYear: payment.academicYear,
+          paymentMode: payment.paymentMode,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
+    }
+
+    res.json({
+      success: true,
+      message: 'Payment cancelled successfully',
+      payment,
+    });
+  } catch (error) {
+    logger.error({ err: error }, 'Error cancelling payment');
+    res.status(500).json({ error: 'Failed to cancel payment' });
   }
-);
+});
 
 // Update payment metadata (remarks, mode, transaction details — amount changes
 // require cancel + re-record to preserve the audit trail)
@@ -767,6 +894,32 @@ router.put('/payments/:id', checkPermission('fees', 'edit'), async (req, res) =>
         });
       } catch {
         // Audit-trail failures must not block the mutation
+      }
+
+      // Dedicated fee-payment audit trail
+      try {
+        await createFeePaymentAuditEntry({
+          schoolId: extractSchoolId(req.user?.schoolId),
+          entityType: 'FeePayment',
+          entityId: payment._id,
+          action: 'payment_updated',
+          performedBy: req.user?._id || req.user?.id,
+          performedByName: req.user?.name || req.user?.email || null,
+          studentId: payment.studentId || null,
+          changes: {
+            before: Object.fromEntries(Object.entries(changedFields).map(([k, v]) => [k, v.from])),
+            after: Object.fromEntries(Object.entries(changedFields).map(([k, v]) => [k, v.to])),
+          },
+          context: {
+            receiptNumber: payment.receiptNumber,
+            amount: payment.amount,
+            academicYear: payment.academicYear,
+            paymentMode: payment.paymentMode,
+          },
+          req,
+        });
+      } catch {
+        // Audit failures must never block the main request
       }
     }
 
@@ -901,6 +1054,37 @@ router.post(
         .populate('studentId', 'name admissionId')
         .populate('classId', 'name section');
 
+      // Audit trail — record refund creation
+      try {
+        await createFeePaymentAuditEntry({
+          schoolId: extractSchoolId(schoolId),
+          entityType: 'FeePayment',
+          entityId: refund._id,
+          action: 'refund_created',
+          performedBy: req.user?._id || req.user?.id,
+          performedByName: req.user?.name || req.user?.email || null,
+          studentId: studentId || null,
+          changes: {
+            after: {
+              amount: refund.amount,
+              reason: refund.reason,
+              refundMode: refund.refundMode,
+              status: refund.status,
+              refundNumber: refund.refundNumber,
+            },
+          },
+          context: {
+            refundNumber: refund.refundNumber,
+            amount: refund.amount,
+            academicYear: refund.academicYear,
+            reason: refund.reason,
+          },
+          req,
+        });
+      } catch {
+        // Audit failures must never block the main request
+      }
+
       res.status(201).json(populated);
     } catch (error) {
       logger.error({ err: error }, 'Error creating refund');
@@ -910,149 +1094,214 @@ router.post(
 );
 
 // Approve refund
-router.put(
-  '/refunds/:id/approve',
-  checkPermission('fees', 'edit'),
-  async (req, res) => {
-    try {
-      const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-      );
-      if (!refund) return res.status(404).json({ error: 'Refund not found' });
-      if (refund.status !== 'pending')
-        return res.status(400).json({ error: 'Only pending refunds can be approved' });
+router.put('/refunds/:id/approve', checkPermission('fees', 'edit'), async (req, res) => {
+  try {
+    const refund = await FeeRefund.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    if (refund.status !== 'pending')
+      return res.status(400).json({ error: 'Only pending refunds can be approved' });
 
-      // Re-validate refund amount against current total paid at approval time
-      const totalPaidAgg = await FeePayment.aggregate([
-        {
-          $match: scopeBySchool(req.user?.schoolId, {
-            studentId: refund.studentId,
-            status: 'completed',
-          }),
-        },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
-      ]);
-      const currentTotalPaid = totalPaidAgg[0]?.total || 0;
-      if (refund.amount > currentTotalPaid) {
-        return res.status(400).json({
-          error: `Refund amount (${refund.amount}) exceeds current total paid (${currentTotalPaid}). Cannot approve.`,
-          code: 'REFUND_EXCEEDS_PAID',
-        });
-      }
-
-      refund.status = 'approved';
-      refund.approvedBy = req.user?._id;
-      refund.approvedAt = new Date();
-      if (req.body.remarks) refund.remarks = req.body.remarks;
-      await refund.save();
-
-      res.json(refund);
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to approve refund');
-      res.status(500).json({ error: 'Failed to approve refund' });
+    // Re-validate refund amount against current total paid at approval time
+    const totalPaidAgg = await FeePayment.aggregate([
+      {
+        $match: scopeBySchool(req.user?.schoolId, {
+          studentId: refund.studentId,
+          status: 'completed',
+        }),
+      },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const currentTotalPaid = totalPaidAgg[0]?.total || 0;
+    if (refund.amount > currentTotalPaid) {
+      return res.status(400).json({
+        error: `Refund amount (${refund.amount}) exceeds current total paid (${currentTotalPaid}). Cannot approve.`,
+        code: 'REFUND_EXCEEDS_PAID',
+      });
     }
+
+    refund.status = 'approved';
+    refund.approvedBy = req.user?._id;
+    refund.approvedAt = new Date();
+    if (req.body.remarks) refund.remarks = req.body.remarks;
+    await refund.save();
+
+    // Audit trail — record refund approval
+    try {
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(req.user?.schoolId),
+        entityType: 'FeePayment',
+        entityId: refund._id,
+        action: 'refund_approved',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: refund.studentId || null,
+        changes: {
+          before: { status: 'pending' },
+          after: { status: 'approved', approvedAt: refund.approvedAt },
+        },
+        context: {
+          refundNumber: refund.refundNumber,
+          amount: refund.amount,
+          academicYear: refund.academicYear,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
+    }
+
+    res.json(refund);
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to approve refund');
+    res.status(500).json({ error: 'Failed to approve refund' });
   }
-);
+});
 
 // Process refund
-router.put(
-  '/refunds/:id/process',
-  checkPermission('fees', 'edit'),
-  async (req, res) => {
+router.put('/refunds/:id/process', checkPermission('fees', 'edit'), async (req, res) => {
+  try {
+    const refund = await FeeRefund.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    if (refund.status !== 'approved')
+      return res.status(400).json({ error: 'Only approved refunds can be processed' });
+
+    refund.status = 'processed';
+    refund.processedBy = req.user?._id;
+    refund.processedAt = new Date();
+    if (req.body.transactionId) refund.transactionId = req.body.transactionId;
+    if (req.body.remarks) refund.remarks = req.body.remarks;
+    await refund.save();
+
+    // Audit trail — record refund processing
     try {
-      const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-      );
-      if (!refund) return res.status(404).json({ error: 'Refund not found' });
-      if (refund.status !== 'approved')
-        return res.status(400).json({ error: 'Only approved refunds can be processed' });
-
-      refund.status = 'processed';
-      refund.processedBy = req.user?._id;
-      refund.processedAt = new Date();
-      if (req.body.transactionId) refund.transactionId = req.body.transactionId;
-      if (req.body.remarks) refund.remarks = req.body.remarks;
-      await refund.save();
-
-      // Reverse student fee balances when refund is processed
-      const refundAmount = refund.amount || 0;
-      if (refund.studentId && refundAmount > 0) {
-        try {
-          // Update StudentFeeStructure — decrease totalPaid, increase totalBalance
-          await updateFeeStructureWithRetry(
-            scopeBySchool(req.user?.schoolId, {
-              studentId: refund.studentId,
-              academicYear: refund.academicYear,
-            }),
-            async (sfs) => {
-              sfs.totalPaid = Math.max((sfs.totalPaid || 0) - refundAmount, 0);
-              const { totalBalance, overallStatus } = computeFeeBalance(sfs);
-              sfs.totalBalance = totalBalance;
-              sfs.overallStatus = overallStatus;
-            }
-          );
-
-          // Update Student.feeDetails — decrease paidAmount, increase balanceAmount.
-          // Clamp floor at 0 so duplicate refund processing can't drive
-          // paidAmount negative.
-          const student = await Student.findOne(
-            scopeBySchool(req.user?.schoolId, { _id: refund.studentId })
-          );
-          if (student) {
-            const currentPaid = student.feeDetails?.paidAmount || 0;
-            const newPaid = Math.max(0, currentPaid - refundAmount);
-            await Student.findByIdAndUpdate(student._id, {
-              $set: { 'feeDetails.paidAmount': newPaid },
-            });
-            const updated = await Student.findById(student._id);
-            if (updated) {
-              const totalFee = updated.feeDetails?.totalFee || 0;
-              const discountApplied = updated.feeDetails?.discountApplied || 0;
-              const paidAmount = updated.feeDetails?.paidAmount || 0;
-              const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
-              await Student.findByIdAndUpdate(student._id, {
-                $set: { 'feeDetails.balanceAmount': balanceAmount },
-              });
-            }
-          }
-        } catch (reverseErr) {
-          logger.warn(
-            { err: reverseErr, studentId: refund.studentId, refundId: refund._id },
-            'Could not reverse student fee balances after refund processing'
-          );
-        }
-      }
-
-      res.json(refund);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to process refund' });
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(req.user?.schoolId),
+        entityType: 'FeePayment',
+        entityId: refund._id,
+        action: 'refund_processed',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: refund.studentId || null,
+        changes: {
+          before: { status: 'approved' },
+          after: { status: 'processed', processedAt: refund.processedAt },
+        },
+        context: {
+          refundNumber: refund.refundNumber,
+          amount: refund.amount,
+          academicYear: refund.academicYear,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
     }
+
+    // Reverse student fee balances when refund is processed
+    const refundAmount = refund.amount || 0;
+    if (refund.studentId && refundAmount > 0) {
+      try {
+        // Update StudentFeeStructure — decrease totalPaid, increase totalBalance
+        await updateFeeStructureWithRetry(
+          scopeBySchool(req.user?.schoolId, {
+            studentId: refund.studentId,
+            academicYear: refund.academicYear,
+          }),
+          async (sfs) => {
+            sfs.totalPaid = Math.max((sfs.totalPaid || 0) - refundAmount, 0);
+            const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+            sfs.totalBalance = totalBalance;
+            sfs.overallStatus = overallStatus;
+          }
+        );
+
+        // Update Student.feeDetails — decrease paidAmount, increase balanceAmount.
+        // Clamp floor at 0 so duplicate refund processing can't drive
+        // paidAmount negative.
+        const student = await Student.findOne(
+          scopeBySchool(req.user?.schoolId, { _id: refund.studentId })
+        );
+        if (student) {
+          const currentPaid = student.feeDetails?.paidAmount || 0;
+          const newPaid = Math.max(0, currentPaid - refundAmount);
+          await Student.findByIdAndUpdate(student._id, {
+            $set: { 'feeDetails.paidAmount': newPaid },
+          });
+          const updated = await Student.findById(student._id);
+          if (updated) {
+            const totalFee = updated.feeDetails?.totalFee || 0;
+            const discountApplied = updated.feeDetails?.discountApplied || 0;
+            const paidAmount = updated.feeDetails?.paidAmount || 0;
+            const balanceAmount = Math.max(totalFee - paidAmount - discountApplied, 0);
+            await Student.findByIdAndUpdate(student._id, {
+              $set: { 'feeDetails.balanceAmount': balanceAmount },
+            });
+          }
+        }
+      } catch (reverseErr) {
+        logger.warn(
+          { err: reverseErr, studentId: refund.studentId, refundId: refund._id },
+          'Could not reverse student fee balances after refund processing'
+        );
+      }
+    }
+
+    res.json(refund);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to process refund' });
   }
-);
+});
 
 // Reject refund
-router.put(
-  '/refunds/:id/reject',
-  checkPermission('fees', 'edit'),
-  async (req, res) => {
+router.put('/refunds/:id/reject', checkPermission('fees', 'edit'), async (req, res) => {
+  try {
+    const refund = await FeeRefund.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+    );
+    if (!refund) return res.status(404).json({ error: 'Refund not found' });
+    if (refund.status === 'processed')
+      return res.status(400).json({ error: 'Processed refunds cannot be rejected' });
+
+    const previousRefundStatus = refund.status;
+    refund.status = 'rejected';
+    refund.rejectionReason = req.body.rejectionReason || '';
+    await refund.save();
+
+    // Audit trail — record refund rejection
     try {
-      const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-      );
-      if (!refund) return res.status(404).json({ error: 'Refund not found' });
-      if (refund.status === 'processed')
-        return res.status(400).json({ error: 'Processed refunds cannot be rejected' });
-
-      refund.status = 'rejected';
-      refund.rejectionReason = req.body.rejectionReason || '';
-      await refund.save();
-
-      res.json(refund);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to reject refund' });
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(req.user?.schoolId),
+        entityType: 'FeePayment',
+        entityId: refund._id,
+        action: 'refund_rejected',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: refund.studentId || null,
+        changes: {
+          before: { status: previousRefundStatus },
+          after: { status: 'rejected', rejectionReason: refund.rejectionReason },
+        },
+        context: {
+          refundNumber: refund.refundNumber,
+          amount: refund.amount,
+          academicYear: refund.academicYear,
+          reason: refund.rejectionReason,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
     }
+
+    res.json(refund);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reject refund' });
   }
-);
+});
 
 // Update refund (only pending refunds can be edited)
 router.put('/refunds/:id', checkPermission('fees', 'edit'), async (req, res) => {
@@ -1072,6 +1321,27 @@ router.put('/refunds/:id', checkPermission('fees', 'edit'), async (req, res) => 
     if (remarks !== undefined) refund.remarks = remarks;
 
     await refund.save();
+
+    // Audit trail — record refund update
+    try {
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(req.user?.schoolId),
+        entityType: 'FeePayment',
+        entityId: refund._id,
+        action: 'refund_updated',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: refund.studentId || null,
+        context: {
+          refundNumber: refund.refundNumber,
+          amount: refund.amount,
+          academicYear: refund.academicYear,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
+    }
 
     const populated = await FeeRefund.findById(refund._id)
       .populate('studentId', 'name admissionId')
@@ -1109,6 +1379,35 @@ router.delete('/refunds/:id', checkPermission('fees', 'delete'), async (req, res
       deletedBy: req.user?.id || req.user?._id,
       schoolId: req.user?.schoolId,
     }).catch(() => {});
+
+    // Audit trail — record refund deletion
+    try {
+      await createFeePaymentAuditEntry({
+        schoolId: extractSchoolId(req.user?.schoolId),
+        entityType: 'FeePayment',
+        entityId: refundSnapshot._id,
+        action: 'refund_deleted',
+        performedBy: req.user?._id || req.user?.id,
+        performedByName: req.user?.name || req.user?.email || null,
+        studentId: refundSnapshot.studentId || null,
+        changes: {
+          before: {
+            amount: refundSnapshot.amount,
+            reason: refundSnapshot.reason,
+            status: refundSnapshot.status,
+            refundNumber: refundSnapshot.refundNumber,
+          },
+        },
+        context: {
+          refundNumber: refundSnapshot.refundNumber,
+          amount: refundSnapshot.amount,
+          academicYear: refundSnapshot.academicYear,
+        },
+        req,
+      });
+    } catch {
+      // Audit failures must never block the main request
+    }
 
     res.json({ message: 'Refund deleted successfully' });
   } catch (error) {

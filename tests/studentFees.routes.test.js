@@ -12,6 +12,7 @@ import {
   createStaffUser,
   createStudentRecord,
 } from './helpers/factories.js';
+import { FeePaymentAudit } from '../database.js';
 import { createTestApp } from './helpers/testApp.js';
 
 // ---------------------------------------------------------------------------
@@ -609,6 +610,18 @@ describe('PUT /api/student-fees/student/:studentId/discount', () => {
     const refreshed = await Student.findById(student._id).lean();
     expect(refreshed.feeDetails.discountApplied).toBe(3000);
     expect(refreshed.feeDetails.balanceAmount).toBe(5000);
+
+    // Verify fee payment audit trail was recorded
+    const auditLogs = await FeePaymentAudit.find({
+      schoolId: school._id,
+      studentId: student._id,
+      action: 'discount_applied',
+    }).lean();
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].changes.before.discountApplied).toBe(0);
+    expect(auditLogs[0].changes.after.discountApplied).toBe(3000);
+    expect(auditLogs[0].context.amount).toBe(3000);
+    expect(auditLogs[0].context.reason).toBe('Merit scholarship');
   });
 
   it('returns 400 when discount exceeds outstanding balance', async () => {
@@ -827,6 +840,18 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
     expect(refreshed.feeDetails.paidAmount).toBe(3000);
     expect(refreshed.feeDetails.balanceAmount).toBe(3000);
     expect(refreshed.feeStatus).toBe('partial');
+
+    // Verify fee payment audit trail was recorded
+    const auditLogs = await FeePaymentAudit.find({
+      schoolId: school._id,
+      studentId: student._id,
+      action: 'payment_recorded',
+    }).lean();
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].changes.before.totalPaid).toBe(0);
+    expect(auditLogs[0].changes.after.totalPaid).toBe(3000);
+    expect(auditLogs[0].context.amount).toBe(3000);
+    expect(auditLogs[0].context.receiptNumber).toBeDefined();
   });
 
   it('marks overall status as paid when full amount is covered', async () => {
@@ -892,6 +917,15 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
 
     const refreshed = await Student.findById(student._id).lean();
     expect(refreshed.feeStatus).toBe('paid');
+
+    // Verify fee payment audit trail was recorded
+    const auditLogs = await FeePaymentAudit.find({
+      schoolId: school._id,
+      studentId: student._id,
+      action: 'payment_recorded',
+    }).lean();
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].context.amount).toBe(5000);
   });
 
   it('handles payment without feeHeadPayments array gracefully', async () => {
