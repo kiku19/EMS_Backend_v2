@@ -151,14 +151,36 @@ export const isServerReady = () => serverReady;
 
 validateEnvironment();
 
+let isShuttingDown = false;
+
+function flushAndExit(exitCode) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  // Safety net: force exit even if the logger transport never flushes
+  const safetyTimeout = setTimeout(() => process.exit(exitCode), 2500);
+  safetyTimeout.unref();
+
+  logger.flush(() => {
+    clearTimeout(safetyTimeout);
+    process.exit(exitCode);
+  });
+}
+
 process.on('uncaughtException', (error) => {
   logger.fatal({ err: error }, 'Uncaught exception');
-  process.exit(1);
+  if (process.env.SENTRY_DSN) {
+    Sentry.captureException(error);
+  }
+  flushAndExit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
   logger.fatal({ reason }, 'Unhandled rejection');
-  process.exit(1);
+  if (process.env.SENTRY_DSN) {
+    Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
+  }
+  flushAndExit(1);
 });
 
 const app = express();
