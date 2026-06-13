@@ -261,9 +261,10 @@ export async function provisionSchoolSubscription({
   billingContactName = null,
   billingEmail = null,
   billingPhone = null,
+  session = null,
 } = {}) {
   const now = new Date();
-  const subscription = await SchoolSubscription.create({
+  const subscription = new SchoolSubscription({
     schoolId,
     planKey: 'starter',
     trialPlanKey: 'growth',
@@ -285,11 +286,13 @@ export async function provisionSchoolSubscription({
     },
   });
 
+  await subscription.save({ session });
   return subscription;
 }
 
 export async function ensureSchoolSubscription(schoolId, defaults = {}) {
-  let subscription = await SchoolSubscription.findOne({ schoolId });
+  const { session } = defaults;
+  let subscription = await SchoolSubscription.findOne({ schoolId }).session(session);
 
   if (!subscription) {
     try {
@@ -298,13 +301,14 @@ export async function ensureSchoolSubscription(schoolId, defaults = {}) {
         billingContactName: defaults.billingContactName || null,
         billingEmail: defaults.billingEmail || null,
         billingPhone: defaults.billingPhone || null,
+        session,
       });
     } catch (err) {
       // Under concurrent load two requests can both see no subscription and both
       // attempt to insert — the second one hits the unique index (E11000).
       // Re-fetch the document that the winning request just created.
       if (err.code === 11000) {
-        subscription = await SchoolSubscription.findOne({ schoolId });
+        subscription = await SchoolSubscription.findOne({ schoolId }).session(session);
       } else {
         throw err;
       }
@@ -486,8 +490,9 @@ export async function syncUsageMetrics(schoolId) {
   return subscription;
 }
 
-export async function incrementUsageMetric(schoolId, metric, delta = 1) {
-  const subscription = await ensureSchoolSubscription(schoolId);
+export async function incrementUsageMetric(schoolId, metric, delta = 1, options = {}) {
+  const { session } = options;
+  const subscription = await ensureSchoolSubscription(schoolId, { session });
   const current = normalizeMetricValue(subscription.usageMetrics?.[metric]);
 
   subscription.usageMetrics[metric] = {
@@ -495,7 +500,7 @@ export async function incrementUsageMetric(schoolId, metric, delta = 1) {
     trackedAt: new Date(),
   };
 
-  await subscription.save();
+  await subscription.save({ session });
   return subscription;
 }
 

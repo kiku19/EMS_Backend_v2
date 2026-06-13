@@ -18,6 +18,7 @@
  */
 
 import express from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
@@ -306,53 +307,53 @@ router.post(
   '/erasure-requests/:id/execute',
   checkPermission('students', 'delete'),
   async (req, res) => {
+    const mongoSession = await mongoose.startSession();
     try {
       const schoolId = req.user.schoolId;
-
-      const request = await ErasureRequest.findOne(
-        buildSchoolScopedQuery(schoolId, { _id: req.params.id, status: 'approved' })
-      );
-      if (!request) {
-        return res.status(404).json({
-          success: false,
-          message: 'Approved erasure request not found',
-        });
-      }
-
       let deletedRecords;
-      try {
-        if (request.entityType === 'Student') {
-          const result = await permanentlyDeleteStudentData(request.entityId);
-          deletedRecords = result.deletedRecords;
-        } else if (request.entityType === 'Staff') {
-          const result = await permanentlyDeleteStaffData(request.entityId);
-          deletedRecords = result.deletedRecords;
-        } else {
-          return res.status(400).json({
-            success: false,
-            message: `Automated erasure is not supported for entityType: ${request.entityType}`,
-          });
-        }
-      } catch (execErr) {
-        request.status = 'failed';
-        request.executionError = execErr.message?.slice(0, 500);
-        await request.save();
-        return res.status(500).json({
-          success: false,
-          message: 'Erasure execution failed',
-          error: execErr.message,
-        });
-      }
 
-      request.status = 'executed';
-      request.executedAt = new Date();
-      request.deletedRecords = deletedRecords;
-      await request.save();
+      await mongoSession.withTransaction(async (session) => {
+        const request = await ErasureRequest.findOne(
+          buildSchoolScopedQuery(schoolId, { _id: req.params.id, status: 'approved' })
+        ).session(session);
+        if (!request) {
+          const err = new Error('Approved erasure request not found');
+          err.status = 404;
+          throw err;
+        }
+
+        let result;
+        if (request.entityType === 'Student') {
+          result = await permanentlyDeleteStudentData(request.entityId, { session });
+        } else if (request.entityType === 'Staff') {
+          result = await permanentlyDeleteStaffData(request.entityId, { session });
+        } else {
+          const err = new Error(
+            `Automated erasure is not supported for entityType: ${request.entityType}`
+          );
+          err.status = 400;
+          throw err;
+        }
+
+        deletedRecords = result.deletedRecords;
+
+        request.status = 'executed';
+        request.executedAt = new Date();
+        request.deletedRecords = deletedRecords;
+        await request.save({ session });
+      });
 
       res.json({ success: true, message: 'Erasure executed successfully', deletedRecords });
     } catch (err) {
       console.error('[GDPR] Execute erasure error:', err);
+
+      if (err.status) {
+        return res.status(err.status).json({ success: false, message: err.message });
+      }
+
       res.status(500).json({ success: false, message: err.message });
+    } finally {
+      await mongoSession.endSession();
     }
   }
 );

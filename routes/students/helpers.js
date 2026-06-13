@@ -57,7 +57,10 @@ export const sendReminderSchema = z.object({
 });
 
 export const sendRemindersBulkSchema = z.object({
-  studentIds: z.array(z.string().min(1)).min(1, 'At least one student is required').max(500, 'Too many students'),
+  studentIds: z
+    .array(z.string().min(1))
+    .min(1, 'At least one student is required')
+    .max(500, 'Too many students'),
   type: z.enum(['fee', 'attendance'], { required_error: 'Reminder type is required' }),
   message: z.string().max(500, 'Message too long').optional(),
 });
@@ -193,20 +196,24 @@ export async function buildStudentListQuery(
   return conditions.length === 1 ? conditions[0] : { $and: conditions };
 }
 
-export async function initializeFeeStructure(student) {
+export async function initializeFeeStructure(student, options = {}) {
+  const { session } = options;
   const academicYear = await resolveAcademicYear(student.academicYear);
 
   const existingFeeStructure = await StudentFeeStructure.findOne({
     studentId: student._id,
     academicYear,
     schoolId: student.schoolId,
-  });
+  }).session(session);
 
   if (existingFeeStructure) {
     return;
   }
 
-  const classInfo = await Class.findOne({ _id: student.classId, schoolId: student.schoolId });
+  const classInfo = await Class.findOne({
+    _id: student.classId,
+    schoolId: student.schoolId,
+  }).session(session);
   if (!classInfo) {
     return;
   }
@@ -221,7 +228,7 @@ export async function initializeFeeStructure(student) {
     schoolId: student.schoolId,
     applicableClasses: { $in: tokens },
     isActive: true,
-  });
+  }).session(session);
 
   const feeStructure = new StudentFeeStructure({
     studentId: student._id,
@@ -246,7 +253,7 @@ export async function initializeFeeStructure(student) {
   feeStructure.totalBalance = feeStructure.totalFee;
   feeStructure.overallStatus = 'pending';
 
-  await feeStructure.save();
+  await feeStructure.save({ session });
 }
 
 function overallStatusFor(totalFee, totalPaid) {
@@ -298,9 +305,7 @@ export async function resyncFeeStructureForClassChange(student) {
     isActive: true,
   });
 
-  const priorByFeeHeadId = new Map(
-    existing.feeHeads.map((fh) => [fh.feeHeadId?.toString(), fh])
-  );
+  const priorByFeeHeadId = new Map(existing.feeHeads.map((fh) => [fh.feeHeadId?.toString(), fh]));
 
   const mergedHeads = newApplicableHeads.map((feeHead) => {
     const prior = priorByFeeHeadId.get(feeHead._id.toString());

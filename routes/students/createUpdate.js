@@ -1,5 +1,13 @@
 import express from 'express';
-import { Student, Class, StudentFeeStructure, Attendance, Result, getNextAdmissionId } from '../../database.js';
+import mongoose from 'mongoose';
+import {
+  Student,
+  Class,
+  StudentFeeStructure,
+  Attendance,
+  Result,
+  getNextAdmissionId,
+} from '../../database.js';
 import { createOrUpdateParentAccount } from '../../utils/parentAccountHelper.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
@@ -31,120 +39,147 @@ router.post(
   planLimitGate('students'),
   validateZod(createStudentSchema),
   async (req, res) => {
+    const mongoSession = await mongoose.startSession();
     try {
-      // Auto-generate admission ID server-side if not provided (avoids race condition
-      // where a separate GET /next-admission-id call increments the counter but the
-      // subsequent student creation fails, permanently consuming the ID).
-      if (!req.body.admissionId) {
-        req.body.admissionId = await getNextAdmissionId(req.user.schoolId);
-      }
+      let student;
+      let populatedStudent;
 
-      const existingAdmission = await Student.findOne(
-        scopeBySchool(req.user?.schoolId, {
-          admissionId: req.body.admissionId,
-          isDeleted: { $ne: true },
-        })
-      );
-      if (existingAdmission) {
-        return res.status(409).json({
-          error: req.t('common:routes.admissionIdAlreadyExists'),
-          field: 'admissionId',
-          value: req.body.admissionId,
-        });
-      }
+      await mongoSession.withTransaction(async (session) => {
+        // Auto-generate admission ID server-side if not provided (avoids race condition
+        // where a separate GET /next-admission-id call increments the counter but the
+        // subsequent student creation fails, permanently consuming the ID).
+        if (!req.body.admissionId) {
+          req.body.admissionId = await getNextAdmissionId(req.user.schoolId);
+        }
 
-      const classExists = await Class.findOne({
-        _id: req.body.classId,
-        schoolId: req.user?.schoolId,
-      });
-      if (!classExists) {
-        return res.status(400).json({
-          error: req.t('common:routes.classDoesNotExist'),
-          field: 'classId',
-          value: req.body.classId,
-        });
-      }
-
-      // Check class capacity before allowing student creation
-      const capacityResult = await checkClassCapacity(req.body.classId, req.user?.schoolId);
-      if (capacityResult && capacityResult.isFull) {
-        return res.status(400).json({
-          error: `Class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}). Cannot add more students.`,
-          field: 'classId',
-          value: req.body.classId,
-        });
-      }
-
-      if (req.body.rollNo != null) {
-        const existingRollNo = await Student.findOne(
+        const existingAdmission = await Student.findOne(
           scopeBySchool(req.user?.schoolId, {
-            rollNo: req.body.rollNo,
-            classId: req.body.classId,
-            academicYear: req.body.academicYear,
+            admissionId: req.body.admissionId,
             isDeleted: { $ne: true },
           })
-        );
-
-        if (existingRollNo) {
-          return res.status(409).json({
-            error: req.t('common:routes.rollNumberAlreadyExistsInThisClassForTheAcademicYear'),
-            field: 'rollNo',
-            value: req.body.rollNo,
-          });
+        ).session(session);
+        if (existingAdmission) {
+          const err = new Error(req.t('common:routes.admissionIdAlreadyExists'));
+          err.status = 409;
+          err.field = 'admissionId';
+          err.value = req.body.admissionId;
+          throw err;
         }
-      }
 
-      const studentData = {
-        name: req.body.name,
-        admissionId: req.body.admissionId,
-        academicYear: req.body.academicYear,
-        rollNo: req.body.rollNo,
-        classId: req.body.classId,
-        schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
-        gender: req.body.gender,
-        dateOfBirth: req.body.dateOfBirth,
-        bloodGroup: req.body.bloodGroup,
-        nationality: req.body.nationality,
-        religion: req.body.religion,
-        category: req.body.category,
-        motherTongue: req.body.motherTongue,
-        aadhaarNumber: req.body.aadhaarNumber,
-        phone: req.body.phone,
-        email: req.body.email,
-        address: req.body.address,
-        city: req.body.city,
-        state: req.body.state,
-        zipCode: req.body.zipCode,
-        parents: processParents(req.body.parents || []),
-        siblings: req.body.siblings,
-        previousSchool: req.body.previousSchool,
-        tcNumber: req.body.tcNumber,
-        mediumOfInstruction: req.body.mediumOfInstruction,
-        house: req.body.house,
-        medicalConditions: req.body.medicalConditions,
-        emergencyContactName: req.body.emergencyContactName,
-        emergencyContactPhone: req.body.emergencyContactPhone,
-        healthInfo: req.body.healthInfo,
-        transportRequired: req.body.transportRequired || false,
-        hostelRequired: req.body.hostelRequired || false,
-        isWhatsapp: req.body.isWhatsapp || false,
-        whatsappNumber: req.body.whatsappNumber,
-        // feeStatus is server-derived from the fee structure, never accepted
-        // from the client. Always initialise to 'pending' — overallStatus
-        // will flip to 'paid'/'partial'/'overdue' as payments land.
-        feeStatus: 'pending',
-        status: req.body.status || 'active',
-        photo: req.body.photo,
-        documents: req.body.documents || [],
-        // LEGAL-03: COPPA — flag students under 13 for compliance tracking
-        coppaApplicable: isCoppaApplicable(req.body.dateOfBirth),
-      };
+        const classExists = await Class.findOne({
+          _id: req.body.classId,
+          schoolId: req.user?.schoolId,
+        }).session(session);
+        if (!classExists) {
+          const err = new Error(req.t('common:routes.classDoesNotExist'));
+          err.status = 400;
+          err.field = 'classId';
+          err.value = req.body.classId;
+          throw err;
+        }
 
-      cleanObject(studentData);
+        // Check class capacity before allowing student creation
+        const capacityResult = await checkClassCapacity(req.body.classId, req.user?.schoolId);
+        if (capacityResult && capacityResult.isFull) {
+          const err = new Error(
+            `Class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}). Cannot add more students.`
+          );
+          err.status = 400;
+          err.field = 'classId';
+          err.value = req.body.classId;
+          throw err;
+        }
 
-      const student = new Student(studentData);
-      await student.save();
+        if (req.body.rollNo != null) {
+          const existingRollNo = await Student.findOne(
+            scopeBySchool(req.user?.schoolId, {
+              rollNo: req.body.rollNo,
+              classId: req.body.classId,
+              academicYear: req.body.academicYear,
+              isDeleted: { $ne: true },
+            })
+          ).session(session);
 
+          if (existingRollNo) {
+            const err = new Error(
+              req.t('common:routes.rollNumberAlreadyExistsInThisClassForTheAcademicYear')
+            );
+            err.status = 409;
+            err.field = 'rollNo';
+            err.value = req.body.rollNo;
+            throw err;
+          }
+        }
+
+        const studentData = {
+          name: req.body.name,
+          admissionId: req.body.admissionId,
+          academicYear: req.body.academicYear,
+          rollNo: req.body.rollNo,
+          classId: req.body.classId,
+          schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
+          gender: req.body.gender,
+          dateOfBirth: req.body.dateOfBirth,
+          bloodGroup: req.body.bloodGroup,
+          nationality: req.body.nationality,
+          religion: req.body.religion,
+          category: req.body.category,
+          motherTongue: req.body.motherTongue,
+          aadhaarNumber: req.body.aadhaarNumber,
+          phone: req.body.phone,
+          email: req.body.email,
+          address: req.body.address,
+          city: req.body.city,
+          state: req.body.state,
+          zipCode: req.body.zipCode,
+          parents: processParents(req.body.parents || []),
+          siblings: req.body.siblings,
+          previousSchool: req.body.previousSchool,
+          tcNumber: req.body.tcNumber,
+          mediumOfInstruction: req.body.mediumOfInstruction,
+          house: req.body.house,
+          medicalConditions: req.body.medicalConditions,
+          emergencyContactName: req.body.emergencyContactName,
+          emergencyContactPhone: req.body.emergencyContactPhone,
+          healthInfo: req.body.healthInfo,
+          transportRequired: req.body.transportRequired || false,
+          hostelRequired: req.body.hostelRequired || false,
+          isWhatsapp: req.body.isWhatsapp || false,
+          whatsappNumber: req.body.whatsappNumber,
+          // feeStatus is server-derived from the fee structure, never accepted
+          // from the client. Always initialise to 'pending' — overallStatus
+          // will flip to 'paid'/'partial'/'overdue' as payments land.
+          feeStatus: 'pending',
+          status: req.body.status || 'active',
+          photo: req.body.photo,
+          documents: req.body.documents || [],
+          // LEGAL-03: COPPA — flag students under 13 for compliance tracking
+          coppaApplicable: isCoppaApplicable(req.body.dateOfBirth),
+        };
+
+        cleanObject(studentData);
+
+        student = new Student(studentData);
+        await student.save({ session });
+
+        if (req.user?.schoolId) {
+          await incrementUsageMetric(req.user.schoolId, 'students', 1, { session });
+        }
+
+        await initializeFeeStructure(student, { session });
+
+        // Re-fetch to get decrypted PII fields (pre-save encrypts in-place)
+        populatedStudent = await Student.findOne({
+          _id: student._id,
+          schoolId: req.user?.schoolId,
+        })
+          .populate('classId', 'name section')
+          .session(session);
+
+        await createOrUpdateParentAccount(populatedStudent, { session });
+      });
+
+      // Non-transactional side effects: webhooks, sockets
       dispatchWebhookEvent(req.user?.schoolId, 'student.created', {
         id: student._id,
         name: student.name,
@@ -153,37 +188,6 @@ router.post(
         academicYear: student.academicYear,
       }).catch(() => {});
 
-      if (req.user?.schoolId) {
-        await incrementUsageMetric(req.user.schoolId, 'students', 1);
-      }
-
-      const warnings = [];
-
-      try {
-        await initializeFeeStructure(student);
-      } catch (feeError) {
-        console.error('Error auto-initializing fee structure:', feeError);
-        warnings.push({
-          operation: 'initializeFeeStructure',
-          message: feeError.message || 'Failed to initialize fee structure',
-        });
-      }
-
-      // Re-fetch to get decrypted PII fields (pre-save encrypts in-place)
-      const populatedStudent = await Student.findOne({
-        _id: student._id,
-        schoolId: req.user?.schoolId,
-      }).populate('classId', 'name section');
-
-      try {
-        await createOrUpdateParentAccount(populatedStudent);
-      } catch (parentError) {
-        console.error('Error auto-creating parent accounts:', parentError);
-        warnings.push({
-          operation: 'createOrUpdateParentAccount',
-          message: parentError.message || 'Failed to create parent account',
-        });
-      }
       const classInfo = formatStudentClass(populatedStudent);
 
       const io = req.app.get('io');
@@ -207,7 +211,6 @@ router.post(
         feeStatus: populatedStudent.feeStatus || 'pending',
         photo: populatedStudent.photo,
         documents: populatedStudent.documents || [],
-        warnings,
         ...populatedStudent.toObject(),
       });
     } catch (error) {
@@ -227,14 +230,23 @@ router.post(
         });
       }
 
+      if (error.status) {
+        return res.status(error.status).json({
+          error: error.message,
+          field: error.field,
+          value: error.value,
+        });
+      }
+
       res.status(error.status || 500).json({
         error: error.message,
         details: error.details,
       });
+    } finally {
+      await mongoSession.endSession();
     }
   }
 );
-
 router.put(
   '/:id',
   authenticate,
@@ -311,7 +323,8 @@ router.put(
         const serverTs = new Date(originalStudent.updatedAt).getTime();
         if (clientTs !== serverTs) {
           return res.status(409).json({
-            error: 'This student record was modified in another tab or session. Please close this form and reopen to get the latest data.',
+            error:
+              'This student record was modified in another tab or session. Please close this form and reopen to get the latest data.',
             code: 'STALE_DATA',
           });
         }

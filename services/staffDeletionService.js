@@ -40,72 +40,94 @@ function getModifiedCount(result) {
  *
  * Returns a summary of all affected document counts.
  */
-export async function cascadeDeleteStaffReferences(staffId) {
+export async function cascadeDeleteStaffReferences(staffId, options = {}) {
+  const { session } = options;
   const normalizedStaffId = toObjectId(staffId);
   const deleted = {};
 
   await Promise.all([
     // Hard-delete attendance records — no value once staff is gone
-    StaffAttendance.deleteMany({ staffId: normalizedStaffId }).then(
+    StaffAttendance.deleteMany({ staffId: normalizedStaffId }, { session }).then(
       (r) => (deleted.staffAttendance = getDeletedCount(r))
     ),
 
     // Hard-delete leave requests — no value once staff is gone
-    TeacherLeave.deleteMany({ teacherId: normalizedStaffId }).then(
+    TeacherLeave.deleteMany({ teacherId: normalizedStaffId }, { session }).then(
       (r) => (deleted.teacherLeaves = getDeletedCount(r))
     ),
 
     // Hard-delete personal notifications for this staff member
-    Notification.deleteMany({
-      userId: normalizedStaffId,
-      userModel: 'Staff',
-    }).then((r) => (deleted.notifications = getDeletedCount(r))),
+    Notification.deleteMany(
+      {
+        userId: normalizedStaffId,
+        userModel: 'Staff',
+      },
+      { session }
+    ).then((r) => (deleted.notifications = getDeletedCount(r))),
 
     // Hard-delete notification preferences for this staff member
-    NotificationPreference.deleteMany({
-      userId: normalizedStaffId,
-      userModel: 'Staff',
-    }).then((r) => (deleted.notificationPreferences = getDeletedCount(r))),
+    NotificationPreference.deleteMany(
+      {
+        userId: normalizedStaffId,
+        userModel: 'Staff',
+      },
+      { session }
+    ).then((r) => (deleted.notificationPreferences = getDeletedCount(r))),
 
     // Hard-delete messages sent or received by this staff member
-    Message.deleteMany({
-      $or: [
-        { senderId: normalizedStaffId, senderModel: 'Staff' },
-        { receiverId: normalizedStaffId, receiverModel: 'Staff' },
-      ],
-    }).then((r) => (deleted.messages = getDeletedCount(r))),
+    Message.deleteMany(
+      {
+        $or: [
+          { senderId: normalizedStaffId, senderModel: 'Staff' },
+          { receiverId: normalizedStaffId, receiverModel: 'Staff' },
+        ],
+      },
+      { session }
+    ).then((r) => (deleted.messages = getDeletedCount(r))),
 
     // Remove staff from conversation participant lists; delete conversation if now empty
-    Conversation.deleteMany({
-      participants: {
-        $elemMatch: { userId: normalizedStaffId, userModel: 'Staff' },
+    Conversation.deleteMany(
+      {
+        participants: {
+          $elemMatch: { userId: normalizedStaffId, userModel: 'Staff' },
+        },
       },
-    }).then((r) => (deleted.conversations = getDeletedCount(r))),
+      { session }
+    ).then((r) => (deleted.conversations = getDeletedCount(r))),
 
     // Null out teacherId on ChapterProgress — keep progress records for the class
-    ChapterProgress.updateMany({ teacherId: normalizedStaffId }, { $unset: { teacherId: 1 } }).then(
-      (r) => (deleted.chapterProgressUnlinked = getModifiedCount(r))
-    ),
+    ChapterProgress.updateMany(
+      { teacherId: normalizedStaffId },
+      { $unset: { teacherId: 1 } },
+      { session }
+    ).then((r) => (deleted.chapterProgressUnlinked = getModifiedCount(r))),
 
     // Null out teacherId on Homework — keep assignments for students
-    Homework.updateMany({ teacherId: normalizedStaffId }, { $unset: { teacherId: 1 } }).then(
-      (r) => (deleted.homeworkUnlinked = getModifiedCount(r))
-    ),
+    Homework.updateMany(
+      { teacherId: normalizedStaffId },
+      { $unset: { teacherId: 1 } },
+      { session }
+    ).then((r) => (deleted.homeworkUnlinked = getModifiedCount(r))),
 
     // Null out authorId on Remark — keep remarks as student history (field is optional)
-    Remark.updateMany({ authorId: normalizedStaffId }, { $unset: { authorId: 1 } }).then(
-      (r) => (deleted.remarksUnlinked = getModifiedCount(r))
-    ),
+    Remark.updateMany(
+      { authorId: normalizedStaffId },
+      { $unset: { authorId: 1 } },
+      { session }
+    ).then((r) => (deleted.remarksUnlinked = getModifiedCount(r))),
 
     // Null out sentBy on ClassAnnouncement — keep announcements as historical records
-    ClassAnnouncement.updateMany({ sentBy: normalizedStaffId }, { $unset: { sentBy: 1 } }).then(
-      (r) => (deleted.classAnnouncementsUnlinked = getModifiedCount(r))
-    ),
+    ClassAnnouncement.updateMany(
+      { sentBy: normalizedStaffId },
+      { $unset: { sentBy: 1 } },
+      { session }
+    ).then((r) => (deleted.classAnnouncementsUnlinked = getModifiedCount(r))),
 
     // Clear warden reference from hostels
     Hostel.updateMany(
       { wardenId: normalizedStaffId },
-      { $unset: { wardenId: 1, wardenName: 1, wardenPhone: 1, wardenEmail: 1 } }
+      { $unset: { wardenId: 1, wardenName: 1, wardenPhone: 1, wardenEmail: 1 } },
+      { session }
     ).then((r) => (deleted.hostelWardensCleared = getModifiedCount(r))),
   ]);
 
@@ -127,9 +149,10 @@ export async function cascadeDeleteStaffReferences(staffId) {
  *
  * Returns { staff, deletedRecords }.
  */
-export async function permanentlyDeleteStaffData(staffId) {
+export async function permanentlyDeleteStaffData(staffId, options = {}) {
+  const { session } = options;
   const normalizedStaffId = toObjectId(staffId);
-  const staff = await Staff.findById(normalizedStaffId).lean();
+  const staff = await Staff.findById(normalizedStaffId).session(session).lean();
 
   if (!staff) {
     const error = new Error('Staff not found');
@@ -138,16 +161,20 @@ export async function permanentlyDeleteStaffData(staffId) {
   }
 
   // Run all reference cleanup first (messages, attendance, leaves, notifications, etc.)
-  const deletedRecords = await cascadeDeleteStaffReferences(normalizedStaffId);
+  const deletedRecords = await cascadeDeleteStaffReferences(normalizedStaffId, { session });
 
   // TeacherTimetable documents for this staff
   deletedRecords.teacherTimetables = getDeletedCount(
-    await TeacherTimetable.deleteMany({ teacherId: normalizedStaffId })
+    await TeacherTimetable.deleteMany({ teacherId: normalizedStaffId }, { session })
   );
 
   // Unlink class teacher assignment
   deletedRecords.classTeacherUnlinked = getModifiedCount(
-    await Class.updateMany({ classTeacherId: normalizedStaffId }, { $unset: { classTeacherId: 1 } })
+    await Class.updateMany(
+      { classTeacherId: normalizedStaffId },
+      { $unset: { classTeacherId: 1 } },
+      { session }
+    )
   );
 
   // Null out this teacher from timetable schedule slots
@@ -157,7 +184,7 @@ export async function permanentlyDeleteStaffData(staffId) {
       Timetable.updateMany(
         { [`schedule.${day}.teacherId`]: normalizedStaffId },
         { $set: { [`schedule.${day}.$[slot].teacherId`]: null } },
-        { arrayFilters: [{ 'slot.teacherId': normalizedStaffId }] }
+        { arrayFilters: [{ 'slot.teacherId': normalizedStaffId }], session }
       )
     )
   );
@@ -168,38 +195,43 @@ export async function permanentlyDeleteStaffData(staffId) {
 
   // UserPermission and PushToken
   deletedRecords.userPermissions = getDeletedCount(
-    await UserPermission.deleteOne({ userId: normalizedStaffId })
+    await UserPermission.deleteOne({ userId: normalizedStaffId }, { session })
   );
   deletedRecords.pushTokens = getDeletedCount(
-    await PushToken.deleteMany({ user: normalizedStaffId, userModel: 'Staff' })
+    await PushToken.deleteMany({ user: normalizedStaffId, userModel: 'Staff' }, { session })
   );
 
   // Payroll financial records
   deletedRecords.payrollRecords = getDeletedCount(
-    await PayrollRecord.deleteMany({ employeeId: normalizedStaffId })
+    await PayrollRecord.deleteMany({ employeeId: normalizedStaffId }, { session })
   );
   deletedRecords.payslips = getDeletedCount(
-    await Payslip.deleteMany({ employeeId: normalizedStaffId })
+    await Payslip.deleteMany({ employeeId: normalizedStaffId }, { session })
   );
   deletedRecords.salaryAdjustments = getDeletedCount(
-    await SalaryAdjustment.deleteMany({ employeeId: normalizedStaffId })
+    await SalaryAdjustment.deleteMany({ employeeId: normalizedStaffId }, { session })
   );
 
   // Profile audit trail and trash entries
   deletedRecords.staffProfileAudits = getDeletedCount(
-    await StaffProfileAudit.deleteMany({ staffId: normalizedStaffId })
+    await StaffProfileAudit.deleteMany({ staffId: normalizedStaffId }, { session })
   );
   deletedRecords.trashEntriesRemoved = getDeletedCount(
-    await TrashItem.deleteMany({ itemType: 'Staff', itemId: normalizedStaffId })
+    await TrashItem.deleteMany({ itemType: 'Staff', itemId: normalizedStaffId }, { session })
   );
 
   // Consent records for this staff member
   deletedRecords.consentRecords = getDeletedCount(
-    await ConsentRecord.deleteMany({ entityType: 'Staff', entityId: normalizedStaffId })
+    await ConsentRecord.deleteMany(
+      { entityType: 'Staff', entityId: normalizedStaffId },
+      { session }
+    )
   );
 
   // Finally, hard-delete the Staff document itself
-  deletedRecords.staff = getDeletedCount(await Staff.deleteOne({ _id: normalizedStaffId }));
+  deletedRecords.staff = getDeletedCount(
+    await Staff.deleteOne({ _id: normalizedStaffId }, { session })
+  );
 
   return { staff, deletedRecords };
 }

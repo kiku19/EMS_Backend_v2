@@ -84,9 +84,10 @@ function collectStudentParents(studentDoc) {
  * For each parent in the student's parents array,
  * find or create a Parent record, link the child, and set password.
  */
-export async function createOrUpdateParentAccount(studentDoc) {
+export async function createOrUpdateParentAccount(studentDoc, options = {}) {
   if (!studentDoc?._id) return;
 
+  const { session } = options;
   const parentsToProcess = collectStudentParents(studentDoc);
   const defaultSchool =
     studentDoc.schoolId || parentsToProcess.length === 0 ? null : await ensureDefaultSchool();
@@ -96,7 +97,7 @@ export async function createOrUpdateParentAccount(studentDoc) {
   const previouslyLinkedParents = await Parent.find({
     'children.studentId': studentDoc._id,
     ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
-  });
+  }).session(session);
 
   for (const linkedParent of previouslyLinkedParents) {
     const linkedPhone = normalizePhone(linkedParent.phone);
@@ -107,7 +108,7 @@ export async function createOrUpdateParentAccount(studentDoc) {
     linkedParent.children = linkedParent.children.filter(
       (child) => child.studentId.toString() !== studentDoc._id.toString()
     );
-    await linkedParent.save();
+    await linkedParent.save({ session });
   }
 
   if (parentsToProcess.length === 0) return;
@@ -123,7 +124,7 @@ export async function createOrUpdateParentAccount(studentDoc) {
       const parent = await Parent.findOne({
         ...piiMatch('phone', parentInfo.phone),
         ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
-      });
+      }).session(session);
 
       if (parent) {
         // Check if this child is already linked
@@ -156,7 +157,7 @@ export async function createOrUpdateParentAccount(studentDoc) {
           parent.schoolId = targetSchoolId;
         }
 
-        await parent.save();
+        await parent.save({ session });
       } else {
         // Create new parent
         const newParent = new Parent({
@@ -174,7 +175,7 @@ export async function createOrUpdateParentAccount(studentDoc) {
             },
           ],
         });
-        await newParent.save();
+        await newParent.save({ session });
       }
     } catch (err) {
       console.error(
