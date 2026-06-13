@@ -3,6 +3,7 @@ import multer from 'multer';
 import { rateLimit } from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.js';
 import { featureGate } from '../middleware/featureGate.js';
+import { validateZod, aiChatSchema } from '../validators/index.js';
 import {
   AiRequestError,
   getAiModelsPayload,
@@ -48,28 +49,35 @@ router.get('/models', (_req, res) => {
   res.json(getAiModelsPayload());
 });
 
-router.post('/chat', chatLimiter, authenticate, featureGate('aiAssistant'), async (req, res) => {
-  try {
-    const { messages = [], selectedModel } = req.body || {};
-    const result = await processAiChat({
-      messages,
-      selectedModel,
-      user: req.user,
-    });
+router.post(
+  '/chat',
+  chatLimiter,
+  authenticate,
+  featureGate('aiAssistant'),
+  validateZod(aiChatSchema),
+  async (req, res) => {
+    try {
+      const { messages = [], selectedModel } = req.body || {};
+      const result = await processAiChat({
+        messages,
+        selectedModel,
+        user: req.user,
+      });
 
-    res.json(result);
-  } catch (error) {
-    console.error('AI chat route error:', error);
+      res.json(result);
+    } catch (error) {
+      console.error('AI chat route error:', error);
 
-    if (error instanceof AiRequestError) {
-      return res.status(error.status || 400).json({ error: error.message });
+      if (error instanceof AiRequestError) {
+        return res.status(error.status || 400).json({ error: error.message });
+      }
+
+      return res.status(500).json({
+        error: error.message || 'Failed to process AI request.',
+      });
     }
-
-    return res.status(500).json({
-      error: error.message || 'Failed to process AI request.',
-    });
   }
-});
+);
 
 router.post(
   '/transcribe',
