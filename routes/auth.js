@@ -43,7 +43,8 @@
  * @swagger
  * /auth/signup:
  *   post:
- *     summary: Create a new school account (admin signup)
+ *     summary: Create a new school account via invite (admin signup)
+ *     description: Signup is invite-only. A valid `inviteToken` obtained from /auth/signup/invite-details is required.
  *     tags: [Auth]
  *     security: []
  *     requestBody:
@@ -61,6 +62,8 @@
  *               $ref: '#/components/schemas/LoginResponse'
  *       400:
  *         $ref: '#/components/responses/ValidationError'
+ *       403:
+ *         description: Invalid or missing invite token
  *       409:
  *         description: Email already in use
  */
@@ -466,28 +469,22 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
     const normalizedEmail = normalizeSignupEmail(email);
     const normalizedSchoolName = normalizeInvitedSchoolName(schoolName);
 
-    // If an invite token is provided, validate it
-    let invite = null;
-    let signupSource = 'open-signup';
-    let provisionedBy = normalizedEmail;
-
-    if (inviteToken) {
-      invite = verifySignupInvite(inviteToken);
-      if (!invite) {
-        return res.status(403).json({
-          error: req.t('auth:errors.inviteOnly'),
-        });
-      }
-
-      if (invite.email !== normalizedEmail || invite.schoolName !== normalizedSchoolName) {
-        return res.status(400).json({
-          error: req.t('auth:errors.inviteMismatch'),
-        });
-      }
-
-      signupSource = 'invite-only';
-      provisionedBy = invite.invitedBy || normalizedEmail;
+    // Signup is invite-only: a valid invite token is required.
+    const invite = verifySignupInvite(inviteToken);
+    if (!invite) {
+      return res.status(403).json({
+        error: req.t('auth:errors.inviteOnly'),
+      });
     }
+
+    if (invite.email !== normalizedEmail || invite.schoolName !== normalizedSchoolName) {
+      return res.status(400).json({
+        error: req.t('auth:errors.inviteMismatch'),
+      });
+    }
+
+    const signupSource = 'invite-only';
+    const provisionedBy = invite.invitedBy || normalizedEmail;
 
     const existingStaff = await Staff.findOne({
       ...piiMatch('email', normalizedEmail),
@@ -523,14 +520,8 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
       ...(school.metadata || {}),
       signupSource,
       ownerName: name.trim(),
-      ...(invite
-        ? {
-            invitedBy: invite.invitedBy,
-            inviteAcceptedAt: new Date().toISOString(),
-          }
-        : {
-            selfSignedUpAt: new Date().toISOString(),
-          }),
+      invitedBy: invite.invitedBy,
+      inviteAcceptedAt: new Date().toISOString(),
     };
     await school.save();
 
@@ -564,7 +555,7 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
 
     res.status(201).json({
       success: true,
-      message: invite ? req.t('auth:success.inviteAccepted') : req.t('auth:success.schoolCreated'),
+      message: req.t('auth:success.inviteAccepted'),
       school: serializeSchool(school),
       user: {
         id: staff._id.toString(),
@@ -995,10 +986,7 @@ router.post('/refresh', staffRefreshLimiter, async (req, res) => {
     // Legacy refresh tokens (pre-sessionId) get a fresh session record minted here.
     let sessionId = decoded.sessionId;
     if (sessionId) {
-      const existing = await Session.findOne(
-        { sessionId },
-        { isRevoked: 1, expiresAt: 1 }
-      ).lean();
+      const existing = await Session.findOne({ sessionId }, { isRevoked: 1, expiresAt: 1 }).lean();
       if (!existing || existing.isRevoked || existing.expiresAt < new Date()) {
         return res.status(401).json({ error: req.t('auth:errors.refreshTokenRevoked') });
       }
