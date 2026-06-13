@@ -9,6 +9,7 @@
  * HMAC uses a separately derived key (same source + ':hmac' salt).
  */
 import crypto from 'crypto';
+import { getRequiredSecret } from '../config/environment.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('Encryption');
@@ -25,10 +26,7 @@ let _encKey = null;
 let _hmacKey = null;
 
 function getRawSecret() {
-  const raw = process.env.PII_ENCRYPTION_KEY || process.env.JWT_SECRET;
-  if (!raw) {
-    throw new Error('PII_ENCRYPTION_KEY (or JWT_SECRET) is required for PII encryption');
-  }
+  const raw = process.env.PII_ENCRYPTION_KEY || getRequiredSecret('JWT_SECRET');
   return raw;
 }
 
