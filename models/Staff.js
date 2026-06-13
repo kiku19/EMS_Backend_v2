@@ -170,7 +170,7 @@ const staffSchema = new mongoose.Schema(
       },
     ],
   },
-  { timestamps: true }
+  { timestamps: true, strict: true }
 );
 
 // Hash password before saving
