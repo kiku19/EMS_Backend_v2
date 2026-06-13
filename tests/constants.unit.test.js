@@ -4,7 +4,7 @@
  * Tests getDefaultAcademicYear and CURRENT_ACADEMIC_YEAR.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { getDefaultAcademicYear, CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 
 describe('getDefaultAcademicYear', () => {
@@ -51,5 +51,42 @@ describe('CURRENT_ACADEMIC_YEAR', () => {
   it('is a string in YYYY-YY format', () => {
     expect(typeof CURRENT_ACADEMIC_YEAR).toBe('string');
     expect(CURRENT_ACADEMIC_YEAR).toMatch(/^\d{4}-\d{2}$/);
+  });
+
+  it('honors the CURRENT_ACADEMIC_YEAR environment variable', async () => {
+    const original = process.env.CURRENT_ACADEMIC_YEAR;
+    process.env.CURRENT_ACADEMIC_YEAR = '2030-31';
+
+    try {
+      // The constant is evaluated at module load time, so clear the module
+      // cache and re-import to pick up the env override.
+      vi.resetModules();
+      const { CURRENT_ACADEMIC_YEAR: fromEnv } = await import('../utils/constants.js');
+      expect(fromEnv).toBe('2030-31');
+    } finally {
+      if (original === undefined) {
+        delete process.env.CURRENT_ACADEMIC_YEAR;
+      } else {
+        process.env.CURRENT_ACADEMIC_YEAR = original;
+      }
+    }
+  });
+
+  it('falls back to the computed default when CURRENT_ACADEMIC_YEAR is invalid', async () => {
+    const original = process.env.CURRENT_ACADEMIC_YEAR;
+    process.env.CURRENT_ACADEMIC_YEAR = 'not-a-year';
+
+    try {
+      vi.resetModules();
+      const { CURRENT_ACADEMIC_YEAR: fallback } = await import('../utils/constants.js');
+      expect(fallback).toMatch(/^\d{4}-\d{2}$/);
+      expect(fallback).not.toBe('not-a-year');
+    } finally {
+      if (original === undefined) {
+        delete process.env.CURRENT_ACADEMIC_YEAR;
+      } else {
+        process.env.CURRENT_ACADEMIC_YEAR = original;
+      }
+    }
   });
 });

@@ -11,12 +11,25 @@ export function getDefaultAcademicYear(referenceDate = new Date()) {
   return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
 }
 
+// Avoid importing utils/academicYear.js here to prevent a circular dependency:
+// academicYear.js imports CURRENT_ACADEMIC_YEAR from this module.
+const ACADEMIC_YEAR_REGEX = /^\d{4}-\d{2}$/;
+
+function resolveCurrentAcademicYear() {
+  const envValue = process.env.CURRENT_ACADEMIC_YEAR;
+  if (envValue && ACADEMIC_YEAR_REGEX.test(envValue.trim())) {
+    return envValue.trim();
+  }
+  return getDefaultAcademicYear();
+}
+
 /**
  * Current Academic Year
- * Can be updated annually or fetched from school settings
+ * Can be updated annually, fetched from school settings, or overridden via the
+ * CURRENT_ACADEMIC_YEAR environment variable for deterministic deployments.
  * Format: 'YYYY-YY' (e.g., '2025-26' for 2025-2026 academic year)
  */
-export const CURRENT_ACADEMIC_YEAR = getDefaultAcademicYear();
+export const CURRENT_ACADEMIC_YEAR = resolveCurrentAcademicYear();
 
 /**
  * Calculate the next academic year from a given one
