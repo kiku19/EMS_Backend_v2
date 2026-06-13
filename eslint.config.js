@@ -24,4 +24,10 @@ export default [
     },
   },
   prettierConfig,
+  {
+    files: ['server.js'],
+    rules: {
+      'no-console': 'error',
+    },
+  },
 ];
