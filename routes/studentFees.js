@@ -200,6 +200,10 @@
  *                       type: number
  *               academicYear:
  *                 $ref: '#/components/schemas/AcademicYear'
+ *               idempotencyKey:
+ *                 type: string
+ *                 maxLength: 100
+ *                 description: Client-generated key to prevent duplicate payments
  *     responses:
  *       200:
  *         description: Payment recorded; fee structure updated
@@ -209,6 +213,8 @@
  *         $ref: '#/components/responses/Forbidden'
  *       404:
  *         description: Fee structure not found
+ *       409:
+ *         description: Duplicate payment request — idempotency key already used
  */
 
 /**
@@ -394,7 +400,9 @@ router.get(
               scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
             ).populate('feeHeads.feeHeadId');
             if (!feeStructure) {
-              throw new Error('Fee structure creation raced but neither version found', { cause: saveError });
+              throw new Error('Fee structure creation raced but neither version found', {
+                cause: saveError,
+              });
             }
           } else {
             throw saveError;
@@ -494,118 +502,114 @@ router.get('/all', checkPermission('fees', 'view'), async (req, res) => {
 });
 
 // Initialize fee structure for a new student
-router.post(
-  '/initialize/:studentId',
-  checkPermission('fees', 'create'),
-  async (req, res) => {
-    try {
-      // Validate student belongs to the school
-      const student = await Student.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.studentId })
-      ).populate('classId');
+router.post('/initialize/:studentId', checkPermission('fees', 'create'), async (req, res) => {
+  try {
+    // Validate student belongs to the school
+    const student = await Student.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.studentId })
+    ).populate('classId');
 
-      if (!student) {
-        return res.status(404).json({ error: req.t('students:errors.notFound') });
-      }
+    if (!student) {
+      return res.status(404).json({ error: req.t('students:errors.notFound') });
+    }
 
-      if (!student.classId) {
-        return res.status(400).json({
-          error: 'Student is not assigned to a class. Assign a class before initializing fees.',
-        });
-      }
+    if (!student.classId) {
+      return res.status(400).json({
+        error: 'Student is not assigned to a class. Assign a class before initializing fees.',
+      });
+    }
 
+    const year = await resolveAcademicYear(req.body.academicYear, req.user?.schoolId);
+    const schoolId = await resolveRequestSchoolId(req);
+
+    // Check if fee structure already exists
+    let feeStructure = await StudentFeeStructure.findOne(
+      scopeBySchool(schoolId, { studentId: student._id, academicYear: year })
+    );
+
+    if (feeStructure) {
+      return res.json({
+        message: 'Fee structure already exists',
+        feeStructure,
+      });
+    }
+
+    // Extract candidate class tokens — handles "Class 10"/"Grade 10"/"10"/Roman
+    // so schools using non-default naming conventions still match their
+    // FeeHead.applicableClasses entries.
+    const applicableFeeHeads = await FeeHead.find(
+      scopeBySchool(schoolId, {
+        applicableClasses: { $in: classNameTokens(student.classId.name) },
+        isActive: true,
+      })
+    );
+
+    // Create fee structure
+    feeStructure = new StudentFeeStructure({
+      studentId: student._id,
+      classId: student.classId._id,
+      academicYear: year,
+      schoolId,
+      feeHeads: applicableFeeHeads.map((fh) => ({
+        feeHeadId: fh._id,
+        name: fh.name,
+        category: fh.category,
+        amount: fh.amount,
+        mandatory: fh.mandatory,
+        frequency: fh.frequency,
+        paidAmount: 0,
+        balanceAmount: fh.amount,
+        status: 'pending',
+      })),
+    });
+
+    // Calculate totals
+    feeStructure.totalFee = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
+    feeStructure.totalPaid = 0;
+    feeStructure.totalBalance = feeStructure.totalFee;
+    feeStructure.overallStatus = 'pending';
+
+    await feeStructure.save();
+
+    // Sync fee data to Student model for consistent reads
+    await Student.findByIdAndUpdate(student._id, {
+      feeStatus: 'pending',
+      feeDetails: {
+        totalFee: feeStructure.totalFee,
+        paidAmount: 0,
+        balanceAmount: feeStructure.totalBalance,
+        discountApplied: 0,
+        lastPaymentDate: null,
+      },
+    });
+
+    // Emit socket event for real-time updates
+    emitFeeUpdate(student._id, student.name, feeStructure);
+
+    res.status(201).json(feeStructure);
+  } catch (error) {
+    // Handle race condition: duplicate key means another request already
+    // initialised it. The lookup MUST scope by schoolId + academicYear —
+    // without it the recovery could return a fee structure from a
+    // different tenant (same studentId collision) or from a prior
+    // academic year.
+    if (error.code === 11000) {
       const year = await resolveAcademicYear(req.body.academicYear, req.user?.schoolId);
       const schoolId = await resolveRequestSchoolId(req);
-
-      // Check if fee structure already exists
-      let feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: student._id, academicYear: year })
-      );
-
-      if (feeStructure) {
-        return res.json({
-          message: 'Fee structure already exists',
-          feeStructure,
-        });
-      }
-
-      // Extract candidate class tokens — handles "Class 10"/"Grade 10"/"10"/Roman
-      // so schools using non-default naming conventions still match their
-      // FeeHead.applicableClasses entries.
-      const applicableFeeHeads = await FeeHead.find(
+      const existing = await StudentFeeStructure.findOne(
         scopeBySchool(schoolId, {
-          applicableClasses: { $in: classNameTokens(student.classId.name) },
-          isActive: true,
+          studentId: req.params.studentId,
+          academicYear: year,
         })
       );
-
-      // Create fee structure
-      feeStructure = new StudentFeeStructure({
-        studentId: student._id,
-        classId: student.classId._id,
-        academicYear: year,
-        schoolId,
-        feeHeads: applicableFeeHeads.map((fh) => ({
-          feeHeadId: fh._id,
-          name: fh.name,
-          category: fh.category,
-          amount: fh.amount,
-          mandatory: fh.mandatory,
-          frequency: fh.frequency,
-          paidAmount: 0,
-          balanceAmount: fh.amount,
-          status: 'pending',
-        })),
-      });
-
-      // Calculate totals
-      feeStructure.totalFee = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
-      feeStructure.totalPaid = 0;
-      feeStructure.totalBalance = feeStructure.totalFee;
-      feeStructure.overallStatus = 'pending';
-
-      await feeStructure.save();
-
-      // Sync fee data to Student model for consistent reads
-      await Student.findByIdAndUpdate(student._id, {
-        feeStatus: 'pending',
-        feeDetails: {
-          totalFee: feeStructure.totalFee,
-          paidAmount: 0,
-          balanceAmount: feeStructure.totalBalance,
-          discountApplied: 0,
-          lastPaymentDate: null,
-        },
-      });
-
-      // Emit socket event for real-time updates
-      emitFeeUpdate(student._id, student.name, feeStructure);
-
-      res.status(201).json(feeStructure);
-    } catch (error) {
-      // Handle race condition: duplicate key means another request already
-      // initialised it. The lookup MUST scope by schoolId + academicYear —
-      // without it the recovery could return a fee structure from a
-      // different tenant (same studentId collision) or from a prior
-      // academic year.
-      if (error.code === 11000) {
-        const year = await resolveAcademicYear(req.body.academicYear, req.user?.schoolId);
-        const schoolId = await resolveRequestSchoolId(req);
-        const existing = await StudentFeeStructure.findOne(
-          scopeBySchool(schoolId, {
-            studentId: req.params.studentId,
-            academicYear: year,
-          })
-        );
-        if (existing) {
-          return res.json({ message: 'Fee structure already exists', feeStructure: existing });
-        }
+      if (existing) {
+        return res.json({ message: 'Fee structure already exists', feeStructure: existing });
       }
-      logger.error({ err: error }, 'Error initializing fee structure');
-      res.status(500).json({ error: error.message });
     }
+    logger.error({ err: error }, 'Error initializing fee structure');
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // Update discount for a student
 router.put(
@@ -683,13 +687,14 @@ router.post(
   checkPermission('fees', 'edit'),
   validateZod(studentFeePaymentSchema),
   async (req, res) => {
-    try {
-      const { amount, feeHeadPayments, academicYear, idempotencyKey } = req.body;
+    let idempotencyKey;
+    let schoolId;
 
-      const resolvedAcademicYear = await resolveAcademicYear(
-        academicYear,
-        req.user?.schoolId
-      );
+    try {
+      const { amount, feeHeadPayments, academicYear } = req.body;
+      idempotencyKey = req.body.idempotencyKey;
+
+      const resolvedAcademicYear = await resolveAcademicYear(academicYear, req.user?.schoolId);
 
       // Pre-flight balance check against the current snapshot — the
       // authoritative check is inside the retry loop below (since another
@@ -710,7 +715,7 @@ router.post(
       }
 
       // Idempotency: reject duplicate payment requests
-      const schoolId = extractSchoolId(req.user?.schoolId);
+      schoolId = extractSchoolId(req.user?.schoolId);
       if (idempotencyKey) {
         const existingPayment = await FeePayment.findOne(
           scopeBySchool(schoolId, { idempotencyKey })
@@ -818,6 +823,26 @@ router.post(
         if (txError.code === 'FEE_STRUCTURE_NOT_FOUND') {
           return res.status(404).json({ error: txError.message });
         }
+        if (txError.code === 11000) {
+          // Race-condition duplicate: look up the existing payment so we can
+          // return the same 409 shape as the pre-flight guard.
+          if (idempotencyKey) {
+            const existingPayment = await FeePayment.findOne(
+              scopeBySchool(schoolId, { idempotencyKey })
+            );
+            if (existingPayment) {
+              return res.status(409).json({
+                error: 'Duplicate payment request — this idempotency key has already been used.',
+                code: 'IDEMPOTENCY_KEY_USED',
+                receiptNumber: existingPayment.receiptNumber,
+              });
+            }
+          }
+          return res.status(409).json({
+            error: 'Duplicate payment request.',
+            code: 'DUPLICATE_PAYMENT',
+          });
+        }
         throw txError;
       } finally {
         await session.endSession();
@@ -833,6 +858,24 @@ router.post(
 
       res.json(feeStructure);
     } catch (error) {
+      if (error.code === 11000) {
+        if (idempotencyKey) {
+          const existingPayment = await FeePayment.findOne(
+            scopeBySchool(schoolId, { idempotencyKey })
+          );
+          if (existingPayment) {
+            return res.status(409).json({
+              error: 'Duplicate payment request — this idempotency key has already been used.',
+              code: 'IDEMPOTENCY_KEY_USED',
+              receiptNumber: existingPayment.receiptNumber,
+            });
+          }
+        }
+        return res.status(409).json({
+          error: 'Duplicate payment request.',
+          code: 'DUPLICATE_PAYMENT',
+        });
+      }
       logger.error({ err: error }, 'Error recording payment');
       res.status(500).json({ error: error.message });
     }
@@ -901,103 +944,99 @@ router.get('/defaulters', checkPermission('fees', 'view'), async (req, res) => {
 // Reconciliation endpoint — recomputes fee totals from FeePayment records
 // and corrects any drift between stored totals and actual payments.
 // Admin-only; returns a diff report of what was changed.
-router.post(
-  '/reconcile/:studentId',
-  checkPermission('fees', 'edit'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const academicYear = await resolveAcademicYear(
-        req.query.academicYear || req.body.academicYear,
-        req.user?.schoolId
-      );
+router.post('/reconcile/:studentId', checkPermission('fees', 'edit'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const academicYear = await resolveAcademicYear(
+      req.query.academicYear || req.body.academicYear,
+      req.user?.schoolId
+    );
 
-      const student = await Student.findOne(scopeBySchool(schoolId, { _id: req.params.studentId }));
-      if (!student) {
-        return res.status(404).json({ error: req.t('students:errors.notFound') });
-      }
+    const student = await Student.findOne(scopeBySchool(schoolId, { _id: req.params.studentId }));
+    if (!student) {
+      return res.status(404).json({ error: req.t('students:errors.notFound') });
+    }
 
-      // Capture "before" from a one-shot read (only for the diff report below).
-      const preSnapshot = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
-      );
-      if (!preSnapshot) {
-        return res
-          .status(404)
-          .json({ error: 'Fee structure not found for this student and academic year' });
-      }
-      const before = {
-        totalPaid: preSnapshot.totalPaid,
-        totalBalance: preSnapshot.totalBalance,
-        overallStatus: preSnapshot.overallStatus,
-      };
+    // Capture "before" from a one-shot read (only for the diff report below).
+    const preSnapshot = await StudentFeeStructure.findOne(
+      scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
+    );
+    if (!preSnapshot) {
+      return res
+        .status(404)
+        .json({ error: 'Fee structure not found for this student and academic year' });
+    }
+    const before = {
+      totalPaid: preSnapshot.totalPaid,
+      totalBalance: preSnapshot.totalBalance,
+      overallStatus: preSnapshot.overallStatus,
+    };
 
-      // Sum all completed payments from FeePayment records
-      const payments = await FeePayment.find(
-        scopeBySchool(schoolId, {
-          studentId: req.params.studentId,
-          academicYear,
-          status: 'completed',
-        })
-      );
-      const actualTotalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
-      // Build a map of feeHeadId -> total paid from all FeePayment records.
-      // Computed outside the retry loop since it depends only on FeePayment
-      // records, not on the SFS doc being mutated.
-      const headPaidMap = new Map();
-      for (const payment of payments) {
-        if (Array.isArray(payment.feeHeads)) {
-          for (const ph of payment.feeHeads) {
-            const key = ph.feeHeadId ? ph.feeHeadId.toString() : ph.name;
-            if (key) {
-              headPaidMap.set(key, (headPaidMap.get(key) || 0) + (ph.amount || 0));
-            }
-          }
-        }
-      }
-
-      const feeStructure = await updateFeeStructureWithRetry(
-        scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear }),
-        async (fs) => {
-          if (Array.isArray(fs.feeHeads)) {
-            for (const fh of fs.feeHeads) {
-              const key = fh.feeHeadId ? fh.feeHeadId.toString() : fh.name;
-              fh.paidAmount = headPaidMap.get(key) || 0;
-              const headResult = computeFeeHeadStatus(fh);
-              fh.balanceAmount = headResult.balanceAmount;
-              fh.status = headResult.status;
-            }
-          }
-          fs.totalPaid = actualTotalPaid;
-          const { totalBalance, overallStatus } = computeFeeBalance(fs);
-          fs.totalBalance = totalBalance;
-          fs.overallStatus = overallStatus;
-        }
-      );
-      await syncStudentFeeDetails(req.params.studentId, feeStructure);
-
-      const after = {
-        totalPaid: feeStructure.totalPaid,
-        totalBalance: feeStructure.totalBalance,
-        overallStatus: feeStructure.overallStatus,
-      };
-
-      const changed = JSON.stringify(before) !== JSON.stringify(after);
-
-      res.json({
+    // Sum all completed payments from FeePayment records
+    const payments = await FeePayment.find(
+      scopeBySchool(schoolId, {
         studentId: req.params.studentId,
         academicYear,
-        paymentCount: payments.length,
-        changed,
-        before,
-        after,
-      });
-    } catch (error) {
-      logger.error({ err: error }, 'Error reconciling fees');
-      res.status(500).json({ error: error.message });
+        status: 'completed',
+      })
+    );
+    const actualTotalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    // Build a map of feeHeadId -> total paid from all FeePayment records.
+    // Computed outside the retry loop since it depends only on FeePayment
+    // records, not on the SFS doc being mutated.
+    const headPaidMap = new Map();
+    for (const payment of payments) {
+      if (Array.isArray(payment.feeHeads)) {
+        for (const ph of payment.feeHeads) {
+          const key = ph.feeHeadId ? ph.feeHeadId.toString() : ph.name;
+          if (key) {
+            headPaidMap.set(key, (headPaidMap.get(key) || 0) + (ph.amount || 0));
+          }
+        }
+      }
     }
+
+    const feeStructure = await updateFeeStructureWithRetry(
+      scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear }),
+      async (fs) => {
+        if (Array.isArray(fs.feeHeads)) {
+          for (const fh of fs.feeHeads) {
+            const key = fh.feeHeadId ? fh.feeHeadId.toString() : fh.name;
+            fh.paidAmount = headPaidMap.get(key) || 0;
+            const headResult = computeFeeHeadStatus(fh);
+            fh.balanceAmount = headResult.balanceAmount;
+            fh.status = headResult.status;
+          }
+        }
+        fs.totalPaid = actualTotalPaid;
+        const { totalBalance, overallStatus } = computeFeeBalance(fs);
+        fs.totalBalance = totalBalance;
+        fs.overallStatus = overallStatus;
+      }
+    );
+    await syncStudentFeeDetails(req.params.studentId, feeStructure);
+
+    const after = {
+      totalPaid: feeStructure.totalPaid,
+      totalBalance: feeStructure.totalBalance,
+      overallStatus: feeStructure.overallStatus,
+    };
+
+    const changed = JSON.stringify(before) !== JSON.stringify(after);
+
+    res.json({
+      studentId: req.params.studentId,
+      academicYear,
+      paymentCount: payments.length,
+      changed,
+      before,
+      after,
+    });
+  } catch (error) {
+    logger.error({ err: error }, 'Error reconciling fees');
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 export default router;

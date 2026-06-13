@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { Student } from '../database.js';
+import { Student, FeePayment } from '../database.js';
 import FeeHead from '../models/FeeHead.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
@@ -938,6 +938,146 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
     // Totals remain unchanged because no individual fee heads were updated
     expect(res.body.totalPaid).toBe(0);
     expect(res.body.lastPaymentDate).toBeDefined();
+  });
+
+  it('stores idempotencyKey on the FeePayment document', async () => {
+    const school = await createSchoolRecord({
+      name: 'Idempotency School',
+      code: 'IDM-01',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'N',
+      schoolId: school._id,
+    });
+    const { tuition } = await createFeeHeads(school._id, '10');
+
+    const student = await createStudentRecord({
+      name: 'Idempotency Student',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+
+    await insertFeeStructureDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      schoolId: school._id,
+      feeHeads: [
+        {
+          feeHeadId: tuition._id,
+          name: 'Tuition Fee',
+          category: 'Academic',
+          amount: 5000,
+          mandatory: true,
+          frequency: 'yearly',
+          paidAmount: 0,
+          balanceAmount: 5000,
+          status: 'pending',
+        },
+      ],
+      totalFee: 5000,
+      totalPaid: 0,
+      totalBalance: 5000,
+      overallStatus: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({
+        amount: 1000,
+        academicYear: '2025-26',
+        idempotencyKey: 'pay-key-123',
+      })
+      .expect(200);
+
+    const payment = await FeePayment.findOne({
+      studentId: student._id,
+      idempotencyKey: 'pay-key-123',
+    }).lean();
+
+    expect(payment).toBeTruthy();
+    expect(payment.amount).toBe(1000);
+    expect(payment.receiptNumber).toBeTruthy();
+  });
+
+  it('rejects duplicate payment with same idempotencyKey with 409', async () => {
+    const school = await createSchoolRecord({
+      name: 'Duplicate School',
+      code: 'DUP-01',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'O',
+      schoolId: school._id,
+    });
+    const { tuition } = await createFeeHeads(school._id, '10');
+
+    const student = await createStudentRecord({
+      name: 'Duplicate Student',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+
+    await insertFeeStructureDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      schoolId: school._id,
+      feeHeads: [
+        {
+          feeHeadId: tuition._id,
+          name: 'Tuition Fee',
+          category: 'Academic',
+          amount: 5000,
+          mandatory: true,
+          frequency: 'yearly',
+          paidAmount: 0,
+          balanceAmount: 5000,
+          status: 'pending',
+        },
+      ],
+      totalFee: 5000,
+      totalPaid: 0,
+      totalBalance: 5000,
+      overallStatus: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    // First payment succeeds
+    await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({
+        amount: 1000,
+        academicYear: '2025-26',
+        idempotencyKey: 'dup-key-456',
+      })
+      .expect(200);
+
+    // Second payment with same key is rejected
+    const second = await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({
+        amount: 1000,
+        academicYear: '2025-26',
+        idempotencyKey: 'dup-key-456',
+      })
+      .expect(409);
+
+    expect(second.body.code).toBe('IDEMPOTENCY_KEY_USED');
+    expect(typeof second.body.receiptNumber).toBe('string');
   });
 });
 
