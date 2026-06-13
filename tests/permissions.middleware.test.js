@@ -293,6 +293,28 @@ describe('checkPermission middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('returns 401 when req.user is missing even if req.body.userId is present', async () => {
+    const req = mockReq({ body: { userId: 'body-user-id' } });
+    const res = mockRes();
+    const next = vi.fn();
+
+    await checkPermission('students', 'view')(req, res, next);
+
+    expect(res._status).toBe(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when req.user is missing even if req.query.userId is present', async () => {
+    const req = mockReq({ query: { userId: 'query-user-id' } });
+    const res = mockRes();
+    const next = vi.fn();
+
+    await checkPermission('students', 'view')(req, res, next);
+
+    expect(res._status).toBe(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('returns 401 when user id is missing', async () => {
     const req = mockReq({ user: { schoolId: 'some-school' } });
     const res = mockRes();
@@ -562,6 +584,17 @@ describe('requireAdmin middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('returns 401 when req.user is missing even if req.body.userId is present', async () => {
+    const req = mockReq({ body: { userId: 'body-user-id' } });
+    const res = mockRes();
+    const next = vi.fn();
+
+    await requireAdmin(req, res, next);
+
+    expect(res._status).toBe(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('returns 403 when schoolId is missing', async () => {
     const req = mockReq({ user: { id: 'user-id' } });
     const res = mockRes();
@@ -682,6 +715,17 @@ describe('getUserPermissions middleware', () => {
 
     expect(next).toHaveBeenCalled();
     expect(req.userPermissions).toBeNull();
+  });
+
+  it('ignores req.body.userId when req.user is missing', async () => {
+    const req = mockReq({ body: { userId: new mongoose.Types.ObjectId().toString() } });
+    const res = mockRes();
+    const next = vi.fn();
+
+    await getUserPermissions(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(req.userPermissions).toBeUndefined();
   });
 
   it('calls next() without userId/schoolId', async () => {
