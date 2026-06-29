@@ -142,6 +142,92 @@ describe('notifications routes', () => {
     expect(res.body.notifications[0].type).toBe('payment');
   });
 
+  // ── GET /api/notifications pagination (PAG-18) ────────────────────
+
+  // Seed a notification with a deterministic createdAt so skip/limit ordering
+  // is stable across pages (createdAt is what the route sorts on, desc).
+  // Inserted via the native driver because the Mongoose `timestamps` plugin
+  // protects createdAt — it ignores values passed to create()/updateOne(),
+  // and rapid inserts would otherwise collide on the same millisecond.
+  const seedNotification = (i) =>
+    Notification.collection.insertOne({
+      userId: admin._id,
+      userModel: 'Staff',
+      schoolId: school._id,
+      type: 'announcement',
+      title: `N${i}`,
+      message: `message ${i}`,
+      read: false,
+      priority: 'normal',
+      channels: [{ type: 'inapp', status: 'pending' }],
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+      updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+    });
+
+  it('paginates with skip/limit and reports total + hasMore', async () => {
+    for (let i = 1; i <= 5; i += 1) {
+      await seedNotification(i);
+    }
+
+    // Page 1 — newest first (N5, N4)
+    const page1 = await request(app)
+      .get('/api/notifications')
+      .query({ limit: 2, skip: 0 })
+      .set(authHeaders)
+      .expect(200);
+    expect(page1.body.notifications).toHaveLength(2);
+    expect(page1.body.notifications.map((n) => n.title)).toEqual(['N5', 'N4']);
+    expect(page1.body.total).toBe(5);
+    expect(page1.body.pagination).toMatchObject({ total: 5, skip: 0, limit: 2, hasMore: true });
+
+    // Page 2 — (N3, N2)
+    const page2 = await request(app)
+      .get('/api/notifications')
+      .query({ limit: 2, skip: 2 })
+      .set(authHeaders)
+      .expect(200);
+    expect(page2.body.notifications.map((n) => n.title)).toEqual(['N3', 'N2']);
+    expect(page2.body.pagination).toMatchObject({ skip: 2, hasMore: true });
+
+    // Page 3 — last item (N1), hasMore now false
+    const page3 = await request(app)
+      .get('/api/notifications')
+      .query({ limit: 2, skip: 4 })
+      .set(authHeaders)
+      .expect(200);
+    expect(page3.body.notifications.map((n) => n.title)).toEqual(['N1']);
+    expect(page3.body.pagination).toMatchObject({ skip: 4, hasMore: false });
+  });
+
+  it('clamps an oversized limit to 100', async () => {
+    const res = await request(app)
+      .get('/api/notifications')
+      .query({ limit: 500 })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.pagination.limit).toBe(100);
+  });
+
+  it('computes unreadCount over all matches, not just the returned page', async () => {
+    for (let i = 1; i <= 3; i += 1) {
+      await seedNotification(i); // all unread by default
+    }
+
+    // Only ask for the first page (1 item) — unreadCount/total must still
+    // reflect all 3, proving the badge is not derived from the page.
+    const res = await request(app)
+      .get('/api/notifications')
+      .query({ limit: 1 })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.notifications).toHaveLength(1);
+    expect(res.body.unreadCount).toBe(3);
+    expect(res.body.total).toBe(3);
+    expect(res.body.pagination.hasMore).toBe(true);
+  });
+
   // ── PUT /api/notifications/:id/read ───────────────────────────────
 
   it('marks a notification as read', async () => {
