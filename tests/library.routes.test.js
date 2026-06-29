@@ -358,6 +358,165 @@ describe('library routes', () => {
       expect(res.body.issues).toHaveLength(1);
       expect(res.body.issues[0].status).toBe('returned');
     });
+
+    describe('q search (PAG-12)', () => {
+      async function seedSearchData(school, classRecord) {
+        const bookA = await createBookDirect(school._id, { title: 'Alpha Adventures' });
+        const bookB = await createBookDirect(school._id, { title: 'Beta Reader' });
+        const bookC = await createBookDirect(school._id, { title: 'Refund (50%) guide' });
+        const student1 = await createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'Priya Sharma',
+        });
+        const student2 = await createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'Arjun Mehta',
+        });
+        const student3 = await createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'Refunded Student',
+        });
+        await createIssueDirect(school._id, bookA._id, student1._id, {
+          bookTitle: bookA.title,
+          studentName: student1.name,
+          studentAdmissionNo: 'ADM-101',
+        });
+        await createIssueDirect(school._id, bookB._id, student2._id, {
+          bookTitle: bookB.title,
+          studentName: student2.name,
+          studentAdmissionNo: 'ADM-202',
+        });
+        await createIssueDirect(school._id, bookC._id, student3._id, {
+          bookTitle: bookC.title,
+          studentName: student3.name,
+          studentAdmissionNo: 'ADM-303',
+        });
+      }
+
+      it('matches on book title', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        const res = await request(app).get('/api/library/issues?q=alpha').set(headers).expect(200);
+
+        expect(res.body.issues).toHaveLength(1);
+        expect(res.body.issues[0].bookTitle).toBe('Alpha Adventures');
+        expect(res.body.total).toBe(1);
+      });
+
+      it('matches on student name', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        const res = await request(app).get('/api/library/issues?q=arjun').set(headers).expect(200);
+
+        expect(res.body.issues).toHaveLength(1);
+        expect(res.body.issues[0].studentName).toBe('Arjun Mehta');
+      });
+
+      it('matches on admission number', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        const res = await request(app)
+          .get('/api/library/issues?q=ADM-202')
+          .set(headers)
+          .expect(200);
+
+        expect(res.body.issues).toHaveLength(1);
+        expect(res.body.issues[0].studentAdmissionNo).toBe('ADM-202');
+      });
+
+      it('is case-insensitive', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        const res = await request(app).get('/api/library/issues?q=PRIYA').set(headers).expect(200);
+
+        expect(res.body.issues).toHaveLength(1);
+        expect(res.body.issues[0].studentName).toBe('Priya Sharma');
+      });
+
+      it('returns an empty list when nothing matches', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        const res = await request(app)
+          .get('/api/library/issues?q=nonexistent')
+          .set(headers)
+          .expect(200);
+
+        expect(res.body.issues).toHaveLength(0);
+        expect(res.body.total).toBe(0);
+      });
+
+      it('treats regex metacharacters as literal text (no over-match)', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        // '.*' would match everything if not escaped; it must match nothing literal.
+        const wildcard = await request(app)
+          .get('/api/library/issues?q=.*')
+          .set(headers)
+          .expect(200);
+        expect(wildcard.body.issues).toHaveLength(0);
+
+        // The literal parenthesised text should still be found.
+        const literal = await request(app)
+          .get('/api/library/issues?q=(50%25)')
+          .set(headers)
+          .expect(200);
+        expect(literal.body.issues).toHaveLength(1);
+        expect(literal.body.issues[0].bookTitle).toBe('Refund (50%) guide');
+      });
+
+      it('does not crash on object-shaped q (NoSQL injection guard)', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        await seedSearchData(school, classRecord);
+
+        // q[$ne]= arrives as an object; the route must coerce it to a string
+        // rather than passing it into the regex, and must not 500.
+        const res = await request(app).get('/api/library/issues?q[$ne]=x').set(headers).expect(200);
+        expect(Array.isArray(res.body.issues)).toBe(true);
+      });
+
+      it('combines with other filters (status + q)', async () => {
+        const { school, app, headers, classRecord } = await setup();
+        const book = await createBookDirect(school._id, { title: 'Alpha Book' });
+        const s1 = await createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'A1',
+        });
+        const s2 = await createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'A2',
+        });
+        await createIssueDirect(school._id, book._id, s1._id, {
+          bookTitle: 'Alpha Book',
+          status: 'issued',
+          studentName: 'A1',
+        });
+        await createIssueDirect(school._id, book._id, s2._id, {
+          bookTitle: 'Alpha Book',
+          status: 'returned',
+          studentName: 'A2',
+        });
+
+        const res = await request(app)
+          .get('/api/library/issues')
+          .query({ q: 'Alpha', status: 'returned' })
+          .set(headers)
+          .expect(200);
+
+        expect(res.body.issues).toHaveLength(1);
+        expect(res.body.issues[0].status).toBe('returned');
+      });
+    });
   });
 
   describe('POST /api/library/issues', () => {
