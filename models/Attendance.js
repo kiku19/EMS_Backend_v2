@@ -24,6 +24,19 @@ const attendanceSchema = new mongoose.Schema(
       enum: ['present', 'absent', 'late', 'leave', 'halfday'],
     },
     markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+    // Audit trail for admin-driven regularization (drawer on student profile).
+    // Mirrors StaffAttendance.regularization. Optional — old docs simply
+    // have no trail; only set when the record is flipped via the
+    // POST /attendance/student/:id/regularize endpoint.
+    regularization: {
+      regularizedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
+      regularizedAt: Date,
+      previousStatus: {
+        type: String,
+        enum: ['present', 'absent', 'late', 'leave', 'halfday', 'unmarked'],
+      },
+      regularizationReason: String,
+    },
     // Soft-delete support: admins can now retract an accidental mass mark
     // (via trash restore) instead of hard-deleting rows which left no audit
     // trail and couldn't be undone.

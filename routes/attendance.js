@@ -112,7 +112,11 @@ import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js'
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { validateZod } from '../validators/zodHelpers.js';
-import { bulkAttendanceSchema, singleAttendanceSchema } from '../validators/attendanceSchema.js';
+import {
+  bulkAttendanceSchema,
+  singleAttendanceSchema,
+  regularizeStudentAttendanceSchema,
+} from '../validators/attendanceSchema.js';
 import { resolveAcademicYear, parseAcademicYear } from '../utils/academicYear.js';
 import SchoolSettings from '../models/SchoolSettings.js';
 import { localTodayString } from '../utils/dateTimezone.js';
@@ -342,6 +346,131 @@ router.get(
       res.json(filtered);
     } catch (error) {
       res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+// ─── Regularize Student Attendance (bulk per-student) ───────────────────
+// Backs the "Regularize Attendance" drawer on the student profile
+// (src/pages/students/components/drawers/RegularizeAttendanceDrawer.jsx).
+// Accepts N { date, status, reason } updates for a single student and flips
+// each record (upserting when no record exists for that day). Audit trail
+// is stored on Attendance.regularization (mirrors StaffAttendance).
+router.post(
+  '/student/:studentId/regularize',
+  validateObjectIdParam('studentId'),
+  checkPermission('attendance', 'edit'),
+  validateZod(regularizeStudentAttendanceSchema),
+  async (req, res) => {
+    try {
+      const { studentId } = req.params;
+      const { updates } = req.body;
+      const regularizedBy = req.user?.id;
+      const schoolId = await resolveRequestSchoolId(req);
+
+      // Reject future dates — regularization is a backdated correction,
+      // never a pre-mark. Mirrors staff regularize guard at line 463.
+      const today = localTodayString();
+      for (const u of updates) {
+        if (u.date > today) {
+          return res.status(400).json({
+            error: 'Cannot regularize attendance for future dates',
+            details: [{ field: 'updates', message: `Future date ${u.date} rejected` }],
+          });
+        }
+      }
+
+      // Verify the student exists and is not soft-deleted (multi-tenancy +
+      // AUDIT-457 pattern used by the GET endpoints above).
+      const studentDoc = await Student.findOne(
+        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+      )
+        .select('_id classId')
+        .lean();
+      if (!studentDoc) {
+        return res.status(404).json({ error: 'Student not found' });
+      }
+
+      const results = [];
+      for (const { date, status, reason } of updates) {
+        // Locate the existing record (school+student+date scope). We use
+        // findOne → manual save (instead of findOneAndUpdate) so the
+        // `regularization` subdocument is set conditionally only when the
+        // record pre-existed (upsert case uses previousStatus='unmarked').
+        const existing = await Attendance.findOne(
+          scopeBySchool(schoolId, { studentId, date, isDeleted: { $ne: true } })
+        );
+
+        const regularizedAt = new Date();
+        if (existing) {
+          existing.regularization = {
+            regularizedBy,
+            regularizedAt,
+            previousStatus: existing.status,
+            regularizationReason: reason || '',
+          };
+          existing.status = status;
+          existing.markedBy = regularizedBy;
+          await existing.save();
+          results.push(existing.toObject());
+        } else {
+          // No prior record — create one. classId is required by the schema;
+          // fall back to the student's current class. If the student has no
+          // class assignment, skip the date with a per-item error rather
+          // than 500-ing the whole batch.
+          if (!studentDoc.classId) {
+            results.push({
+              date,
+              status,
+              skipped: true,
+              reason: `Student has no class assignment; cannot create attendance for ${date}`,
+            });
+            continue;
+          }
+          const created = await Attendance.create({
+            schoolId,
+            studentId,
+            classId: studentDoc.classId,
+            date,
+            status,
+            markedBy: regularizedBy,
+            regularization: {
+              regularizedBy,
+              regularizedAt,
+              previousStatus: 'unmarked',
+              regularizationReason: reason || '',
+            },
+          });
+          results.push(created.toObject());
+        }
+
+        // Real-time + webhook fan-out (matches POST / handler). One event
+        // per updated date so dashboards watching a single day refresh.
+        const io = req.app.get('io');
+        emitEvent(io, EVENTS.STUDENT_ATTENDANCE_UPDATED, {
+          schoolId,
+          studentId: studentId?.toString(),
+          classId: studentDoc.classId?.toString(),
+          date,
+          status,
+        });
+        dispatchWebhookEvent(schoolId, 'attendance.regularized', {
+          studentId,
+          classId: studentDoc.classId,
+          date,
+          status,
+          reason: reason || '',
+        }).catch(() => {});
+      }
+
+      res.json({
+        success: true,
+        message: `Regularized ${results.filter((r) => !r.skipped).length} record(s)`,
+        results,
+      });
+    } catch (error) {
+      console.error('[Attendance] Error regularizing student attendance:', error);
+      res.status(500).json({ error: error.message || 'Failed to regularize attendance' });
     }
   }
 );
