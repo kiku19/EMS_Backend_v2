@@ -147,6 +147,7 @@ import {
   createFeePaymentSchema,
   createRefundSchema,
   paymentsSummaryQuerySchema,
+  refundsSummaryQuerySchema,
 } from '../validators/index.js';
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { getFeePaymentGateway } from '../services/paymentGateway/index.js';
@@ -172,10 +173,50 @@ async function resolveRequestSchoolId(req) {
 
 // Escape user input before using it inside a RegExp so a search term like
 // "a.b(" can't act as a regex (ReDoS / unintended matches). Used by the
-// payments search filter below.
+// payments and refunds search filters below.
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// Build the MongoDB filter used by both GET /fees/refunds and
+// GET /fees/refunds/summary so the list page and its KPI cards always reflect
+// the same dataset (PAG-17). `search` matches student name OR refundNumber;
+// the student name branch needs a separate Student lookup because FeeRefund
+// only stores the studentId ref.
+//
+// schoolId/studentId are cast to ObjectId here so the SAME filter works for
+// both `find()`/`countDocuments()` (which would cast anyway) and `aggregate()`
+// (which does NOT cast from schema — passing a string schoolId to $match in an
+// aggregate silently matches nothing).
+function toObjectIdOrLeave(value) {
+  try {
+    return new mongoose.Types.ObjectId(String(value));
+  } catch {
+    return value;
+  }
+}
+
+async function buildRefundsFilter(req, { includeSearch = true } = {}) {
+  const { studentId, status, academicYear, search } = req.query;
+  const filter = scopeBySchool(req.user?.schoolId, {});
+  // Always cast schoolId (added by scopeBySchool) to ObjectId so the filter is
+  // safe for aggregate().
+  if (filter.schoolId) filter.schoolId = toObjectIdOrLeave(filter.schoolId);
+  if (studentId) filter.studentId = toObjectIdOrLeave(studentId);
+  if (status) filter.status = status;
+  if (academicYear) filter.academicYear = academicYear;
+
+  if (includeSearch && search && String(search).trim()) {
+    const rx = new RegExp(escapeRegex(String(search).trim().slice(0, 100)), 'i');
+    const matchingStudents = await Student.find(
+      scopeBySchool(req.user?.schoolId, { name: rx }),
+      '_id'
+    ).lean();
+    filter.$or = [{ studentId: { $in: matchingStudents.map((s) => s._id) } }, { refundNumber: rx }];
+  }
+  return filter;
+}
+
 
 // Get all payments with optional filters (paginated)
 router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
@@ -1025,24 +1066,101 @@ router.put('/payments/:id', checkPermission('fees', 'edit'), async (req, res) =>
 
 // ── Refunds ──────────────────────────────────────────────────────────────────
 
-// Get all refunds
+// Get all refunds (paginated, server-side search + status filter — PAG-17)
 router.get('/refunds', checkPermission('fees', 'view'), async (req, res) => {
   try {
-    const { studentId, status, academicYear } = req.query;
-    const filter = scopeBySchool(req.user?.schoolId, {});
-    if (studentId) filter.studentId = studentId;
-    if (status) filter.status = status;
-    if (academicYear) filter.academicYear = academicYear;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const skip = (page - 1) * limit;
 
-    const refunds = await FeeRefund.find(filter)
-      .populate('studentId', 'name admissionId')
-      .populate('classId', 'name section')
-      .sort({ createdAt: -1 });
+    const filter = await buildRefundsFilter(req);
 
-    res.json(refunds);
+    const [refunds, total] = await Promise.all([
+      FeeRefund.find(filter)
+        .populate('studentId', 'name admissionId')
+        .populate('classId', 'name section')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      FeeRefund.countDocuments(filter),
+    ]);
+
+    res.json({
+      refunds,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     logger.error({ err: error }, 'Error fetching refunds');
     res.status(500).json({ error: 'Failed to fetch refunds' });
+  }
+});
+
+// Refunds-page KPI summary (PAG-17) — computed over the FULL filtered dataset,
+// never the loaded page. Returns the total refund amount and per-status counts
+// the Refunds page KPI cards show. Registered before `/refunds/:id` so it
+// isn't captured as an :id.
+router.get('/refunds/summary', checkPermission('fees', 'view'), async (req, res) => {
+  try {
+    const parsed = refundsSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid query parameters', details: parsed.error.flatten().fieldErrors });
+    }
+    // Re-run the same filter builder with the validated query so the summary
+    // matches exactly what the list endpoint would paginate over.
+    const filter = await buildRefundsFilter({ user: req.user, query: parsed.data });
+
+    const agg = await FeeRefund.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          total: { $sum: '$amount' },
+        },
+      },
+    ]);
+
+    const summary = {
+      totalAmount: 0,
+      totalCount: 0,
+      pendingCount: 0,
+      approvedCount: 0,
+      processedCount: 0,
+      rejectedCount: 0,
+    };
+    for (const row of agg) {
+      const status = row._id || 'pending';
+      summary.totalAmount += row.total || 0;
+      summary.totalCount += row.count || 0;
+      switch (status) {
+        case 'pending':
+          summary.pendingCount = row.count || 0;
+          break;
+        case 'approved':
+          summary.approvedCount = row.count || 0;
+          break;
+        case 'processed':
+          summary.processedCount = row.count || 0;
+          break;
+        case 'rejected':
+          summary.rejectedCount = row.count || 0;
+          break;
+        default:
+          break;
+      }
+    }
+
+    res.json(summary);
+  } catch (error) {
+    logger.error({ err: error }, 'Error computing refunds summary');
+    res.status(500).json({ error: 'Failed to compute refunds summary' });
   }
 });
 

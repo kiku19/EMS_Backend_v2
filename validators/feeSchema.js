@@ -119,6 +119,21 @@ export const paymentsSummaryQuerySchema = z
   })
   .strip();
 
+// ─── REFUNDS SUMMARY QUERY (PAG-17) ─────────────────────────────
+// Backs GET /fees/refunds/summary, which computes the Refunds-page KPI cards
+// (total amount + per-status counts) over the FULL filtered dataset
+// server-side instead of from the loaded page of rows. Mirrors the list
+// route's filter surface (studentId / status / academicYear / search) so the
+// summary always matches what the list is paginating over.
+export const refundsSummaryQuerySchema = z
+  .object({
+    studentId: objectId.optional(),
+    status: z.string().max(50).optional(),
+    academicYear: academicYear.optional(),
+    search: z.string().max(100).optional(),
+  })
+  .strip();
+
 // ─── FEE TEMPLATE ──────────────────────────────────────────────
 const feeTemplateFeeHeadSchema = z
   .object({

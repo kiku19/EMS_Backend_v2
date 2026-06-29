@@ -51,6 +51,7 @@ export {
   updateDiscountSchema,
   defaultersQuerySchema,
   paymentsSummaryQuerySchema,
+  refundsSummaryQuerySchema,
   createFeeTemplateSchema,
   updateFeeTemplateSchema,
 } from './feeSchema.js';
