@@ -68,6 +68,12 @@ router.get('/permissions', async (req, res) => {
 });
 
 // Get all conversations for a user — derived from session
+// Supports offset-based pagination via `limit` (default 50, capped at 200) and
+// `skip` (default 0), plus cursor-based pagination via `cursor` (the
+// ISO-8601 timestamp of the last conversation's lastMessage from the previous
+// page). For the staff/dashboard surface the response body is still a plain
+// array — pagination metadata is exposed on the standard headers so the
+// existing dashboard destructuring of the body is unaffected.
 router.get('/conversations', async (req, res) => {
   try {
     const userId = req.user.id || req.user.userId;
@@ -80,14 +86,41 @@ router.get('/conversations', async (req, res) => {
       return res.status(403).json({ error: 'Permission denied' });
     }
 
-    const conversations = await Conversation.find({
+    // [PAG-29] Bound the result set. For admins messaging hundreds of parents
+    // the un-paginated fetch-all would balloon both the wire payload and the
+    // server-side per-conversation enrichment (Staff/Student/UserPresence
+    // batch lookups scale linearly with returned docs).
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const skip = Math.max(parseInt(req.query.skip, 10) || 0, 0);
+    // Cursor takes precedence over skip: callers paginating by timestamp
+    // (newest-first) get stable positions even when conversations shift.
+    let cursorFilter = null;
+    if (req.query.cursor) {
+      const cursorDate = new Date(req.query.cursor);
+      if (Number.isFinite(cursorDate.getTime())) {
+        cursorFilter = { 'lastMessage.timestamp': { $lt: cursorDate } };
+      }
+    }
+
+    const baseFilter = {
       schoolId,
       'participants.userId': userId,
       isArchived: false,
       isDeleted: { $ne: true },
       'deletedBy.userId': { $ne: userId },
-    })
+    };
+    const filter = cursorFilter ? { ...baseFilter, ...cursorFilter } : baseFilter;
+
+    // Count under the unscoped base filter so X-Total-Count is the global
+    // total visible to this user. `X-Has-More` is computed locally from
+    // the page size and is the right "are there more in this direction"
+    // signal for both offset- and cursor-based callers.
+    const total = await Conversation.countDocuments(baseFilter);
+
+    const conversations = await Conversation.find(filter)
       .sort({ 'lastMessage.timestamp': -1 })
+      .skip(cursorFilter ? 0 : skip)
+      .limit(limit)
       .lean();
 
     // Collect all unique participant user IDs grouped by model type to avoid N+1
@@ -161,6 +194,22 @@ router.get('/conversations', async (req, res) => {
         updatedAt: conv.updatedAt,
       };
     });
+
+    // [PAG-29] Pagination metadata on standard response headers. The body
+    // shape stays a plain array so the existing dashboard destructuring
+    // (`const conversations = await chatService.getConversations()`) keeps
+    // working without a coordinated frontend change.
+    const hasMore = enrichedConversations.length === limit;
+    const lastConv = enrichedConversations[enrichedConversations.length - 1];
+    const nextCursor =
+      hasMore && lastConv?.lastMessage?.timestamp
+        ? new Date(lastConv.lastMessage.timestamp).toISOString()
+        : undefined;
+
+    res.set('X-Total-Count', String(total));
+    res.set('X-Limit', String(limit));
+    res.set('X-Has-More', String(hasMore));
+    if (nextCursor) res.set('X-Next-Cursor', nextCursor);
 
     res.json(enrichedConversations);
   } catch (error) {
@@ -268,8 +317,7 @@ router.post('/conversations', async (req, res) => {
     // Parent → 'Parent' (NOT 'Student') — ternary fall-through silently
     // persisted parent participants as Student, breaking refPath populate
     // and every downstream avatar/name lookup.
-    const typeToModel = (t) =>
-      t === 'parent' ? 'Parent' : t === 'student' ? 'Student' : 'Staff';
+    const typeToModel = (t) => (t === 'parent' ? 'Parent' : t === 'student' ? 'Student' : 'Staff');
     const user1Model = typeToModel(user1Type);
     const user2Model = typeToModel(user2Type);
 
