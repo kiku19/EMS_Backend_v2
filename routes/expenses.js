@@ -11,12 +11,22 @@ router.use(authenticate);
 // GET /expenses — list with optional filters
 router.get('/', async (req, res) => {
   try {
-    const { category, status, academicYear, from, to, page = 1, limit = 50 } = req.query;
+    const { q, category, status, academicYear, from, to, page = 1, limit = 50 } = req.query;
     const query = { schoolId: req.user.schoolId, isDeleted: { $ne: true } };
 
     if (category) query.category = category;
     if (status) query.status = status;
     if (academicYear) query.academicYear = academicYear;
+    if (q) {
+      // Coerce to string (guards against NoSQL injection via object params) and
+      // escape regex metacharacters before matching title/vendor case-insensitively.
+      const escaped = String(q)
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (escaped) {
+        query.$or = [{ title: new RegExp(escaped, 'i') }, { vendor: new RegExp(escaped, 'i') }];
+      }
+    }
     if (from || to) {
       query.expenseDate = {};
       if (from) query.expenseDate.$gte = new Date(from);
