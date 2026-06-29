@@ -30,6 +30,12 @@ const listQuerySchema = z.object({
     .optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
+  search: z
+    .string()
+    .trim()
+    .min(1, 'search must not be empty')
+    .max(100, 'search too long (max 100 chars)')
+    .optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -40,6 +46,12 @@ const exportQuerySchema = z.object({
   endDate: z.string().optional(),
   entity: z.string().trim().optional(),
   action: z.enum(ACTION_ENUM).optional(),
+  search: z
+    .string()
+    .trim()
+    .min(1, 'search must not be empty')
+    .max(100, 'search too long (max 100 chars)')
+    .optional(),
 });
 
 const purgeBodySchema = z.object({
@@ -47,6 +59,10 @@ const purgeBodySchema = z.object({
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function buildFilter(schoolId, params) {
   const filter = { schoolId };
@@ -63,6 +79,20 @@ function buildFilter(schoolId, params) {
       filter.createdAt.$lte = end;
     }
   }
+
+  if (params.search) {
+    const escaped = escapeRegex(params.search);
+    const rx = new RegExp(escaped, 'i');
+    filter.$or = [
+      { userName: rx },
+      { entity: rx },
+      { entityId: rx },
+      { ipAddress: rx },
+      { path: rx },
+      { method: rx },
+    ];
+  }
+
   return filter;
 }
 

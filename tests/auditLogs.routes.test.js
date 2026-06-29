@@ -322,6 +322,162 @@ describe('GET /api/audit-logs', () => {
     expect(res.body.details).toHaveProperty('limit');
   });
 
+  it('filters by free-text search across userName, entity, ip, path', async () => {
+    const { school, admin, app, adminHeaders } = await setup();
+    await AuditTrail.create([
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'Ananya Sharma',
+        action: 'created',
+        entity: 'student',
+        ipAddress: '10.0.0.7',
+        path: '/api/students',
+      }),
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'Dinesh Admin',
+        action: 'updated',
+        entity: 'staff',
+        ipAddress: '192.168.1.10',
+        path: '/api/staff/staff-001',
+      }),
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'Ravi Menon',
+        action: 'deleted',
+        entity: 'class',
+        ipAddress: '203.0.113.5',
+        path: '/api/classes/cls-12b',
+      }),
+    ]);
+
+    const byUser = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: 'ananya' })
+      .expect(200);
+    expect(byUser.body.logs).toHaveLength(1);
+    expect(byUser.body.logs[0].userName).toBe('Ananya Sharma');
+    expect(byUser.body.pagination.total).toBe(1);
+
+    const byIp = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: '203.0.113' })
+      .expect(200);
+    expect(byIp.body.logs).toHaveLength(1);
+    expect(byIp.body.logs[0].ipAddress).toBe('203.0.113.5');
+
+    const byPath = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: '/api/staff' })
+      .expect(200);
+    expect(byPath.body.logs).toHaveLength(1);
+    expect(byPath.body.logs[0].entity).toBe('staff');
+
+    const byEntity = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: 'class' })
+      .expect(200);
+    expect(byEntity.body.logs.map((l) => l.entity)).toContain('class');
+  });
+
+  it('search is case-insensitive', async () => {
+    const { school, admin, app, adminHeaders } = await setup();
+    await AuditTrail.create(
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'Ananya Sharma',
+        action: 'created',
+        entity: 'student',
+      })
+    );
+
+    const res = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: 'ANANYA' })
+      .expect(200);
+    expect(res.body.logs).toHaveLength(1);
+  });
+
+  it('search escapes regex special characters (no ReDoS, literal match)', async () => {
+    const { school, admin, app, adminHeaders } = await setup();
+    await AuditTrail.create([
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'foo.*admin.*bar',
+        ipAddress: '127.0.0.1',
+      }),
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'admin.test',
+        ipAddress: '127.0.0.2',
+      }),
+    ]);
+
+    // The literal string ".*admin.*" should match the first log literally,
+    // not act as a regex pattern that would otherwise match every record
+    // containing "admin" (or be vulnerable to ReDoS).
+    const res = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: '.*admin.*' })
+      .expect(200);
+    expect(res.body.logs).toHaveLength(1);
+    expect(res.body.logs[0].userName).toBe('foo.*admin.*bar');
+  });
+
+  it('returns 400 when search is whitespace only', async () => {
+    const { app, adminHeaders } = await setup();
+    const res = await request(app).get(BASE).set(adminHeaders).query({ search: '   ' }).expect(400);
+    expect(res.body.error).toBe('Invalid query parameters');
+    expect(res.body.details).toHaveProperty('search');
+  });
+
+  it('returns 400 when search exceeds 100 chars', async () => {
+    const { app, adminHeaders } = await setup();
+    const res = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: 'a'.repeat(101) })
+      .expect(400);
+    expect(res.body.error).toBe('Invalid query parameters');
+    expect(res.body.details).toHaveProperty('search');
+  });
+
+  it('search combines with filters and pagination', async () => {
+    const { school, admin, app, adminHeaders } = await setup();
+    await AuditTrail.create(
+      Array.from({ length: 6 }, (_, i) =>
+        createAuditLog({
+          schoolId: school._id,
+          userId: admin._id,
+          userName: 'Ananya Sharma',
+          entity: i % 2 === 0 ? 'student' : 'staff',
+          action: 'created',
+        })
+      )
+    );
+
+    const res = await request(app)
+      .get(BASE)
+      .set(adminHeaders)
+      .query({ search: 'ananya', entity: 'staff', page: 1, limit: 2 })
+      .expect(200);
+    expect(res.body.logs).toHaveLength(2);
+    expect(res.body.logs.every((l) => l.entity === 'staff')).toBe(true);
+    expect(res.body.pagination).toMatchObject({ page: 1, limit: 2, total: 3 });
+  });
+
   it('defaults limit to 50 and page to 1', async () => {
     const { school, admin, app, adminHeaders } = await setup();
     await AuditTrail.create(
@@ -501,6 +657,33 @@ describe('GET /api/audit-logs/export', () => {
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].action).toBe('created');
+  });
+
+  it('respects search during export', async () => {
+    const { school, admin, app, adminHeaders } = await setup();
+    await AuditTrail.create([
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'Ananya Sharma',
+        ipAddress: '10.0.0.7',
+      }),
+      createAuditLog({
+        schoolId: school._id,
+        userId: admin._id,
+        userName: 'Other User',
+        ipAddress: '10.0.0.8',
+      }),
+    ]);
+
+    const res = await request(app)
+      .get(`${BASE}/export`)
+      .set(adminHeaders)
+      .query({ format: 'json', search: 'ananya' })
+      .expect(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].userName).toBe('Ananya Sharma');
   });
 
   it('returns empty CSV when no logs match', async () => {
