@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import { Admission, Appointment, Feedback, CallLog, Staff, Student } from '../database.js';
 // NOTE: Visitor and GatePass models are NOT imported here.
 // Visitor CRUD is handled by routes/visitors.js (mounted at /api/visitors).
@@ -21,6 +22,21 @@ async function resolveRequestSchoolId(req) {
   return schoolId;
 }
 
+// Coarse admission stages → their constituent fine-grained statuses. Mirrors
+// STAGE_OPTIONS in the dashboard's admissionsConstants.js so a `?stage=` filter
+// resolves to the same buckets the UI shows.
+const STAGE_STATUSES = {
+  inquiry: ['inquiry-logged', 'form-sent'],
+  visited: ['form-submitted', 'documents-verified'],
+  applied: ['test-scheduled', 'test-cleared', 'test-failed', 'test-no-show'],
+  admitted: ['admission-approved', 'fee-paid', 'student-admitted'],
+  rejected: ['admission-rejected'],
+};
+
+// Escape user-supplied search text before it goes into a RegExp so special
+// characters are matched literally (and can't form a pathological pattern).
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const router = express.Router();
 router.use(authenticate);
 
@@ -36,23 +52,104 @@ router.use((req, res, next) => {
 
 /**
  * GET /api/front-desk/admissions
- * Get all admissions with optional filters
+ * List admissions for the school, newest first.
+ *
+ * Query params:
+ *   - status  exact admission status
+ *   - stage   coarse stage key (inquiry|visited|applied|admitted|rejected);
+ *             ignored when `status` is also supplied
+ *   - source  enquiry source (walk-in|call|website|reference)
+ *   - search  case-insensitive match on name / parent / phone / class
+ *   - page    1-based page number (default 1)
+ *   - limit   page size (default 50, max 100, 0 = no cap / return every match)
+ *
+ * Response shape depends on whether pagination was requested:
+ *   - No `page`/`limit` param → legacy bare array of every match (kept so the
+ *     front-desk dashboard summary and other unpaginated callers are unaffected).
+ *   - `page` or `limit` present → { data, pagination, statusCounts } envelope,
+ *     mirroring the canonical students list contract. `statusCounts` is the
+ *     per-status breakdown across the whole school (ignoring search/stage/page)
+ *     so the UI's stage filter strip stays an accurate pipeline navigator.
  */
 router.get('/admissions', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
-    const { status, source } = req.query;
+    const { status, source, search, stage, page, limit } = req.query;
     const schoolId = await resolveRequestSchoolId(req);
+
+    // Build the filter. Coerce values to String so a crafted query such as
+    // `?status[$ne]=` can't smuggle an operator object into the filter.
     const query = { schoolId };
+    if (status) {
+      query.status = String(status);
+    } else if (stage && STAGE_STATUSES[String(stage)]) {
+      query.status = { $in: STAGE_STATUSES[String(stage)] };
+    }
+    if (source) query.source = String(source);
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
+      query.$or = [
+        { studentName: rx },
+        { parentName: rx },
+        { phoneNumber: rx },
+        { classApplyingFor: rx },
+      ];
+    }
 
-    if (status) query.status = status;
-    if (source) query.source = source;
+    // Backward compatibility: callers that don't ask for pagination still get
+    // the full array they always received.
+    const wantsPagination = page !== undefined || limit !== undefined;
+    if (!wantsPagination) {
+      const admissions = await Admission.find(query)
+        .sort({ createdAt: -1 })
+        .populate('assignedTeacher', 'name')
+        .populate('decisionBy', 'name');
+      return res.json(admissions);
+    }
 
-    const admissions = await Admission.find(query)
+    const rawLimit = parseInt(limit, 10);
+    const noLimit = rawLimit === 0; // limit=0 → return every match (board view)
+    const pageNum = noLimit ? 1 : Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = noLimit ? 0 : Math.min(Math.max(rawLimit || 50, 1), 100);
+    const skip = noLimit ? 0 : (pageNum - 1) * limitNum;
+
+    let listQuery = Admission.find(query)
       .sort({ createdAt: -1 })
       .populate('assignedTeacher', 'name')
       .populate('decisionBy', 'name');
+    if (!noLimit) listQuery = listQuery.skip(skip).limit(limitNum);
 
-    res.json(admissions);
+    const [data, totalItems, statusAgg] = await Promise.all([
+      listQuery,
+      Admission.countDocuments(query),
+      Admission.aggregate([
+        { $match: { schoolId: new mongoose.Types.ObjectId(schoolId) } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const statusCounts = statusAgg.reduce(
+      (acc, { _id, count }) => {
+        if (_id) acc[_id] = count;
+        acc.all += count;
+        return acc;
+      },
+      { all: 0 }
+    );
+
+    const totalPages = noLimit ? 1 : Math.max(Math.ceil(totalItems / limitNum), 1);
+
+    res.json({
+      data,
+      statusCounts,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalItems,
+        itemsPerPage: noLimit ? totalItems : limitNum,
+        hasNextPage: noLimit ? false : pageNum < totalPages,
+        hasPrevPage: noLimit ? false : pageNum > 1,
+      },
+    });
   } catch (error) {
     console.error('❌ Get admissions error:', error);
     res.status(500).json({

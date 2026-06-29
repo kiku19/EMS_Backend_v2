@@ -69,6 +69,150 @@ describe('front-desk admissions routes', () => {
     });
   });
 
+  describe('GET /api/front-desk/admissions (paginated)', () => {
+    async function seedAdmissions(app, admin, names) {
+      for (const studentName of names) {
+        await request(app)
+          .post('/api/front-desk/admissions')
+          .set(authHeadersFor(admin))
+          .send({ studentName, source: 'walk-in' })
+          .expect(201);
+      }
+    }
+
+    it('returns the { data, pagination, statusCounts } envelope when a page is requested', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Alice Apple', 'Bob Banana', 'Carol Cherry']);
+
+      const res = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ page: 1, limit: 2 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+
+      expect(Array.isArray(res.body)).toBe(false);
+      expect(res.body.data).toHaveLength(2);
+      expect(res.body.pagination).toMatchObject({
+        currentPage: 1,
+        totalItems: 3,
+        totalPages: 2,
+        itemsPerPage: 2,
+        hasNextPage: true,
+        hasPrevPage: false,
+      });
+      // statusCounts is the whole-school breakdown, independent of the page.
+      expect(res.body.statusCounts.all).toBe(3);
+      expect(res.body.statusCounts['inquiry-logged']).toBe(3);
+    });
+
+    it('walks to the last page', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Alice Apple', 'Bob Banana', 'Carol Cherry']);
+
+      const res = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ page: 2, limit: 2 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.pagination).toMatchObject({
+        currentPage: 2,
+        hasNextPage: false,
+        hasPrevPage: true,
+      });
+    });
+
+    it('caps the page size at 100', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Solo Student']);
+
+      const res = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ page: 1, limit: 5000 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+
+      expect(res.body.pagination.itemsPerPage).toBe(100);
+    });
+
+    it('limit=0 returns every match without a cap', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Alice Apple', 'Bob Banana', 'Carol Cherry']);
+
+      const res = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ limit: 0 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+
+      expect(res.body.data).toHaveLength(3);
+      expect(res.body.pagination).toMatchObject({
+        itemsPerPage: 3,
+        totalItems: 3,
+        hasNextPage: false,
+      });
+    });
+
+    it('filters by search across name fields without affecting statusCounts', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Alice Apple', 'Bob Banana', 'Carol Cherry']);
+
+      const res = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ search: 'alice', page: 1, limit: 10 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].studentName).toBe('Alice Apple');
+      expect(res.body.pagination.totalItems).toBe(1);
+      // Grand totals stay at 3 — the stage strip ignores the active search.
+      expect(res.body.statusCounts.all).toBe(3);
+    });
+
+    it('filters by coarse stage key', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Alice Apple', 'Bob Banana']);
+
+      const inquiry = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ stage: 'inquiry', limit: 10 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+      expect(inquiry.body.data).toHaveLength(2);
+
+      const admitted = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ stage: 'admitted', limit: 10 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+      expect(admitted.body.data).toHaveLength(0);
+    });
+
+    it('treats a crafted operator query param as a literal (no NoSQL injection)', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      await seedAdmissions(app, admin, ['Alice Apple']);
+
+      const res = await request(app)
+        .get('/api/front-desk/admissions')
+        .query({ 'status[$ne]': 'nope', limit: 10 })
+        .set(authHeadersFor(admin))
+        .expect(200);
+
+      // Coerced to the string "[object Object]" → matches nothing, rather than
+      // leaking every record via a $ne operator.
+      expect(res.body.data).toHaveLength(0);
+    });
+  });
+
   describe('POST /api/front-desk/admissions', () => {
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
