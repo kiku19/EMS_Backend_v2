@@ -155,6 +155,58 @@
  *         $ref: '#/components/responses/NotFound'
  */
 
+/**
+ * @swagger
+ * /classes/attendance/week:
+ *   get:
+ *     summary: Per-day covered/total class attendance counts for a week
+ *     description: |
+ *       Returns the Monday of the requested week plus one entry per past
+ *       school day (Mon–Sat by default, configurable via SchoolSettings).
+ *       Used by the frontend ClassesRail week-calendar to replace the
+ *       "neutral until ..." stub (SCH-191).
+ *     tags: [Classes, Attendance]
+ *     parameters:
+ *       - in: query
+ *         name: weekStart
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Monday of the week to summarise (YYYY-MM-DD). Defaults to the current week.
+ *       - in: query
+ *         name: academicYear
+ *         schema:
+ *           type: string
+ *         description: Optional YYYY-YY filter (unused for now; reserved for future use).
+ *     responses:
+ *       200:
+ *         description: Week summary
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 weekStart:
+ *                   type: string
+ *                   format: date
+ *                 days:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       date:
+ *                         type: string
+ *                         format: date
+ *                       covered:
+ *                         type: integer
+ *                       total:
+ *                         type: integer
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ */
+
 import express from 'express';
 import {
   Class,
@@ -172,6 +224,7 @@ import {
 } from '../database.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import Homework from '../models/Homework.js';
+import SchoolSettings from '../models/SchoolSettings.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { validateZod } from '../middleware/validation.js';
@@ -181,6 +234,7 @@ import {
   updateClassTeacherSchema,
   updateClassSubjectsSchema,
   updateClassTagSchema,
+  weekAttendanceQuerySchema,
 } from '../validators/index.js';
 import resolveClassId from '../utils/resolveClassId.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
@@ -188,6 +242,7 @@ import { countActiveStudents, checkClassCapacity } from '../utils/classCapacity.
 import { sendNotification } from './notifications.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { localTodayString } from '../utils/dateTimezone.js';
 import mongoose from 'mongoose';
 import { logToTrash } from '../services/trashService.js';
 
@@ -402,6 +457,128 @@ router.get('/', checkPermission('classes', 'view'), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ─── PER-DAY WEEK ATTENDANCE COVERAGE (SCH-191) ──────────────────────────
+// Single-call endpoint that returns per-day covered/total class counts for the
+// current (or requested) week. Replaces the frontend's `ClassesRail.weekcal`
+// "neutral until ..." stub with real bar colouring.
+//
+// Mounted BEFORE the `/:id` routes so `attendance` is matched as a literal
+// path segment instead of an `:id` parameter.
+const WEEK_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function startOfIsoWeek(dateStr) {
+  // Anchor to Monday of the ISO week containing the given YYYY-MM-DD.
+  // Uses UTC parsing so the result is stable across server timezones.
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  const dow = d.getUTCDay(); // 0=Sun..6=Sat
+  const diff = dow === 0 ? -6 : 1 - dow;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function addDaysIso(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function dayNameFromIso(dateStr) {
+  return WEEK_DAY_NAMES[new Date(`${dateStr}T00:00:00Z`).getUTCDay()];
+}
+
+router.get(
+  '/attendance/week',
+  checkPermission('attendance', 'view'),
+  validateZod(weekAttendanceQuerySchema, 'query'),
+  async (req, res) => {
+    try {
+      const schoolId = await resolveRequestSchoolId(req);
+
+      // Resolve the week window. `weekStart` defaults to "this Monday".
+      const requestedWeekStart = req.query.weekStart || startOfIsoWeek(localTodayString());
+      const weekStart = startOfIsoWeek(requestedWeekStart);
+      if (!weekStart) {
+        return res.status(400).json({ error: 'Invalid weekStart value' });
+      }
+
+      // Build the 7-day window (Mon..Sun). Future dates and non-working days
+      // are pruned below; this is the inclusive list of candidates.
+      const candidateDates = Array.from({ length: 7 }, (_, i) => addDaysIso(weekStart, i));
+      const today = localTodayString();
+
+      // Read school settings for workingDays + holidays. Both are optional —
+      // fall back to Mon–Sat and an empty holiday list on missing settings.
+      let workingDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      let holidaySet = new Set();
+      try {
+        const settings = await SchoolSettings.findOne({ schoolId }).select('workingDays holidays');
+        if (Array.isArray(settings?.workingDays) && settings.workingDays.length > 0) {
+          workingDays = settings.workingDays;
+        }
+        if (Array.isArray(settings?.holidays)) {
+          holidaySet = new Set(settings.holidays.map((h) => h.date).filter(Boolean));
+        }
+      } catch (settingsErr) {
+        console.warn('[classes/attendance/week] settings lookup failed:', settingsErr.message);
+      }
+
+      // Eligible dates = past school days in the requested week that aren't
+      // holidays. "Past" means `date <= today` in the school's local timezone
+      // so users looking at the current week still see today's bar (today is
+      // included; future days of the current week are omitted).
+      const eligibleDates = candidateDates.filter((dateStr) => {
+        if (dateStr > today) return false;
+        if (holidaySet.has(dateStr)) return false;
+        return workingDays.includes(dayNameFromIso(dateStr));
+      });
+
+      // Total active classes (school-scoped, non-deleted, current AY by
+      // default). Used as `total` for every eligible day — the contract says
+      // `total` is the number of classes that *should* have attendance on a
+      // school day, which doesn't change day-to-day.
+      const baseClassQuery = scopeBySchool(schoolId, {
+        isDeleted: { $ne: true },
+        academicYear: CURRENT_ACADEMIC_YEAR,
+      });
+      const total = await Class.countDocuments(baseClassQuery);
+
+      // Covered counts: distinct classIds with any non-deleted attendance
+      // record for the eligible dates, grouped by date. Done in one
+      // aggregation instead of N queries.
+      const coveredByDate = {};
+      if (eligibleDates.length > 0) {
+        const records = await Attendance.aggregate([
+          {
+            $match: {
+              schoolId: new mongoose.Types.ObjectId(String(schoolId)),
+              date: { $in: eligibleDates },
+              isDeleted: { $ne: true },
+            },
+          },
+          { $group: { _id: { date: '$date', classId: '$classId' } } },
+          { $group: { _id: '$_id.date', classes: { $sum: 1 } } },
+        ]);
+        for (const row of records) {
+          coveredByDate[row._id] = row.classes;
+        }
+      }
+
+      const days = eligibleDates.map((dateStr) => ({
+        date: dateStr,
+        covered: coveredByDate[dateStr] || 0,
+        total,
+      }));
+
+      res.json({ weekStart, days });
+    } catch (error) {
+      console.error('[classes/attendance/week] error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 router.post(
   '/',

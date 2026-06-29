@@ -29,6 +29,7 @@ export {
   studentPromoteSchema,
   yearEndPromotionSchema,
   bulkStudentPromoteSchema,
+  weekAttendanceQuerySchema,
 } from './classSchema.js';
 export {
   createExamSchema,
