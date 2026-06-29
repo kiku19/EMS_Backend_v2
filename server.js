@@ -117,7 +117,7 @@ import ptmRoutes from './routes/ptm.js';
 import searchRoutes from './routes/search.js';
 import gdprRoutes from './routes/gdpr.js';
 import archivalRoutes from './routes/archival.js';
-// import inventoryRoutes from './routes/inventory.js'; // Commented out — not needed for launch
+import inventoryRoutes from './routes/inventory.js';
 import tallyRoutes from './routes/tally.js';
 import googleClassroomRoutes from './routes/googleClassroom.js';
 import npsRoutes from './routes/nps.js';
@@ -639,7 +639,7 @@ v1Router.use('/bulk-ops', bulkOpsRoutes);
 // ─── Extra Modules ───────────────────────────────────────────────────────────
 v1Router.use('/library', libraryRoutes);
 v1Router.use('/transport', transportRoutes);
-// v1Router.use('/inventory', inventoryRoutes); // Commented out — not needed for launch
+v1Router.use('/inventory', inventoryRoutes);
 v1Router.use('/hostel', hostelRoutes);
 
 // ─── Integrations ────────────────────────────────────────────────────────────
