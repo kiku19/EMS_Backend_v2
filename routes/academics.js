@@ -22,6 +22,18 @@
  *         schema:
  *           type: string
  *           enum: [scheduled, ongoing, completed, results_published]
+ *       - in: query
+ *         name: q
+ *         schema: { type: string }
+ *         description: Case-insensitive substring match on exam name or subject name (PAG-09).
+ *       - in: query
+ *         name: skip
+ *         schema: { type: integer, minimum: 0 }
+ *         description: Pagination offset (default 0).
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 200 }
+ *         description: Page size (default 50, capped at 200).
  *     responses:
  *       200:
  *         description: Array of exams
@@ -31,6 +43,9 @@
  *               type: array
  *               items:
  *                 $ref: '#/components/schemas/ExamBase'
+ *         headers:
+ *           X-Total-Count: { schema: { type: integer }, description: Total exams matching the filter (across all pages). }
+ *           X-Has-More:    { schema: { type: boolean }, description: True when more exams exist past the current page. }
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  *   post:
@@ -376,7 +391,7 @@ router.get(
 
 router.get('/exams', checkPermission('academics', 'view'), async (req, res) => {
   try {
-    const { academicYear, classId, status } = req.query;
+    const { academicYear, classId, status, q } = req.query;
     // AUDIT-66: Add pagination support
     const skip = parseInt(req.query.skip) || 0;
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
@@ -394,6 +409,16 @@ router.get('/exams', checkPermission('academics', 'view'), async (req, res) => {
     }
     if (status) {
       query.status = status;
+    }
+    // PAG-09: server-side name/subject search so the Results-entry picker
+    // can find older exams across years. Regex is escaped and length-bounded
+    // to avoid ReDoS on hostile input.
+    if (typeof q === 'string' && q.trim()) {
+      const safe = q.trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { name: { $regex: safe, $options: 'i' } },
+        { subjectName: { $regex: safe, $options: 'i' } },
+      ];
     }
 
     const scopedQuery = scopeBySchool(req.user?.schoolId, query);

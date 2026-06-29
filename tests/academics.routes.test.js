@@ -105,6 +105,97 @@ describe('academics routes', () => {
       const { app } = createTestApp();
       await request(app).get('/api/exams').expect(401);
     });
+
+    // PAG-09: scope + search so the Results-entry picker doesn't drop older exams
+    it('filters exams by academicYear', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      for (const [name, year] of [
+        ['2024 Final', '2024-25'],
+        ['2025 Final', '2025-26'],
+      ]) {
+        await request(app)
+          .post('/api/exams')
+          .set(authHeaders)
+          .send({
+            name,
+            classId: classRecord._id.toString(),
+            maxMarks: 100,
+            passingMarks: 35,
+            startDate: '2026-05-10',
+            academicYear: year,
+          })
+          .expect(201);
+      }
+
+      const response = await request(app)
+        .get('/api/exams?academicYear=2024-25')
+        .set(authHeaders)
+        .expect(200);
+
+      expect(response.body).toHaveLength(1);
+      expect(response.body[0].name).toBe('2024 Final');
+      expect(response.body[0].academicYear).toBe('2024-25');
+    });
+
+    it('filters exams by case-insensitive name search via q', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      for (const name of ['Mid Term Maths', 'Final Science', 'Pop Quiz English']) {
+        await request(app)
+          .post('/api/exams')
+          .set(authHeaders)
+          .send({
+            name,
+            classId: classRecord._id.toString(),
+            maxMarks: 100,
+            passingMarks: 35,
+            startDate: '2026-05-10',
+            academicYear: '2025-26',
+          })
+          .expect(201);
+      }
+
+      const response = await request(app).get('/api/exams?q=maths').set(authHeaders).expect(200);
+
+      expect(response.body).toHaveLength(1);
+      expect(response.body[0].name).toBe('Mid Term Maths');
+    });
+
+    it('treats regex metacharacters in q as literals (no ReDoS, no crash)', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Quarterly Test',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-05-10',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      const response = await request(app)
+        .get('/api/exams?q=' + encodeURIComponent('.*Quarterly.*'))
+        .set(authHeaders)
+        .expect(200);
+
+      // Without the escape, ".*" would match the whole collection; with it,
+      // it should match only the literal substring ".*Quarterly.*" (zero rows).
+      expect(response.body).toHaveLength(0);
+    });
   });
 
   describe('GET /api/exams/:id — get single exam', () => {
@@ -336,7 +427,12 @@ describe('academics routes', () => {
           rollNo: i + 1,
           classId: classRecord._id,
           parents: [
-            { name: 'Grade Parent', relationship: 'father', phone: `920000000${i}`, isWhatsapp: true },
+            {
+              name: 'Grade Parent',
+              relationship: 'father',
+              phone: `920000000${i}`,
+              isWhatsapp: true,
+            },
           ],
         });
         students.push(student);
@@ -413,9 +509,7 @@ describe('academics routes', () => {
         .send({
           examId: examRes.body._id,
           classId: classRecord._id.toString(),
-          results: [
-            { studentId: student._id.toString(), marksObtained: 0, status: 'absent' },
-          ],
+          results: [{ studentId: student._id.toString(), marksObtained: 0, status: 'absent' }],
         })
         .expect(200);
 
