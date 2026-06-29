@@ -364,6 +364,42 @@ describe('notifications routes', () => {
     await request(app).delete(`/api/notifications/${notif._id}`).set(authHeaders).expect(404);
   });
 
+  // ── DELETE /api/notifications/clear-all ────────────────────────────
+
+  it('clears all notifications for the user (regression: literal route must win over /:id)', async () => {
+    await Notification.create({
+      userId: admin._id,
+      userModel: 'Staff',
+      schoolId: school._id,
+      type: 'salary',
+      title: 'Payslip',
+      message: 'Your payslip is ready',
+      channels: [{ type: 'inapp', status: 'pending' }],
+    });
+    await Notification.create({
+      userId: admin._id,
+      userModel: 'Staff',
+      schoolId: school._id,
+      type: 'attendance',
+      title: 'Absent',
+      message: 'Student absent',
+      channels: [{ type: 'inapp', status: 'pending' }],
+    });
+
+    const res = await request(app)
+      .delete('/api/notifications/clear-all')
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.message).toBe('All notifications cleared');
+
+    const remaining = await Notification.countDocuments({
+      userId: admin._id,
+      userModel: 'Staff',
+    });
+    expect(remaining).toBe(0);
+  });
+
   // ── GET /api/notifications/preferences/me ─────────────────────────
 
   it('returns default preferences when none exist', async () => {
