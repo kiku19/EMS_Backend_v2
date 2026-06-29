@@ -171,82 +171,74 @@ router.get('/intake-forms/:id', async (req, res) => {
 });
 
 // POST /intake-forms - Create a new intake form
-router.post(
-  '/intake-forms',
-  validateZod(createIntakeFormSchema),
-  async (req, res) => {
-    try {
-      const { formName, formType, fields, status } = req.body;
+router.post('/intake-forms', validateZod(createIntakeFormSchema), async (req, res) => {
+  try {
+    const { formName, formType, fields, status } = req.body;
 
-      // Create intake form
-      const form = new IntakeForm({
-        schoolId: req.user.schoolId,
-        formName,
-        formType,
-        fields,
-        status: status || 'active',
-        createdBy: req.user.id,
-      });
+    // Create intake form
+    const form = new IntakeForm({
+      schoolId: req.user.schoolId,
+      formName,
+      formType,
+      fields,
+      status: status || 'active',
+      createdBy: req.user.id,
+    });
 
-      await form.save();
+    await form.save();
 
-      // Populate createdBy before returning
-      await form.populate('createdBy', 'name code');
+    // Populate createdBy before returning
+    await form.populate('createdBy', 'name code');
 
-      res.status(201).json(form);
-    } catch (error) {
-      console.error('❌ Error creating intake form:', error);
-      res.status(500).json({
-        error: 'Failed to create intake form',
-        message: error.message,
-      });
-    }
+    res.status(201).json(form);
+  } catch (error) {
+    console.error('❌ Error creating intake form:', error);
+    res.status(500).json({
+      error: 'Failed to create intake form',
+      message: error.message,
+    });
   }
-);
+});
 
 // PUT /intake-forms/:id - Update an intake form
-router.put(
-  '/intake-forms/:id',
-  validateZod(updateIntakeFormSchema),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { formName, formType, fields, status } = req.body;
+router.put('/intake-forms/:id', validateZod(updateIntakeFormSchema), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { formName, formType, fields, status } = req.body;
 
-      // Find existing form
-      const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
+    // Find existing form
+    const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
 
-      if (!form) {
-        console.warn('Intake form not found:', id);
-        return res.status(404).json({
-          error: 'Intake form not found',
-          message: `No form found with ID: ${id}`,
-        });
-      }
-
-      // Update fields
-      if (formName !== undefined) form.formName = formName;
-      if (formType !== undefined) form.formType = formType;
-      if (fields !== undefined) {
-        form.fields = fields;
-      }
-      if (status !== undefined) form.status = status;
-
-      await form.save();
-
-      // Populate createdBy before returning
-      await form.populate('createdBy', 'name code');
-
-      res.json(form);
-    } catch (error) {
-      console.error('❌ Error updating intake form:', error);
-      res.status(500).json({
-        error: 'Failed to update intake form',
-        message: error.message,
+    if (!form) {
+      console.warn('Intake form not found:', id);
+      return res.status(404).json({
+        error: 'Intake form not found',
+        message: `No form found with ID: ${id}`,
       });
     }
+
+    // Update fields
+    if (formName !== undefined) form.formName = formName;
+    if (formType !== undefined) form.formType = formType;
+    if (fields !== undefined) {
+      form.fields = fields;
+    }
+    if (status !== undefined) form.status = status;
+
+    await form.save();
+
+    // Populate createdBy before returning
+    await form.populate('createdBy', 'name code');
+
+    res.json(form);
+  } catch (error) {
+    console.error('❌ Error updating intake form:', error);
+    res.status(500).json({
+      error: 'Failed to update intake form',
+      message: error.message,
+    });
   }
-);
+});
 
 // DELETE /intake-forms/:id - Delete an intake form
 router.delete('/intake-forms/:id', async (req, res) => {
@@ -343,188 +335,184 @@ router.post('/intake-forms/:id/duplicate', async (req, res) => {
 // ============================================================
 
 // POST /intake-forms/:id/assign - Assign form to email/phone
-router.post(
-  '/intake-forms/:id/assign',
-  validateZod(assignFormSchema),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const {
-        emails = [],
-        phones = [],
-        assignedToEmail,
-        assignedToPhone,
-        expiresInDays = 7,
-      } = req.body;
-      const enableThirdPartyValidation = req.query.validatePhone === 'true';
+router.post('/intake-forms/:id/assign', validateZod(assignFormSchema), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      emails = [],
+      phones = [],
+      assignedToEmail,
+      assignedToPhone,
+      expiresInDays = 7,
+    } = req.body;
+    const enableThirdPartyValidation = req.query.validatePhone === 'true';
 
-      // Validate form exists
-      const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
-      if (!form) {
-        console.warn('⚠️ Intake form not found:', id);
-        return res.status(404).json({
-          error: 'Intake form not found',
-          message: `No form found with ID: ${id}`,
-        });
-      }
-
-      // Support both array format (from frontend) and string format (backward compatibility)
-      const recipientEmails = emails?.length ? emails : assignedToEmail ? [assignedToEmail] : [];
-      const recipientPhones = phones?.length ? phones : assignedToPhone ? [assignedToPhone] : [];
-
-      if (recipientEmails.length === 0 && recipientPhones.length === 0) {
-        return res.status(400).json({
-          error: 'Validation failed',
-          message: 'At least one email or phone is required',
-        });
-      }
-
-      // Validate phone numbers if provided
-      if (recipientPhones.length > 0) {
-        const validationErrors = [];
-
-        for (const phone of recipientPhones) {
-          // Format validation (Indian phone numbers)
-          const formatValidation = validateIndianPhone(phone);
-
-          if (!formatValidation.isValid) {
-            validationErrors.push({
-              phone: phone,
-              error: formatValidation.error,
-              stage: 'format_validation',
-            });
-            continue;
-          }
-
-          // Third-party validation (optional)
-          if (enableThirdPartyValidation) {
-            try {
-              const thirdPartyValidation = await mockThirdPartyValidation(phone);
-
-              if (!thirdPartyValidation.isValid) {
-                validationErrors.push({
-                  phone: phone,
-                  error: thirdPartyValidation.error,
-                  stage: 'third_party_validation',
-                  provider: thirdPartyValidation.provider,
-                });
-              }
-            } catch (error) {
-              console.error(`❌ Third-party validation failed for phone ${phone}:`, error.message);
-              validationErrors.push({
-                phone: phone,
-                error: 'Third-party validation service unavailable',
-                stage: 'third_party_validation',
-                details: error.message,
-              });
-            }
-          }
-        }
-
-        // If any validation failed, return errors
-        if (validationErrors.length > 0) {
-          console.warn('⚠️ Phone validation failed for one or more numbers:', validationErrors);
-          return res.status(400).json({
-            error: 'Phone validation failed',
-            message: 'One or more phone numbers failed validation',
-            validationErrors: validationErrors,
-          });
-        }
-      }
-
-      // Calculate expiration date
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + expiresInDays);
-
-      // Create assignments for all recipients
-      const assignments = [];
-      const assignedById = req.user.id;
-
-      for (const email of recipientEmails) {
-        const accessToken = generateAccessToken();
-        const assignment = new FormAssignment({
-          schoolId: req.user.schoolId,
-          formId: id,
-          assignedToEmail: email,
-          assignedBy: assignedById,
-          status: 'pending',
-          accessToken,
-          expiresAt,
-          assignedAt: new Date(),
-        });
-        await assignment.save();
-        await assignment.populate('formId', 'formName formType');
-        await assignment.populate('assignedBy', 'name code');
-        assignments.push(assignment);
-      }
-
-      for (const phone of recipientPhones) {
-        const accessToken = generateAccessToken();
-        const assignment = new FormAssignment({
-          schoolId: req.user.schoolId,
-          formId: id,
-          assignedToPhone: phone,
-          assignedBy: assignedById,
-          status: 'pending',
-          accessToken,
-          expiresAt,
-          assignedAt: new Date(),
-        });
-        await assignment.save();
-        await assignment.populate('formId', 'formName formType');
-        await assignment.populate('assignedBy', 'name code');
-        assignments.push(assignment);
-      }
-
-      // --- Notification: Send email to each assigned recipient (fire-and-forget) ---
-      const schoolName = process.env.SCHOOL_NAME || 'School';
-      for (const assignment of assignments) {
-        const recipientEmail = assignment.assignedToEmail;
-        if (recipientEmail) {
-          sendIntakeFormAssignedEmail({
-            recipientEmail,
-            formName: form.formName,
-            formType: form.formType,
-            accessToken: assignment.accessToken,
-            expiresAt: assignment.expiresAt,
-            schoolName,
-          }).catch((err) =>
-            console.error(
-              `[IntakeForm] Failed to send assignment email to ${recipientEmail}:`,
-              err.message
-            )
-          );
-        }
-
-        // Emit socket event for real-time dashboard updates
-        const io = req.app.get('io');
-        emitEvent(io, EVENTS.INTAKE_FORM_ASSIGNED, {
-          schoolId: req.user.schoolId,
-          assignmentId: assignment._id.toString(),
-          formName: form.formName,
-          formType: form.formType,
-          assignedToEmail: assignment.assignedToEmail || undefined,
-          assignedToPhone: assignment.assignedToPhone || undefined,
-        });
-      }
-
-      res.status(201).json({
-        assignments,
-        count: assignments.length,
-        validation: {
-          phonesValidated: recipientPhones.length,
-          thirdPartyEnabled: enableThirdPartyValidation,
-        },
-      });
-    } catch (error) {
-      console.error('❌ Error creating form assignment:', error);
-      res.status(500).json({
-        error: 'Failed to create form assignment',
-        message: error.message,
+    // Validate form exists
+    const form = await IntakeForm.findOne({ _id: id, schoolId: req.user.schoolId });
+    if (!form) {
+      console.warn('⚠️ Intake form not found:', id);
+      return res.status(404).json({
+        error: 'Intake form not found',
+        message: `No form found with ID: ${id}`,
       });
     }
+
+    // Support both array format (from frontend) and string format (backward compatibility)
+    const recipientEmails = emails?.length ? emails : assignedToEmail ? [assignedToEmail] : [];
+    const recipientPhones = phones?.length ? phones : assignedToPhone ? [assignedToPhone] : [];
+
+    if (recipientEmails.length === 0 && recipientPhones.length === 0) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'At least one email or phone is required',
+      });
+    }
+
+    // Validate phone numbers if provided
+    if (recipientPhones.length > 0) {
+      const validationErrors = [];
+
+      for (const phone of recipientPhones) {
+        // Format validation (Indian phone numbers)
+        const formatValidation = validateIndianPhone(phone);
+
+        if (!formatValidation.isValid) {
+          validationErrors.push({
+            phone: phone,
+            error: formatValidation.error,
+            stage: 'format_validation',
+          });
+          continue;
+        }
+
+        // Third-party validation (optional)
+        if (enableThirdPartyValidation) {
+          try {
+            const thirdPartyValidation = await mockThirdPartyValidation(phone);
+
+            if (!thirdPartyValidation.isValid) {
+              validationErrors.push({
+                phone: phone,
+                error: thirdPartyValidation.error,
+                stage: 'third_party_validation',
+                provider: thirdPartyValidation.provider,
+              });
+            }
+          } catch (error) {
+            console.error(`❌ Third-party validation failed for phone ${phone}:`, error.message);
+            validationErrors.push({
+              phone: phone,
+              error: 'Third-party validation service unavailable',
+              stage: 'third_party_validation',
+              details: error.message,
+            });
+          }
+        }
+      }
+
+      // If any validation failed, return errors
+      if (validationErrors.length > 0) {
+        console.warn('⚠️ Phone validation failed for one or more numbers:', validationErrors);
+        return res.status(400).json({
+          error: 'Phone validation failed',
+          message: 'One or more phone numbers failed validation',
+          validationErrors: validationErrors,
+        });
+      }
+    }
+
+    // Calculate expiration date
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + expiresInDays);
+
+    // Create assignments for all recipients
+    const assignments = [];
+    const assignedById = req.user.id;
+
+    for (const email of recipientEmails) {
+      const accessToken = generateAccessToken();
+      const assignment = new FormAssignment({
+        schoolId: req.user.schoolId,
+        formId: id,
+        assignedToEmail: email,
+        assignedBy: assignedById,
+        status: 'pending',
+        accessToken,
+        expiresAt,
+        assignedAt: new Date(),
+      });
+      await assignment.save();
+      await assignment.populate('formId', 'formName formType');
+      await assignment.populate('assignedBy', 'name code');
+      assignments.push(assignment);
+    }
+
+    for (const phone of recipientPhones) {
+      const accessToken = generateAccessToken();
+      const assignment = new FormAssignment({
+        schoolId: req.user.schoolId,
+        formId: id,
+        assignedToPhone: phone,
+        assignedBy: assignedById,
+        status: 'pending',
+        accessToken,
+        expiresAt,
+        assignedAt: new Date(),
+      });
+      await assignment.save();
+      await assignment.populate('formId', 'formName formType');
+      await assignment.populate('assignedBy', 'name code');
+      assignments.push(assignment);
+    }
+
+    // --- Notification: Send email to each assigned recipient (fire-and-forget) ---
+    const schoolName = process.env.SCHOOL_NAME || 'School';
+    for (const assignment of assignments) {
+      const recipientEmail = assignment.assignedToEmail;
+      if (recipientEmail) {
+        sendIntakeFormAssignedEmail({
+          recipientEmail,
+          formName: form.formName,
+          formType: form.formType,
+          accessToken: assignment.accessToken,
+          expiresAt: assignment.expiresAt,
+          schoolName,
+        }).catch((err) =>
+          console.error(
+            `[IntakeForm] Failed to send assignment email to ${recipientEmail}:`,
+            err.message
+          )
+        );
+      }
+
+      // Emit socket event for real-time dashboard updates
+      const io = req.app.get('io');
+      emitEvent(io, EVENTS.INTAKE_FORM_ASSIGNED, {
+        schoolId: req.user.schoolId,
+        assignmentId: assignment._id.toString(),
+        formName: form.formName,
+        formType: form.formType,
+        assignedToEmail: assignment.assignedToEmail || undefined,
+        assignedToPhone: assignment.assignedToPhone || undefined,
+      });
+    }
+
+    res.status(201).json({
+      assignments,
+      count: assignments.length,
+      validation: {
+        phonesValidated: recipientPhones.length,
+        thirdPartyEnabled: enableThirdPartyValidation,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error creating form assignment:', error);
+    res.status(500).json({
+      error: 'Failed to create form assignment',
+      message: error.message,
+    });
   }
-);
+});
 
 // GET /form-assignments - Get all form assignments with optional filters
 router.get('/form-assignments', async (req, res) => {
@@ -675,22 +663,56 @@ router.delete('/form-assignments/:id', async (req, res) => {
 // FORM SUBMISSION ENDPOINTS
 // ============================================================
 
-// GET /form-submissions - Get all form submissions with optional filters
+// GET /form-submissions - Get form submissions with optional filters.
+// Pagination is opt-in (PAG-16): when `page` or `limit` is supplied the
+// response is a paginated envelope `{ data, pagination }`; otherwise the full
+// sorted list is returned as a bare array for backward compatibility with
+// callers that aggregate over every submission (enrollment funnel,
+// student-form counts).
 router.get('/form-submissions', async (req, res) => {
   try {
-    const { formId, reviewStatus } = req.query;
+    const { formId, reviewStatus, page, limit } = req.query;
 
     const query = { schoolId: req.user.schoolId };
     if (formId) query.formId = formId;
     if (reviewStatus) query.reviewStatus = reviewStatus;
 
-    const submissions = await FormSubmission.find(query)
-      .populate('assignmentId', 'assignedToEmail assignedToPhone assignedBy')
-      .populate('formId', 'formName formType')
-      .populate('reviewedBy', 'name code')
-      .sort({ submittedAt: -1 });
+    const buildQuery = () =>
+      FormSubmission.find(query)
+        .populate('assignmentId', 'assignedToEmail assignedToPhone assignedBy')
+        .populate('formId', 'formName formType')
+        .populate('reviewedBy', 'name code')
+        .sort({ submittedAt: -1 });
 
-    res.json(submissions);
+    const wantsPagination = page !== undefined || limit !== undefined;
+
+    if (!wantsPagination) {
+      const submissions = await buildQuery();
+      return res.json(submissions);
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [submissions, total] = await Promise.all([
+      buildQuery().skip(skip).limit(limitNum),
+      FormSubmission.countDocuments(query),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / limitNum));
+
+    res.json({
+      data: submissions,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalItems: total,
+        itemsPerPage: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+    });
   } catch (error) {
     console.error('❌ Error fetching form submissions:', error);
     res.status(500).json({

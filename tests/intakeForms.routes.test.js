@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { describe, it, expect, beforeEach } from 'vitest';
 import mongoose from 'mongoose';
-import { IntakeForm } from '../database.js';
+import { IntakeForm, FormSubmission } from '../database.js';
 import { authHeadersFor, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
@@ -194,6 +194,83 @@ describe('intakeForms routes', () => {
       const res = await request(app).get('/api/form-submissions').set(headers).expect(200);
 
       expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    // PAG-16: pagination is opt-in via page/limit.
+    const seedSubmissions = async (count) => {
+      const form = await IntakeForm.create({
+        schoolId: school._id,
+        formName: 'Paged Form',
+        formType: 'student',
+        fields: [],
+      });
+      const docs = Array.from({ length: count }, (_, i) => ({
+        schoolId: school._id,
+        assignmentId: new mongoose.Types.ObjectId(),
+        formId: form._id,
+        submittedByEmail: `parent${i}@example.com`,
+        reviewStatus: 'pending',
+        submittedAt: new Date(Date.now() - i * 1000),
+      }));
+      await FormSubmission.insertMany(docs);
+    };
+
+    it('returns the full array (no pagination) when page/limit are omitted', async () => {
+      await seedSubmissions(3);
+
+      const res = await request(app).get('/api/form-submissions').set(headers).expect(200);
+
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body).toHaveLength(3);
+    });
+
+    it('returns a paginated envelope when page/limit are supplied', async () => {
+      await seedSubmissions(25);
+
+      const res = await request(app)
+        .get('/api/form-submissions?page=1&limit=10')
+        .set(headers)
+        .expect(200);
+
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data).toHaveLength(10);
+      expect(res.body.pagination).toMatchObject({
+        currentPage: 1,
+        totalPages: 3,
+        totalItems: 25,
+        itemsPerPage: 10,
+        hasNextPage: true,
+        hasPrevPage: false,
+      });
+    });
+
+    it('returns the last partial page with correct flags', async () => {
+      await seedSubmissions(25);
+
+      const res = await request(app)
+        .get('/api/form-submissions?page=3&limit=10')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.data).toHaveLength(5);
+      expect(res.body.pagination).toMatchObject({
+        currentPage: 3,
+        totalPages: 3,
+        hasNextPage: false,
+        hasPrevPage: true,
+      });
+    });
+
+    it('clamps an over-large limit to 100', async () => {
+      await seedSubmissions(2);
+
+      const res = await request(app)
+        .get('/api/form-submissions?page=1&limit=9999')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.pagination.itemsPerPage).toBe(100);
+      expect(res.body.data).toHaveLength(2);
     });
   });
 
