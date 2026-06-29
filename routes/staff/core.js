@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import {
   Class,
   Staff,
@@ -8,6 +9,7 @@ import {
   getNextStaffCode,
 } from '../../database.js';
 import UserPermission from '../../models/UserPermission.js';
+import StaffAttendance from '../../models/StaffAttendance.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { validateZod, createStaffSchema, updateStaffSchema } from '../../validators/index.js';
@@ -33,12 +35,120 @@ import {
 const router = express.Router();
 router.use(authenticate);
 
+// ── Helpers for the list endpoint (SCH-126 / PAG-28: server-side search + facets) ──
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseCommaList(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function parseScalar(raw) {
+  if (raw === undefined || raw === null) return null;
+  const v = String(raw).trim();
+  return v === '' ? null : v;
+}
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function looksLikePhone(value) {
+  return /^[+]?[\d\s-]{6,}$/.test(value);
+}
+
+// Build the {$or: [...]} clause for the free-text `q` param.
+// PII fields (phone, email) are encrypted at rest — substring search is not
+// possible on them without decryption. When `q` looks like an email or phone,
+// we additionally attempt an exact match via the deterministic HMAC hash
+// (piiMatch). Non-PII text fields get a case-insensitive substring regex.
+function buildSearchClause(q) {
+  const esc = escapeRegex(q);
+  const clauses = [
+    { name: { $regex: esc, $options: 'i' } },
+    { code: { $regex: esc, $options: 'i' } },
+    { staffNumber: { $regex: esc, $options: 'i' } },
+    { designation: { $regex: esc, $options: 'i' } },
+    { role: { $regex: esc, $options: 'i' } },
+  ];
+  if (looksLikeEmail(q)) clauses.push(piiMatch('email', q));
+  if (looksLikePhone(q)) clauses.push(piiMatch('phone', q));
+  return { $or: clauses };
+}
+
+// Aggregate unique values + counts for a single field over `baseQuery`.
+// `unwindArray` should be true for array fields (e.g. `role`).
+//
+// Note: `aggregate()` does NOT cast query values to the schema (unlike find()).
+// The caller must ensure `schoolId` is a mongoose.Types.ObjectId — see
+// `facetBaseQuery()` below.
+async function aggregateFacet(StaffModel, baseQuery, field, { unwindArray = false } = {}) {
+  const pipeline = [{ $match: baseQuery }];
+  if (unwindArray) pipeline.push({ $unwind: `$${field}` });
+  pipeline.push(
+    { $match: { [field]: { $exists: true, $nin: [null, ''] } } },
+    { $group: { _id: `$${field}`, count: { $sum: 1 } } },
+    { $sort: { _id: 1 } }
+  );
+  const rows = await StaffModel.aggregate(pipeline);
+  return rows.map((r) => ({ value: r._id, count: r.count }));
+}
+
+// Build a query object whose `schoolId` is a mongoose.Types.ObjectId, so it
+// works in `aggregate()` pipelines (which bypass Mongoose schema casting).
+function facetBaseQuery(schoolId, extras = {}) {
+  const normalized = mongoose.Types.ObjectId.isValid(String(schoolId))
+    ? new mongoose.Types.ObjectId(String(schoolId))
+    : schoolId;
+  return { ...extras, schoolId: normalized };
+}
+
 // Fix: Add isDeleted filter and schoolId to Class query
 // Fix 3.15: Add pagination support with backward compatibility
+// SCH-126 / PAG-28: Extend paginated branch with q (search), role/department/
+// employmentType/gender facet filters, today (StaffAttendance join), and a
+// `facets` aggregate so the dashboard's filter pills can be driven server-side.
 router.get('/', checkPermission('staff', 'view'), async (req, res) => {
   try {
-    const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
+    const schoolId = req.user?.schoolId;
+    const baseQuery = scopeBySchool(schoolId, { isDeleted: { $ne: true } });
     const isPaginated = req.query.page !== undefined;
+
+    const q = parseScalar(req.query.q);
+    const roleFilters = parseCommaList(req.query.role);
+    const department = parseScalar(req.query.department);
+    const employmentType = parseScalar(req.query.employmentType);
+    const gender = parseScalar(req.query.gender);
+    const status = parseScalar(req.query.status);
+    const todayOnly = String(req.query.today) === 'true';
+
+    // Filter that drives the paged result. Facet filters apply here.
+    const resultQuery = { ...baseQuery };
+    if (q) resultQuery.$and = [buildSearchClause(q)];
+    if (roleFilters.length > 0) resultQuery.role = { $in: roleFilters };
+    if (department) resultQuery.department = department;
+    if (employmentType) resultQuery.employmentType = employmentType;
+    if (gender) resultQuery.gender = gender;
+    if (status && status !== 'all') resultQuery.status = status;
+
+    if (todayOnly) {
+      const today = new Date().toISOString().split('T')[0];
+      const todaysRecords = await StaffAttendance.find(
+        scopeBySchool(schoolId, {
+          date: today,
+          status: { $in: ['present', 'absent', 'leave'] },
+        })
+      )
+        .select('staffId')
+        .lean();
+      resultQuery._id = { $in: todaysRecords.map((r) => r.staffId) };
+    }
 
     let staffList;
     let total;
@@ -49,20 +159,20 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
       const skip = (page - 1) * limit;
 
       [staffList, total] = await Promise.all([
-        Staff.find(query)
+        Staff.find(resultQuery)
           .populate('reporterId', 'name')
           .sort({ createdAt: 1 })
           .skip(skip)
           .limit(limit)
           .lean(),
-        Staff.countDocuments(query),
+        Staff.countDocuments(resultQuery),
       ]);
 
       const staffIds = staffList.map((staff) => staff._id);
       const assignedClasses =
         staffIds.length > 0
           ? await Class.find(
-              scopeBySchool(req.user?.schoolId, {
+              scopeBySchool(schoolId, {
                 classTeacherId: { $in: staffIds },
               })
             )
@@ -74,6 +184,31 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
         assignedClasses.map((classDoc) => [classDoc.classTeacherId.toString(), classDoc])
       );
 
+      // Facets: computed over (baseQuery + q + today) but EXCLUDING facet
+      // selections, so each pill reflects the available options given the
+      // current search/attendance view. Skipping via includeFacets=false avoids
+      // the 4 aggregation queries for callers that only want the page.
+      const includeFacets = String(req.query.includeFacets) !== 'false';
+      let facets;
+      if (includeFacets) {
+        // aggregate() doesn't schema-cast, so schoolId must be a real ObjectId.
+        const facetBase = facetBaseQuery(schoolId);
+        if (q) facetBase.$and = [buildSearchClause(q)];
+        if (todayOnly) facetBase._id = resultQuery._id;
+        const [roleFacet, deptFacet, empFacet, genderFacet] = await Promise.all([
+          aggregateFacet(Staff, facetBase, 'role', { unwindArray: true }),
+          aggregateFacet(Staff, facetBase, 'department'),
+          aggregateFacet(Staff, facetBase, 'employmentType'),
+          aggregateFacet(Staff, facetBase, 'gender'),
+        ]);
+        facets = {
+          role: roleFacet,
+          department: deptFacet,
+          employmentType: empFacet,
+          gender: genderFacet,
+        };
+      }
+
       return res.json({
         data: staffList.map((staff) =>
           formatStaffResponse(staff, classMap.get(staff._id.toString()))
@@ -84,11 +219,15 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
           total,
           totalPages: Math.ceil(total / limit),
         },
+        ...(facets ? { facets } : {}),
       });
     }
 
-    // Backward compatible: return plain array when no page param
-    staffList = await Staff.find(query)
+    // Backward compatible: return plain array when no page param.
+    // q / facet / today filters DO apply here too, so existing consumers that
+    // opt into the new params get filtered results. Unfiltered calls (the
+    // current AppContext bootstrap) still get the full list.
+    staffList = await Staff.find(resultQuery)
       .populate('reporterId', 'name')
       .sort({ createdAt: 1 })
       .lean();
@@ -97,7 +236,7 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
     const assignedClasses =
       staffIds.length > 0
         ? await Class.find(
-            scopeBySchool(req.user?.schoolId, {
+            scopeBySchool(schoolId, {
               classTeacherId: { $in: staffIds },
             })
           )
