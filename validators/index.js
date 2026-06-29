@@ -50,6 +50,7 @@ export {
   studentFeePaymentSchema,
   updateDiscountSchema,
   defaultersQuerySchema,
+  paymentsSummaryQuerySchema,
   createFeeTemplateSchema,
   updateFeeTemplateSchema,
 } from './feeSchema.js';

@@ -103,6 +103,22 @@ export const defaultersQuerySchema = z
   })
   .strip();
 
+// ─── PAYMENTS KPI SUMMARY QUERY (PAG-01) ────────────────────────
+// Backs GET /fees/payments/summary, which computes the Fees-page KPIs
+// (collected today / outstanding total / students owing) over the FULL
+// dataset server-side instead of from the first page of payment rows.
+// `date` is the client's local calendar day (YYYY-MM-DD) so "collected
+// today" matches the cashier's timezone, not the server's.
+export const paymentsSummaryQuerySchema = z
+  .object({
+    academicYear: academicYear.optional(),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be in YYYY-MM-DD format')
+      .optional(),
+  })
+  .strip();
+
 // ─── FEE TEMPLATE ──────────────────────────────────────────────
 const feeTemplateFeeHeadSchema = z
   .object({

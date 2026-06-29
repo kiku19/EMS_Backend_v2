@@ -142,7 +142,12 @@ import {
   computeFeeHeadStatus,
   syncStudentFeeDetails,
 } from '../utils/feeCalculator.js';
-import { validateZod, createFeePaymentSchema, createRefundSchema } from '../validators/index.js';
+import {
+  validateZod,
+  createFeePaymentSchema,
+  createRefundSchema,
+  paymentsSummaryQuerySchema,
+} from '../validators/index.js';
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { getFeePaymentGateway } from '../services/paymentGateway/index.js';
 import { logToTrash } from '../services/trashService.js';
@@ -165,10 +170,17 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
+// Escape user input before using it inside a RegExp so a search term like
+// "a.b(" can't act as a regex (ReDoS / unintended matches). Used by the
+// payments search filter below.
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Get all payments with optional filters (paginated)
 router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
   try {
-    const { studentId, academicYear, status, startDate, endDate } = req.query;
+    const { studentId, academicYear, status, startDate, endDate, search } = req.query;
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
     const skip = (page - 1) * limit;
@@ -188,6 +200,22 @@ router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
       // so use string comparison instead of Date objects
       if (startDate) filter.paymentDate.$gte = startDate;
       if (endDate) filter.paymentDate.$lte = endDate;
+    }
+
+    // Server-side search (PAG-01): match by student name or receipt number so
+    // payments older than the first page are still findable. Client-side
+    // search only ever saw the rows already on screen. studentId ref is
+    // resolved via a name lookup first (same pattern as /defaulters).
+    if (search && String(search).trim()) {
+      const rx = new RegExp(escapeRegex(String(search).trim().slice(0, 100)), 'i');
+      const matchingStudents = await Student.find(
+        scopeBySchool(req.user?.schoolId, { name: rx }),
+        '_id'
+      ).lean();
+      filter.$or = [
+        { studentId: { $in: matchingStudents.map((s) => s._id) } },
+        { receiptNumber: rx },
+      ];
     }
 
     const [payments, total] = await Promise.all([
@@ -211,6 +239,68 @@ router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
   } catch (error) {
     logger.error({ err: error }, 'Error fetching payments');
     res.status(500).json({ error: 'Failed to fetch payments' });
+  }
+});
+
+// Fees-page KPI summary (PAG-01) — computed over the FULL dataset, never the
+// first page of rows. Three figures the Fees page shows:
+//   • collectedToday  — sum of non-cancelled FeePayment.amount for `date`
+//   • outstandingTotal — sum of StudentFeeStructure.totalBalance still owed
+//   • overdueCount     — number of students with an outstanding balance
+// Outstanding/overdue come from StudentFeeStructure (the source of truth for
+// dues) because FeePayment rows are completed transactions with no
+// balance/due fields. Registered before `/payments/:id` so it isn't captured
+// as an :id.
+router.get('/payments/summary', checkPermission('fees', 'view'), async (req, res) => {
+  try {
+    const parsed = paymentsSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid query parameters', details: parsed.error.flatten().fieldErrors });
+    }
+
+    const schoolId = await resolveRequestSchoolId(req);
+    const resolvedYear = await resolveAcademicYear(parsed.data.academicYear, schoolId);
+    // Default to the server's calendar day; the client passes its own local
+    // date so "collected today" matches the cashier's timezone.
+    const date = parsed.data.date || new Date().toISOString().slice(0, 10);
+    const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+
+    const [collectedAgg, outstandingAgg] = await Promise.all([
+      FeePayment.aggregate([
+        {
+          $match: {
+            schoolId: schoolObjectId,
+            academicYear: resolvedYear,
+            paymentDate: date,
+            status: { $ne: 'cancelled' },
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      StudentFeeStructure.aggregate([
+        {
+          $match: {
+            schoolId: schoolObjectId,
+            academicYear: resolvedYear,
+            totalBalance: { $gt: 0 },
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$totalBalance' }, students: { $sum: 1 } } },
+      ]),
+    ]);
+
+    res.json({
+      collectedToday: collectedAgg[0]?.total || 0,
+      outstandingTotal: outstandingAgg[0]?.total || 0,
+      overdueCount: outstandingAgg[0]?.students || 0,
+      date,
+      academicYear: resolvedYear,
+    });
+  } catch (error) {
+    logger.error({ err: error }, 'Error computing fee payments summary');
+    res.status(500).json({ error: 'Failed to compute fee payments summary' });
   }
 });
 
@@ -619,12 +709,10 @@ router.post(
           { err: error },
           'Duplicate receipt number on concurrent payment — retried automatically'
         );
-        return res
-          .status(409)
-          .json({
-            error: 'A payment was already recorded concurrently. Please refresh and try again.',
-            code: 'DUPLICATE_RECEIPT',
-          });
+        return res.status(409).json({
+          error: 'A payment was already recorded concurrently. Please refresh and try again.',
+          code: 'DUPLICATE_RECEIPT',
+        });
       }
       logger.error({ err: error }, 'Error creating payment');
       res.status(500).json({ error: 'Failed to create payment' });
