@@ -36,16 +36,23 @@
  *         description: Page size (default 50, capped at 200).
  *     responses:
  *       200:
- *         description: Array of exams
+ *         description: Paginated list of exams for the current school (PAG-10: pagination lives in the body, not headers)
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/ExamBase'
- *         headers:
- *           X-Total-Count: { schema: { type: integer }, description: Total exams matching the filter (across all pages). }
- *           X-Has-More:    { schema: { type: boolean }, description: True when more exams exist past the current page. }
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/ExamBase'
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     total:    { type: integer, description: 'Total exams matching the filter (across all pages).' }
+ *                     skip:     { type: integer, description: 'Offset used for this page.' }
+ *                     limit:    { type: integer, description: 'Page size used for this page.' }
+ *                     hasMore:  { type: boolean, description: 'True when more exams exist past the current page.' }
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  *   post:
@@ -449,11 +456,18 @@ router.get('/exams', checkPermission('academics', 'view'), async (req, res) => {
       className: exam.classId ? classMap.get(exam.classId.toString()) : exam.classId,
     }));
 
-    // AUDIT-66: Return pagination metadata alongside results
-    // Return array directly for backward compatibility, with pagination headers
-    res.set('X-Total-Count', String(total));
-    res.set('X-Has-More', String(skip + exams.length < total));
-    res.json(formattedExams);
+    // AUDIT-66 + PAG-10: Return pagination metadata in the response body so
+    // the dashboard (which parses JSON only and can't read headers) can
+    // discover total counts and whether more pages exist.
+    res.json({
+      data: formattedExams,
+      pagination: {
+        total,
+        skip,
+        limit,
+        hasMore: skip + exams.length < total,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: 'An internal error occurred. Please try again.' });
   }
@@ -534,7 +548,9 @@ router.post(
           scopeBySchool(req.user?.schoolId, { _id: resolvedClassId, isDeleted: { $ne: true } })
         );
         if (!classExists) {
-          return res.status(404).json({ error: 'Class not found. Cannot create exam for a non-existent class.' });
+          return res
+            .status(404)
+            .json({ error: 'Class not found. Cannot create exam for a non-existent class.' });
         }
       }
 
@@ -828,9 +844,7 @@ router.put(
         const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
         const examPassingMarks = exam.passingMarks || 35;
         const examMaxMarks = exam.maxMarks || 100;
-        const schoolSettings = schoolId
-          ? await SchoolSettings.findOne({ schoolId }).lean()
-          : null;
+        const schoolSettings = schoolId ? await SchoolSettings.findOne({ schoolId }).lean() : null;
         const gradingScale = schoolSettings?.gradingScale?.length
           ? schoolSettings.gradingScale
           : null;
@@ -844,9 +858,12 @@ router.put(
                 filter: { _id: result._id },
                 update: {
                   $set: {
-                    status: result.status === 'absent'
-                      ? 'absent'
-                      : marks >= examPassingMarks ? 'passed' : 'failed',
+                    status:
+                      result.status === 'absent'
+                        ? 'absent'
+                        : marks >= examPassingMarks
+                          ? 'passed'
+                          : 'failed',
                     grade: computeGrade(pct, gradingScale),
                     percentage: pct,
                   },
@@ -872,191 +889,130 @@ router.put(
   }
 );
 
-router.delete(
-  '/exams/:id',
-  checkPermission('academics', 'delete'),
-  async (req, res) => {
-    try {
-      // Snapshot before mutation for trash logging
-      const examSnapshot = await Exam.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-      ).lean();
+router.delete('/exams/:id', checkPermission('academics', 'delete'), async (req, res) => {
+  try {
+    // Snapshot before mutation for trash logging
+    const examSnapshot = await Exam.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    ).lean();
 
-      // Issue #25: Soft delete with audit trail
-      const exam = await Exam.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        { isDeleted: true, deletedAt: new Date() },
-        { new: true }
-      );
-      if (!exam) {
-        return res.status(404).json({ error: 'Exam not found' });
-      }
-
-      await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: req.params.id }), {
-        isDeleted: true,
-        deletedAt: new Date(),
-      });
-
-      // Remove this exam's id from any ExamSchedule.generatedExamIds arrays
-      // — previously soft-deleted exams left dangling references in the
-      // schedule, producing orphaned entries in "exams generated from this
-      // schedule" listings.
-      try {
-        const { default: ExamSchedule } = await import('../models/ExamSchedule.js');
-        await ExamSchedule.updateMany(
-          scopeBySchool(req.user?.schoolId, { generatedExamIds: exam._id }),
-          { $pull: { generatedExamIds: exam._id } }
-        );
-      } catch {
-        // ExamSchedule cleanup is non-critical — proceed with trash log
-      }
-
-      // Log to trash
-      if (examSnapshot) {
-        logToTrash({
-          itemType: 'Exam',
-          itemId: exam._id,
-          itemName: examSnapshot.name || 'Exam',
-          originalData: examSnapshot,
-          deletedBy: req.user?.id || req.user?._id,
-          schoolId: req.user?.schoolId,
-        }).catch(() => {});
-      }
-
-      res.json({ message: 'Exam deleted successfully' });
-    } catch (error) {
-      res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+    // Issue #25: Soft delete with audit trail
+    const exam = await Exam.findOneAndUpdate(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+      { isDeleted: true, deletedAt: new Date() },
+      { new: true }
+    );
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
     }
-  }
-);
 
-router.post(
-  '/exams/:id/publish',
-  checkPermission('academics', 'publish'),
-  async (req, res) => {
+    await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: req.params.id }), {
+      isDeleted: true,
+      deletedAt: new Date(),
+    });
+
+    // Remove this exam's id from any ExamSchedule.generatedExamIds arrays
+    // — previously soft-deleted exams left dangling references in the
+    // schedule, producing orphaned entries in "exams generated from this
+    // schedule" listings.
     try {
-      // Confirm the exam exists and belongs to the caller's school BEFORE any
-      // other checks — otherwise a bogus id (or a cross-tenant id) falls into
-      // the "no results entered" branch and leaks a misleading 400.
-      const existingExam = await Exam.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-      ).select('_id');
-      if (!existingExam) {
-        return res.status(404).json({ error: 'Exam not found' });
-      }
-
-      // Verify results exist before publishing — prevents empty notifications
-      // to parents. Count ONLY non-deleted results; before this filter,
-      // soft-deleted rows counted as "entered" and a truly-empty exam could
-      // pass the publish gate.
-      const resultsCount = await Result.countDocuments(
-        scopeBySchool(req.user?.schoolId, {
-          examId: req.params.id,
-          isDeleted: { $ne: true },
-        })
+      const { default: ExamSchedule } = await import('../models/ExamSchedule.js');
+      await ExamSchedule.updateMany(
+        scopeBySchool(req.user?.schoolId, { generatedExamIds: exam._id }),
+        { $pull: { generatedExamIds: exam._id } }
       );
-      if (resultsCount === 0) {
-        return res.status(400).json({ error: 'Cannot publish exam without any results entered' });
-      }
+    } catch {
+      // ExamSchedule cleanup is non-critical — proceed with trash log
+    }
 
-      // Use school-scoped update to prevent cross-tenant manipulation
-      // Exclude soft-deleted exams from being published
-      const exam = await Exam.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        { status: 'results_published', isPublished: true, publishedAt: new Date() },
-        { new: true }
-      );
-      if (!exam) {
-        return res.status(404).json({ error: 'Exam not found' });
-      }
-
-      // Issue #18 Fix: Also publish all Result documents for this exam
-      await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: exam._id }), {
-        $set: { isPublished: true },
-      });
-
-      // BUG-37 Fix: Recompute ranks at publish time to ensure freshness
-      const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
-      if (schoolId && exam.classId) {
-        await computeAndSaveRanks(exam._id.toString(), exam.classId.toString(), schoolId);
-      }
-
-      // Issue #10: Notify parents when results are published
-      try {
-        const results = await Result.find(
-          scopeBySchool(req.user?.schoolId, { examId: exam._id })
-        ).select('studentId');
-        const studentIds = [
-          ...new Set(results.map((r) => r.studentId?.toString()).filter(Boolean)),
-        ];
-
-        if (studentIds.length > 0) {
-          const parents = await Parent.find(
-            scopeBySchool(req.user?.schoolId, { 'children.studentId': { $in: studentIds } })
-          ).select('_id');
-          for (const parent of parents) {
-            sendNotification(
-              parent._id,
-              'Parent',
-              'academic',
-              'Exam Results Published',
-              `Results for ${exam.name} are now available. Check your child's performance.`,
-              { relatedId: exam._id, relatedType: 'Exam', priority: 'normal' }
-            ).catch((err) => console.error('Notification error (publish):', err));
-          }
-        }
-
-        // Emit socket event for real-time update
-        const io = req.app.get('io');
-        emitEvent(io, EVENTS.RESULTS_PUBLISHED, {
-          schoolId: exam.schoolId?.toString(),
-          classId: exam.classId?.toString(),
-          examId: exam._id.toString(),
-          examName: exam.name,
-        });
-      } catch (notifError) {
-        console.error('Error sending publish notifications:', notifError);
-        // Don't fail the request if notifications fail
-      }
-
-      dispatchWebhookEvent(req.user?.schoolId, 'exam.published', {
-        id: exam._id,
-        name: exam.name,
-        classId: exam.classId,
-        academicYear: exam.academicYear,
+    // Log to trash
+    if (examSnapshot) {
+      logToTrash({
+        itemType: 'Exam',
+        itemId: exam._id,
+        itemName: examSnapshot.name || 'Exam',
+        originalData: examSnapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId: req.user?.schoolId,
       }).catch(() => {});
-
-      res.json(exam);
-    } catch (error) {
-      res.status(500).json({ error: 'An internal error occurred. Please try again.' });
     }
+
+    res.json({ message: 'Exam deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'An internal error occurred. Please try again.' });
   }
-);
+});
 
-// Unpublish exam results — allows retracting a published exam
-router.put(
-  '/exams/:id/unpublish',
-  checkPermission('academics', 'publish'),
-  async (req, res) => {
+router.post('/exams/:id/publish', checkPermission('academics', 'publish'), async (req, res) => {
+  try {
+    // Confirm the exam exists and belongs to the caller's school BEFORE any
+    // other checks — otherwise a bogus id (or a cross-tenant id) falls into
+    // the "no results entered" branch and leaks a misleading 400.
+    const existingExam = await Exam.findOne(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    ).select('_id');
+    if (!existingExam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    // Verify results exist before publishing — prevents empty notifications
+    // to parents. Count ONLY non-deleted results; before this filter,
+    // soft-deleted rows counted as "entered" and a truly-empty exam could
+    // pass the publish gate.
+    const resultsCount = await Result.countDocuments(
+      scopeBySchool(req.user?.schoolId, {
+        examId: req.params.id,
+        isDeleted: { $ne: true },
+      })
+    );
+    if (resultsCount === 0) {
+      return res.status(400).json({ error: 'Cannot publish exam without any results entered' });
+    }
+
+    // Use school-scoped update to prevent cross-tenant manipulation
+    // Exclude soft-deleted exams from being published
+    const exam = await Exam.findOneAndUpdate(
+      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
+      { status: 'results_published', isPublished: true, publishedAt: new Date() },
+      { new: true }
+    );
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
+    }
+
+    // Issue #18 Fix: Also publish all Result documents for this exam
+    await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: exam._id }), {
+      $set: { isPublished: true },
+    });
+
+    // BUG-37 Fix: Recompute ranks at publish time to ensure freshness
+    const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
+    if (schoolId && exam.classId) {
+      await computeAndSaveRanks(exam._id.toString(), exam.classId.toString(), schoolId);
+    }
+
+    // Issue #10: Notify parents when results are published
     try {
-      // Only allow unpublishing exams that are currently published
-      const exam = await Exam.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, {
-          _id: req.params.id,
-          isPublished: true,
-          isDeleted: { $ne: true },
-        }),
-        { status: 'completed', isPublished: false, publishedAt: null },
-        { new: true }
-      );
-      if (!exam) {
-        return res.status(404).json({ error: 'Published exam not found' });
-      }
+      const results = await Result.find(
+        scopeBySchool(req.user?.schoolId, { examId: exam._id })
+      ).select('studentId');
+      const studentIds = [...new Set(results.map((r) => r.studentId?.toString()).filter(Boolean))];
 
-      // Also unpublish all Result documents for this exam
-      await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: exam._id }), {
-        $set: { isPublished: false },
-      });
+      if (studentIds.length > 0) {
+        const parents = await Parent.find(
+          scopeBySchool(req.user?.schoolId, { 'children.studentId': { $in: studentIds } })
+        ).select('_id');
+        for (const parent of parents) {
+          sendNotification(
+            parent._id,
+            'Parent',
+            'academic',
+            'Exam Results Published',
+            `Results for ${exam.name} are now available. Check your child's performance.`,
+            { relatedId: exam._id, relatedType: 'Exam', priority: 'normal' }
+          ).catch((err) => console.error('Notification error (publish):', err));
+        }
+      }
 
       // Emit socket event for real-time update
       const io = req.app.get('io');
@@ -1065,55 +1021,104 @@ router.put(
         classId: exam.classId?.toString(),
         examId: exam._id.toString(),
         examName: exam.name,
-        unpublished: true,
       });
-
-      dispatchWebhookEvent(req.user?.schoolId, 'exam.unpublished', {
-        id: exam._id,
-        name: exam.name,
-        classId: exam.classId,
-        academicYear: exam.academicYear,
-      }).catch(() => {});
-
-      // Notify parents that the results have been retracted — otherwise
-      // they'd click the earlier 'results published' notification and get
-      // a 'not available' screen with no explanation.
-      try {
-        const { sendNotification } = await import('./notifications.js');
-        const { Parent } = await import('../database.js');
-        const students = await Result.find(
-          scopeBySchool(req.user?.schoolId, { examId: exam._id, isDeleted: { $ne: true } })
-        )
-          .select('studentId')
-          .lean();
-        const studentIds = students.map((s) => s.studentId).filter(Boolean);
-        if (studentIds.length) {
-          const parents = await Parent.find({ 'children.studentId': { $in: studentIds } }).select('_id');
-          for (const parent of parents) {
-            await sendNotification(
-              parent._id,
-              'Parent',
-              'academic',
-              `${exam.name} results retracted`,
-              `The ${exam.name} results have been temporarily retracted while the school reviews them. We'll notify you when they're republished.`,
-              {
-                relatedId: exam._id,
-                relatedType: 'Exam',
-                priority: 'normal',
-              }
-            ).catch(() => {});
-          }
-        }
-      } catch {
-        // Non-critical — unpublish succeeds even if notifications fail
-      }
-
-      res.json(exam);
-    } catch (error) {
-      res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+    } catch (notifError) {
+      console.error('Error sending publish notifications:', notifError);
+      // Don't fail the request if notifications fail
     }
+
+    dispatchWebhookEvent(req.user?.schoolId, 'exam.published', {
+      id: exam._id,
+      name: exam.name,
+      classId: exam.classId,
+      academicYear: exam.academicYear,
+    }).catch(() => {});
+
+    res.json(exam);
+  } catch (error) {
+    res.status(500).json({ error: 'An internal error occurred. Please try again.' });
   }
-);
+});
+
+// Unpublish exam results — allows retracting a published exam
+router.put('/exams/:id/unpublish', checkPermission('academics', 'publish'), async (req, res) => {
+  try {
+    // Only allow unpublishing exams that are currently published
+    const exam = await Exam.findOneAndUpdate(
+      scopeBySchool(req.user?.schoolId, {
+        _id: req.params.id,
+        isPublished: true,
+        isDeleted: { $ne: true },
+      }),
+      { status: 'completed', isPublished: false, publishedAt: null },
+      { new: true }
+    );
+    if (!exam) {
+      return res.status(404).json({ error: 'Published exam not found' });
+    }
+
+    // Also unpublish all Result documents for this exam
+    await Result.updateMany(scopeBySchool(req.user?.schoolId, { examId: exam._id }), {
+      $set: { isPublished: false },
+    });
+
+    // Emit socket event for real-time update
+    const io = req.app.get('io');
+    emitEvent(io, EVENTS.RESULTS_PUBLISHED, {
+      schoolId: exam.schoolId?.toString(),
+      classId: exam.classId?.toString(),
+      examId: exam._id.toString(),
+      examName: exam.name,
+      unpublished: true,
+    });
+
+    dispatchWebhookEvent(req.user?.schoolId, 'exam.unpublished', {
+      id: exam._id,
+      name: exam.name,
+      classId: exam.classId,
+      academicYear: exam.academicYear,
+    }).catch(() => {});
+
+    // Notify parents that the results have been retracted — otherwise
+    // they'd click the earlier 'results published' notification and get
+    // a 'not available' screen with no explanation.
+    try {
+      const { sendNotification } = await import('./notifications.js');
+      const { Parent } = await import('../database.js');
+      const students = await Result.find(
+        scopeBySchool(req.user?.schoolId, { examId: exam._id, isDeleted: { $ne: true } })
+      )
+        .select('studentId')
+        .lean();
+      const studentIds = students.map((s) => s.studentId).filter(Boolean);
+      if (studentIds.length) {
+        const parents = await Parent.find({ 'children.studentId': { $in: studentIds } }).select(
+          '_id'
+        );
+        for (const parent of parents) {
+          await sendNotification(
+            parent._id,
+            'Parent',
+            'academic',
+            `${exam.name} results retracted`,
+            `The ${exam.name} results have been temporarily retracted while the school reviews them. We'll notify you when they're republished.`,
+            {
+              relatedId: exam._id,
+              relatedType: 'Exam',
+              priority: 'normal',
+            }
+          ).catch(() => {});
+        }
+      }
+    } catch {
+      // Non-critical — unpublish succeeds even if notifications fail
+    }
+
+    res.json(exam);
+  } catch (error) {
+    res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+  }
+});
 
 router.get(
   '/results/class/:classId/exam/:examId',
@@ -1288,7 +1293,12 @@ router.post(
         const percentage = Math.min(100, Math.max(0, rawPercentage));
         const grade = computeGrade(percentage, schoolGradingScale);
         // AUDIT-748: Respect 'absent' status from frontend; do not override it with pass/fail
-        const status = result.status === 'absent' ? 'absent' : (marksObtained >= examPassingMarks ? 'passed' : 'failed');
+        const status =
+          result.status === 'absent'
+            ? 'absent'
+            : marksObtained >= examPassingMarks
+              ? 'passed'
+              : 'failed';
 
         return {
           updateOne: {
@@ -1385,7 +1395,12 @@ router.post(
         const percentage = Math.min(100, Math.max(0, rawPercentage));
         const grade = computeGrade(percentage, gradingScale);
         // AUDIT-748: Preserve 'absent' status; only recompute pass/fail for non-absent results
-        const status = result.status === 'absent' ? 'absent' : (marksObtained >= examPassingMarks ? 'passed' : 'failed');
+        const status =
+          result.status === 'absent'
+            ? 'absent'
+            : marksObtained >= examPassingMarks
+              ? 'passed'
+              : 'failed';
 
         return {
           updateOne: {
@@ -1421,33 +1436,29 @@ router.post(
 // ────────────────────────────────────────────────────────────────
 // GET /exams/:id/results — Return all results for a specific exam
 // ────────────────────────────────────────────────────────────────
-router.get(
-  '/exams/:id/results',
-  checkPermission('academics', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user?.schoolId;
-      const exam = await Exam.findOne(
-        scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-      );
-      if (!exam) {
-        return res.status(404).json({ error: 'Exam not found' });
-      }
-
-      const results = await Result.find(
-        scopeBySchool(schoolId, { examId: req.params.id, isDeleted: { $ne: true } })
-      )
-        .populate('studentId', 'name rollNo admissionId')
-        .populate('classId', 'name section')
-        .sort({ rank: 1, percentage: -1 });
-
-      res.json(results);
-    } catch (error) {
-      console.error('Get exam results failed:', error);
-      res.status(500).json({ error: 'An internal error occurred. Please try again.' });
+router.get('/exams/:id/results', checkPermission('academics', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const exam = await Exam.findOne(
+      scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+    );
+    if (!exam) {
+      return res.status(404).json({ error: 'Exam not found' });
     }
+
+    const results = await Result.find(
+      scopeBySchool(schoolId, { examId: req.params.id, isDeleted: { $ne: true } })
+    )
+      .populate('studentId', 'name rollNo admissionId')
+      .populate('classId', 'name section')
+      .sort({ rank: 1, percentage: -1 });
+
+    res.json(results);
+  } catch (error) {
+    console.error('Get exam results failed:', error);
+    res.status(500).json({ error: 'An internal error occurred. Please try again.' });
   }
-);
+});
 
 // ────────────────────────────────────────────────────────────────
 // POST /results — Create a single result entry
@@ -1457,7 +1468,9 @@ router.post('/results', checkPermission('academics', 'edit'), async (req, res) =
     // AUDIT-19: Zod validation for single result creation
     const parseResult = createResultSchema.safeParse(req.body);
     if (!parseResult.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parseResult.error.errors });
+      return res
+        .status(400)
+        .json({ error: 'Validation failed', details: parseResult.error.errors });
     }
     const { examId, studentId, classId, marksObtained, maxMarks, remarks, academicYear } =
       parseResult.data;
@@ -1558,7 +1571,9 @@ router.put('/results/:id', checkPermission('academics', 'edit'), async (req, res
     // AUDIT-19: Zod validation for single result update
     const parseResult = updateResultSchema.safeParse(req.body);
     if (!parseResult.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parseResult.error.errors });
+      return res
+        .status(400)
+        .json({ error: 'Validation failed', details: parseResult.error.errors });
     }
 
     const schoolId = req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined;
