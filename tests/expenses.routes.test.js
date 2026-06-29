@@ -340,6 +340,136 @@ describe('expenses routes', () => {
       const res = await request(app).get(`${BASE}/summary`).set(headers).expect(200);
       expect(res.body.totalAmount).toBe(100);
     });
+
+    it('honors the category filter', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'B',
+          amount: 250,
+          category: 'utilities',
+          expenseDate: new Date('2025-06-02'),
+          status: 'approved',
+        },
+      ]);
+
+      const res = await request(app)
+        .get(`${BASE}/summary?category=supplies`)
+        .set(headers)
+        .expect(200);
+      expect(res.body.totalAmount).toBe(100);
+      expect(res.body.summary).toHaveLength(1);
+      expect(res.body.summary[0]._id).toBe('supplies');
+    });
+
+    it('honors the status filter, including rejected', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'B',
+          amount: 200,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-02'),
+          status: 'rejected',
+        },
+        {
+          schoolId: school._id,
+          title: 'C',
+          amount: 75,
+          category: 'utilities',
+          expenseDate: new Date('2025-06-03'),
+          status: 'pending',
+        },
+      ]);
+
+      const approved = await request(app)
+        .get(`${BASE}/summary?status=approved`)
+        .set(headers)
+        .expect(200);
+      expect(approved.body.totalAmount).toBe(100);
+
+      // An explicit rejected filter overrides the default rejected exclusion.
+      const rejected = await request(app)
+        .get(`${BASE}/summary?status=rejected`)
+        .set(headers)
+        .expect(200);
+      expect(rejected.body.totalAmount).toBe(200);
+    });
+
+    it('combines status and category filters', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'B',
+          amount: 300,
+          category: 'salaries',
+          expenseDate: new Date('2025-06-02'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'C',
+          amount: 50,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-03'),
+          status: 'pending',
+        },
+      ]);
+
+      const res = await request(app)
+        .get(`${BASE}/summary?status=approved&category=supplies`)
+        .set(headers)
+        .expect(200);
+      expect(res.body.totalAmount).toBe(100);
+    });
+
+    it('ignores object-shaped status params (NoSQL injection guard)', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+      ]);
+
+      // status[$ne]=approved would, if passed through, match everything.
+      const res = await request(app)
+        .get(`${BASE}/summary?status[$ne]=approved`)
+        .set(headers)
+        .expect(200);
+      expect(res.body.totalAmount).toBe(0);
+    });
   });
 
   // ── PUT /api/expenses/:id ────────────────────────────────────────────────

@@ -48,12 +48,18 @@ router.get('/', async (req, res) => {
 // GET /expenses/summary — total by category for dashboard
 router.get('/summary', async (req, res) => {
   try {
-    const { academicYear, from, to } = req.query;
+    const { academicYear, from, to, category, status } = req.query;
     const match = {
       schoolId: new mongoose.Types.ObjectId(req.user.schoolId),
       isDeleted: { $ne: true },
-      status: { $ne: 'rejected' },
     };
+    // Honor an explicit status filter so the cards match the filtered table
+    // (the list route applies the same param). With no status filter, keep the
+    // dashboard rollup excluding rejected expenses. String() guards against
+    // object-shaped query params (e.g. status[$ne]=…) reaching the aggregation.
+    if (status) match.status = String(status);
+    else match.status = { $ne: 'rejected' };
+    if (category) match.category = String(category);
     if (academicYear) match.academicYear = academicYear;
     if (from || to) {
       match.expenseDate = {};
