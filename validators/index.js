@@ -69,6 +69,7 @@ export {
   updateGroupWhiteLabelSchema,
 } from './schoolGroupSchema.js';
 export { searchQuerySchema } from './searchSchema.js';
+export { homeworkListQuerySchema, homeworkStatsQuerySchema } from './homeworkSchema.js';
 export {
   cancelSubscriptionSchema,
   scheduleDowngradeSchema,
