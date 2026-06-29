@@ -187,9 +187,9 @@ describe('academics routes', () => {
         .set(authHeaders)
         .expect(200);
 
-      expect(response.body).toHaveLength(1);
-      expect(response.body[0].name).toBe('2024 Final');
-      expect(response.body[0].academicYear).toBe('2024-25');
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].name).toBe('2024 Final');
+      expect(response.body.data[0].academicYear).toBe('2024-25');
     });
 
     it('filters exams by case-insensitive name search via q', async () => {
@@ -215,8 +215,8 @@ describe('academics routes', () => {
 
       const response = await request(app).get('/api/exams?q=maths').set(authHeaders).expect(200);
 
-      expect(response.body).toHaveLength(1);
-      expect(response.body[0].name).toBe('Mid Term Maths');
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].name).toBe('Mid Term Maths');
     });
 
     it('treats regex metacharacters in q as literals (no ReDoS, no crash)', async () => {
@@ -245,7 +245,7 @@ describe('academics routes', () => {
 
       // Without the escape, ".*" would match the whole collection; with it,
       // it should match only the literal substring ".*Quarterly.*" (zero rows).
-      expect(response.body).toHaveLength(0);
+      expect(response.body.data).toHaveLength(0);
     });
   });
 
