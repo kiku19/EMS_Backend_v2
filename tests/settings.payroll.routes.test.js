@@ -44,7 +44,7 @@ describe('settings/payroll routes', () => {
           disburseDate: 1,
           payrollCycle: 'monthly',
           paymentMethod: 'bank_transfer',
-          autoReminder: false,
+          autoReminder: true,
           reminderDays: 3,
         },
       });
@@ -223,8 +223,8 @@ describe('settings/payroll routes', () => {
         .expect(400);
     });
 
-    it('accepts reminderDays at 0 and 30 (boundary values)', async () => {
-      for (const value of [0, 30]) {
+    it('accepts reminderDays at 1 and 30 (boundary values)', async () => {
+      for (const value of [1, 30]) {
         const { admin } = await setupAdmin(`BND${value}`);
         const { app } = createTestApp();
         const response = await request(app)

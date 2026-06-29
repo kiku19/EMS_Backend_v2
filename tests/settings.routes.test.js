@@ -1299,4 +1299,155 @@ describe('settings routes', () => {
       expect(holidaysB.body[0].name).toBe('B Only Holiday');
     });
   });
+
+  // ============================================================
+  // GET / PUT /api/settings/payroll  (STUB-08: paymentMethod + reminder fields)
+  // ============================================================
+
+  describe('payroll settings', () => {
+    it('GET /api/settings/payroll returns defaults when none saved', async () => {
+      const school = await createSchoolRecord({
+        name: 'Payroll Default School',
+        code: 'PAYDEF',
+      });
+      const admin = await createStaffUser({
+        name: 'Payroll Default Admin',
+        email: 'payroll.default@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      const response = await request(app)
+        .get('/api/settings/payroll')
+        .set(authHeadersFor(admin, 'admin'))
+        .expect(200);
+
+      expect(response.body.data).toMatchObject({
+        disburseDate: 1,
+        payrollCycle: 'monthly',
+        paymentMethod: 'bank_transfer',
+        autoReminder: true,
+        reminderDays: 3,
+      });
+    });
+
+    it('PUT /api/settings/payroll persists paymentMethod', async () => {
+      const school = await createSchoolRecord({
+        name: 'Payroll Method School',
+        code: 'PAYMTD',
+      });
+      const admin = await createStaffUser({
+        name: 'Payroll Method Admin',
+        email: 'payroll.method@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      const response = await request(app)
+        .put('/api/settings/payroll')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ paymentMethod: 'upi' })
+        .expect(200);
+
+      expect(response.body.data.paymentMethod).toBe('upi');
+
+      const saved = await SchoolSettings.findOne({ schoolId: school._id }).lean();
+      expect(saved.payroll.paymentMethod).toBe('upi');
+    });
+
+    it('PUT /api/settings/payroll persists reminder fields', async () => {
+      const school = await createSchoolRecord({
+        name: 'Payroll Reminder School',
+        code: 'PAYRMD',
+      });
+      const admin = await createStaffUser({
+        name: 'Payroll Reminder Admin',
+        email: 'payroll.reminder@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      const response = await request(app)
+        .put('/api/settings/payroll')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ autoReminder: false, reminderDays: 7 })
+        .expect(200);
+
+      expect(response.body.data.autoReminder).toBe(false);
+      expect(response.body.data.reminderDays).toBe(7);
+
+      const saved = await SchoolSettings.findOne({ schoolId: school._id }).lean();
+      expect(saved.payroll.autoReminder).toBe(false);
+      expect(saved.payroll.reminderDays).toBe(7);
+    });
+
+    it('PUT /api/settings/payroll rejects unknown field (strict schema)', async () => {
+      const school = await createSchoolRecord({
+        name: 'Payroll Strict School',
+        code: 'PAYSTR',
+      });
+      const admin = await createStaffUser({
+        name: 'Payroll Strict Admin',
+        email: 'payroll.strict@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/payroll')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ unknownField: 'rejected' })
+        .expect(400);
+    });
+
+    it('PUT /api/settings/payroll rejects invalid paymentMethod', async () => {
+      const school = await createSchoolRecord({
+        name: 'Payroll Invalid School',
+        code: 'PAYINV',
+      });
+      const admin = await createStaffUser({
+        name: 'Payroll Invalid Admin',
+        email: 'payroll.invalid@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/payroll')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ paymentMethod: 'crypto' })
+        .expect(400);
+    });
+
+    it('PUT /api/settings/payroll rejects reminderDays out of range', async () => {
+      const school = await createSchoolRecord({
+        name: 'Payroll Range School',
+        code: 'PAYRNG',
+      });
+      const admin = await createStaffUser({
+        name: 'Payroll Range Admin',
+        email: 'payroll.range@example.com',
+        schoolId: school._id,
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put('/api/settings/payroll')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ reminderDays: 0 })
+        .expect(400);
+    });
+  });
 });

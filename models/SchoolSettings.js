@@ -138,8 +138,8 @@ const schoolSettingsSchema = new mongoose.Schema(
         default: 'bank_transfer',
         enum: ['bank_transfer', 'cheque', 'cash', 'upi'],
       },
-      autoReminder: { type: Boolean, default: false },
-      reminderDays: { type: Number, default: 3, min: 0, max: 30 },
+      autoReminder: { type: Boolean, default: true },
+      reminderDays: { type: Number, default: 3, min: 1, max: 30 },
     },
 
     // Salary Component Definitions (earnings / deductions templates)

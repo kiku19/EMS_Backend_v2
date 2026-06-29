@@ -17,9 +17,9 @@ const normalizePayroll = (raw = {}) => ({
   disburseDate: typeof raw.disburseDate === 'number' ? raw.disburseDate : 1,
   payrollCycle: raw.payrollCycle || 'monthly',
   paymentMethod: PAYMENT_METHODS.includes(raw.paymentMethod) ? raw.paymentMethod : 'bank_transfer',
-  autoReminder: typeof raw.autoReminder === 'boolean' ? raw.autoReminder : false,
+  autoReminder: typeof raw.autoReminder === 'boolean' ? raw.autoReminder : true,
   reminderDays:
-    typeof raw.reminderDays === 'number' && raw.reminderDays >= 0 && raw.reminderDays <= 30
+    typeof raw.reminderDays === 'number' && raw.reminderDays >= 1 && raw.reminderDays <= 30
       ? raw.reminderDays
       : 3,
 });
@@ -45,11 +45,14 @@ const updatePayrollSettingsSchema = z
     reminderDays: z
       .number()
       .int()
-      .min(0, 'Must be between 0 and 30')
-      .max(30, 'Must be between 0 and 30')
+      .min(1, 'Must be between 1 and 30')
+      .max(30, 'Must be between 1 and 30')
       .optional(),
   })
   .strict();
+
+// Shape the payroll block for responses (defaults applied for missing fields).
+// `normalizePayroll` above is the single source of truth for defaults.
 
 // GET /settings/payroll — fetch payroll settings from SchoolSettings
 router.get('/payroll', authenticate, async (req, res) => {
