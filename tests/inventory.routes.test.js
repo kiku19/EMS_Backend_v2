@@ -252,6 +252,36 @@ describe('inventory routes', () => {
       expect(res.body.data).toHaveLength(1);
       expect(res.body.data[0].status).toBe('ACTIVE');
     });
+
+    it('filters assets by condition', async () => {
+      const { school, app, headers } = await setup();
+      await createAssetDirect(school._id, { name: 'Good', condition: 'GOOD' });
+      await createAssetDirect(school._id, { name: 'Damaged', condition: 'DAMAGED' });
+
+      const res = await request(app)
+        .get('/api/inventory/assets')
+        .query({ condition: 'DAMAGED' })
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].condition).toBe('DAMAGED');
+    });
+
+    it('filters assets by location', async () => {
+      const { school, app, headers } = await setup();
+      await createAssetDirect(school._id, { name: 'Lab', location: 'Room 101' });
+      await createAssetDirect(school._id, { name: 'Office', location: 'Room 202' });
+
+      const res = await request(app)
+        .get('/api/inventory/assets')
+        .query({ location: 'Room 101' })
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].location).toBe('Room 101');
+    });
   });
 
   describe('GET /api/inventory/assets/low-stock', () => {
