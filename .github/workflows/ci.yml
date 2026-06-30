@@ -52,7 +52,6 @@ jobs:
 
       - name: Check for security vulnerabilities
         run: npm audit --audit-level=high
-        continue-on-error: true
 
       - name: Run tests with coverage
         run: npm run test:coverage
@@ -122,13 +121,6 @@ jobs:
     name: Dependency Review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    # Non-blocking: this action requires the repo's Dependency Graph feature,
-    # which is currently disabled (Settings -> Security & analysis), so it
-    # errors on every PR ("Dependency review is not supported on this
-    # repository") regardless of the diff. High-severity dependencies are
-    # already gated by `npm audit --audit-level=high` in the Lint & Test job.
-    # Re-enable blocking (remove continue-on-error) once Dependency Graph is on.
-    continue-on-error: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
