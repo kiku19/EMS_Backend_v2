@@ -7,6 +7,75 @@
 
 /**
  * @swagger
+ * /dashboard/feed:
+ *   get:
+ *     summary: Get dashboard action items, schedule, and weekly highlights
+ *     description: |
+ *       Returns real-time dashboard content that is currently mocked on the
+ *       frontend: priority action items (fee defaulters, unstaffed classes,
+ *       upcoming events), today's schedule from the calendar, and weekly
+ *       highlight moments.
+ *     tags: [Dashboard]
+ *     responses:
+ *       200:
+ *         description: Dashboard feed data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 priorities:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       kind:
+ *                         type: string
+ *                         enum: [danger, warn, info]
+ *                       title:
+ *                         type: string
+ *                       body:
+ *                         type: string
+ *                       meta:
+ *                         type: string
+ *                       primary:
+ *                         type: string
+ *                       route:
+ *                         type: string
+ *                 schedule:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       time:
+ *                         type: string
+ *                       title:
+ *                         type: string
+ *                       meta:
+ *                         type: string
+ *                       mine:
+ *                         type: boolean
+ *                       allDay:
+ *                         type: boolean
+ *                 moments:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       label:
+ *                         type: string
+ *                       value:
+ *                         type: string
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ */
+
+/**
+ * @swagger
  * /dashboard/stats:
  *   get:
  *     summary: Get role-specific dashboard statistics
@@ -49,8 +118,18 @@
  */
 
 import express from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
-import { Student, Staff, Class, FeePayment, Exam, Attendance } from '../database.js';
+import {
+  Student,
+  Staff,
+  Class,
+  FeePayment,
+  Exam,
+  Attendance,
+  Substitution,
+  StudentFeeStructure,
+} from '../database.js';
 import StaffAttendance from '../models/StaffAttendance.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import TeacherLeave from '../models/TeacherLeave.js';
@@ -78,6 +157,162 @@ function hasRole(user, roles) {
   const userRoles = getRoles(user);
   return roles.some((r) => userRoles.includes(r));
 }
+
+function getCalendarEventModel() {
+  return mongoose.models.CalendarEvent || null;
+}
+
+function getDayName(dateString) {
+  const date = new Date(dateString + 'T00:00:00');
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+function formatINRCompact(amount) {
+  if (amount == null || Number.isNaN(amount)) return '₹0';
+  const n = Math.abs(amount);
+  if (n >= 1e7) return `₹${(n / 1e7).toFixed(n >= 1e8 ? 0 : 1)}Cr`;
+  if (n >= 1e5) return `₹${(n / 1e5).toFixed(n >= 1e6 ? 0 : 1)}L`;
+  if (n >= 1e3) return `₹${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}K`;
+  return `₹${Math.round(n)}`;
+}
+
+function formatShortDate(dateString) {
+  const date = new Date(dateString + 'T00:00:00');
+  if (Number.isNaN(date.getTime())) return dateString;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function daysBetween(from, to) {
+  const start = new Date(from + 'T00:00:00');
+  const end = new Date(to + 'T00:00:00');
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+}
+
+// GET /api/v1/dashboard/feed
+// Returns action items, today's schedule, and weekly highlights for the dashboard.
+router.get('/feed', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const nextWeekDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const nextWeek = nextWeekDate.toISOString().split('T')[0];
+
+    const [feeStructures, pendingSubstitutions, calendarEvents] = await Promise.allSettled([
+      StudentFeeStructure.find({ schoolId, totalBalance: { $gt: 0 } })
+        .select('totalBalance')
+        .lean(),
+      Substitution.find({
+        schoolId,
+        date: today,
+        status: { $in: ['pending', 'confirmed'] },
+      })
+        .populate('classId', 'name section')
+        .sort({ period: 1 })
+        .lean(),
+      (async () => {
+        const CalendarEvent = getCalendarEventModel();
+        if (!CalendarEvent) return [];
+        return CalendarEvent.find({
+          schoolId,
+          date: { $gte: today, $lte: nextWeek },
+          isDeleted: { $ne: true },
+          type: { $in: ['event', 'meeting', 'exam'] },
+        })
+          .sort({ date: 1, startTime: 1 })
+          .lean();
+      })(),
+    ]);
+
+    const defaulterStructures = feeStructures.status === 'fulfilled' ? feeStructures.value : [];
+    const feeDefaultersCount = defaulterStructures.length;
+    const totalPending = defaulterStructures.reduce(
+      (sum, record) => sum + (record.totalBalance || 0),
+      0
+    );
+
+    const substitutions =
+      pendingSubstitutions.status === 'fulfilled' ? pendingSubstitutions.value : [];
+
+    const events = calendarEvents.status === 'fulfilled' ? calendarEvents.value : [];
+    const todayEvents = events.filter((event) => event.date === today);
+    const upcomingEvents = events.filter((event) => event.date > today);
+
+    const priorities = [];
+    if (feeDefaultersCount > 0) {
+      priorities.push({
+        id: 'fees',
+        kind: 'danger',
+        title:
+          totalPending > 0
+            ? `${formatINRCompact(totalPending)} unpaid fees`
+            : `${feeDefaultersCount} fee defaulters`,
+        body: `${feeDefaultersCount} student${feeDefaultersCount === 1 ? '' : 's'} past cutoff`,
+        meta: 'Reminder ready',
+        primary: 'Send reminders',
+        route: '/fees',
+      });
+    }
+
+    if (substitutions.length > 0) {
+      const first = substitutions[0];
+      const className = first.classId
+        ? `${first.classId.name || ''} ${first.classId.section || ''}`.trim()
+        : 'Unknown class';
+      priorities.push({
+        id: 'coverage',
+        kind: 'warn',
+        title: `Period ${first.period} · ${className || 'Unstaffed'} unstaffed`,
+        body: 'Substitute not assigned',
+        meta: 'Today',
+        primary: 'Assign substitute',
+        route: '/staffs',
+      });
+    }
+
+    if (upcomingEvents.length > 0) {
+      const first = upcomingEvents[0];
+      const daysLeft = daysBetween(today, first.date);
+      priorities.push({
+        id: 'event',
+        kind: 'info',
+        title: `${first.title} · ${formatShortDate(first.date)}`,
+        body: first.description || 'Upcoming event',
+        meta: daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? '' : 's'} left` : 'Today',
+        primary: 'Open details',
+        route: '/calendar',
+      });
+    }
+
+    const schedule = todayEvents.map((event) => ({
+      time: event.startTime || (event.allDay ? 'All day' : 'TBD'),
+      title: event.title,
+      meta: event.description || `${getDayName(event.date)} event`,
+      mine: false,
+      allDay: event.allDay || false,
+    }));
+
+    const moments = [];
+    const weekEventCount = events.length;
+    if (weekEventCount > 0) {
+      moments.push({
+        label: 'events this week',
+        value: String(weekEventCount),
+      });
+    }
+
+    return res.json({ priorities, schedule, moments });
+  } catch (error) {
+    logger.error('Dashboard feed error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
 
 // GET /api/v1/dashboard/stats
 router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {

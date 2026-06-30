@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import mongoose from 'mongoose';
 import {
   authHeadersFor,
   createSchoolRecord,
@@ -7,6 +8,7 @@ import {
   createStudentRecord,
   createClassRecord,
 } from './helpers/factories.js';
+import { StudentFeeStructure, Substitution } from '../database.js';
 import { createTestApp } from './helpers/testApp.js';
 
 let seq = 0;
@@ -145,6 +147,126 @@ describe('dashboard routes', () => {
       expect(res.body.role).toBe('general');
       expect(res.body).toHaveProperty('totalStudents');
       expect(res.body).toHaveProperty('totalClasses');
+    });
+  });
+
+  // ─── Dashboard Feed ────────────────────────────────────────────────────
+  describe('GET /api/dashboard/feed', () => {
+    it('returns empty feed when no dashboard data exists', async () => {
+      const { app, headers } = await setup('admin', ['Admin']);
+
+      const res = await request(app).get('/api/dashboard/feed').set(headers).expect(200);
+
+      expect(res.body).toHaveProperty('priorities');
+      expect(res.body).toHaveProperty('schedule');
+      expect(res.body).toHaveProperty('moments');
+      expect(Array.isArray(res.body.priorities)).toBe(true);
+      expect(Array.isArray(res.body.schedule)).toBe(true);
+      expect(Array.isArray(res.body.moments)).toBe(true);
+      expect(res.body.priorities).toHaveLength(0);
+      expect(res.body.schedule).toHaveLength(0);
+      expect(res.body.moments).toHaveLength(0);
+    });
+
+    it('includes fee defaulter priority when balances are outstanding', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classRecord = await createClassRecord({ schoolId: school._id });
+      const student = await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+      });
+      await StudentFeeStructure.create({
+        schoolId: school._id,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: '2026-27',
+        totalBalance: 5000,
+        overallStatus: 'pending',
+      });
+
+      const res = await request(app).get('/api/dashboard/feed').set(headers).expect(200);
+
+      const feePriority = res.body.priorities.find((p) => p.id === 'fees');
+      expect(feePriority).toBeDefined();
+      expect(feePriority.kind).toBe('danger');
+      expect(feePriority.body).toMatch(/1 student/);
+    });
+
+    it('includes unstaffed coverage priority for pending substitutions', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const teacher = await createStaffUser({
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+      });
+      const substitute = await createStaffUser({
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+      });
+      const classRecord = await createClassRecord({ schoolId: school._id });
+      const today = new Date().toISOString().split('T')[0];
+      await Substitution.create({
+        schoolId: school._id,
+        date: today,
+        classId: classRecord._id,
+        period: '3',
+        absentTeacherId: teacher._id,
+        substituteTeacherId: substitute._id,
+        status: 'pending',
+      });
+
+      const res = await request(app).get('/api/dashboard/feed').set(headers).expect(200);
+
+      const coveragePriority = res.body.priorities.find((p) => p.id === 'coverage');
+      expect(coveragePriority).toBeDefined();
+      expect(coveragePriority.kind).toBe('warn');
+      expect(coveragePriority.title).toMatch(/Period 3/);
+    });
+
+    it('includes upcoming event priority and schedule from calendar events', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const CalendarEvent = mongoose.models.CalendarEvent;
+      expect(CalendarEvent).toBeDefined();
+
+      const today = new Date().toISOString().split('T')[0];
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      await CalendarEvent.create({
+        schoolId: school._id,
+        title: 'Morning assembly',
+        date: today,
+        type: 'event',
+        startTime: '09:00',
+        description: 'Auditorium',
+      });
+      await CalendarEvent.create({
+        schoolId: school._id,
+        title: 'PTM',
+        date: tomorrow,
+        type: 'meeting',
+        startTime: '10:00',
+        description: 'Parent Teacher Meeting',
+      });
+
+      const res = await request(app).get('/api/dashboard/feed').set(headers).expect(200);
+
+      const eventPriority = res.body.priorities.find((p) => p.id === 'event');
+      expect(eventPriority).toBeDefined();
+      expect(eventPriority.kind).toBe('info');
+      expect(eventPriority.title).toMatch(/PTM/);
+
+      expect(res.body.schedule).toHaveLength(1);
+      expect(res.body.schedule[0].title).toBe('Morning assembly');
+      expect(res.body.schedule[0].time).toBe('09:00');
+
+      expect(res.body.moments.length).toBeGreaterThan(0);
+      expect(res.body.moments[0].label).toBe('events this week');
+    });
+
+    it('returns 401 when no auth token is provided', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/feed').expect(401);
     });
   });
 
