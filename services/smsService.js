@@ -76,4 +76,4 @@ export const sendEmergencyAlertSMS = async (to, alertMessage, locale = 'en') => 
   return await sendSMS(to, message);
 };
 
-export { sendSMS, sendSMSWithFlow, sendBulkSMS };
+export { sendSMS, sendSMSWithFlow, sendBulkSMS, isSmsConfigured } from '../config/sms.js';

@@ -1,4 +1,27 @@
 import { z } from 'zod';
+import { optionalObjectId, phoneIntl } from './zodHelpers.js';
+
+export const sendOtpSchema = z.object({
+  phone: phoneIntl,
+  schoolId: optionalObjectId,
+  schoolCode: z.string().trim().max(50).optional(),
+});
+
+export const verifyOtpSchema = z
+  .object({
+    phone: phoneIntl,
+    otp: z
+      .string()
+      .regex(/^\d{4,10}$/, 'OTP must be 4–10 digits')
+      .optional(),
+    firebaseIdToken: z.string().min(1).optional(),
+    schoolId: optionalObjectId,
+    schoolCode: z.string().trim().max(50).optional(),
+  })
+  .refine((data) => Boolean(data.otp) || Boolean(data.firebaseIdToken), {
+    message: 'Either otp or firebaseIdToken is required',
+    path: ['otp'],
+  });
 
 export const leaveRequestSchema = z
   .object({

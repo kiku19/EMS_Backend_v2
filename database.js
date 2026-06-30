@@ -197,6 +197,7 @@ import Announcement from './models/Announcement.js';
 import AnnouncementRecipient from './models/AnnouncementRecipient.js';
 import Reminder from './models/Reminder.js';
 import Parent from './models/Parent.js';
+import OtpAttempt from './models/OtpAttempt.js';
 import School from './models/School.js';
 import SchoolSubscription from './models/SchoolSubscription.js';
 import SchoolInvoice from './models/SchoolInvoice.js';
@@ -243,6 +244,7 @@ export const TransportRoute = TransportRouteModel;
 
 export {
   Parent,
+  OtpAttempt,
   School,
   SchoolSubscription,
   SchoolInvoice,

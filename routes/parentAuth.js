@@ -52,10 +52,10 @@
  * @swagger
  * /parent/auth/send-otp:
  *   post:
- *     summary: Request a Firebase OTP for parent phone login
+ *     summary: Request an OTP for parent phone login
  *     tags: [Parent Auth]
  *     security: []
- *     description: Rate-limited to 5 requests per 15 minutes. Requires Firebase to be configured.
+ *     description: Rate-limited to 5 requests per 15 minutes. Uses Firebase when configured; otherwise falls back to server-generated SMS OTP.
  *     requestBody:
  *       required: true
  *       content:
@@ -67,11 +67,17 @@
  *               phone:
  *                 type: string
  *                 example: '+919876543210'
+ *               schoolId:
+ *                 type: string
+ *                 example: '507f1f77bcf86cd799439011'
+ *               schoolCode:
+ *                 type: string
+ *                 example: 'SCH001'
  *     responses:
  *       200:
- *         description: OTP sent via Firebase
+ *         description: OTP request accepted (SMS sent by server or Firebase client)
  *       503:
- *         description: Firebase not configured
+ *         description: No OTP provider configured
  *       429:
  *         description: Too many OTP requests
  */
@@ -80,21 +86,33 @@
  * @swagger
  * /parent/auth/verify-otp:
  *   post:
- *     summary: Verify Firebase OTP and log in as parent
+ *     summary: Verify an OTP and log in as parent
  *     tags: [Parent Auth]
  *     security: []
- *     description: Rate-limited to 5 verifications per 15 minutes.
+ *     description: Rate-limited to 5 verifications per 15 minutes. Accepts either a Firebase ID token (Firebase mode) or a server-generated SMS OTP (SMS fallback mode).
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [idToken]
+ *             required: [phone]
  *             properties:
- *               idToken:
+ *               phone:
  *                 type: string
- *                 description: Firebase ID token from the client SDK
+ *                 example: '+919876543210'
+ *               firebaseIdToken:
+ *                 type: string
+ *                 description: Firebase ID token from the client SDK (Firebase mode)
+ *               otp:
+ *                 type: string
+ *                 description: Server-generated SMS OTP (SMS fallback mode)
+ *               schoolId:
+ *                 type: string
+ *                 example: '507f1f77bcf86cd799439011'
+ *               schoolCode:
+ *                 type: string
+ *                 example: 'SCH001'
  *     responses:
  *       200:
  *         description: OTP verified; returns EMS JWT token
@@ -141,8 +159,7 @@
 
 import express from 'express';
 import { rateLimit } from 'express-rate-limit';
-import { Parent } from '../database.js';
-import { Student } from '../database.js';
+import { Parent, Student, OtpAttempt } from '../database.js';
 import jwt from 'jsonwebtoken';
 import admin, { getFirebaseInitializationError, isFirebaseConfigured } from '../config/firebase.js';
 import { getRequiredSecret } from '../config/environment.js';
@@ -154,8 +171,20 @@ import {
 } from '../utils/schoolContext.js';
 import { authenticateParent } from '../middleware/parentAuth.js';
 import { validateZod } from '../validators/zodHelpers.js';
-import { changePasswordSchema } from '../validators/parentAuthSchema.js';
+import {
+  changePasswordSchema,
+  sendOtpSchema,
+  verifyOtpSchema,
+} from '../validators/parentAuthSchema.js';
 import { piiMatch, hmac } from '../utils/encryption.js';
+import {
+  generateOTP,
+  hashOTP,
+  verifyOTP,
+  getOtpExpiryMinutes,
+  getOtpMaxAttempts,
+} from '../utils/otp.js';
+import { sendOTPSMS, isSmsConfigured } from '../services/smsService.js';
 
 const router = express.Router();
 
@@ -183,6 +212,8 @@ const parentOtpVerificationLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+export { parentOtpRequestLimiter, parentOtpVerificationLimiter };
 
 const parentRefreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -244,6 +275,36 @@ function buildFirebaseUnavailablePayload() {
   }
 
   return payload;
+}
+
+function buildSmsUnavailablePayload() {
+  return {
+    success: false,
+    error: {
+      code: 'OTP_PROVIDER_NOT_CONFIGURED',
+      message: 'OTP login is not configured on the server. Please contact support.',
+    },
+  };
+}
+
+function isOtpProviderConfigured() {
+  return isFirebaseConfigured() || isSmsConfigured();
+}
+
+async function issueParentAuthResponse(parent, res) {
+  await ensureDocumentSchool(parent);
+  const { accessToken, refreshToken } = buildParentTokens(parent);
+  const parentPayload = await buildParentPayload(parent);
+
+  res.json({
+    success: true,
+    message: 'Login successful',
+    data: {
+      parent: parentPayload,
+      accessToken,
+      refreshToken,
+    },
+  });
 }
 
 async function findMatchingParents({ identifier, phone, schoolId, schoolCode }) {
@@ -492,33 +553,63 @@ router.post('/login', parentLoginLimiter, async (req, res) => {
 });
 
 // POST /api/parent/auth/send-otp
-// This endpoint triggers Firebase Phone Auth by checking if phone exists
-router.post('/send-otp', parentOtpRequestLimiter, async (req, res) => {
+// Triggers an OTP for the provided phone number.
+// When Firebase is configured, the client initiates Firebase Phone Auth itself.
+// When Firebase is not configured, the server generates and sends an OTP via SMS.
+router.post('/send-otp', parentOtpRequestLimiter, validateZod(sendOtpSchema), async (req, res) => {
   try {
-    if (!isFirebaseConfigured()) {
-      return res.status(503).json(buildFirebaseUnavailablePayload());
-    }
-
     const { phone, schoolId, schoolCode } = req.body;
 
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_PHONE',
-          message: 'Phone number is required',
-        },
-      });
+    if (!isOtpProviderConfigured()) {
+      return res.status(503).json(buildSmsUnavailablePayload());
     }
 
-    const { parents, schoolLookupFailed } = await findMatchingParents({
+    // Check if any parent matches (used only when sending via SMS; result is not leaked).
+    const { parents } = await findMatchingParents({
       phone,
       schoolId,
       schoolCode,
     });
 
-    // Don't reveal if phone exists — always return same response to prevent enumeration.
-    // Firebase handles actual OTP delivery on client side.
+    if (isFirebaseConfigured()) {
+      // Firebase mode: the client uses the Firebase SDK to send the SMS.
+      // We do not reveal whether the phone is registered.
+      return res.json({
+        success: true,
+        message: 'If this phone number is registered, an OTP has been sent.',
+      });
+    }
+
+    // SMS fallback mode: server-generated OTP delivered by MSG91.
+    if (!parents.length) {
+      // Don't reveal that the phone is not registered.
+      return res.json({
+        success: true,
+        message: 'If this phone number is registered, an OTP has been sent.',
+      });
+    }
+
+    const otp = generateOTP();
+    const otpHash = hashOTP(otp);
+    const expiresAt = new Date(Date.now() + getOtpExpiryMinutes() * 60 * 1000);
+
+    await OtpAttempt.findOneAndUpdate(
+      { phone: normalizePhoneNumber(phone) },
+      {
+        otpHash,
+        expiresAt,
+        attempts: 0,
+        used: false,
+      },
+      { upsert: true, new: true }
+    );
+
+    const smsResult = await sendOTPSMS(phone, otp);
+    if (!smsResult.success) {
+      console.error('Failed to send OTP SMS:', smsResult.error);
+      // Don't leak SMS failure details to the client
+    }
+
     res.json({
       success: true,
       message: 'If this phone number is registered, an OTP has been sent.',
@@ -536,134 +627,250 @@ router.post('/send-otp', parentOtpRequestLimiter, async (req, res) => {
 });
 
 // POST /api/parent/auth/verify-otp
-// Verify Firebase token and issue JWT
-router.post('/verify-otp', parentOtpVerificationLimiter, async (req, res) => {
-  try {
-    const { phone, firebaseIdToken, schoolId, schoolCode } = req.body;
+// Verifies an OTP and issues a JWT.
+// Supports Firebase ID tokens (when Firebase is configured) or server-generated SMS OTPs.
+router.post(
+  '/verify-otp',
+  parentOtpVerificationLimiter,
+  validateZod(verifyOtpSchema),
+  async (req, res) => {
+    try {
+      const { phone, firebaseIdToken, otp, schoolId, schoolCode } = req.body;
 
-    if (!phone || !firebaseIdToken) {
+      if (!isOtpProviderConfigured()) {
+        return res.status(503).json(buildSmsUnavailablePayload());
+      }
+
+      const verifiedPhone = phone;
+
+      if (firebaseIdToken) {
+        if (!isFirebaseConfigured()) {
+          return res.status(503).json(buildFirebaseUnavailablePayload());
+        }
+
+        // Verify Firebase token
+        const decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
+        const firebaseUid = decodedToken.uid;
+
+        if (!phoneNumbersMatch(phone, decodedToken.phone_number)) {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'PHONE_MISMATCH',
+              message: 'The verified phone number does not match the requested phone number',
+            },
+          });
+        }
+
+        const { parents, schoolLookupFailed } = await findMatchingParents({
+          phone,
+          schoolId,
+          schoolCode,
+        });
+
+        if (schoolLookupFailed) {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: 'SCHOOL_NOT_FOUND',
+              message: req.t('common:errors.schoolNotFound'),
+            },
+          });
+        }
+
+        if (parents.length > 1) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'SCHOOL_IDENTIFIER_REQUIRED',
+              message:
+                'Multiple parent accounts matched the provided credentials. Please provide a school identifier.',
+            },
+          });
+        }
+
+        const [parent] = parents;
+
+        if (!parent) {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: 'PARENT_NOT_FOUND',
+              message:
+                'No parent account found for this phone number. Please contact school administration.',
+            },
+          });
+        }
+
+        if (parent.status !== 'active') {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'ACCOUNT_INACTIVE',
+              message: 'Your account is not active. Please contact school administration.',
+            },
+          });
+        }
+
+        if (!parent.firebaseUid) {
+          parent.firebaseUid = firebaseUid;
+        }
+
+        parent.lastLogin = new Date();
+        await parent.save();
+
+        return issueParentAuthResponse(parent, res);
+      }
+
+      if (otp) {
+        // Server-generated SMS OTP verification
+        const normalizedPhone = normalizePhoneNumber(phone);
+        const otpAttempt = await OtpAttempt.findOne({ phone: normalizedPhone });
+
+        if (!otpAttempt) {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'INVALID_OTP',
+              message: 'Invalid or expired OTP',
+            },
+          });
+        }
+
+        if (otpAttempt.used) {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'INVALID_OTP',
+              message: 'OTP has already been used',
+            },
+          });
+        }
+
+        if (new Date() > otpAttempt.expiresAt) {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'OTP_EXPIRED',
+              message: 'OTP has expired. Please request a new one.',
+            },
+          });
+        }
+
+        if (otpAttempt.attempts >= getOtpMaxAttempts()) {
+          return res.status(429).json({
+            success: false,
+            error: {
+              code: 'TOO_MANY_ATTEMPTS',
+              message: 'Too many failed attempts. Please request a new OTP.',
+            },
+          });
+        }
+
+        otpAttempt.attempts += 1;
+        const isValid = verifyOTP(otp, otpAttempt.otpHash);
+
+        if (!isValid) {
+          await otpAttempt.save();
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'INVALID_OTP',
+              message: 'Invalid OTP',
+            },
+          });
+        }
+
+        otpAttempt.used = true;
+        await otpAttempt.save();
+
+        const { parents, schoolLookupFailed } = await findMatchingParents({
+          phone,
+          schoolId,
+          schoolCode,
+        });
+
+        if (schoolLookupFailed) {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: 'SCHOOL_NOT_FOUND',
+              message: req.t('common:errors.schoolNotFound'),
+            },
+          });
+        }
+
+        if (parents.length > 1) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'SCHOOL_IDENTIFIER_REQUIRED',
+              message:
+                'Multiple parent accounts matched the provided credentials. Please provide a school identifier.',
+            },
+          });
+        }
+
+        const [parent] = parents;
+
+        if (!parent) {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: 'PARENT_NOT_FOUND',
+              message:
+                'No parent account found for this phone number. Please contact school administration.',
+            },
+          });
+        }
+
+        if (parent.status !== 'active') {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'ACCOUNT_INACTIVE',
+              message: 'Your account is not active. Please contact school administration.',
+            },
+          });
+        }
+
+        parent.lastLogin = new Date();
+        await parent.save();
+
+        return issueParentAuthResponse(parent, res);
+      }
+
+      // Neither firebaseIdToken nor otp provided
       return res.status(400).json({
         success: false,
         error: {
           code: 'MISSING_CREDENTIALS',
-          message: 'Phone and Firebase token are required',
+          message: 'Firebase token or OTP is required',
         },
       });
-    }
+    } catch (error) {
+      console.error('Verify OTP error:', error);
 
-    if (!isFirebaseConfigured()) {
-      return res.status(503).json(buildFirebaseUnavailablePayload());
-    }
+      if (error.code === 'auth/argument-error') {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'INVALID_FIREBASE_TOKEN',
+            message: 'Invalid Firebase token',
+          },
+        });
+      }
 
-    // 1. Verify Firebase token
-    const decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
-    const firebaseUid = decodedToken.uid;
-
-    if (!phoneNumbersMatch(phone, decodedToken.phone_number)) {
-      return res.status(401).json({
+      res.status(500).json({
         success: false,
         error: {
-          code: 'PHONE_MISMATCH',
-          message: 'The verified phone number does not match the requested phone number',
+          code: 'SERVER_ERROR',
+          message: 'Failed to verify OTP',
         },
       });
     }
-
-    const { parents, schoolLookupFailed } = await findMatchingParents({
-      phone,
-      schoolId,
-      schoolCode,
-    });
-
-    if (schoolLookupFailed) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'SCHOOL_NOT_FOUND',
-          message: req.t('common:errors.schoolNotFound'),
-        },
-      });
-    }
-
-    if (parents.length > 1) {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'SCHOOL_IDENTIFIER_REQUIRED',
-          message:
-            'Multiple parent accounts matched the provided credentials. Please provide a school identifier.',
-        },
-      });
-    }
-
-    const [parent] = parents;
-
-    if (!parent) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'PARENT_NOT_FOUND',
-          message:
-            'No parent account found for this phone number. Please contact school administration.',
-        },
-      });
-    }
-
-    if (parent.status !== 'active') {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'ACCOUNT_INACTIVE',
-          message: 'Your account is not active. Please contact school administration.',
-        },
-      });
-    }
-
-    // 3. Update firebaseUid if not set
-    if (!parent.firebaseUid) {
-      parent.firebaseUid = firebaseUid;
-    }
-
-    // 4. Update last login
-    parent.lastLogin = new Date();
-    await parent.save();
-
-    await ensureDocumentSchool(parent);
-    const { accessToken, refreshToken } = buildParentTokens(parent);
-    const parentPayload = await buildParentPayload(parent);
-
-    // 6. Return tokens and parent data
-    res.json({
-      success: true,
-      message: 'Login successful',
-      data: {
-        parent: parentPayload,
-        accessToken,
-        refreshToken,
-      },
-    });
-  } catch (error) {
-    console.error('Verify OTP error:', error);
-
-    if (error.code === 'auth/argument-error') {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'INVALID_FIREBASE_TOKEN',
-          message: 'Invalid Firebase token',
-        },
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'SERVER_ERROR',
-        message: 'Failed to verify OTP',
-      },
-    });
   }
-});
+);
 
 // POST /api/parent/auth/refresh
 // Refresh access token using refresh token
