@@ -496,6 +496,18 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
       });
     }
 
+    // Check for duplicate school name (case-insensitive)
+    const existingSchoolByName = await School.findOne({
+      name: {
+        $regex: new RegExp(`^${normalizedSchoolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      },
+    });
+    if (existingSchoolByName) {
+      return res.status(409).json({
+        error: req.t('auth:errors.schoolNameExists'),
+      });
+    }
+
     const result = await onboardSchool({
       schoolName: normalizedSchoolName,
       contactEmail: normalizedEmail,
@@ -553,6 +565,27 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
       verificationToken
     ).catch((err) => logger.warn({ err }, 'Failed to send welcome email'));
 
+    // Generate JWT and session for immediate login
+    const payload = await buildStaffAuthPayload(staff);
+    const sessionId = randomUUID();
+    const token = generateToken(staff._id.toString(), staff.role, {
+      schoolId: payload.schoolId,
+      userType: 'staff',
+      sessionId,
+    });
+    const refreshToken = generateStaffRefreshToken(
+      staff._id.toString(),
+      payload.schoolId,
+      staff.tokenVersion || 1,
+      sessionId
+    );
+
+    await createSessionRecord(staff, req, sessionId);
+    logAuthEvent('signup', staff, req);
+
+    setAuthCookie(res, token);
+    setRefreshCookie(res, refreshToken);
+
     res.status(201).json({
       success: true,
       message: req.t('auth:success.inviteAccepted'),
@@ -565,6 +598,9 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
         schoolId: school._id.toString(),
         subscription: summarizeSubscription(subscription),
       },
+      token,
+      refreshToken,
+      tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
     });
   } catch (error) {
     if (error?.code === 11000) {

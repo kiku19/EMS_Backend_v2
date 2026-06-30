@@ -87,6 +87,9 @@ describe('auth routes', () => {
           status: 'trialing',
         }),
       }),
+      token: expect.any(String),
+      refreshToken: expect.any(String),
+      tokenExpiresAt: expect.any(Number),
     });
 
     const school = await School.findOne({ code: 'SUNRISE-PUBLIC-SCHOOL' });
