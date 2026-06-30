@@ -89,6 +89,8 @@
     "failedToFetchAnalytics": "Failed to fetch analytics",
     "announcementResentSuccessfully": "Announcement resent successfully",
     "failedToResendAnnouncement": "Failed to resend announcement",
+    "failedToFetchCommunicationLogs": "Failed to fetch communication logs",
+    "failedToFetchCommunicationLogStats": "Failed to fetch communication log stats",
     "userNotFound": "User not found",
     "failedToFetchPermissions": "Failed to fetch permissions",
     "adminAccessRequired": "Admin access required",

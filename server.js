@@ -19,6 +19,7 @@ import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
 import expensesRoutes from './routes/expenses.js';
 import announcementRoutes from './routes/announcements.js';
+import communicationLogsRoutes from './routes/communicationLogs.js';
 import emailCampaignsRoutes from './routes/emailCampaigns.js';
 import trackingRoutes from './routes/tracking.js';
 import reminderRoutes from './routes/reminders.js';
@@ -593,6 +594,7 @@ v1Router.use('/fee-structure', feeStructureRoutes);
 // ─── Communication & Messaging ───────────────────────────────────────────────
 v1Router.use('/messages', messageRoutes);
 v1Router.use('/announcements', announcementRoutes);
+v1Router.use('/communication-logs', communicationLogsRoutes);
 v1Router.use('/email-campaigns', emailCampaignsRoutes);
 v1Router.use('/notifications', notificationRoutes);
 v1Router.use('/push-notifications', pushNotificationsRoutes);

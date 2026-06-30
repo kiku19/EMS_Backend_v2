@@ -170,6 +170,9 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
           announcementId: announcement._id,
           userId: r.userId,
           userType: r.userType,
+          name: r.name || '',
+          email: r.email || '',
+          phone: r.phone || '',
           deliveryStatus: announcement.channels.map((ch) => ({
             channel: ch.type,
             status: 'pending',
@@ -332,20 +335,16 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       const schoolId = announcement.schoolId;
 
       if (recipientTypes.includes('all') || recipientTypes.includes('parents')) {
-        await pushService
-          .sendToAllParents(schoolId, pushTitle, pushBody, pushData)
-          .catch((err) => {
-            logger.warn({ err }, 'Push sendToAllParents failed');
-            pushFailed = true;
-          });
+        await pushService.sendToAllParents(schoolId, pushTitle, pushBody, pushData).catch((err) => {
+          logger.warn({ err }, 'Push sendToAllParents failed');
+          pushFailed = true;
+        });
       }
       if (recipientTypes.includes('all') || recipientTypes.includes('staff')) {
-        await pushService
-          .sendToAllStaff(schoolId, pushTitle, pushBody, pushData)
-          .catch((err) => {
-            logger.warn({ err }, 'Push sendToAllStaff failed');
-            pushFailed = true;
-          });
+        await pushService.sendToAllStaff(schoolId, pushTitle, pushBody, pushData).catch((err) => {
+          logger.warn({ err }, 'Push sendToAllStaff failed');
+          pushFailed = true;
+        });
       }
     } catch (pushErr) {
       logger.warn({ err: pushErr }, 'Push notification dispatch failed');

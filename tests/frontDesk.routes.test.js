@@ -366,10 +366,7 @@ describe('front-desk visitors routes', () => {
     it('returns empty array when no visitors exist', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
-      const res = await request(app)
-        .get('/api/visitors')
-        .set(authHeadersFor(admin))
-        .expect(200);
+      const res = await request(app).get('/api/visitors').set(authHeadersFor(admin)).expect(200);
       const list = res.body.data || res.body;
       expect(Array.isArray(list)).toBe(true);
     });
@@ -487,10 +484,7 @@ describe('front-desk gate-passes routes', () => {
     it('returns empty array when no gate passes exist', async () => {
       const admin = await createStaffUser();
       const { app } = createTestApp();
-      const res = await request(app)
-        .get('/api/gate-passes')
-        .set(authHeadersFor(admin))
-        .expect(200);
+      const res = await request(app).get('/api/gate-passes').set(authHeadersFor(admin)).expect(200);
       const list = res.body.data || res.body;
       expect(Array.isArray(list)).toBe(true);
     });

@@ -364,12 +364,7 @@ async function regexSearchRoutes(q, schoolId, limit, skip) {
   return TransportRoute.find({
     schoolId: new mongoose.Types.ObjectId(schoolId),
     isDeleted: { $ne: true },
-    $or: [
-      { routeName: regex },
-      { routeNumber: regex },
-      { 'stops.name': regex },
-      { notes: regex },
-    ],
+    $or: [{ routeName: regex }, { routeNumber: regex }, { 'stops.name': regex }, { notes: regex }],
   })
     .select('routeName routeNumber vehicleId status')
     .skip(skip)

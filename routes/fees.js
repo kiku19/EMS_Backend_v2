@@ -217,7 +217,6 @@ async function buildRefundsFilter(req, { includeSearch = true } = {}) {
   return filter;
 }
 
-
 // Get all payments with optional filters (paginated)
 router.get('/payments', checkPermission('fees', 'view'), async (req, res) => {
   try {

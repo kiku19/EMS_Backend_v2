@@ -421,7 +421,10 @@ router.get('/exams', checkPermission('academics', 'view'), async (req, res) => {
     // can find older exams across years. Regex is escaped and length-bounded
     // to avoid ReDoS on hostile input.
     if (typeof q === 'string' && q.trim()) {
-      const safe = q.trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const safe = q
+        .trim()
+        .slice(0, 100)
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       query.$or = [
         { name: { $regex: safe, $options: 'i' } },
         { subjectName: { $regex: safe, $options: 'i' } },

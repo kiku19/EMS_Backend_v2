@@ -20,11 +20,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { createGunzip } from 'zlib';
 import { Readable } from 'stream';
-import {
-  GetObjectCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 
 // ─── Parse CLI args ──────────────────────────────────────────────────────────
 
