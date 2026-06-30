@@ -5,6 +5,7 @@ import Session from '../../models/Session.js';
 import School from '../../models/School.js';
 import { getRequiredSecret } from '../../config/environment.js';
 import { ensureDocumentSchool } from '../../utils/schoolContext.js';
+import { runWithTenant } from '../../utils/tenantAsyncContext.js';
 import { isSuperAdminUser } from '../../utils/superAdmin.js';
 import { Sentry } from '../../utils/sentry.js';
 import { authenticateApiKey } from './apiKeyAuth.js';
@@ -251,7 +252,9 @@ export async function authenticate(req, res, next) {
       email: req.user.email || undefined,
     });
 
-    next();
+    // Bind the resolved schoolId to the async context so the global Mongoose
+    // tenant-scope plugin can enforce schoolId filtering end-to-end.
+    return runWithTenant(req.user?.schoolId || null, next);
   } catch (error) {
     return res.status(401).json({
       error: req.t('auth:errors.authFailed'),
@@ -272,7 +275,7 @@ export async function optionalAuth(req, res, next) {
       req.user = await buildAuthenticatedUser(decoded);
     }
 
-    next();
+    return runWithTenant(req.user?.schoolId || null, next);
   } catch (error) {
     next();
   }

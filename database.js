@@ -1,5 +1,8 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+// Apply the global tenant-scoping plugin before any schema is compiled so every
+// model that owns a schoolId field inherits automatic schoolId filtering.
+import './models/plugins/tenantScope.js';
 import { createLogger } from './utils/logger.js';
 
 dotenv.config();

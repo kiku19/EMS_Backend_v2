@@ -822,11 +822,16 @@ describe('GET /api/fees/payments/:id', () => {
       isDefault: true,
     });
     const accountant = await createAccountant({ schoolId: school._id });
-    const classRecord = await createClassRecord({ name: 'Class 10', section: 'D' });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'D',
+      schoolId: school._id,
+    });
     const student = await createStudentRecord({
       name: 'Populated Student',
       admissionId: 'ADM-POP-001',
       classId: classRecord._id,
+      schoolId: school._id,
     });
 
     const insertedId = await insertPaymentDirect({
