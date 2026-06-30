@@ -10,6 +10,7 @@
     "dev": "node --watch start.js",
     "backup:db": "node scripts/renderDbBackup.js",
     "backup:verify": "node scripts/verifyBackupRestore.js",
+    "backup:restore": "node scripts/restoreFromS3.js",
     "tenant:bootstrap": "node scripts/bootstrapDefaultSchoolTenant.js",
     "create:admin": "node scripts/createAdmin.js",
     "create:signup-invite": "node scripts/createSignupInvite.js",
