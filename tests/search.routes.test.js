@@ -881,7 +881,7 @@ describe('search routes', () => {
       schoolId: admin.schoolId,
       title: 'Physics Volume One',
       author: 'HC Verma',
-      category: 'Physics',
+      category: 'textbook',
       totalCopies: 5,
       availableCopies: 5,
     });
@@ -889,7 +889,7 @@ describe('search routes', () => {
       schoolId: admin.schoolId,
       title: 'Mathematics Class 12',
       author: 'RD Sharma',
-      category: 'Maths',
+      category: 'reference',
       totalCopies: 3,
       availableCopies: 3,
     });
@@ -911,7 +911,7 @@ describe('search routes', () => {
       schoolId: admin.schoolId,
       title: 'Hidden Book',
       author: 'Anon',
-      category: 'Misc',
+      category: 'other',
       isActive: false,
       totalCopies: 1,
       availableCopies: 1,
@@ -968,7 +968,10 @@ describe('search routes', () => {
       routeName: 'North Loop',
       routeNumber: 'R-01',
       academicYear: '2025-26',
-      stops: [{ name: 'Sector 21', order: 1 }, { name: 'MG Road', order: 2 }],
+      stops: [
+        { name: 'Sector 21', order: 1 },
+        { name: 'MG Road', order: 2 },
+      ],
     });
     await TransportRoute.create({
       schoolId: admin.schoolId,

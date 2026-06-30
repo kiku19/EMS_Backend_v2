@@ -58,7 +58,7 @@
     "mongoose": "^8.9.3",
     "multer": "^2.0.2",
     "node-fetch": "^2.7.0",
-    "nodemailer": "^8.0.7",
+    "nodemailer": "^9.0.1",
     "otplib": "^13.3.0",
     "pdfkit": "^0.17.2",
     "peer": "^1.0.2",
