@@ -36,7 +36,7 @@
  *         description: Page size (default 50, capped at 200).
  *     responses:
  *       200:
- *         description: Paginated list of exams for the current school (PAG-10: pagination lives in the body, not headers)
+ *         description: "Paginated list of exams for the current school (PAG-10: pagination lives in the body, not headers)"
  *         content:
  *           application/json:
  *             schema:
