@@ -38,6 +38,7 @@ const SKIP_COMMANDS = new Set([
   'buildinfo',
   'listDatabases',
   'listCollections',
+  'create', // collection-creation DDL (autoCreate / first-write) — not a real query
   'createIndexes',
   'dropIndexes',
   'endSessions',

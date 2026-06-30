@@ -36,6 +36,14 @@ const FAILOVER_CONNECTION_OPTIONS = {
 
   // OBS-05: Enable MongoDB APM command events for slow query monitoring
   monitorCommands: true,
+
+  // Faster cold starts in production: skip eagerly issuing a `create` collection
+  // command for every model on boot. With ~129 models against a remote Atlas
+  // cluster, that burst of DDL round-trips (~250ms each) dominates startup and
+  // floods the slow-query log. Collections are still created on first write,
+  // and autoIndex stays enabled so indexes are still ensured on boot. Kept on
+  // in dev/test so the local suite (mongodb-memory-server) behaves unchanged.
+  autoCreate: process.env.NODE_ENV !== 'production',
 };
 
 export async function connectDB() {
