@@ -71,9 +71,19 @@ const studentSchema = new mongoose.Schema(
     },
 
     // Parents/Guardians (stored as array)
+    // Each entry is linked to the canonical Parent collection via parentId.
+    // The embedded name/phone/email fields remain as a denormalized cache for
+    // student-scoped reads; parentId makes the link to the authoritative
+    // Parent account explicit.
     parents: {
       type: [
         {
+          parentId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Parent',
+            default: null,
+            index: true,
+          },
           name: { type: String, required: true },
           relationship: String,
           phone: String,

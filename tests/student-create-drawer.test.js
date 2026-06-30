@@ -608,6 +608,71 @@ describe('Student Create Drawer — Parent Account Sync', () => {
     // It should have 2 children linked
     expect(parents[0].children.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('writes parentId back to Student.parents when creating a student', async () => {
+    const admin = await createStaffUser();
+    const classRecord = await createClassRecord();
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(admin, 'admin');
+    const uniquePhone = '9888800003';
+
+    const res = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(
+        validStudentPayload(classRecord._id, {
+          parents: [
+            { name: 'Linked Parent', relationship: 'father', phone: uniquePhone, isWhatsapp: true },
+          ],
+        })
+      )
+      .expect(201);
+
+    const parent = await Parent.findOne(piiMatch('phone', uniquePhone)).lean();
+    expect(parent).toBeTruthy();
+
+    const student = await Student.findById(res.body.id).lean();
+    expect(student.parents).toHaveLength(1);
+    expect(student.parents[0].parentId?.toString()).toBe(parent._id.toString());
+  });
+
+  it('preserves parentId when updating a student', async () => {
+    const admin = await createStaffUser();
+    const classRecord = await createClassRecord();
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(admin, 'admin');
+    const uniquePhone = '9888800004';
+
+    const createRes = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(
+        validStudentPayload(classRecord._id, {
+          admissionId: 'ADM-LINK-001',
+          rollNo: 1,
+          parents: [
+            { name: 'Linked Parent', relationship: 'father', phone: uniquePhone, isWhatsapp: true },
+          ],
+        })
+      )
+      .expect(201);
+
+    const studentId = createRes.body.id;
+    const parentBefore = await Parent.findOne(piiMatch('phone', uniquePhone)).lean();
+
+    await request(app)
+      .put(`/api/students/${studentId}`)
+      .set(authHeaders)
+      .send({
+        parents: [
+          { name: 'Updated Parent', relationship: 'father', phone: uniquePhone, isWhatsapp: true },
+        ],
+      })
+      .expect(200);
+
+    const student = await Student.findById(studentId).lean();
+    expect(student.parents[0].parentId?.toString()).toBe(parentBefore._id.toString());
+  });
 });
 
 // ══════════════════════════════════════════════════════════════
