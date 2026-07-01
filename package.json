@@ -29,6 +29,8 @@
     "migrate:status": "node scripts/migrate.js status",
     "migrate:dry-run": "node scripts/migrate.js up --dry-run",
     "migrate:indexes": "node scripts/migrateIndexes.js",
+    "reencrypt:pii": "node scripts/reencryptPii.js",
+    "reencrypt:pii:apply": "node scripts/reencryptPii.js --apply",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
