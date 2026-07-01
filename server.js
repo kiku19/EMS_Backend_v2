@@ -95,6 +95,7 @@ import { initializeChatHandlers } from './socket/chatHandler.js';
 import { validateEnvironment, config } from './config/environment.js';
 import { authenticate } from './middleware/auth.js';
 import { authenticateParent } from './middleware/parentAuth.js';
+import { moduleAccessGuard } from './middleware/auth/moduleAccess.js';
 import { apiUsageTracker } from './middleware/apiUsageTracker.js';
 import { initializeSocket } from './utils/socketEmitter.js';
 import { createLogger } from './utils/logger.js';
@@ -539,6 +540,12 @@ v1Router.use('/billing', billingRoutes);
 // Individual route files may still apply `authenticate` per-handler as
 // defense-in-depth — the double-check is harmless and intentional.
 v1Router.use(authenticate);
+
+// ─── Module Enablement Gateway ──────────────────────────────────────────────
+// Blocks API access to modules a school has switched OFF in Settings → Modules.
+// Core + system endpoints (students, staff, classes, permissions, settings, …)
+// are never gated; super-admins bypass. See middleware/auth/moduleAccess.js.
+v1Router.use(moduleAccessGuard);
 
 // ─── Platform Administration ─────────────────────────────────────────────────
 v1Router.use('/permissions', permissionRoutes);

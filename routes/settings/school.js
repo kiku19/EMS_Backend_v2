@@ -226,6 +226,27 @@ const schoolSettingsSchema = z.object({
         .optional(),
     })
     .optional(),
+  // Timings, periods & working week. These mirror SchoolSettings (model +
+  // getDefaultSchoolSettings) but were previously absent from this schema, so
+  // the strict() guard rejected any attempt to save them from the dashboard
+  // (Settings → Academics) or the onboarding wizard. Declaring them here closes
+  // that gap.
+  schoolStartTime: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+    .optional(),
+  schoolEndTime: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+    .optional(),
+  periodDuration: z.number().int().min(5).max(180).optional(),
+  periodsPerDay: z.number().int().min(1).max(20).optional(),
+  breaksPerDay: z.number().int().min(0).max(10).optional(),
+  secondFourthSaturdayOff: z.boolean().optional(),
+  workingDays: z
+    .array(z.enum(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']))
+    .max(7)
+    .optional(),
 }).strict(); // Reject unknown top-level keys so arbitrary SchoolSettings
 // fields can't be mass-assigned by the dashboard or an attacker sending
 // extra JSON keys. Dot-notation nested updates are still supported by the

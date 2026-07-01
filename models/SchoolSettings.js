@@ -33,6 +33,10 @@ const schoolSettingsSchema = new mongoose.Schema(
         enum: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
       },
     ],
+    breaksPerDay: { type: Number, default: 2 },
+    // CBSE-style alternating-Saturday holiday: auto-marks the 2nd & 4th
+    // Saturday of each month as non-working.
+    secondFourthSaturdayOff: { type: Boolean, default: false },
     holidays: [
       {
         name: { type: String, required: true },

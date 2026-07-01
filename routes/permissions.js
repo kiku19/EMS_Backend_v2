@@ -13,6 +13,8 @@ import { sanitizeQueryStr, sanitizeQueryId } from '../middleware/validation.js';
 import { authenticate } from '../middleware/auth.js';
 import AuditTrail from '../models/AuditTrail.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import School from '../models/School.js';
+import { resolveEnabledModules } from '../config/moduleRegistry.js';
 
 // Fire-and-forget audit entry
 function logPermissionAuditEvent({ schoolId, actorId, action, entityId, newValue, req }) {
@@ -113,7 +115,15 @@ router.get('/me', async (req, res) => {
       await ensurePermissionDocument(userPermission, userPermission.role);
     }
 
-    res.json(userPermission);
+    // Include the school's effective enabled-module set so the dashboard can
+    // gate nav + routes from the same payload it already fetches on load.
+    const school = await School.findById(sid).select('enabledModules').lean();
+    const { enabled } = resolveEnabledModules(school?.enabledModules);
+
+    res.json({
+      ...userPermission.toObject(),
+      enabledModules: [...enabled],
+    });
   } catch (error) {
     console.error('Error fetching user permissions:', error);
     res.status(500).json({ error: req.t('common:routes.failedToFetchPermissions') });
