@@ -2,8 +2,8 @@ services:
   - type: web
     name: school-backend
     runtime: node
-    rootDir: backend
-    buildCommand: npm install --workspaces=false
+    rootDir: .
+    buildCommand: npm ci --omit=dev
     startCommand: npm run migrate:up && npm start
     healthCheckPath: /health
     envVars:
@@ -13,9 +13,13 @@ services:
         value: 3001
       - key: MONGODB_URI
         sync: false
+      - key: MONGO_URI
+        sync: false
       - key: JWT_SECRET
         sync: false
       - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: PII_ENCRYPTION_KEY
         sync: false
       - key: FRONTEND_URL
         sync: false
@@ -77,51 +81,57 @@ services:
         sync: false
       - key: MSG91_WHATSAPP_SENDER_PHONE
         sync: false
-
-  - type: static
-    name: school-dashboard
-    rootDir: school-dashboard
-    buildCommand: npm install --workspaces=false && npm run build
-    staticPublishPath: school-dashboard/dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      # Set this to the backend URL including the /api suffix.
-      - key: VITE_API_URL
+      - key: REDIS_URL
         sync: false
-      - key: VITE_SCHOOL_NAME
+      - key: REDIS_TLS_REJECT_UNAUTHORIZED
         sync: false
-      - key: VITE_SCHOOL_ADDRESS
+      - key: SENTRY_DSN
         sync: false
-      - key: VITE_SCHOOL_CONTACT
+      - key: LOG_LEVEL
+        value: warn
+      - key: LOKI_URL
         sync: false
-      - key: VITE_SCHOOL_GSTIN
+      - key: LOKI_USERNAME
         sync: false
-
-  - type: static
-    name: parent-app-web
-    rootDir: parent-app
-    buildCommand: npm install --workspaces=false && npm run build:web
-    staticPublishPath: parent-app/dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      # Use the backend origin without /api here.
-      - key: EXPO_PUBLIC_API_BASE_URL
+      - key: LOKI_PASSWORD
         sync: false
-      - key: EXPO_PUBLIC_SOCKET_URL
+      - key: DD_API_KEY
+        sync: false
+      - key: ELASTICSEARCH_URL
+        sync: false
+      - key: ELASTICSEARCH_INDEX
+        sync: false
+      - key: ELASTICSEARCH_API_KEY
+        sync: false
+      - key: AGENDA_DB_COLLECTION
+        value: jobs
+      - key: AGENDA_PROCESS_EVERY
+        value: 5_seconds
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_CONTACT_EMAIL
+        sync: false
+      - key: PEERJS_PORT
+        value: 9000
+      - key: PEERJS_PATH
+        value: /peerjs
+      - key: STUN_SERVERS
+        sync: false
+      - key: TURN_SERVER_URL
+        sync: false
+      - key: TURN_SERVER_USERNAME
+        sync: false
+      - key: TURN_SERVER_PASSWORD
         sync: false
 
   - type: cron
     name: school-db-backup
     runtime: node
-    rootDir: backend
+    rootDir: .
     schedule: "0 2 * * *"
-    buildCommand: npm install --workspaces=false
+    buildCommand: npm ci --omit=dev
     startCommand: npm run backup:db
     envVars:
       - key: NODE_ENV
@@ -150,9 +160,9 @@ services:
   - type: cron
     name: school-db-backup-verify
     runtime: node
-    rootDir: backend
+    rootDir: .
     schedule: "0 4 * * 0"
-    buildCommand: npm install --workspaces=false
+    buildCommand: npm ci --omit=dev
     startCommand: npm run backup:verify
     envVars:
       - key: NODE_ENV

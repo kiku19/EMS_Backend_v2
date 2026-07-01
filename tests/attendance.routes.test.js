@@ -35,7 +35,9 @@ describe('attendance routes', () => {
         admissionId: 'ADM7002',
         rollNo: 2,
         classId: classRecord._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9876543211', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9876543211', isWhatsapp: true },
+        ],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -96,13 +98,17 @@ describe('attendance routes', () => {
         name: 'Student Beta',
         rollNo: 2,
         classId: classRecord._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9000000001', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9000000001', isWhatsapp: true },
+        ],
       });
       const studentC = await createStudentRecord({
         name: 'Student Gamma',
         rollNo: 3,
         classId: classRecord._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9000000002', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9000000002', isWhatsapp: true },
+        ],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -152,13 +158,17 @@ describe('attendance routes', () => {
         name: 'Absent Student',
         rollNo: 2,
         classId: classRecord._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9100000001', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9100000001', isWhatsapp: true },
+        ],
       });
       const lateStudent = await createStudentRecord({
         name: 'Late Student',
         rollNo: 3,
         classId: classRecord._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9100000002', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9100000002', isWhatsapp: true },
+        ],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -541,7 +551,9 @@ describe('attendance routes', () => {
         name: 'Snap Student Two',
         rollNo: 2,
         classId: classRecord._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9200000001', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9200000001', isWhatsapp: true },
+        ],
       });
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(teacher, 'teacher');
@@ -631,7 +643,9 @@ describe('attendance routes', () => {
         name: 'MT Student B',
         rollNo: 1,
         classId: classB._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9300000001', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9300000001', isWhatsapp: true },
+        ],
       });
       const date = '2026-03-11';
 
@@ -689,7 +703,9 @@ describe('attendance routes', () => {
         name: 'Cross Student B',
         rollNo: 1,
         classId: classB._id,
-        parents: [{ name: 'Parent', relationship: 'Parent', phone: '9400000001', isWhatsapp: true }],
+        parents: [
+          { name: 'Parent', relationship: 'Parent', phone: '9400000001', isWhatsapp: true },
+        ],
       });
       const date = '2026-03-12';
 
@@ -733,6 +749,244 @@ describe('attendance routes', () => {
       } else {
         expect(recordScopedToA).toBeNull();
       }
+    });
+  });
+
+  // ── POST /api/attendance/student/:studentId/regularize ──────────────
+  describe('POST /api/attendance/student/:studentId/regularize — regularize attendance', () => {
+    it('flips an existing absent record to present and stores audit trail', async () => {
+      const admin = await createStaffUser({
+        name: 'Admin Regularize',
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      const classRecord = await createClassRecord({
+        classTeacherId: admin._id,
+        name: 'Class Reg',
+        section: 'A',
+      });
+      const student = await createStudentRecord({
+        name: 'Student Reg',
+        classId: classRecord._id,
+      });
+      const date = '2026-03-15';
+
+      // Seed an absent record (the use case the drawer is built for).
+      await Attendance.create({
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        date,
+        status: 'absent',
+        markedBy: admin._id,
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const response = await request(app)
+        .post(`/api/attendance/student/${student._id.toString()}/regularize`)
+        .set(authHeaders)
+        .send({
+          updates: [{ date, status: 'present', reason: 'sick' }],
+        })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.results).toHaveLength(1);
+      expect(response.body.results[0].status).toBe('present');
+
+      const saved = await Attendance.findOne({
+        studentId: student._id,
+        date,
+      }).lean();
+      expect(saved.status).toBe('present');
+      expect(saved.regularization).toMatchObject({
+        previousStatus: 'absent',
+        regularizationReason: 'sick',
+      });
+      expect(String(saved.regularization.regularizedBy)).toBe(String(admin._id));
+    });
+
+    it('creates a new record (upsert) when none exists for the date', async () => {
+      const admin = await createStaffUser({
+        name: 'Admin Upsert Reg',
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      const classRecord = await createClassRecord({
+        classTeacherId: admin._id,
+        name: 'Class Upsert Reg',
+        section: 'B',
+      });
+      const student = await createStudentRecord({
+        name: 'Student Upsert Reg',
+        classId: classRecord._id,
+      });
+      const date = '2026-03-16';
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const response = await request(app)
+        .post(`/api/attendance/student/${student._id.toString()}/regularize`)
+        .set(authHeaders)
+        .send({
+          updates: [{ date, status: 'present', reason: 'official' }],
+        })
+        .expect(200);
+
+      expect(response.body.results[0].status).toBe('present');
+      expect(response.body.results[0].regularization.previousStatus).toBe('unmarked');
+
+      const saved = await Attendance.findOne({ studentId: student._id, date }).lean();
+      expect(saved).toBeTruthy();
+      expect(saved.status).toBe('present');
+    });
+
+    it('rejects future dates with 400', async () => {
+      const admin = await createStaffUser({
+        name: 'Admin Future',
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      const classRecord = await createClassRecord({
+        classTeacherId: admin._id,
+        name: 'Class Future',
+        section: 'C',
+      });
+      const student = await createStudentRecord({
+        name: 'Student Future',
+        classId: classRecord._id,
+      });
+
+      // Pick a date guaranteed to be in the future relative to the test
+      // clock by adding 10 days to today.
+      const futureDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split('T')[0];
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const response = await request(app)
+        .post(`/api/attendance/student/${student._id.toString()}/regularize`)
+        .set(authHeaders)
+        .send({
+          updates: [{ date: futureDate, status: 'present', reason: 'sick' }],
+        })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/future dates/i);
+    });
+
+    it('returns 404 when the student does not exist', async () => {
+      const admin = await createStaffUser({
+        name: 'Admin 404',
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      await request(app)
+        .post('/api/attendance/student/000000000000000000000000/regularize')
+        .set(authHeaders)
+        .send({
+          updates: [{ date: '2026-03-10', status: 'present', reason: 'sick' }],
+        })
+        .expect(404);
+    });
+
+    it('returns 400 on invalid body (empty updates array)', async () => {
+      const admin = await createStaffUser({
+        name: 'Admin Invalid',
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      const classRecord = await createClassRecord({
+        classTeacherId: admin._id,
+        name: 'Class Invalid',
+        section: 'D',
+      });
+      const student = await createStudentRecord({
+        name: 'Student Invalid',
+        classId: classRecord._id,
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      await request(app)
+        .post(`/api/attendance/student/${student._id.toString()}/regularize`)
+        .set(authHeaders)
+        .send({ updates: [] })
+        .expect(400);
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      const { app } = createTestApp();
+
+      await request(app)
+        .post('/api/attendance/student/000000000000000000000000/regularize')
+        .send({
+          updates: [{ date: '2026-03-10', status: 'present', reason: 'sick' }],
+        })
+        .expect(401);
+    });
+
+    it('handles multiple updates in a single request', async () => {
+      const admin = await createStaffUser({
+        name: 'Admin Multi',
+        staffRole: ['Admin'],
+        permissionRole: 'admin',
+      });
+      const classRecord = await createClassRecord({
+        classTeacherId: admin._id,
+        name: 'Class Multi',
+        section: 'E',
+      });
+      const student = await createStudentRecord({
+        name: 'Student Multi',
+        classId: classRecord._id,
+      });
+
+      // Seed two absent records.
+      await Attendance.create({
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        date: '2026-03-20',
+        status: 'absent',
+        markedBy: admin._id,
+      });
+      await Attendance.create({
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        date: '2026-03-21',
+        status: 'absent',
+        markedBy: admin._id,
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const response = await request(app)
+        .post(`/api/attendance/student/${student._id.toString()}/regularize`)
+        .set(authHeaders)
+        .send({
+          updates: [
+            { date: '2026-03-20', status: 'present', reason: 'official' },
+            { date: '2026-03-21', status: 'present', reason: 'sick' },
+          ],
+        })
+        .expect(200);
+
+      expect(response.body.results).toHaveLength(2);
+      const saved = await Attendance.find({ studentId: student._id }).lean();
+      expect(saved.filter((r) => r.status === 'present')).toHaveLength(2);
+      expect(saved.every((r) => r.regularization?.previousStatus === 'absent')).toBe(true);
     });
   });
 });

@@ -27,9 +27,17 @@
  *         schema:
  *           type: integer
  *           default: 50
+ *           maximum: 100
+ *         description: Page size (clamped to 1..100)
+ *       - in: query
+ *         name: skip
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *         description: Number of notifications to skip for load-more pagination
  *     responses:
  *       200:
- *         description: Notifications with unread count
+ *         description: Notifications with unread count and pagination metadata
  *         content:
  *           application/json:
  *             schema:
@@ -41,6 +49,21 @@
  *                     type: object
  *                 unreadCount:
  *                   type: integer
+ *                   description: Unread count across ALL matching notifications, not just this page
+ *                 total:
+ *                   type: integer
+ *                   description: Total matching notifications across all pages
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: integer
+ *                     skip:
+ *                       type: integer
+ *                     limit:
+ *                       type: integer
+ *                     hasMore:
+ *                       type: boolean
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  */
@@ -188,7 +211,7 @@ const getPreferenceRole = (user) => {
 router.get('/', async (req, res) => {
   try {
     const user = req.user;
-    const { unreadOnly, type, limit = 50 } = req.query;
+    const { unreadOnly, type, limit = 50, skip = 0 } = req.query;
 
     // Always tenant-scope notifications so a user who legitimately belongs
     // to multiple schools (group-admin / cross-posted staff) doesn't see
@@ -207,18 +230,32 @@ router.get('/', async (req, res) => {
       query.type = type;
     }
 
-    const notifications = await Notification.find(query)
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .lean();
+    // Skip/limit pagination so the client can lazily load older notifications
+    // instead of being silently capped at the first page (PAG-18). `limit` is
+    // clamped to a sane range; `skip` floors at 0.
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+    const skipNum = Math.max(parseInt(skip, 10) || 0, 0);
 
-    // Get unread count
-    const unreadCount = await Notification.getUnreadCount(user.id, query.userModel, user.schoolId);
+    const [notifications, total, unreadCount] = await Promise.all([
+      Notification.find(query).sort({ createdAt: -1 }).skip(skipNum).limit(limitNum).lean(),
+      Notification.countDocuments(query),
+      // Unread count is computed server-side over ALL matching notifications,
+      // never derived from the returned page — so the badge stays accurate
+      // beyond the first page.
+      Notification.getUnreadCount(user.id, query.userModel, user.schoolId),
+    ]);
 
     res.json({
       data: notifications,
       notifications,
       unreadCount,
+      total,
+      pagination: {
+        total,
+        skip: skipNum,
+        limit: limitNum,
+        hasMore: skipNum + notifications.length < total,
+      },
     });
   } catch (error) {
     console.error('Error fetching notifications:', error);
@@ -406,6 +443,24 @@ router.put('/read-all', async (req, res) => {
   }
 });
 
+// DELETE /api/notifications/clear-all - Clear all notifications for the user
+router.delete('/clear-all', async (req, res) => {
+  try {
+    const user = req.user;
+    const userModel = getUserModel(user);
+
+    await Notification.deleteMany({
+      userId: user.id,
+      userModel,
+    });
+
+    res.json({ message: 'All notifications cleared' });
+  } catch (error) {
+    console.error('Error clearing notifications:', error);
+    res.status(500).json({ error: 'Failed to clear notifications' });
+  }
+});
+
 // DELETE /api/notifications/:id - Delete notification
 router.delete('/:id', async (req, res) => {
   try {
@@ -423,24 +478,6 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting notification:', error);
     res.status(500).json({ error: 'Failed to delete notification' });
-  }
-});
-
-// DELETE /api/notifications/clear-all - Clear all notifications for the user
-router.delete('/clear-all', async (req, res) => {
-  try {
-    const user = req.user;
-    const userModel = getUserModel(user);
-
-    await Notification.deleteMany({
-      userId: user.id,
-      userModel,
-    });
-
-    res.json({ message: 'All notifications cleared' });
-  } catch (error) {
-    console.error('Error clearing notifications:', error);
-    res.status(500).json({ error: 'Failed to clear notifications' });
   }
 });
 

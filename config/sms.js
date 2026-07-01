@@ -112,4 +112,8 @@ export const sendBulkSMS = async (smsList) => {
   return results;
 };
 
-export default { sendSMS, sendSMSWithFlow, sendBulkSMS };
+export function isSmsConfigured() {
+  return Boolean(MSG91_AUTH_KEY && MSG91_SENDER_ID);
+}
+
+export default { sendSMS, sendSMSWithFlow, sendBulkSMS, isSmsConfigured };

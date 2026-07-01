@@ -1116,6 +1116,96 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regression — FeePayment idempotency unique index must build cleanly (SCH-210)
+// ---------------------------------------------------------------------------
+//
+// MongoDB partial indexes reject `$ne` (it compiles to `$not: {$eq}`), so the
+// old `partialFilterExpression: { idempotencyKey: { $exists: true, $ne: null } }`
+// made `syncIndexes()` / `createIndexes` fail — meaning the unique idempotency
+// index never actually existed in prod (autoIndex swallows the error). This
+// test guards the corrected spec (`$type: 'string'`) by driving the real index
+// build against the in-memory mongod and asserting the partial unique compound
+// index shows up.
+describe('FeePayment idempotency index (SCH-210)', () => {
+  it('builds the unique partial index without error and with the expected filter', async () => {
+    // Drive the real index build the same way `npm run migrate:indexes` does.
+    await expect(FeePayment.syncIndexes()).resolves.not.toThrow();
+
+    const indexes = await FeePayment.collection.indexes();
+    const compound = indexes.find(
+      (i) => i.key && i.key.schoolId === 1 && i.key.idempotencyKey === 1
+    );
+
+    expect(compound, 'compound (schoolId, idempotencyKey) index should exist').toBeTruthy();
+    expect(compound.unique).toBe(true);
+    expect(compound.partialFilterExpression).toEqual({
+      idempotencyKey: { $type: 'string' },
+    });
+  });
+
+  it('does not treat missing/empty idempotencyKey as a uniqueness collision', async () => {
+    const school = await createSchoolRecord({
+      name: 'No-Key School',
+      code: 'NKY-01',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'P',
+      schoolId: school._id,
+    });
+    const { tuition } = await createFeeHeads(school._id, '10');
+    const student = await createStudentRecord({
+      name: 'No-Key Student',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+
+    await insertFeeStructureDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      schoolId: school._id,
+      feeHeads: [
+        {
+          feeHeadId: tuition._id,
+          name: 'Tuition Fee',
+          category: 'Academic',
+          amount: 5000,
+          mandatory: true,
+          frequency: 'yearly',
+          paidAmount: 0,
+          balanceAmount: 5000,
+          status: 'pending',
+        },
+      ],
+      totalFee: 5000,
+      totalPaid: 0,
+      totalBalance: 5000,
+      overallStatus: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    // Two payments with no idempotencyKey must both succeed — the partial
+    // index excludes documents where the key isn't a real string.
+    await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({ amount: 1000, academicYear: '2025-26' })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({ amount: 500, academicYear: '2025-26' })
+      .expect(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/student-fees/defaulters — List defaulters
 // ---------------------------------------------------------------------------
 

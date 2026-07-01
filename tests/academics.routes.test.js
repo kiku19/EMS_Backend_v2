@@ -63,7 +63,7 @@ describe('academics routes', () => {
   });
 
   describe('GET /api/exams — list exams', () => {
-    it('returns all exams for the school', async () => {
+    it('returns all exams for the school with pagination metadata in the body (PAG-10)', async () => {
       const admin = await createStaffUser();
       const classRecord = await createClassRecord();
       const { app } = createTestApp();
@@ -97,13 +97,155 @@ describe('academics routes', () => {
 
       const response = await request(app).get('/api/exams').set(authHeaders).expect(200);
 
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBe(2);
+      // PAG-10: response is now { data, pagination } — not a bare array.
+      // This lets the dashboard read total/hasMore without parsing headers.
+      expect(Array.isArray(response.body.data)).toBe(true);
+      expect(response.body.data).toHaveLength(2);
+      expect(response.body.pagination).toMatchObject({
+        total: 2,
+        skip: 0,
+        limit: expect.any(Number),
+        hasMore: false,
+      });
+      // The legacy X-Total-Count header should no longer be the source of
+      // truth — the contract now lives in the body.
+      expect(response.headers['x-total-count']).toBeUndefined();
+    });
+
+    it('honors skip/limit and reports hasMore when more pages exist (PAG-10)', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      for (const [name, day] of [
+        ['Day 1', '2026-05-10'],
+        ['Day 2', '2026-05-11'],
+        ['Day 3', '2026-05-12'],
+      ]) {
+        await request(app)
+          .post('/api/exams')
+          .set(authHeaders)
+          .send({
+            name,
+            classId: classRecord._id.toString(),
+            maxMarks: 50,
+            passingMarks: 20,
+            startDate: day,
+            academicYear: '2025-26',
+          })
+          .expect(201);
+      }
+
+      const first = await request(app)
+        .get('/api/exams?skip=0&limit=2')
+        .set(authHeaders)
+        .expect(200);
+      expect(first.body.data).toHaveLength(2);
+      expect(first.body.pagination).toMatchObject({ total: 3, skip: 0, limit: 2, hasMore: true });
+
+      const second = await request(app)
+        .get('/api/exams?skip=2&limit=2')
+        .set(authHeaders)
+        .expect(200);
+      expect(second.body.data).toHaveLength(1);
+      expect(second.body.pagination).toMatchObject({ total: 3, skip: 2, limit: 2, hasMore: false });
     });
 
     it('returns 401 when unauthenticated', async () => {
       const { app } = createTestApp();
       await request(app).get('/api/exams').expect(401);
+    });
+
+    // PAG-09: scope + search so the Results-entry picker doesn't drop older exams
+    it('filters exams by academicYear', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      for (const [name, year] of [
+        ['2024 Final', '2024-25'],
+        ['2025 Final', '2025-26'],
+      ]) {
+        await request(app)
+          .post('/api/exams')
+          .set(authHeaders)
+          .send({
+            name,
+            classId: classRecord._id.toString(),
+            maxMarks: 100,
+            passingMarks: 35,
+            startDate: '2026-05-10',
+            academicYear: year,
+          })
+          .expect(201);
+      }
+
+      const response = await request(app)
+        .get('/api/exams?academicYear=2024-25')
+        .set(authHeaders)
+        .expect(200);
+
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].name).toBe('2024 Final');
+      expect(response.body.data[0].academicYear).toBe('2024-25');
+    });
+
+    it('filters exams by case-insensitive name search via q', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      for (const name of ['Mid Term Maths', 'Final Science', 'Pop Quiz English']) {
+        await request(app)
+          .post('/api/exams')
+          .set(authHeaders)
+          .send({
+            name,
+            classId: classRecord._id.toString(),
+            maxMarks: 100,
+            passingMarks: 35,
+            startDate: '2026-05-10',
+            academicYear: '2025-26',
+          })
+          .expect(201);
+      }
+
+      const response = await request(app).get('/api/exams?q=maths').set(authHeaders).expect(200);
+
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].name).toBe('Mid Term Maths');
+    });
+
+    it('treats regex metacharacters in q as literals (no ReDoS, no crash)', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Quarterly Test',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-05-10',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      const response = await request(app)
+        .get('/api/exams?q=' + encodeURIComponent('.*Quarterly.*'))
+        .set(authHeaders)
+        .expect(200);
+
+      // Without the escape, ".*" would match the whole collection; with it,
+      // it should match only the literal substring ".*Quarterly.*" (zero rows).
+      expect(response.body.data).toHaveLength(0);
     });
   });
 
@@ -336,7 +478,12 @@ describe('academics routes', () => {
           rollNo: i + 1,
           classId: classRecord._id,
           parents: [
-            { name: 'Grade Parent', relationship: 'father', phone: `920000000${i}`, isWhatsapp: true },
+            {
+              name: 'Grade Parent',
+              relationship: 'father',
+              phone: `920000000${i}`,
+              isWhatsapp: true,
+            },
           ],
         });
         students.push(student);
@@ -413,9 +560,7 @@ describe('academics routes', () => {
         .send({
           examId: examRes.body._id,
           classId: classRecord._id.toString(),
-          results: [
-            { studentId: student._id.toString(), marksObtained: 0, status: 'absent' },
-          ],
+          results: [{ studentId: student._id.toString(), marksObtained: 0, status: 'absent' }],
         })
         .expect(200);
 
@@ -719,8 +864,11 @@ describe('academics routes', () => {
       const authHeadersA = authHeadersFor(adminA, 'admin');
       const response = await request(app).get('/api/exams').set(authHeadersA).expect(200);
 
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body).toHaveLength(0);
+      // PAG-10: response is { data, pagination } — pagination.total reflects
+      // school-scoped count, so 0 confirms school isolation is intact.
+      expect(Array.isArray(response.body.data)).toBe(true);
+      expect(response.body.data).toHaveLength(0);
+      expect(response.body.pagination).toMatchObject({ total: 0, hasMore: false });
     });
 
     it('school A admin cannot see school B results', async () => {

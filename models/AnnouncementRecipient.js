@@ -22,6 +22,12 @@ const announcementRecipientSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Denormalized recipient details for fast communication-log queries
+    // without extra lookups to Staff/Student/Parent collections.
+    name: { type: String, default: '' },
+    email: { type: String, default: '' },
+    phone: { type: String, default: '' },
+
     // Delivery status per channel
     deliveryStatus: [
       {
@@ -65,6 +71,7 @@ const announcementRecipientSchema = new mongoose.Schema(
 // Indexes
 announcementRecipientSchema.index({ schoolId: 1, announcementId: 1 });
 announcementRecipientSchema.index({ schoolId: 1, userId: 1 });
+announcementRecipientSchema.index({ schoolId: 1, createdAt: -1 });
 announcementRecipientSchema.index({ status: 1 });
 announcementRecipientSchema.index({ 'deliveryStatus.trackingToken': 1 });
 announcementRecipientSchema.index({ 'deliveryStatus.messageId': 1 });

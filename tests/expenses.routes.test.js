@@ -186,6 +186,94 @@ describe('expenses routes', () => {
       expect(titles).toContain('Active');
       expect(titles).not.toContain('Deleted');
     });
+
+    describe('q search (PAG-13)', () => {
+      async function seedSearchData(school) {
+        await Expense.create([
+          {
+            schoolId: school._id,
+            title: 'Projector bulb replacement',
+            amount: 100,
+            category: 'maintenance',
+            expenseDate: new Date('2025-06-01'),
+            vendor: 'Acme Electronics',
+          },
+          {
+            schoolId: school._id,
+            title: 'Monthly water bill',
+            amount: 200,
+            category: 'utilities',
+            expenseDate: new Date('2025-06-02'),
+            vendor: 'City Water Board',
+          },
+        ]);
+      }
+
+      it('matches on title', async () => {
+        const { school, app, headers } = await setup();
+        await seedSearchData(school);
+
+        const res = await request(app).get(`${BASE}?q=projector`).set(headers).expect(200);
+        expect(res.body.expenses).toHaveLength(1);
+        expect(res.body.expenses[0].title).toBe('Projector bulb replacement');
+      });
+
+      it('matches on vendor', async () => {
+        const { school, app, headers } = await setup();
+        await seedSearchData(school);
+
+        const res = await request(app).get(`${BASE}?q=water+board`).set(headers).expect(200);
+        expect(res.body.expenses).toHaveLength(1);
+        expect(res.body.expenses[0].vendor).toBe('City Water Board');
+      });
+
+      it('is case-insensitive', async () => {
+        const { school, app, headers } = await setup();
+        await seedSearchData(school);
+
+        const res = await request(app).get(`${BASE}?q=ACME`).set(headers).expect(200);
+        expect(res.body.expenses).toHaveLength(1);
+        expect(res.body.expenses[0].vendor).toBe('Acme Electronics');
+      });
+
+      it('returns an empty list when nothing matches', async () => {
+        const { school, app, headers } = await setup();
+        await seedSearchData(school);
+
+        const res = await request(app).get(`${BASE}?q=nonexistent`).set(headers).expect(200);
+        expect(res.body.expenses).toHaveLength(0);
+        expect(res.body.total).toBe(0);
+      });
+
+      it('treats regex metacharacters as literal text (no over-match)', async () => {
+        const { school, app, headers } = await setup();
+        await Expense.create({
+          schoolId: school._id,
+          title: 'Refund (50%) processing',
+          amount: 100,
+          category: 'other',
+          expenseDate: new Date('2025-06-01'),
+        });
+
+        // '.*' would match everything if not escaped; here it must match nothing literal.
+        const wildcard = await request(app).get(`${BASE}?q=.*`).set(headers).expect(200);
+        expect(wildcard.body.expenses).toHaveLength(0);
+
+        // The literal parenthesised text should still be found.
+        const literal = await request(app).get(`${BASE}?q=(50%)`).set(headers).expect(200);
+        expect(literal.body.expenses).toHaveLength(1);
+      });
+
+      it('does not crash on object-shaped q (NoSQL injection guard)', async () => {
+        const { school, app, headers } = await setup();
+        await seedSearchData(school);
+
+        // q[$ne]= arrives as an object; the route must coerce it to a string
+        // rather than passing it into the regex, and must not 500.
+        const res = await request(app).get(`${BASE}?q[$ne]=x`).set(headers).expect(200);
+        expect(Array.isArray(res.body.expenses)).toBe(true);
+      });
+    });
   });
 
   // ── GET /api/expenses/summary ────────────────────────────────────────────
@@ -251,6 +339,136 @@ describe('expenses routes', () => {
 
       const res = await request(app).get(`${BASE}/summary`).set(headers).expect(200);
       expect(res.body.totalAmount).toBe(100);
+    });
+
+    it('honors the category filter', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'B',
+          amount: 250,
+          category: 'utilities',
+          expenseDate: new Date('2025-06-02'),
+          status: 'approved',
+        },
+      ]);
+
+      const res = await request(app)
+        .get(`${BASE}/summary?category=supplies`)
+        .set(headers)
+        .expect(200);
+      expect(res.body.totalAmount).toBe(100);
+      expect(res.body.summary).toHaveLength(1);
+      expect(res.body.summary[0]._id).toBe('supplies');
+    });
+
+    it('honors the status filter, including rejected', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'B',
+          amount: 200,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-02'),
+          status: 'rejected',
+        },
+        {
+          schoolId: school._id,
+          title: 'C',
+          amount: 75,
+          category: 'utilities',
+          expenseDate: new Date('2025-06-03'),
+          status: 'pending',
+        },
+      ]);
+
+      const approved = await request(app)
+        .get(`${BASE}/summary?status=approved`)
+        .set(headers)
+        .expect(200);
+      expect(approved.body.totalAmount).toBe(100);
+
+      // An explicit rejected filter overrides the default rejected exclusion.
+      const rejected = await request(app)
+        .get(`${BASE}/summary?status=rejected`)
+        .set(headers)
+        .expect(200);
+      expect(rejected.body.totalAmount).toBe(200);
+    });
+
+    it('combines status and category filters', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'B',
+          amount: 300,
+          category: 'salaries',
+          expenseDate: new Date('2025-06-02'),
+          status: 'approved',
+        },
+        {
+          schoolId: school._id,
+          title: 'C',
+          amount: 50,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-03'),
+          status: 'pending',
+        },
+      ]);
+
+      const res = await request(app)
+        .get(`${BASE}/summary?status=approved&category=supplies`)
+        .set(headers)
+        .expect(200);
+      expect(res.body.totalAmount).toBe(100);
+    });
+
+    it('ignores object-shaped status params (NoSQL injection guard)', async () => {
+      const { school, app, headers } = await setup();
+      await Expense.create([
+        {
+          schoolId: school._id,
+          title: 'A',
+          amount: 100,
+          category: 'supplies',
+          expenseDate: new Date('2025-06-01'),
+          status: 'approved',
+        },
+      ]);
+
+      // status[$ne]=approved would, if passed through, match everything.
+      const res = await request(app)
+        .get(`${BASE}/summary?status[$ne]=approved`)
+        .set(headers)
+        .expect(200);
+      expect(res.body.totalAmount).toBe(0);
     });
   });
 

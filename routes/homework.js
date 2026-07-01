@@ -250,6 +250,7 @@ import { Student } from '../database.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
 import { zodSchemas, validateZod } from '../middleware/validation.js';
+import { homeworkListQuerySchema, homeworkStatsQuerySchema } from '../validators/index.js';
 import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
@@ -315,21 +316,43 @@ router.get('/class/:classId', async (req, res) => {
   }
 });
 
+// Escape user input before using it inside a RegExp so a search term like
+// "a.b(" can't act as a regex (ReDoS / unintended matches). Used by the
+// homework list and stats filters below.
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Build the school-scoped filter shared by GET /homework and GET /homework/stats
+// so the KPI cards and the table always agree on the same result set. ObjectId
+// refs are cast eagerly so the filter works in both find() and aggregate()
+// pipelines (aggregate $match does NOT auto-coerce strings → ObjectIds).
+function buildHomeworkFilter(req, params) {
+  const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
+  if (params.status) query.status = params.status;
+  if (params.classId) query.classId = new mongoose.Types.ObjectId(params.classId);
+  if (params.teacherId) query.teacherId = new mongoose.Types.ObjectId(params.teacherId);
+  if (params.academicYear) query.academicYear = params.academicYear;
+  if (params.search) {
+    const rx = new RegExp(escapeRegex(String(params.search).trim().slice(0, 100)), 'i');
+    query.$or = [{ title: rx }, { subject: rx }, { description: rx }];
+  }
+  return query;
+}
+
 // Get all homework for the school (admin dashboard)
-router.get('/', checkPermission('homework', 'view'), async (req, res) => {
+router.get('/', checkPermission('homework', 'view'), async (req, res, next) => {
   try {
-    const { status, classId, teacherId, academicYear, page = 1, limit = 50 } = req.query;
+    const parsed = homeworkListQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid query parameters', details: parsed.error.flatten().fieldErrors });
+    }
+    const { page, limit, ...filters } = parsed.data;
 
-    const query = scopeBySchool(req.user.schoolId, { isDeleted: { $ne: true } });
-    if (status) query.status = status;
-    if (classId) query.classId = classId;
-    if (teacherId) query.teacherId = teacherId;
-    if (academicYear) query.academicYear = academicYear;
-
-    // Pagination
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
-    const skip = (pageNum - 1) * limitNum;
+    const query = buildHomeworkFilter(req, filters);
+    const skip = (page - 1) * limit;
 
     const [homework, total] = await Promise.all([
       Homework.find(query)
@@ -337,21 +360,72 @@ router.get('/', checkPermission('homework', 'view'), async (req, res) => {
         .populate('teacherId', 'name')
         .sort({ dueDate: -1 })
         .skip(skip)
-        .limit(limitNum),
+        .limit(limit),
       Homework.countDocuments(query),
     ]);
 
     res.json({
       data: homework,
       pagination: {
-        page: pageNum,
-        limit: limitNum,
+        page,
+        limit,
         total,
-        totalPages: Math.ceil(total / limitNum),
+        totalPages: Math.ceil(total / limit),
       },
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    next(error);
+  }
+});
+
+// Homework KPI summary (PAG-08) — server-computed counts over the FULL
+// dataset so the four stat cards on the dashboard stay correct beyond the
+// first page. Registered before /:id so it isn't captured as an :id. Shares
+// the same filter set as GET /homework so the table and stats never disagree.
+router.get('/stats', checkPermission('homework', 'view'), async (req, res, next) => {
+  try {
+    const parsed = homeworkStatsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid query parameters', details: parsed.error.flatten().fieldErrors });
+    }
+
+    // Aggregate $match doesn't coerce schoolId strings → ObjectIds the way
+    // find() does, so cast explicitly. The filter builder still uses the
+    // scoped string; we replace it here for the aggregation pipeline only.
+    const baseMatch = buildHomeworkFilter(req, parsed.data);
+    const aggMatch = { ...baseMatch, schoolId: new mongoose.Types.ObjectId(baseMatch.schoolId) };
+    const now = new Date();
+
+    const byStatusAgg = await Homework.aggregate([
+      { $match: aggMatch },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
+
+    const counts = { active: 0, completed: 0, cancelled: 0 };
+    let total = 0;
+    for (const row of byStatusAgg) {
+      if (row && row._id in counts) counts[row._id] = row.count;
+      total += row.count;
+    }
+
+    // Overdue = active homework whose dueDate is already in the past.
+    const overdueAgg = await Homework.aggregate([
+      { $match: { ...aggMatch, status: 'active', dueDate: { $lt: now } } },
+      { $count: 'count' },
+    ]);
+    const overdue = overdueAgg[0]?.count || 0;
+
+    res.json({
+      total,
+      active: counts.active,
+      completed: counts.completed,
+      cancelled: counts.cancelled,
+      overdue,
+    });
+  } catch (error) {
+    next(error);
   }
 });
 
@@ -691,46 +765,51 @@ router.post(
 );
 
 // Grade homework submission (teacher)
-router.post('/:id/grade', checkPermission('homework', 'edit'), validateZod(zodSchemas.gradeHomework), async (req, res) => {
-  try {
-    const { studentId, marks, feedback } = req.body;
+router.post(
+  '/:id/grade',
+  checkPermission('homework', 'edit'),
+  validateZod(zodSchemas.gradeHomework),
+  async (req, res) => {
+    try {
+      const { studentId, marks, feedback } = req.body;
 
-    const homework = await Homework.findOne(
-      scopeBySchool(req.user.schoolId, { _id: req.params.id })
-    );
+      const homework = await Homework.findOne(
+        scopeBySchool(req.user.schoolId, { _id: req.params.id })
+      );
 
-    if (!homework) {
-      return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
+      if (!homework) {
+        return res.status(404).json({ error: req.t('common:routes.homeworkNotFound') });
+      }
+
+      // Validate marks against homework's totalMarks upper bound
+      const maxMarks = homework.totalMarks ?? 100;
+      if (marks > maxMarks) {
+        return res.status(400).json({
+          error: `Marks (${marks}) cannot exceed total marks (${maxMarks}) for this homework`,
+        });
+      }
+
+      const submission = homework.submissions.find((s) => s.studentId.toString() === studentId);
+
+      if (!submission) {
+        return res.status(404).json({
+          error: req.t('common:routes.submissionNotFoundStudentHasNotSubmittedThisHomework'),
+        });
+      }
+
+      submission.marks = marks;
+      if (feedback !== undefined) submission.feedback = feedback;
+      submission.gradedAt = new Date();
+
+      homework.updatedAt = new Date();
+      await homework.save();
+
+      res.json({ success: true, message: req.t('common:routes.homeworkGradedSuccessfully') });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    // Validate marks against homework's totalMarks upper bound
-    const maxMarks = homework.totalMarks ?? 100;
-    if (marks > maxMarks) {
-      return res.status(400).json({
-        error: `Marks (${marks}) cannot exceed total marks (${maxMarks}) for this homework`,
-      });
-    }
-
-    const submission = homework.submissions.find((s) => s.studentId.toString() === studentId);
-
-    if (!submission) {
-      return res.status(404).json({
-        error: req.t('common:routes.submissionNotFoundStudentHasNotSubmittedThisHomework'),
-      });
-    }
-
-    submission.marks = marks;
-    if (feedback !== undefined) submission.feedback = feedback;
-    submission.gradedAt = new Date();
-
-    homework.updatedAt = new Date();
-    await homework.save();
-
-    res.json({ success: true, message: req.t('common:routes.homeworkGradedSuccessfully') });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Delete homework (soft delete — preserves grading data)
 router.delete('/:id', checkPermission('homework', 'delete'), async (req, res) => {

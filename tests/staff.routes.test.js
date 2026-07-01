@@ -2,6 +2,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import mongoose from 'mongoose';
 import { Staff } from '../database.js';
+import StaffAttendance from '../models/StaffAttendance.js';
 import { createSchoolRecord, createStaffUser, authHeadersFor } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
@@ -184,6 +185,375 @@ describe('staff routes', () => {
 
       const names = response.body.map((s) => s.name);
       expect(names).not.toContain('Deleted Teacher');
+    });
+
+    // ─── SCH-126 / PAG-28: server-side search, facets, today filter ────
+
+    describe('SCH-126 — server-side search (q param)', () => {
+      it('filters by name substring, case-insensitive', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'Alice Smith' });
+        await createTeacherInSchool(school._id, { name: 'Bob Jones' });
+        await createTeacherInSchool(school._id, { name: 'Eve Smithy' });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&q=smith')
+          .set(authHeaders)
+          .expect(200);
+
+        const names = response.body.data.map((s) => s.name);
+        expect(names).toContain('Alice Smith');
+        expect(names).toContain('Eve Smithy');
+        expect(names).not.toContain('Bob Jones');
+      });
+
+      it('matches staffNumber/code as a substring', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        const teacher = await createTeacherInSchool(school._id, { name: 'Code Match' });
+        await Staff.findByIdAndUpdate(teacher._id, { staffNumber: 'SMITH-9999' });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&q=SMITH-9999')
+          .set(authHeaders)
+          .expect(200);
+
+        const names = response.body.data.map((s) => s.name);
+        expect(names).toContain('Code Match');
+      });
+
+      it('returns zero results when no staff match the query', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'Alice' });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&q=zzznomatchzzz')
+          .set(authHeaders)
+          .expect(200);
+
+        expect(response.body.data).toHaveLength(0);
+        expect(response.body.pagination.total).toBe(0);
+      });
+    });
+
+    describe('SCH-126 — facet filters (role / department / employmentType / gender)', () => {
+      it('filters by a single role (comma list semantics, $in)', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'T1', staffRole: ['Teacher'] });
+        await createTeacherInSchool(school._id, { name: 'L1', staffRole: ['Librarian'] });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&role=Teacher')
+          .set(authHeaders)
+          .expect(200);
+
+        const names = response.body.data.map((s) => s.name);
+        expect(names).toContain('T1');
+        expect(names).not.toContain('L1');
+      });
+
+      it('filters by multiple roles (comma-separated)', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'T1', staffRole: ['Teacher'] });
+        await createTeacherInSchool(school._id, { name: 'L1', staffRole: ['Librarian'] });
+        await createTeacherInSchool(school._id, { name: 'A1', staffRole: ['Accountant'] });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&role=Teacher,Librarian')
+          .set(authHeaders)
+          .expect(200);
+
+        const names = response.body.data.map((s) => s.name);
+        expect(names).toContain('T1');
+        expect(names).toContain('L1');
+        expect(names).not.toContain('A1');
+      });
+
+      it('filters by department, employmentType, gender', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        const match = await createTeacherInSchool(school._id, {
+          name: 'Match',
+          staffRole: ['Teacher'],
+          department: 'Science',
+        });
+        await Staff.findByIdAndUpdate(match._id, {
+          employmentType: 'Full-Time',
+          gender: 'Female',
+        });
+        const other = await createTeacherInSchool(school._id, {
+          name: 'Other',
+          staffRole: ['Teacher'],
+          department: 'Math',
+        });
+        await Staff.findByIdAndUpdate(other._id, {
+          employmentType: 'Part-Time',
+          gender: 'Male',
+        });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const deptResponse = await request(app)
+          .get('/api/staff?page=1&limit=50&department=Science')
+          .set(authHeaders)
+          .expect(200);
+        expect(deptResponse.body.data.map((s) => s.name)).toContain('Match');
+        expect(deptResponse.body.data.map((s) => s.name)).not.toContain('Other');
+
+        const empResponse = await request(app)
+          .get('/api/staff?page=1&limit=50&employmentType=Full-Time')
+          .set(authHeaders)
+          .expect(200);
+        expect(empResponse.body.data.map((s) => s.name)).toContain('Match');
+
+        const genderResponse = await request(app)
+          .get('/api/staff?page=1&limit=50&gender=Female')
+          .set(authHeaders)
+          .expect(200);
+        expect(genderResponse.body.data.map((s) => s.name)).toContain('Match');
+      });
+    });
+
+    describe('SCH-126 — facets aggregate', () => {
+      it('returns facets with value+count entries in the paginated branch', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, {
+          name: 'T1',
+          staffRole: ['Teacher'],
+          department: 'Math',
+        });
+        await createTeacherInSchool(school._id, {
+          name: 'T2',
+          staffRole: ['Teacher'],
+          department: 'Math',
+        });
+        await createTeacherInSchool(school._id, { name: 'L1', staffRole: ['Librarian'] });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50')
+          .set(authHeaders)
+          .expect(200);
+
+        expect(response.body.facets).toBeDefined();
+        const teacherFacet = response.body.facets.role.find((r) => r.value === 'Teacher');
+        expect(teacherFacet).toBeDefined();
+        expect(teacherFacet.count).toBe(2);
+        const librarianFacet = response.body.facets.role.find((r) => r.value === 'Librarian');
+        expect(librarianFacet.count).toBe(1);
+
+        const mathDept = response.body.facets.department.find((d) => d.value === 'Math');
+        expect(mathDept.count).toBe(2);
+      });
+
+      it('excludes empty/null values from facet options', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, {
+          name: 'Has Dept',
+          staffRole: ['Teacher'],
+          department: 'Science',
+        });
+        await createTeacherInSchool(school._id, { name: 'No Dept', staffRole: ['Teacher'] });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50')
+          .set(authHeaders)
+          .expect(200);
+
+        // The 'No Dept' staff should not produce a '' or null facet entry
+        const deptValues = response.body.facets.department.map((d) => d.value);
+        expect(deptValues).not.toContain('');
+        expect(deptValues).not.toContain(null);
+      });
+
+      it('facets respect q (search) filtering — pills reflect the searched set', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, {
+          name: 'Alice Math',
+          staffRole: ['Teacher'],
+          department: 'Math',
+        });
+        await createTeacherInSchool(school._id, {
+          name: 'Bob Science',
+          staffRole: ['Teacher'],
+          department: 'Science',
+        });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&q=alice')
+          .set(authHeaders)
+          .expect(200);
+
+        const deptValues = response.body.facets.department.map((d) => d.value);
+        expect(deptValues).toContain('Math');
+        expect(deptValues).not.toContain('Science');
+      });
+
+      it('skips facets when includeFacets=false', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'T1' });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&includeFacets=false')
+          .set(authHeaders)
+          .expect(200);
+
+        expect(response.body.facets).toBeUndefined();
+      });
+
+      it('non-paginated branch does NOT return facets (backward compat)', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'T1' });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app).get('/api/staff').set(authHeaders).expect(200);
+
+        expect(Array.isArray(response.body)).toBe(true);
+        expect(response.body.facets).toBeUndefined();
+      });
+    });
+
+    describe('SCH-126 — today filter (StaffAttendance join)', () => {
+      it('restricts to staff with an attendance record for today', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        const present = await createTeacherInSchool(school._id, { name: 'Present Today' });
+        const absent = await createTeacherInSchool(school._id, { name: 'Absent Today' });
+        await createTeacherInSchool(school._id, { name: 'No Attendance' });
+
+        const today = new Date().toISOString().split('T')[0];
+        await StaffAttendance.create([
+          {
+            schoolId: school._id,
+            staffId: present._id,
+            date: today,
+            status: 'present',
+          },
+          {
+            schoolId: school._id,
+            staffId: absent._id,
+            date: today,
+            status: 'absent',
+          },
+        ]);
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&today=true')
+          .set(authHeaders)
+          .expect(200);
+
+        const names = response.body.data.map((s) => s.name);
+        expect(names).toContain('Present Today');
+        expect(names).toContain('Absent Today');
+        expect(names).not.toContain('No Attendance');
+      });
+
+      it('excludes staff whose only record is "unmarked" (excluded status)', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        const unmarked = await createTeacherInSchool(school._id, { name: 'Unmarked Today' });
+
+        const today = new Date().toISOString().split('T')[0];
+        await StaffAttendance.create({
+          schoolId: school._id,
+          staffId: unmarked._id,
+          date: today,
+          status: 'unmarked',
+        });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&today=true')
+          .set(authHeaders)
+          .expect(200);
+
+        const names = response.body.data.map((s) => s.name);
+        expect(names).not.toContain('Unmarked Today');
+      });
+    });
+
+    describe('SCH-126 — backward compatibility', () => {
+      it('unchanged pagination contract: page/limit/total/totalPages', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        for (let i = 0; i < 5; i++) {
+          await createTeacherInSchool(school._id, { name: `Paged ${i}` });
+        }
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=3')
+          .set(authHeaders)
+          .expect(200);
+
+        expect(response.body.pagination).toMatchObject({
+          page: 1,
+          limit: 3,
+          total: 6,
+          totalPages: 2,
+        });
+      });
+
+      it('unchanged non-paginated contract: plain array with all staff', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id);
+        await createTeacherInSchool(school._id);
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app).get('/api/staff').set(authHeaders).expect(200);
+
+        expect(Array.isArray(response.body)).toBe(true);
+        expect(response.body.length).toBe(3); // admin + 2 teachers
+      });
+
+      it('non-paginated branch applies q/facet filters too (single source of truth)', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, { name: 'Alpha' });
+        await createTeacherInSchool(school._id, { name: 'Beta' });
+
+        const { app } = createTestApp();
+        const authHeaders = authHeadersFor(admin, 'admin');
+
+        const response = await request(app).get('/api/staff?q=alpha').set(authHeaders).expect(200);
+
+        expect(Array.isArray(response.body)).toBe(true);
+        const names = response.body.map((s) => s.name);
+        expect(names).toContain('Alpha');
+        expect(names).not.toContain('Beta');
+      });
     });
   });
 
@@ -544,7 +914,7 @@ describe('staff routes', () => {
       expect(response.body.email).toBe('upper@example.com');
     });
 
-    it("does NOT desync Staff↔Class when caller sends isClassTeacher/classTeacherOf alone", async () => {
+    it('does NOT desync Staff↔Class when caller sends isClassTeacher/classTeacherOf alone', async () => {
       // Before the fix, sending `{isClassTeacher: true, classTeacherOf:
       // 'Class 5-A'}` wrote those flags to the Staff doc without ever
       // updating Class.classTeacherId — the two collections drifted.

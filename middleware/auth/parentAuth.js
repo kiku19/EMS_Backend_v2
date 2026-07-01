@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import Parent from '../../models/Parent.js';
 import { getRequiredSecret } from '../../config/environment.js';
 import { ensureDocumentSchool } from '../../utils/schoolContext.js';
+import { runWithTenant } from '../../utils/tenantAsyncContext.js';
 
 /**
  * Authenticate parent JWT token and load parent data
@@ -60,7 +61,9 @@ export const authenticateParent = async (req, res, next) => {
       schoolId,
     };
 
-    next();
+    // Bind the parent's schoolId to the async context so all downstream
+    // database queries are scoped to the correct tenant.
+    return runWithTenant(schoolId, next);
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({

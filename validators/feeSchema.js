@@ -103,6 +103,37 @@ export const defaultersQuerySchema = z
   })
   .strip();
 
+// ─── PAYMENTS KPI SUMMARY QUERY (PAG-01) ────────────────────────
+// Backs GET /fees/payments/summary, which computes the Fees-page KPIs
+// (collected today / outstanding total / students owing) over the FULL
+// dataset server-side instead of from the first page of payment rows.
+// `date` is the client's local calendar day (YYYY-MM-DD) so "collected
+// today" matches the cashier's timezone, not the server's.
+export const paymentsSummaryQuerySchema = z
+  .object({
+    academicYear: academicYear.optional(),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be in YYYY-MM-DD format')
+      .optional(),
+  })
+  .strip();
+
+// ─── REFUNDS SUMMARY QUERY (PAG-17) ─────────────────────────────
+// Backs GET /fees/refunds/summary, which computes the Refunds-page KPI cards
+// (total amount + per-status counts) over the FULL filtered dataset
+// server-side instead of from the loaded page of rows. Mirrors the list
+// route's filter surface (studentId / status / academicYear / search) so the
+// summary always matches what the list is paginating over.
+export const refundsSummaryQuerySchema = z
+  .object({
+    studentId: objectId.optional(),
+    status: z.string().max(50).optional(),
+    academicYear: academicYear.optional(),
+    search: z.string().max(100).optional(),
+  })
+  .strip();
+
 // ─── FEE TEMPLATE ──────────────────────────────────────────────
 const feeTemplateFeeHeadSchema = z
   .object({

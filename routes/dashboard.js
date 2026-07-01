@@ -7,6 +7,75 @@
 
 /**
  * @swagger
+ * /dashboard/feed:
+ *   get:
+ *     summary: Get dashboard action items, schedule, and weekly highlights
+ *     description: |
+ *       Returns real-time dashboard content that is currently mocked on the
+ *       frontend: priority action items (fee defaulters, unstaffed classes,
+ *       upcoming events), today's schedule from the calendar, and weekly
+ *       highlight moments.
+ *     tags: [Dashboard]
+ *     responses:
+ *       200:
+ *         description: Dashboard feed data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 priorities:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       kind:
+ *                         type: string
+ *                         enum: [danger, warn, info]
+ *                       title:
+ *                         type: string
+ *                       body:
+ *                         type: string
+ *                       meta:
+ *                         type: string
+ *                       primary:
+ *                         type: string
+ *                       route:
+ *                         type: string
+ *                 schedule:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       time:
+ *                         type: string
+ *                       title:
+ *                         type: string
+ *                       meta:
+ *                         type: string
+ *                       mine:
+ *                         type: boolean
+ *                       allDay:
+ *                         type: boolean
+ *                 moments:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       label:
+ *                         type: string
+ *                       value:
+ *                         type: string
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ */
+
+/**
+ * @swagger
  * /dashboard/stats:
  *   get:
  *     summary: Get role-specific dashboard statistics
@@ -49,8 +118,18 @@
  */
 
 import express from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
-import { Student, Staff, Class, FeePayment, Exam, Attendance } from '../database.js';
+import {
+  Student,
+  Staff,
+  Class,
+  FeePayment,
+  Exam,
+  Attendance,
+  Substitution,
+  StudentFeeStructure,
+} from '../database.js';
 import StaffAttendance from '../models/StaffAttendance.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import TeacherLeave from '../models/TeacherLeave.js';
@@ -78,6 +157,162 @@ function hasRole(user, roles) {
   const userRoles = getRoles(user);
   return roles.some((r) => userRoles.includes(r));
 }
+
+function getCalendarEventModel() {
+  return mongoose.models.CalendarEvent || null;
+}
+
+function getDayName(dateString) {
+  const date = new Date(dateString + 'T00:00:00');
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+function formatINRCompact(amount) {
+  if (amount == null || Number.isNaN(amount)) return '₹0';
+  const n = Math.abs(amount);
+  if (n >= 1e7) return `₹${(n / 1e7).toFixed(n >= 1e8 ? 0 : 1)}Cr`;
+  if (n >= 1e5) return `₹${(n / 1e5).toFixed(n >= 1e6 ? 0 : 1)}L`;
+  if (n >= 1e3) return `₹${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}K`;
+  return `₹${Math.round(n)}`;
+}
+
+function formatShortDate(dateString) {
+  const date = new Date(dateString + 'T00:00:00');
+  if (Number.isNaN(date.getTime())) return dateString;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function daysBetween(from, to) {
+  const start = new Date(from + 'T00:00:00');
+  const end = new Date(to + 'T00:00:00');
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+}
+
+// GET /api/v1/dashboard/feed
+// Returns action items, today's schedule, and weekly highlights for the dashboard.
+router.get('/feed', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const nextWeekDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const nextWeek = nextWeekDate.toISOString().split('T')[0];
+
+    const [feeStructures, pendingSubstitutions, calendarEvents] = await Promise.allSettled([
+      StudentFeeStructure.find({ schoolId, totalBalance: { $gt: 0 } })
+        .select('totalBalance')
+        .lean(),
+      Substitution.find({
+        schoolId,
+        date: today,
+        status: { $in: ['pending', 'confirmed'] },
+      })
+        .populate('classId', 'name section')
+        .sort({ period: 1 })
+        .lean(),
+      (async () => {
+        const CalendarEvent = getCalendarEventModel();
+        if (!CalendarEvent) return [];
+        return CalendarEvent.find({
+          schoolId,
+          date: { $gte: today, $lte: nextWeek },
+          isDeleted: { $ne: true },
+          type: { $in: ['event', 'meeting', 'exam'] },
+        })
+          .sort({ date: 1, startTime: 1 })
+          .lean();
+      })(),
+    ]);
+
+    const defaulterStructures = feeStructures.status === 'fulfilled' ? feeStructures.value : [];
+    const feeDefaultersCount = defaulterStructures.length;
+    const totalPending = defaulterStructures.reduce(
+      (sum, record) => sum + (record.totalBalance || 0),
+      0
+    );
+
+    const substitutions =
+      pendingSubstitutions.status === 'fulfilled' ? pendingSubstitutions.value : [];
+
+    const events = calendarEvents.status === 'fulfilled' ? calendarEvents.value : [];
+    const todayEvents = events.filter((event) => event.date === today);
+    const upcomingEvents = events.filter((event) => event.date > today);
+
+    const priorities = [];
+    if (feeDefaultersCount > 0) {
+      priorities.push({
+        id: 'fees',
+        kind: 'danger',
+        title:
+          totalPending > 0
+            ? `${formatINRCompact(totalPending)} unpaid fees`
+            : `${feeDefaultersCount} fee defaulters`,
+        body: `${feeDefaultersCount} student${feeDefaultersCount === 1 ? '' : 's'} past cutoff`,
+        meta: 'Reminder ready',
+        primary: 'Send reminders',
+        route: '/fees',
+      });
+    }
+
+    if (substitutions.length > 0) {
+      const first = substitutions[0];
+      const className = first.classId
+        ? `${first.classId.name || ''} ${first.classId.section || ''}`.trim()
+        : 'Unknown class';
+      priorities.push({
+        id: 'coverage',
+        kind: 'warn',
+        title: `Period ${first.period} · ${className || 'Unstaffed'} unstaffed`,
+        body: 'Substitute not assigned',
+        meta: 'Today',
+        primary: 'Assign substitute',
+        route: '/staffs',
+      });
+    }
+
+    if (upcomingEvents.length > 0) {
+      const first = upcomingEvents[0];
+      const daysLeft = daysBetween(today, first.date);
+      priorities.push({
+        id: 'event',
+        kind: 'info',
+        title: `${first.title} · ${formatShortDate(first.date)}`,
+        body: first.description || 'Upcoming event',
+        meta: daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? '' : 's'} left` : 'Today',
+        primary: 'Open details',
+        route: '/calendar',
+      });
+    }
+
+    const schedule = todayEvents.map((event) => ({
+      time: event.startTime || (event.allDay ? 'All day' : 'TBD'),
+      title: event.title,
+      meta: event.description || `${getDayName(event.date)} event`,
+      mine: false,
+      allDay: event.allDay || false,
+    }));
+
+    const moments = [];
+    const weekEventCount = events.length;
+    if (weekEventCount > 0) {
+      moments.push({
+        label: 'events this week',
+        value: String(weekEventCount),
+      });
+    }
+
+    return res.json({ priorities, schedule, moments });
+  } catch (error) {
+    logger.error('Dashboard feed error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
 
 // GET /api/v1/dashboard/stats
 router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
@@ -299,6 +534,115 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
     });
   } catch (error) {
     logger.error('Dashboard stats error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
+// GET /api/v1/dashboard/analytics-summary
+// Server-computed student KPIs for the Analytics and Dashboard screens.
+// [PAG-05] removed global student hydration from the app shell, so those pages
+// can no longer count students client-side from AppContext. Rather than
+// re-introduce a full-roster fetch, this endpoint aggregates the status/fee
+// breakdowns and per-class distribution in MongoDB and returns only the totals.
+router.get('/analytics-summary', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: req.t('common:routes.invalidQueryParameters'),
+        details: parsed.error.errors,
+      });
+    }
+
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    // Student.schoolId is an ObjectId; aggregation `$match` does not auto-cast
+    // (unlike countDocuments used elsewhere in this file), so convert explicitly.
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+    const baseMatch = { schoolId: schoolObjId, isDeleted: { $ne: true } };
+
+    const [statusAgg, feeAgg, classAgg] = await Promise.allSettled([
+      Student.aggregate([
+        { $match: baseMatch },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+      Student.aggregate([
+        { $match: baseMatch },
+        { $group: { _id: '$feeStatus', count: { $sum: 1 } } },
+      ]),
+      Student.aggregate([
+        { $match: { ...baseMatch, status: 'active' } },
+        { $group: { _id: '$classId', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+    ]);
+
+    const countsByKey = (settled) => {
+      const map = {};
+      if (settled.status === 'fulfilled') {
+        for (const row of settled.value) {
+          if (row?._id != null) map[row._id] = row.count;
+        }
+      }
+      return map;
+    };
+
+    const statusCounts = countsByKey(statusAgg);
+    const feeCounts = countsByKey(feeAgg);
+    const totalStudents =
+      statusAgg.status === 'fulfilled'
+        ? statusAgg.value.reduce((sum, row) => sum + (row.count || 0), 0)
+        : 0;
+
+    const students = {
+      total: totalStudents,
+      active: statusCounts.active || 0,
+      inactive: statusCounts.inactive || 0,
+      graduated: statusCounts.graduated || 0,
+      transferred: statusCounts.transferred || 0,
+      alumni: statusCounts.alumni || 0,
+    };
+
+    const paid = feeCounts.paid || 0;
+    const pending = feeCounts.pending || 0;
+    const partial = feeCounts.partial || 0;
+    const overdue = feeCounts.overdue || 0;
+    const fees = {
+      paid,
+      pending,
+      partial,
+      overdue,
+      // Defaulters mirror the `/dashboard/stats` definition (pending + overdue).
+      defaulters: pending + overdue,
+      collectionRate: totalStudents > 0 ? Number(((paid / totalStudents) * 100).toFixed(1)) : 0,
+    };
+
+    // Resolve class names for the distribution chart (students-per-class,
+    // largest/smallest class). Kept as a bounded second query rather than a
+    // `$lookup` so we don't couple to the physical collection name.
+    const classRows = classAgg.status === 'fulfilled' ? classAgg.value : [];
+    const classIds = classRows.map((row) => row._id).filter(Boolean);
+    let nameMap = new Map();
+    if (classIds.length > 0) {
+      const classDocs = await Class.find({ schoolId: schoolObjId, _id: { $in: classIds } })
+        .select('name section')
+        .lean();
+      nameMap = new Map(
+        classDocs.map((c) => [String(c._id), `${c.name || ''} ${c.section || ''}`.trim()])
+      );
+    }
+    const classDistribution = classRows.map((row) => ({
+      classId: row._id ? String(row._id) : null,
+      name: row._id ? nameMap.get(String(row._id)) || 'Unknown class' : 'Unassigned',
+      count: row.count,
+    }));
+
+    return res.json({ students, fees, classDistribution });
+  } catch (error) {
+    logger.error('Dashboard analytics-summary error', { error: error.message });
     return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
   }
 });

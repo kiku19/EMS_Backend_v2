@@ -5,6 +5,7 @@ import { Student } from '../database.js';
 import {
   generateParentPassword,
   createOrUpdateParentAccount,
+  syncParentToStudent,
 } from '../utils/parentAccountHelper.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
@@ -205,6 +206,11 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
     parent.password = plainPassword;
     await parent.save();
 
+    // Keep the student-side parent cache in sync with the canonical Parent record
+    syncParentToStudent(parent).catch((err) => {
+      console.error(`Error syncing parent ${parent._id} to student after password reset:`, err);
+    });
+
     res.json({
       success: true,
       message: req.t('common:routes.passwordResetSuccessfully'),
@@ -246,6 +252,11 @@ router.put('/:id/status', async (req, res) => {
       });
     }
 
+    // Keep the student-side parent cache in sync with the canonical Parent record
+    syncParentToStudent(parent).catch((err) => {
+      console.error(`Error syncing parent ${parent._id} to student after status change:`, err);
+    });
+
     res.json({ success: true, message: `Parent account ${status}`, data: parent });
   } catch (error) {
     console.error('Update parent status error:', error);
@@ -265,9 +276,7 @@ router.post('/bulk-create', requireAdmin, async (req, res) => {
         isDeleted: { $ne: true },
       })
     )
-      .select(
-        'name admissionId dateOfBirth parents schoolId'
-      )
+      .select('name admissionId dateOfBirth parents schoolId')
       .lean();
 
     let created = 0;

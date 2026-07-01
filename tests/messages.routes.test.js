@@ -170,6 +170,170 @@ describe('messages routes', () => {
 
       expect(res.body).toEqual([]);
     });
+
+    // [PAG-29] The conversations list is now paginated: `limit` caps the
+    // page size (default 50, max 200), `skip` is the offset, and `cursor`
+    // is an ISO-8601 timestamp that paginates by lastMessage time. The
+    // response body remains a plain array (backwards compatible with the
+    // dashboard's `chatService.getConversations()` which destructures the
+    // body directly); pagination metadata rides on response headers.
+    describe('pagination [PAG-29]', () => {
+      it('caps the response at the default limit and exposes X-Total-Count/X-Limit/X-Has-More headers', async () => {
+        const { app, admin1, headers1 } = await setupTwoStaffUsers();
+
+        // Create one conversation so the route has something to paginate over.
+        // The default limit is 50, so a single conversation should come back
+        // whole and `X-Has-More` should be false.
+        const conversation = await Conversation.findOrCreate(
+          admin1._id,
+          'Staff',
+          admin1._id, // self as the other side is fine for this test
+          'Staff',
+          admin1.schoolId
+        );
+        conversation.lastMessage = {
+          content: 'hi',
+          senderId: admin1._id,
+          senderName: 'Admin Alice',
+          timestamp: new Date(),
+          type: 'text',
+        };
+        await conversation.save();
+
+        const res = await request(app).get('/api/messages/conversations').set(headers1).expect(200);
+
+        expect(Array.isArray(res.body)).toBe(true);
+        expect(res.headers['x-total-count']).toBe('1');
+        expect(res.headers['x-limit']).toBe('50');
+        expect(res.headers['x-has-more']).toBe('false');
+        expect(res.headers['x-next-cursor']).toBeUndefined();
+      });
+
+      it('respects an explicit `limit` query parameter and sets X-Has-More=true when more exist', async () => {
+        const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
+
+        // Two conversations for the same user → page size 1 → hasMore = true.
+        await createDirectConversation(admin1, admin2);
+        const extra = await createDirectConversation(admin1, admin2);
+        extra.lastMessage = {
+          content: 'second',
+          senderId: admin1._id,
+          senderName: 'Admin Alice',
+          timestamp: new Date(),
+          type: 'text',
+        };
+        await extra.save();
+
+        const res = await request(app)
+          .get('/api/messages/conversations')
+          .query({ limit: 1 })
+          .set(headers1)
+          .expect(200);
+
+        expect(res.body).toHaveLength(1);
+        expect(res.headers['x-limit']).toBe('1');
+        expect(res.headers['x-has-more']).toBe('true');
+        expect(res.headers['x-next-cursor']).toBeDefined();
+      });
+
+      it('clamps `limit` to the documented max of 200', async () => {
+        const { app, admin1, headers1 } = await setupTwoStaffUsers();
+
+        const res = await request(app)
+          .get('/api/messages/conversations')
+          .query({ limit: 9999 })
+          .set(headers1)
+          .expect(200);
+
+        expect(res.headers['x-limit']).toBe('200');
+      });
+
+      it('honors `skip` for offset-based pagination', async () => {
+        const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
+        // Need a third staff user so we get two DISTINCT conversations
+        // involving admin1 (findOrCreate is idempotent for the same pair).
+        const admin3 = await createStaffUser({
+          name: 'Admin Carol',
+          email: `carol.${setupSeq}@chat.example.com`,
+          schoolId: admin1.schoolId,
+          staffRole: ['Admin'],
+          permissionRole: 'admin',
+        });
+        await Staff.findByIdAndUpdate(admin3._id, { username: `carol_${setupSeq}` });
+
+        const a = await createDirectConversation(admin1, admin2);
+        a.lastMessage = {
+          content: 'older',
+          senderId: admin1._id,
+          senderName: 'Admin Alice',
+          timestamp: new Date('2024-01-01T00:00:00Z'),
+          type: 'text',
+        };
+        await a.save();
+
+        const b = await createDirectConversation(admin1, admin3);
+        b.lastMessage = {
+          content: 'newer',
+          senderId: admin1._id,
+          senderName: 'Admin Alice',
+          timestamp: new Date('2024-02-01T00:00:00Z'),
+          type: 'text',
+        };
+        await b.save();
+
+        // skip=1 should drop the newest and return only the older one.
+        const res = await request(app)
+          .get('/api/messages/conversations')
+          .query({ limit: 10, skip: 1 })
+          .set(headers1)
+          .expect(200);
+
+        expect(res.body).toHaveLength(1);
+        expect(res.body[0].lastMessage.content).toBe('older');
+      });
+
+      it('uses `cursor` to fetch conversations older than the cursor', async () => {
+        const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
+        const admin3 = await createStaffUser({
+          name: 'Admin Carol',
+          email: `carol.${setupSeq}@chat.example.com`,
+          schoolId: admin1.schoolId,
+          staffRole: ['Admin'],
+          permissionRole: 'admin',
+        });
+        await Staff.findByIdAndUpdate(admin3._id, { username: `carol_${setupSeq}` });
+
+        const a = await createDirectConversation(admin1, admin2);
+        a.lastMessage = {
+          content: 'older',
+          senderId: admin1._id,
+          senderName: 'Admin Alice',
+          timestamp: new Date('2024-01-01T00:00:00Z'),
+          type: 'text',
+        };
+        await a.save();
+
+        const b = await createDirectConversation(admin1, admin3);
+        b.lastMessage = {
+          content: 'newer',
+          senderId: admin1._id,
+          senderName: 'Admin Alice',
+          timestamp: new Date('2024-02-01T00:00:00Z'),
+          type: 'text',
+        };
+        await b.save();
+
+        // Cursor at the newer conversation's timestamp → only the older one.
+        const res = await request(app)
+          .get('/api/messages/conversations')
+          .query({ cursor: '2024-02-01T00:00:00.000Z' })
+          .set(headers1)
+          .expect(200);
+
+        expect(res.body).toHaveLength(1);
+        expect(res.body[0].lastMessage.content).toBe('older');
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -286,6 +450,136 @@ describe('messages routes', () => {
 
       expect(res.body).toHaveLength(1);
       expect(res.body[0].content).toBe('visible msg');
+    });
+
+    // PAG-06: backend already implements a `before` cursor; these tests lock
+    // in that a follow-up call with `before=<oldestCreatedAt>` returns only
+    // messages strictly older than that cursor and respects the limit.
+    it('returns only messages older than the `before` cursor', async () => {
+      const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
+      const conversation = await createDirectConversation(admin1, admin2);
+
+      // The cursor query uses `createdAt < before`, so each test message must
+      // have a distinct timestamp or the strictly-less comparison collapses
+      // the test set. Pin createdAt explicitly per row.
+      const baseTime = new Date('2026-01-01T12:00:00.000Z').getTime();
+      const oldMsg = await Message.create({
+        schoolId: conversation.schoolId,
+        conversationId: conversation._id,
+        senderId: admin1._id,
+        senderModel: 'Staff',
+        receiverId: admin2._id,
+        receiverModel: 'Staff',
+        content: 'old-1',
+        type: 'text',
+        status: 'sent',
+        createdAt: new Date(baseTime + 1_000),
+      });
+      const midMsg = await Message.create({
+        schoolId: conversation.schoolId,
+        conversationId: conversation._id,
+        senderId: admin2._id,
+        senderModel: 'Staff',
+        receiverId: admin1._id,
+        receiverModel: 'Staff',
+        content: 'mid-1',
+        type: 'text',
+        status: 'sent',
+        createdAt: new Date(baseTime + 2_000),
+      });
+      const newMsg = await Message.create({
+        schoolId: conversation.schoolId,
+        conversationId: conversation._id,
+        senderId: admin1._id,
+        senderModel: 'Staff',
+        receiverId: admin2._id,
+        receiverModel: 'Staff',
+        content: 'new-1',
+        type: 'text',
+        status: 'sent',
+        createdAt: new Date(baseTime + 3_000),
+      });
+
+      // Fetch with limit=2 returns the two newest; `before` is the
+      // createdAt of the oldest message returned, so a follow-up fetch
+      // should return messages strictly older than that cursor.
+      const firstPage = await request(app)
+        .get(`/api/messages/conversations/${conversation._id}/messages`)
+        .query({ limit: 2 })
+        .set(headers1)
+        .expect(200);
+
+      expect(firstPage.body).toHaveLength(2);
+      expect(firstPage.body.map((m) => m.content)).toEqual(['mid-1', 'new-1']);
+
+      const oldestOnPage = firstPage.body[0].createdAt;
+      const secondPage = await request(app)
+        .get(`/api/messages/conversations/${conversation._id}/messages`)
+        .query({ limit: 50, before: oldestOnPage })
+        .set(headers1)
+        .expect(200);
+
+      expect(secondPage.body).toHaveLength(1);
+      expect(secondPage.body[0].content).toBe('old-1');
+      expect(secondPage.body[0].id).toBe(oldMsg._id.toString());
+
+      // Sanity: every returned message is strictly older than the cursor
+      secondPage.body.forEach((m) => {
+        expect(new Date(m.createdAt).getTime()).toBeLessThan(new Date(oldestOnPage).getTime());
+      });
+
+      // `before` must not include the cursor message itself or anything newer
+      const ids = secondPage.body.map((m) => m.id);
+      expect(ids).not.toContain(midMsg._id.toString());
+      expect(ids).not.toContain(newMsg._id.toString());
+    });
+
+    it('returns chronological order with `before` cursor (oldest first within page)', async () => {
+      const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
+      const conversation = await createDirectConversation(admin1, admin2);
+
+      // Five messages with distinct, monotonically increasing timestamps so
+      // the strict-less-than cursor comparison is well defined.
+      const baseTime = new Date('2026-01-01T12:00:00.000Z').getTime();
+      for (let i = 1; i <= 5; i += 1) {
+        await Message.create({
+          schoolId: conversation.schoolId,
+          conversationId: conversation._id,
+          senderId: admin1._id,
+          senderModel: 'Staff',
+          receiverId: admin2._id,
+          receiverModel: 'Staff',
+          content: `m-${i}`,
+          type: 'text',
+          status: 'sent',
+          createdAt: new Date(baseTime + i * 1_000),
+        });
+      }
+
+      const res = await request(app)
+        .get(`/api/messages/conversations/${conversation._id}/messages`)
+        .query({ limit: 3, before: new Date(baseTime + 10_000).toISOString() })
+        .set(headers1)
+        .expect(200);
+
+      expect(res.body).toHaveLength(3);
+      // Backend sorts ASC within page after fetch
+      expect(res.body.map((m) => m.content)).toEqual(['m-3', 'm-4', 'm-5']);
+    });
+
+    it('returns an empty page when `before` is older than every message', async () => {
+      const { app, admin1, admin2, headers1 } = await setupTwoStaffUsers();
+      const conversation = await createDirectConversation(admin1, admin2);
+
+      await createMessage(conversation, admin1, admin2, 'recent');
+
+      const res = await request(app)
+        .get(`/api/messages/conversations/${conversation._id}/messages`)
+        .query({ before: new Date('2000-01-01T00:00:00.000Z').toISOString() })
+        .set(headers1)
+        .expect(200);
+
+      expect(res.body).toEqual([]);
     });
   });
 

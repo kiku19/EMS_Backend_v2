@@ -1,28 +1,64 @@
 /**
- * Index Migration Script
+ * Index Migration Script  (`npm run migrate:indexes`)
  *
- * Drops old indexes and lets Mongoose recreate them with updated definitions.
- * Required after the student journey audit fixes that changed indexes on:
- *   - students: rollNo partial filter expression (Issue #4)
- *   - classes: added schoolId to unique index (Issue #16)
- *   - feestructures: added schoolId to unique index (Issue #34)
- *   - attendances: fixed stale records.studentId path (Issue #52)
+ * Two responsibilities:
  *
- * Usage: node scripts/migrateIndexes.js
+ *  1. Drop a handful of *legacy* indexes whose key stayed the same but whose
+ *     options changed (a partialFilterExpression was added, schoolId was added
+ *     to a compound unique key, a stale path was fixed). `syncIndexes()` does
+ *     not always detect an options-only change on an identically-keyed index,
+ *     so those are dropped explicitly by name first and then recreated below.
+ *       - students: rollNo partial filter expression (Issue #4)
+ *       - classes: added schoolId to unique index (Issue #16)
+ *       - feestructures: added schoolId to unique index (Issue #34)
+ *       - attendances: fixed stale records.studentId path (Issue #52)
+ *
+ *  2. Run `syncIndexes()` for **every registered Mongoose model** so the live
+ *     database's indexes match the schemas exactly (creates missing indexes,
+ *     drops indexes no longer declared). This is what makes it safe to disable
+ *     Mongoose `autoIndex` in production (see DB_DISABLE_AUTOINDEX in
+ *     database.js): indexes are ensured deliberately at deploy time by this
+ *     script instead of re-ensured on every cold start. Previously this step
+ *     covered only the 4 models above, which is not sufficient once autoIndex
+ *     is off — all ~129 models need their indexes ensured.
+ *
+ * Idempotent and safe to re-run. Intended to be run as a deliberate deploy
+ * step, not on every boot. Exits non-zero if any model fails to sync so a
+ * deploy pipeline (`npm run migrate:indexes && npm start`) halts on failure.
+ *
+ * Usage: node scripts/migrateIndexes.js   (or: npm run migrate:indexes)
  */
 
 import mongoose from 'mongoose';
+import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
+// Import every model file so ALL models are registered — not just the subset
+// that database.js imports. At runtime the app registers all ~129 models as
+// routes/services load; a standalone script must replicate that or it silently
+// under-covers (importing only database.js registers ~68). All model schemas
+// live under models/, so importing each file registers every model.
+async function registerAllModels() {
+  const modelsDir = path.join(__dirname, '..', 'models');
+  const files = fs
+    .readdirSync(modelsDir)
+    .filter((f) => f.endsWith('.js'))
+    .sort();
+  for (const file of files) {
+    await import(pathToFileURL(path.join(modelsDir, file)).href);
+  }
+}
+
 const MONGO_URI =
   process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/ems';
 
-// Old indexes to drop (by collection name and index key pattern)
+// Old indexes to drop (by collection name and index name) whose options changed
+// but whose key did not — syncIndexes() alone may not replace these.
 const INDEX_MIGRATIONS = [
   {
     collection: 'students',
@@ -53,6 +89,7 @@ async function migrate() {
   await mongoose.connect(MONGO_URI);
   const db = mongoose.connection.db;
 
+  // ── Step 1: drop legacy indexes whose options changed ─────────────────────
   for (const migration of INDEX_MIGRATIONS) {
     const { collection, description, oldIndexName } = migration;
     console.log(`--- ${collection} ---`);
@@ -88,29 +125,41 @@ async function migrate() {
     }
   }
 
-  // Trigger Mongoose to recreate indexes with updated definitions
-  console.log('--- Recreating indexes via Mongoose syncIndexes ---');
+  // ── Step 2: sync indexes for EVERY registered model ───────────────────────
+  console.log('--- Syncing indexes for all registered models (Mongoose syncIndexes) ---');
+  const failures = [];
   try {
-    await import('../database.js');
+    await registerAllModels();
 
-    const models = ['Student', 'Class', 'FeeStructure', 'Attendance'];
-    for (const modelName of models) {
+    const modelNames = mongoose.modelNames().sort();
+    console.log(`  ${modelNames.length} models registered.\n`);
+
+    for (const modelName of modelNames) {
       try {
         const model = mongoose.model(modelName);
-        console.log(`  Syncing indexes for ${modelName}...`);
         await model.syncIndexes();
-        console.log(`  DONE: ${modelName} indexes synced.`);
+        console.log(`  [OK]   ${modelName}`);
       } catch (err) {
-        console.error(`  ERROR syncing ${modelName}: ${err.message}`);
+        failures.push({ modelName, message: err.message });
+        console.error(`  [FAIL] ${modelName}: ${err.message}`);
       }
     }
   } catch (err) {
     console.error(`  ERROR loading models: ${err.message}`);
-    console.log('  Indexes will be recreated automatically on next server start.');
+    failures.push({ modelName: '<model load>', message: err.message });
   }
 
-  console.log('\nMigration complete.');
   await mongoose.disconnect();
+
+  if (failures.length > 0) {
+    console.error(`\nMigration finished with ${failures.length} failure(s):`);
+    for (const f of failures) {
+      console.error(`  - ${f.modelName}: ${f.message}`);
+    }
+    process.exit(1);
+  }
+
+  console.log('\nMigration complete — all model indexes synced.');
   process.exit(0);
 }
 

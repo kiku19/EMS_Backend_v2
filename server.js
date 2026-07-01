@@ -19,7 +19,8 @@ import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
 import expensesRoutes from './routes/expenses.js';
 import announcementRoutes from './routes/announcements.js';
-// import emailCampaignsRoutes from './routes/emailCampaigns.js'; // Commented out — using announcements instead
+import communicationLogsRoutes from './routes/communicationLogs.js';
+import emailCampaignsRoutes from './routes/emailCampaigns.js';
 import trackingRoutes from './routes/tracking.js';
 import reminderRoutes from './routes/reminders.js';
 import notificationRoutes from './routes/notifications.js';
@@ -118,7 +119,7 @@ import ptmRoutes from './routes/ptm.js';
 import searchRoutes from './routes/search.js';
 import gdprRoutes from './routes/gdpr.js';
 import archivalRoutes from './routes/archival.js';
-// import inventoryRoutes from './routes/inventory.js'; // Commented out — not needed for launch
+import inventoryRoutes from './routes/inventory.js';
 import tallyRoutes from './routes/tally.js';
 import googleClassroomRoutes from './routes/googleClassroom.js';
 import npsRoutes from './routes/nps.js';
@@ -266,7 +267,9 @@ if (config.cloudinary.configured) {
     api_secret: config.cloudinary.apiSecret,
   });
 } else {
-  logger.warn('Cloudinary not configured. File uploads will use base64 fallback.');
+  logger.warn(
+    'Cloudinary not configured. Document and chat-attachment uploads will return 503; only staff profile photos fall back to base64 storage. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.'
+  );
 }
 
 logger.debug({ corsOrigins: config.corsOrigins }, 'CORS origins configured');
@@ -600,7 +603,8 @@ v1Router.use('/fee-structure', feeStructureRoutes);
 // ─── Communication & Messaging ───────────────────────────────────────────────
 v1Router.use('/messages', messageRoutes);
 v1Router.use('/announcements', announcementRoutes);
-// v1Router.use('/email-campaigns', emailCampaignsRoutes); // Commented out — using announcements instead
+v1Router.use('/communication-logs', communicationLogsRoutes);
+v1Router.use('/email-campaigns', emailCampaignsRoutes);
 v1Router.use('/notifications', notificationRoutes);
 v1Router.use('/push-notifications', pushNotificationsRoutes);
 v1Router.use('/calls', callRoutes);
@@ -646,7 +650,7 @@ v1Router.use('/bulk-ops', bulkOpsRoutes);
 // ─── Extra Modules ───────────────────────────────────────────────────────────
 v1Router.use('/library', libraryRoutes);
 v1Router.use('/transport', transportRoutes);
-// v1Router.use('/inventory', inventoryRoutes); // Commented out — not needed for launch
+v1Router.use('/inventory', inventoryRoutes);
 v1Router.use('/hostel', hostelRoutes);
 
 // ─── Integrations ────────────────────────────────────────────────────────────

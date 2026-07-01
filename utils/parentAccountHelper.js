@@ -1,11 +1,12 @@
 import Parent from '../models/Parent.js';
+import { Student } from '../database.js';
 import { ensureDefaultSchool } from './schoolContext.js';
 import { piiMatch } from './encryption.js';
 
 /**
  * Generate parent password from student's DOB and admission ID
  * DOB "2010-05-15" becomes "15052010", then appended with admissionId
- * e.g., "15052010ADM2024001"
+ * e.g. "15052010ADM2024001"
  */
 export function generateParentPassword(dateOfBirth, admissionId) {
   if (!dateOfBirth || !admissionId) return null;
@@ -41,6 +42,15 @@ function normalizeEmail(email) {
   return typeof email === 'string' ? email.trim().toLowerCase() : null;
 }
 
+function normalizeRelationship(rel) {
+  if (!rel) return 'guardian';
+  const lower = rel.toLowerCase();
+  if (lower.includes('father') || lower === 'dad') return 'father';
+  if (lower.includes('mother') || lower === 'mom') return 'mother';
+  if (lower.includes('guardian')) return 'guardian';
+  return 'other';
+}
+
 function collectStudentParents(studentDoc) {
   const parentMap = new Map();
 
@@ -49,10 +59,13 @@ function collectStudentParents(studentDoc) {
     if (!phone) return;
 
     const normalized = {
+      parentId: parentInfo.parentId || null,
       name: typeof parentInfo.name === 'string' ? parentInfo.name.trim() : '',
       phone,
       email: normalizeEmail(parentInfo.email),
       relationship: normalizeRelationship(parentInfo.relationship),
+      isWhatsapp: parentInfo.isWhatsapp ?? true,
+      occupation: parentInfo.occupation || undefined,
     };
 
     const existing = parentMap.get(phone);
@@ -62,8 +75,8 @@ function collectStudentParents(studentDoc) {
     }
 
     parentMap.set(phone, {
+      ...existing,
       name: existing.name || normalized.name,
-      phone,
       email: existing.email || normalized.email,
       relationship:
         existing.relationship !== 'guardian' ? existing.relationship : normalized.relationship,
@@ -80,9 +93,66 @@ function collectStudentParents(studentDoc) {
 }
 
 /**
+ * Sync core parent fields from a Parent document into the matching embedded
+ * entry inside Student.parents. Keeps the two systems consistent when the
+ * authoritative Parent record is the source of truth.
+ */
+export async function syncParentToStudent(parentDoc) {
+  if (!parentDoc?._id || !parentDoc.children?.length) return;
+
+  const parentId = parentDoc._id;
+  const source = {
+    name: parentDoc.name,
+    phone: parentDoc.phone,
+    email: parentDoc.email,
+  };
+
+  // Remove undefined values so we don't overwrite existing data with nulls
+  Object.keys(source).forEach((key) => {
+    if (source[key] === undefined) delete source[key];
+  });
+
+  if (Object.keys(source).length === 0) return;
+
+  for (const child of parentDoc.children) {
+    const studentId = child.studentId;
+    if (!studentId) continue;
+
+    try {
+      // Load the student and mutate the embedded parents array so the PII
+      // encryption pre-save hook runs. updateOne would leave nested PII in
+      // plaintext and break consistency with the rest of the codebase.
+      const student = await Student.findById(studentId);
+      if (!student || !Array.isArray(student.parents)) continue;
+
+      let changed = false;
+      for (const entry of student.parents) {
+        if (entry.parentId?.toString?.() !== parentId.toString()) continue;
+
+        for (const key of Object.keys(source)) {
+          if (entry[key] !== source[key]) {
+            entry[key] = source[key];
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        student.markModified('parents');
+        await student.save({ validateBeforeSave: false });
+      }
+    } catch (err) {
+      console.error(`⚠️ Error syncing Parent ${parentId} to Student ${studentId}:`, err.message);
+    }
+  }
+}
+
+/**
  * Create or update parent accounts for a student.
  * For each parent in the student's parents array,
  * find or create a Parent record, link the child, and set password.
+ * Also writes the matching parentId back into Student.parents so the
+ * embedded cache and the canonical Parent collection are reconciled.
  */
 export async function createOrUpdateParentAccount(studentDoc, options = {}) {
   if (!studentDoc?._id) return;
@@ -99,6 +169,7 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
     ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
   }).session(session);
 
+  // Unlink parents that are no longer associated with this student
   for (const linkedParent of previouslyLinkedParents) {
     const linkedPhone = normalizePhone(linkedParent.phone);
     if (currentPhones.has(linkedPhone)) {
@@ -109,22 +180,47 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
       (child) => child.studentId.toString() !== studentDoc._id.toString()
     );
     await linkedParent.save({ session });
+
+    // Clear parentId from the detached Student.parents entry on a best-effort basis
+    try {
+      await Student.updateOne(
+        { _id: studentDoc._id, 'parents.parentId': linkedParent._id },
+        { $set: { 'parents.$[elem].parentId': null } },
+        { arrayFilters: [{ 'elem.parentId': linkedParent._id }], session }
+      );
+    } catch (err) {
+      console.error(
+        `⚠️ Error clearing parentId for detached parent ${linkedParent._id}:`,
+        err.message
+      );
+    }
   }
 
   if (parentsToProcess.length === 0) return;
 
   // Generate password from student DOB + admission ID
   const plainPassword = generateParentPassword(studentDoc.dateOfBirth, studentDoc.admissionId);
+  const linkedParentIds = [];
 
   for (const parentInfo of parentsToProcess) {
     try {
       const relationship = parentInfo.relationship || 'guardian';
 
-      // Find existing parent by phone (use piiMatch for encrypted phone lookup)
-      const parent = await Parent.findOne({
-        ...piiMatch('phone', parentInfo.phone),
-        ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
-      }).session(session);
+      // Prefer an existing link by parentId, otherwise fall back to phone match
+      let parent = null;
+      if (parentInfo.parentId) {
+        parent = await Parent.findOne({
+          _id: parentInfo.parentId,
+          ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
+        }).session(session);
+      }
+
+      if (!parent) {
+        parent = await Parent.findOne({
+          ...piiMatch('phone', parentInfo.phone),
+          ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
+        }).session(session);
+      }
 
       if (parent) {
         // Check if this child is already linked
@@ -160,7 +256,7 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
         await parent.save({ session });
       } else {
         // Create new parent
-        const newParent = new Parent({
+        parent = new Parent({
           schoolId: targetSchoolId,
           name: parentInfo.name,
           phone: parentInfo.phone,
@@ -175,8 +271,13 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
             },
           ],
         });
-        await newParent.save({ session });
+        await parent.save({ session });
       }
+
+      linkedParentIds.push({
+        phone: parentInfo.phone,
+        parentId: parent._id,
+      });
     } catch (err) {
       console.error(
         `⚠️ Error creating/updating parent account for ${parentInfo.phone}:`,
@@ -184,13 +285,32 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
       );
     }
   }
-}
 
-function normalizeRelationship(rel) {
-  if (!rel) return 'guardian';
-  const lower = rel.toLowerCase();
-  if (lower.includes('father') || lower === 'dad') return 'father';
-  if (lower.includes('mother') || lower === 'mom') return 'mother';
-  if (lower.includes('guardian')) return 'guardian';
-  return 'other';
+  // Write the linked parentId(s) back into the Student.parents array so the
+  // two parent data systems are explicitly reconciled.
+  if (linkedParentIds.length > 0) {
+    try {
+      const student = await Student.findById(studentDoc._id).session(session);
+      if (student && Array.isArray(student.parents)) {
+        let changed = false;
+        for (const link of linkedParentIds) {
+          const entry = student.parents.find((p) => normalizePhone(p.phone) === link.phone);
+          if (entry) {
+            const currentId = entry.parentId?.toString?.();
+            const newId = link.parentId.toString();
+            if (currentId !== newId) {
+              entry.parentId = link.parentId;
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          student.markModified('parents');
+          await student.save({ validateBeforeSave: false, session });
+        }
+      }
+    } catch {
+      console.error(`⚠️ Error writing parentId back to Student ${studentDoc._id}:`);
+    }
+  }
 }

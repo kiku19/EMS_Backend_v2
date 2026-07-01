@@ -208,7 +208,7 @@ export function validateEnvironment() {
     env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET;
   if (!cloudinaryConfigured) {
     warnings.push(
-      'Cloudinary not configured. File uploads will be unavailable. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.'
+      'Cloudinary not configured. Document and chat-attachment uploads will return 503; only staff profile photos fall back to base64 storage. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.'
     );
   }
 

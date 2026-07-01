@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { FeePayment, Student, StudentFeeStructure } from '../database.js';
+import { FeePayment, FeeRefund, Student, StudentFeeStructure } from '../database.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
   authHeadersFor,
@@ -822,11 +822,16 @@ describe('GET /api/fees/payments/:id', () => {
       isDefault: true,
     });
     const accountant = await createAccountant({ schoolId: school._id });
-    const classRecord = await createClassRecord({ name: 'Class 10', section: 'D' });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'D',
+      schoolId: school._id,
+    });
     const student = await createStudentRecord({
       name: 'Populated Student',
       admissionId: 'ADM-POP-001',
       classId: classRecord._id,
+      schoolId: school._id,
     });
 
     const insertedId = await insertPaymentDirect({
@@ -890,5 +895,519 @@ describe('GET /api/fees/payments/:id', () => {
       paymentDate: '2026-03-06',
     });
     expect(res.body.createdAt).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/fees/refunds — pagination, search, and KPI summary (PAG-17)
+// ---------------------------------------------------------------------------
+//
+// Refunds previously fetch-all'd and let the frontend slice client-side; this
+// suite locks down the server-side pagination + search added in PAG-17 and the
+// /refunds/summary aggregate that backs the page's KPI cards.
+
+// Insert a FeeRefund straight into MongoDB. schoolId is stored as a real
+// ObjectId for the same reason insertPaymentDirect does it: the scoped query
+// casts the filter to ObjectId, so a plain string schoolId would never match.
+async function insertRefundDirect(fields) {
+  const { schoolId, studentId, classId, ...rest } = fields;
+  const result = await FeeRefund.collection.insertOne({
+    academicYear: CURRENT_ACADEMIC_YEAR,
+    refundDate: '2026-03-06',
+    amount: 100,
+    reason: 'Duplicate payment, refund requested',
+    refundMode: 'cash',
+    status: 'pending',
+    remarks: '',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...rest,
+    schoolId: new mongoose.Types.ObjectId(schoolId.toString()),
+    studentId: new mongoose.Types.ObjectId(studentId.toString()),
+    classId: new mongoose.Types.ObjectId(classId.toString()),
+    refundNumber: rest.refundNumber || `RFD-${Date.now()}-${Math.random()}`,
+  });
+  return result.insertedId;
+}
+
+describe('GET /api/fees/refunds — pagination + search (PAG-17)', () => {
+  it('returns { refunds, pagination } and respects page/limit', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Page School',
+      code: 'RPG-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({ name: 'Class 9', section: 'A' });
+    const student = await createStudentRecord({
+      name: 'Refund Student',
+      classId: classRecord._id,
+    });
+
+    // 3 refunds — default limit is 50 so all fit on page 1, but ask for 2.
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-PG-001',
+      amount: 100,
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-PG-002',
+      amount: 200,
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-PG-003',
+      amount: 300,
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app)
+      .get('/api/fees/refunds')
+      .query({ page: 1, limit: 2 })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(Array.isArray(res.body.refunds)).toBe(true);
+    expect(res.body.refunds).toHaveLength(2);
+    expect(res.body.pagination).toMatchObject({
+      page: 1,
+      limit: 2,
+      total: 3,
+      totalPages: 2,
+    });
+
+    // Page 2 returns the remaining refund.
+    const res2 = await request(app)
+      .get('/api/fees/refunds')
+      .query({ page: 2, limit: 2 })
+      .set(authHeaders)
+      .expect(200);
+    expect(res2.body.refunds).toHaveLength(1);
+    expect(res2.body.pagination.total).toBe(3);
+  });
+
+  it('matches by student name via server-side search', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Search School',
+      code: 'RSR-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 9',
+      section: 'B',
+      schoolId: school._id,
+    });
+    const studentA = await createStudentRecord({
+      name: 'Alice Wonderland',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+    const studentB = await createStudentRecord({
+      name: 'Bob Builder',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: studentA._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SR-001',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: studentB._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SR-002',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app)
+      .get('/api/fees/refunds')
+      .query({ search: 'alice' })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.refunds).toHaveLength(1);
+    expect(res.body.refunds[0].studentId.name).toBe('Alice Wonderland');
+  });
+
+  it('matches by refundNumber via server-side search', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Number School',
+      code: 'RNO-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({ name: 'Class 9', section: 'C' });
+    const student = await createStudentRecord({
+      name: 'Number Student',
+      classId: classRecord._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-UNIQUE-42',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-OTHER-99',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app)
+      .get('/api/fees/refunds')
+      .query({ search: 'UNIQUE-42' })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.refunds).toHaveLength(1);
+    expect(res.body.refunds[0].refundNumber).toBe('RFD-UNIQUE-42');
+  });
+
+  it('does not interpret regex metacharacters in search (ReDoS safety)', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Regex School',
+      code: 'RRX-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({ name: 'Class 9', section: 'D' });
+    const student = await createStudentRecord({
+      name: 'Regex (Safe)',
+      classId: classRecord._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      // Refund number containing literal parens — a naive RegExp construction
+      // from the search string would treat these as a capture group.
+      refundNumber: 'RFD-(LITERAL)',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    // Searching for the literal "(LITERAL)" matches exactly one row.
+    // If the route fed the raw string to `new RegExp(...)`, the parens would
+    // form a valid (harmless) group but the search would still match — the
+    // real safety net is that no SyntaxError is thrown and the result is the
+    // same set of rows a plain substring match would return.
+    const res = await request(app)
+      .get('/api/fees/refunds')
+      .query({ search: '(LITERAL)' })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.refunds).toHaveLength(1);
+    expect(res.body.refunds[0].refundNumber).toBe('RFD-(LITERAL)');
+
+    // A search with a regex quantifier like "a{1,2,3}" (invalid quantifier)
+    // would throw a SyntaxError if the route didn't escape — verify it
+    // returns an empty page rather than crashing.
+    const res2 = await request(app)
+      .get('/api/fees/refunds')
+      .query({ search: 'a{1,2,3}' })
+      .set(authHeaders)
+      .expect(200);
+    expect(res2.body.refunds).toHaveLength(0);
+  });
+
+  it('filters by status', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Status School',
+      code: 'RST-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({ name: 'Class 9', section: 'E' });
+    const student = await createStudentRecord({
+      name: 'Status Student',
+      classId: classRecord._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-ST-1',
+      status: 'pending',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-ST-2',
+      status: 'approved',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app)
+      .get('/api/fees/refunds')
+      .query({ status: 'approved' })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.refunds).toHaveLength(1);
+    expect(res.body.refunds[0].status).toBe('approved');
+    expect(res.body.pagination.total).toBe(1);
+  });
+
+  it('multi-tenancy: School A cannot see School B refunds', async () => {
+    const schoolA = await createSchoolRecord({
+      name: 'Refunds School A',
+      code: 'RMT-A',
+      isDefault: true,
+    });
+    const schoolB = await createSchoolRecord({ name: 'Refunds School B', code: 'RMT-B' });
+    const accountantA = await createAccountant({ schoolId: schoolA._id });
+    const accountantB = await createAccountant({ schoolId: schoolB._id });
+    const classRecord = await createClassRecord({ name: 'Class 9', section: 'F' });
+    const student = await createStudentRecord({
+      name: 'MT Refund Student',
+      classId: classRecord._id,
+    });
+
+    // Refund scoped to School B.
+    await insertRefundDirect({
+      schoolId: schoolB._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-MT-B-1',
+    });
+
+    const { app } = createTestApp();
+    const authHeadersA = authHeadersFor(accountantA, 'accountant');
+    const authHeadersB = authHeadersFor(accountantB, 'accountant');
+
+    const resA = await request(app).get('/api/fees/refunds').set(authHeadersA).expect(200);
+    expect(resA.body.refunds).toHaveLength(0);
+
+    const resB = await request(app).get('/api/fees/refunds').set(authHeadersB).expect(200);
+    expect(resB.body.refunds).toHaveLength(1);
+    expect(resB.body.refunds[0].refundNumber).toBe('RFD-MT-B-1');
+  });
+});
+
+describe('GET /api/fees/refunds/summary — KPI aggregate (PAG-17)', () => {
+  it('returns totalAmount + per-status counts over the full dataset', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Summary School',
+      code: 'RSU-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({ name: 'Class 11', section: 'A' });
+    const student = await createStudentRecord({
+      name: 'Summary Student',
+      classId: classRecord._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SU-1',
+      amount: 100,
+      status: 'pending',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SU-2',
+      amount: 250,
+      status: 'pending',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SU-3',
+      amount: 500,
+      status: 'approved',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SU-4',
+      amount: 750,
+      status: 'processed',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SU-5',
+      amount: 50,
+      status: 'rejected',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app).get('/api/fees/refunds/summary').set(authHeaders).expect(200);
+
+    expect(res.body).toMatchObject({
+      totalAmount: 1650,
+      totalCount: 5,
+      pendingCount: 2,
+      approvedCount: 1,
+      processedCount: 1,
+      rejectedCount: 1,
+    });
+  });
+
+  it('respects status filter (only the matching status contributes)', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Summary Status School',
+      code: 'RSS-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({ name: 'Class 11', section: 'B' });
+    const student = await createStudentRecord({
+      name: 'Summary Status Student',
+      classId: classRecord._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SS-1',
+      amount: 100,
+      status: 'pending',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: student._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SS-2',
+      amount: 500,
+      status: 'approved',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app)
+      .get('/api/fees/refunds/summary')
+      .query({ status: 'approved' })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      totalAmount: 500,
+      totalCount: 1,
+      approvedCount: 1,
+      pendingCount: 0,
+    });
+  });
+
+  it('respects search filter (matches student name)', async () => {
+    const school = await createSchoolRecord({
+      name: 'Refunds Summary Search School',
+      code: 'RSSR-MAIN',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 11',
+      section: 'C',
+      schoolId: school._id,
+    });
+    const studentA = await createStudentRecord({
+      name: 'Carol Search',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+    const studentB = await createStudentRecord({
+      name: 'Dave Other',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: studentA._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SSR-1',
+      amount: 300,
+      status: 'pending',
+    });
+    await insertRefundDirect({
+      schoolId: school._id,
+      studentId: studentB._id,
+      classId: classRecord._id,
+      refundNumber: 'RFD-SSR-2',
+      amount: 400,
+      status: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app)
+      .get('/api/fees/refunds/summary')
+      .query({ search: 'carol' })
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.totalAmount).toBe(300);
+    expect(res.body.totalCount).toBe(1);
+  });
+
+  it('is registered before /:id (not shadowed)', async () => {
+    // A get to /refunds/summary must run the summary handler, not the
+    // /refunds/:id handler with id="summary".
+    const accountant = await createAccountant();
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    const res = await request(app).get('/api/fees/refunds/summary').set(authHeaders).expect(200);
+
+    // If it had been shadowed by /:id, the response would be a 404 "Refund not
+    // found" object, not a summary object with totalCount.
+    expect(res.body).toHaveProperty('totalCount');
+    expect(res.body).toHaveProperty('totalAmount');
+  });
+
+  it('returns 400 on invalid query parameters', async () => {
+    const accountant = await createAccountant();
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    // search string longer than the schema's 100-char max
+    const res = await request(app)
+      .get('/api/fees/refunds/summary')
+      .query({ search: 'x'.repeat(101) })
+      .set(authHeaders)
+      .expect(400);
+
+    expect(res.body).toHaveProperty('details');
   });
 });

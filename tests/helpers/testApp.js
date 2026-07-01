@@ -11,6 +11,7 @@ import aiRoutes from '../../routes/ai.js';
 import authRoutes from '../../routes/auth.js';
 import attendanceRoutes from '../../routes/attendance.js';
 import announcementRoutes from '../../routes/announcements.js';
+import communicationLogsRoutes from '../../routes/communicationLogs.js';
 import billingRoutes from '../../routes/billing.js';
 import dashboardRoutes from '../../routes/dashboard.js';
 import calendarEventsRoutes from '../../routes/calendarEvents.js';
@@ -130,6 +131,7 @@ export function createTestApp() {
   v1Router.use('/parent', authenticateParent, parentDataRoutes);
   v1Router.use('/', academicsRoutes);
   v1Router.use('/announcements', announcementRoutes);
+  v1Router.use('/communication-logs', communicationLogsRoutes);
   v1Router.use('/billing', billingRoutes);
   v1Router.use('/classes', classesRoutes);
   v1Router.use('/classes-enhanced', classesEnhancedRoutes);

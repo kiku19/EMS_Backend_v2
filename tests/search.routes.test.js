@@ -1,7 +1,10 @@
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import mongoose from 'mongoose';
-import { Exam, Announcement, FeePayment } from '../database.js';
+import { Exam, Announcement, FeePayment, TransportRoute } from '../database.js';
+import Book from '../models/Book.js';
+import HostelRoom from '../models/HostelRoom.js';
+import Hostel from '../models/Hostel.js';
 import {
   createSchoolRecord,
   createStaffUser,
@@ -865,6 +868,169 @@ describe('search routes', () => {
       .expect(200);
 
     expect(response.body.days).toBe(30);
+  });
+
+  // ─── Books / Rooms / Routes search (PAG-32) ─────────────────────────
+  // CommandPalette used to fetch only the first 50 of each entity, so older
+  // books/rooms/routes were unfindable from the palette. The /search endpoint
+  // now backs the palette and supports server-side search for these types.
+
+  it('searches books by title and author', async () => {
+    const admin = await createStaffUser();
+    await Book.create({
+      schoolId: admin.schoolId,
+      title: 'Physics Volume One',
+      author: 'HC Verma',
+      category: 'textbook',
+      totalCopies: 5,
+      availableCopies: 5,
+    });
+    await Book.create({
+      schoolId: admin.schoolId,
+      title: 'Mathematics Class 12',
+      author: 'RD Sharma',
+      category: 'reference',
+      totalCopies: 3,
+      availableCopies: 3,
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=Verma&types=books')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.books.results).toHaveLength(1);
+    expect(response.body.books.results[0].title).toBe('Physics Volume One');
+    expect(response.body.books.count).toBe(1);
+  });
+
+  it('excludes inactive books from results', async () => {
+    const admin = await createStaffUser();
+    await Book.create({
+      schoolId: admin.schoolId,
+      title: 'Hidden Book',
+      author: 'Anon',
+      category: 'other',
+      isActive: false,
+      totalCopies: 1,
+      availableCopies: 1,
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=Hidden&types=books')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.books.results).toHaveLength(0);
+  });
+
+  it('searches hostel rooms by room number', async () => {
+    const admin = await createStaffUser();
+    const hostel = await Hostel.create({
+      schoolId: admin.schoolId,
+      name: 'Boys Hostel A',
+      type: 'boys',
+      capacity: 50,
+      wardenName: 'Warden X',
+    });
+    await HostelRoom.create({
+      schoolId: admin.schoolId,
+      hostelId: hostel._id,
+      roomNumber: 'A-101',
+      type: 'double',
+      capacity: 2,
+    });
+    await HostelRoom.create({
+      schoolId: admin.schoolId,
+      hostelId: hostel._id,
+      roomNumber: 'B-202',
+      type: 'single',
+      capacity: 1,
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=A-101&types=rooms')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.rooms.results).toHaveLength(1);
+    expect(response.body.rooms.results[0].roomNumber).toBe('A-101');
+    expect(response.body.rooms.results[0].hostelId?.name).toBe('Boys Hostel A');
+  });
+
+  it('searches transport routes by routeName and stop name', async () => {
+    const admin = await createStaffUser();
+    await TransportRoute.create({
+      schoolId: admin.schoolId,
+      routeName: 'North Loop',
+      routeNumber: 'R-01',
+      academicYear: '2025-26',
+      stops: [
+        { name: 'Sector 21', order: 1 },
+        { name: 'MG Road', order: 2 },
+      ],
+    });
+    await TransportRoute.create({
+      schoolId: admin.schoolId,
+      routeName: 'South Express',
+      routeNumber: 'R-02',
+      academicYear: '2025-26',
+      stops: [{ name: 'Market Square', order: 1 }],
+    });
+
+    const { app } = createTestApp();
+    const byName = await request(app)
+      .get('/api/search?q=North&types=routes')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+    expect(byName.body.routes.results).toHaveLength(1);
+    expect(byName.body.routes.results[0].routeName).toBe('North Loop');
+
+    const byStop = await request(app)
+      .get('/api/search?q=MG%20Road&types=routes')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+    expect(byStop.body.routes.results).toHaveLength(1);
+    expect(byStop.body.routes.results[0].routeNumber).toBe('R-01');
+  });
+
+  it('searches assets by name and category', async () => {
+    const admin = await createStaffUser();
+    // Direct model create — the inventory router is intentionally not mounted
+    // (see server.js:642), but the model still exists and /search must query it.
+    const AssetModel = mongoose.model('Asset');
+    await AssetModel.create({
+      schoolId: admin.schoolId,
+      name: 'Dell Latitude Laptop',
+      category: 'Electronics',
+      assetTag: 'AST-001',
+      status: 'ACTIVE',
+      condition: 'GOOD',
+      purchaseDate: new Date(),
+      purchasePrice: 50000,
+    });
+    await AssetModel.create({
+      schoolId: admin.schoolId,
+      name: 'Office Chair',
+      category: 'Furniture',
+      assetTag: 'AST-002',
+      status: 'ACTIVE',
+      condition: 'GOOD',
+      purchaseDate: new Date(),
+      purchasePrice: 5000,
+    });
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get('/api/search?q=Laptop&types=assets')
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    expect(response.body.assets.results).toHaveLength(1);
+    expect(response.body.assets.results[0].name).toBe('Dell Latitude Laptop');
   });
 
   // ─── Atlas pipeline unit tests ──────────────────────────────────────

@@ -1,0 +1,41 @@
+# Local development backup automation for EMS MongoDB.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f infra/docker-compose.backup.yml up -d
+#
+# This adds a cron-scheduled mongodump service that creates compressed
+# archive backups of the local mongo container every 6 hours.
+#
+# Backups are written to the local filesystem at ./backups/ and retained
+# for 7 days (older files are pruned automatically).
+
+services:
+  mongo-backup:
+    image: mongo:7
+    container_name: ems-mongo-backup
+    restart: unless-stopped
+    volumes:
+      - mongo_backups:/backups
+      - ./scripts/localDbBackup.sh:/usr/local/bin/localDbBackup.sh:ro
+    environment:
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      BACKUP_DIR: /backups
+      RETENTION_DAYS: 7
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # Run backup immediately on start, then every 6 hours
+    command: >
+      bash -c "
+        chmod +x /usr/local/bin/localDbBackup.sh &&
+        /usr/local/bin/localDbBackup.sh &&
+        while true; do
+          sleep 6h;
+          /usr/local/bin/localDbBackup.sh;
+        done
+      "
+
+volumes:
+  mongo_backups:
+    driver: local

@@ -9,6 +9,16 @@ import { objectIdParamHandler } from '../../middleware/validation.js';
 
 const router = express.Router();
 const logger = createLogger('StudentFees');
+
+// Map the reminder domain type ('fee' | 'attendance') to a valid
+// Notification.type enum value. NOTE: 'fee' is NOT a member of the
+// Notification.type enum (the canonical fee/payment type is 'payment'),
+// so passing the raw reminder type straight through made every reminder
+// notification fail validation on save — silently swallowed per-parent while
+// the endpoint still reported success (SCH-209). Reuse 'payment', which the
+// rest of the codebase already uses for fee/payment notifications.
+const REMINDER_NOTIFICATION_TYPE = { fee: 'payment', attendance: 'attendance' };
+
 router.use(authenticate);
 router.param('id', objectIdParamHandler);
 router.param('classId', objectIdParamHandler);
@@ -138,10 +148,11 @@ router.post(
           : `This is a reminder regarding attendance for ${student.name}.`);
 
       const { sendNotification } = await import('../notifications.js');
+      const notifType = REMINDER_NOTIFICATION_TYPE[type] || 'payment';
       let notified = 0;
       for (const parent of parents) {
         try {
-          await sendNotification(parent._id, 'Parent', type, title, body, {
+          await sendNotification(parent._id, 'Parent', notifType, title, body, {
             relatedId: student._id,
             relatedType: 'Student',
             priority: 'normal',
@@ -180,20 +191,26 @@ router.post(
     const schoolId = req.user?.schoolId;
 
     const { sendNotification } = await import('../notifications.js');
+    const notifType = REMINDER_NOTIFICATION_TYPE[type] || 'payment';
     let succeeded = 0;
     let failed = 0;
 
     for (const studentId of studentIds) {
       try {
-        const student = await Student.findOne(
-          scopeBySchool(schoolId, { _id: studentId })
-        );
-        if (!student) { failed++; continue; }
+        const student = await Student.findOne(scopeBySchool(schoolId, { _id: studentId }));
+        if (!student) {
+          failed++;
+          continue;
+        }
 
         const parents = await Parent.find({ 'children.studentId': studentId }).select('_id');
-        if (parents.length === 0) { failed++; continue; }
+        if (parents.length === 0) {
+          failed++;
+          continue;
+        }
 
-        const title = type === 'fee' ? `Fee Reminder: ${student.name}` : `Attendance Reminder: ${student.name}`;
+        const title =
+          type === 'fee' ? `Fee Reminder: ${student.name}` : `Attendance Reminder: ${student.name}`;
         const body =
           message ||
           (type === 'fee'
@@ -202,7 +219,7 @@ router.post(
 
         for (const parent of parents) {
           try {
-            await sendNotification(parent._id, 'Parent', type, title, body, {
+            await sendNotification(parent._id, 'Parent', notifType, title, body, {
               relatedId: student._id,
               relatedType: 'Student',
               priority: 'normal',

@@ -114,6 +114,8 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
 
     const schoolId = signupRes.body.user.schoolId;
     expect(schoolId).toBeTruthy();
+    expect(signupRes.body.token).toBeTruthy();
+    expect(signupRes.body.refreshToken).toBeTruthy();
 
     // New admin can immediately log in
     const loginRes = await request(app)
@@ -484,6 +486,41 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
   });
 
   // ─── Rate limiting awareness ─────────────────────────────────────────────────
+
+  it('16) signup rejects duplicate school name', async () => {
+    const { app } = createTestApp();
+    const inviteA = generateSignupInvite({
+      email: 'school-dup-a@example.com',
+      schoolName: 'Same Name School',
+    });
+    await request(app)
+      .post('/api/auth/signup')
+      .send({
+        name: 'Admin A',
+        email: 'school-dup-a@example.com',
+        schoolName: 'Same Name School',
+        password: 'Password123',
+        inviteToken: inviteA,
+      })
+      .expect(201);
+
+    const inviteB = generateSignupInvite({
+      email: 'school-dup-b@example.com',
+      schoolName: 'Same Name School',
+    });
+    const dupRes = await request(app)
+      .post('/api/auth/signup')
+      .send({
+        name: 'Admin B',
+        email: 'school-dup-b@example.com',
+        schoolName: 'Same Name School',
+        password: 'Password123',
+        inviteToken: inviteB,
+      })
+      .expect(409);
+
+    expect(dupRes.body.error).toMatch(/school with this name already exists/i);
+  });
 
   it('15) multiple failed logins return consistent error messaging', async () => {
     const school = await createSchoolRecord({ name: 'Rate School', code: 'RATE-SCH' });

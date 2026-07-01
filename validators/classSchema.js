@@ -187,3 +187,18 @@ export const yearEndPromotionSchema = z
     skipAttendanceCheck: z.boolean().optional().default(false),
   })
   .strip();
+
+// ─── QUERY PARAMS: PER-DAY WEEK ATTENDANCE COVERAGE ────────────────
+// Used by GET /api/v1/classes/attendance/week (SCH-191) to power the
+// frontend's ClassesRail week-calendar stub. `weekStart` is the Monday
+// of the week to summarise; `academicYear` is optional and validated
+// only when provided.
+export const weekAttendanceQuerySchema = z
+  .object({
+    weekStart: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'weekStart must be in YYYY-MM-DD format')
+      .optional(),
+    academicYear: academicYear.optional(),
+  })
+  .strip();

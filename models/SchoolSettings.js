@@ -137,6 +137,13 @@ const schoolSettingsSchema = new mongoose.Schema(
     payroll: {
       disburseDate: { type: Number, default: 1, min: 1, max: 31 },
       payrollCycle: { type: String, default: 'monthly', enum: ['weekly', 'biweekly', 'monthly'] },
+      paymentMethod: {
+        type: String,
+        default: 'bank_transfer',
+        enum: ['bank_transfer', 'cheque', 'cash', 'upi'],
+      },
+      autoReminder: { type: Boolean, default: true },
+      reminderDays: { type: Number, default: 3, min: 1, max: 30 },
     },
 
     // Salary Component Definitions (earnings / deductions templates)

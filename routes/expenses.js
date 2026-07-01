@@ -11,12 +11,22 @@ router.use(authenticate);
 // GET /expenses — list with optional filters
 router.get('/', async (req, res) => {
   try {
-    const { category, status, academicYear, from, to, page = 1, limit = 50 } = req.query;
+    const { q, category, status, academicYear, from, to, page = 1, limit = 50 } = req.query;
     const query = { schoolId: req.user.schoolId, isDeleted: { $ne: true } };
 
     if (category) query.category = category;
     if (status) query.status = status;
     if (academicYear) query.academicYear = academicYear;
+    if (q) {
+      // Coerce to string (guards against NoSQL injection via object params) and
+      // escape regex metacharacters before matching title/vendor case-insensitively.
+      const escaped = String(q)
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (escaped) {
+        query.$or = [{ title: new RegExp(escaped, 'i') }, { vendor: new RegExp(escaped, 'i') }];
+      }
+    }
     if (from || to) {
       query.expenseDate = {};
       if (from) query.expenseDate.$gte = new Date(from);
@@ -38,12 +48,18 @@ router.get('/', async (req, res) => {
 // GET /expenses/summary — total by category for dashboard
 router.get('/summary', async (req, res) => {
   try {
-    const { academicYear, from, to } = req.query;
+    const { academicYear, from, to, category, status } = req.query;
     const match = {
       schoolId: new mongoose.Types.ObjectId(req.user.schoolId),
       isDeleted: { $ne: true },
-      status: { $ne: 'rejected' },
     };
+    // Honor an explicit status filter so the cards match the filtered table
+    // (the list route applies the same param). With no status filter, keep the
+    // dashboard rollup excluding rejected expenses. String() guards against
+    // object-shaped query params (e.g. status[$ne]=…) reaching the aggregation.
+    if (status) match.status = String(status);
+    else match.status = { $ne: 'rejected' };
+    if (category) match.category = String(category);
     if (academicYear) match.academicYear = academicYear;
     if (from || to) {
       match.expenseDate = {};

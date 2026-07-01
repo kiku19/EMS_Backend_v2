@@ -127,23 +127,19 @@ router.get('/books', checkPermission('library', 'view'), async (req, res) => {
  * GET /api/v1/library/books/low-stock
  * Books with availableCopies <= 2
  */
-router.get(
-  '/books/low-stock',
-  checkPermission('library', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const query = buildSchoolScopedQuery(schoolId, {
-        isActive: true,
-        availableCopies: { $lte: 2 },
-      });
-      const books = await Book.find(query).sort({ availableCopies: 1 });
-      res.json({ books });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
+router.get('/books/low-stock', checkPermission('library', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const query = buildSchoolScopedQuery(schoolId, {
+      isActive: true,
+      availableCopies: { $lte: 2 },
+    });
+    const books = await Book.find(query).sort({ availableCopies: 1 });
+    res.json({ books });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * GET /api/v1/library/books/:id
@@ -269,36 +265,32 @@ router.put('/books/:id', checkPermission('library', 'edit'), async (req, res) =>
  * DELETE /api/v1/library/books/:id
  * Soft delete
  */
-router.delete(
-  '/books/:id',
-  checkPermission('library', 'delete'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const book = await Book.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
-      if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
+router.delete('/books/:id', checkPermission('library', 'delete'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const book = await Book.findOne(buildSchoolScopedQuery(schoolId, { _id: req.params.id }));
+    if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
-      // Check no active issues
-      const activeIssues = await BookIssue.countDocuments(
-        buildSchoolScopedQuery(schoolId, {
-          bookId: req.params.id,
-          status: { $in: ['issued', 'overdue', 'reserved'] },
-        })
-      );
-      if (activeIssues > 0) {
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.cannotDeleteBookWithActiveIssuesOrReservations') });
-      }
-
-      book.isActive = false;
-      await book.save();
-      res.json({ message: req.t('common:routes.bookDeleted') });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+    // Check no active issues
+    const activeIssues = await BookIssue.countDocuments(
+      buildSchoolScopedQuery(schoolId, {
+        bookId: req.params.id,
+        status: { $in: ['issued', 'overdue', 'reserved'] },
+      })
+    );
+    if (activeIssues > 0) {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.cannotDeleteBookWithActiveIssuesOrReservations') });
     }
+
+    book.isActive = false;
+    await book.save();
+    res.json({ message: req.t('common:routes.bookDeleted') });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // ─── Issue / Return ───────────────────────────────────────────────────────────
 
@@ -309,7 +301,7 @@ router.delete(
 router.get('/issues', checkPermission('library', 'view'), async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
-    const { status, studentId, bookId, overdue, page = 1, limit = 50 } = req.query;
+    const { q, status, studentId, bookId, overdue, page = 1, limit = 50 } = req.query;
 
     const query = buildSchoolScopedQuery(schoolId, {});
     if (status) query.status = status;
@@ -318,6 +310,25 @@ router.get('/issues', checkPermission('library', 'view'), async (req, res) => {
     if (overdue === 'true') {
       query.dueDate = { $lt: new Date() };
       query.status = 'issued';
+    }
+    if (q) {
+      // Coerce to string (guards against NoSQL injection via object params) and
+      // escape regex metacharacters before matching the denormalized book /
+      // student fields stored on BookIssue (bookTitle, bookIsbn, studentName,
+      // studentAdmissionNo). Pattern mirrors the q search added for /expenses
+      // (PAG-13) and the search filter on /library/books.
+      const escaped = String(q)
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (escaped) {
+        const regex = new RegExp(escaped, 'i');
+        query.$or = [
+          { bookTitle: regex },
+          { bookIsbn: regex },
+          { studentName: regex },
+          { studentAdmissionNo: regex },
+        ];
+      }
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -442,148 +453,134 @@ router.post('/issues', checkPermission('library', 'create'), async (req, res) =>
  * PUT /api/v1/library/issues/:id/return
  * Return a book
  */
-router.put(
-  '/issues/:id/return',
-  checkPermission('library', 'edit'),
-  async (req, res) => {
-    try {
-      const { finePaid, notes, returnCondition } = returnBookSchema.parse(req.body);
-      const schoolId = req.user.schoolId;
+router.put('/issues/:id/return', checkPermission('library', 'edit'), async (req, res) => {
+  try {
+    const { finePaid, notes, returnCondition } = returnBookSchema.parse(req.body);
+    const schoolId = req.user.schoolId;
 
-      const issue = await BookIssue.findOne(
-        buildSchoolScopedQuery(schoolId, {
-          _id: req.params.id,
-          status: { $in: ['issued', 'overdue'] },
-        })
-      );
-      if (!issue)
-        return res.status(404).json({ error: req.t('common:routes.activeIssueNotFound') });
+    const issue = await BookIssue.findOne(
+      buildSchoolScopedQuery(schoolId, {
+        _id: req.params.id,
+        status: { $in: ['issued', 'overdue'] },
+      })
+    );
+    if (!issue) return res.status(404).json({ error: req.t('common:routes.activeIssueNotFound') });
 
-      const returnDate = new Date();
-      const dueDate = new Date(issue.dueDate);
+    const returnDate = new Date();
+    const dueDate = new Date(issue.dueDate);
 
-      // Calculate fine
-      let fineAmount = 0;
-      if (returnDate > dueDate) {
-        const daysLate = Math.ceil((returnDate - dueDate) / (1000 * 60 * 60 * 24));
-        const book = await Book.findById(issue.bookId);
-        const finePerDay = book?.finePerDay || 0;
-        fineAmount = daysLate * finePerDay;
-      }
-
-      issue.returnDate = returnDate;
-      issue.status = 'returned';
-      issue.fineAmount = fineAmount;
-      if (finePaid !== undefined) issue.finePaid = finePaid;
-      if (finePaid) issue.finePaidDate = returnDate;
-      if (notes) issue.notes = notes;
-      if (returnCondition) issue.returnCondition = returnCondition;
-
-      // Return copy to available stock
-      await Book.findByIdAndUpdate(issue.bookId, { $inc: { availableCopies: 1 } });
-      await issue.save();
-
-      // Release and update the individual copy
-      if (issue.copyId) {
-        const copyUpdate = { status: 'available' };
-        if (returnCondition) copyUpdate.condition = returnCondition;
-        await BookCopy.findByIdAndUpdate(issue.copyId, { $set: copyUpdate });
-      }
-
-      res.json({ issue, fineAmount });
-    } catch (error) {
-      if (error.name === 'ZodError') {
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
-      }
-      res.status(500).json({ error: error.message });
+    // Calculate fine
+    let fineAmount = 0;
+    if (returnDate > dueDate) {
+      const daysLate = Math.ceil((returnDate - dueDate) / (1000 * 60 * 60 * 24));
+      const book = await Book.findById(issue.bookId);
+      const finePerDay = book?.finePerDay || 0;
+      fineAmount = daysLate * finePerDay;
     }
+
+    issue.returnDate = returnDate;
+    issue.status = 'returned';
+    issue.fineAmount = fineAmount;
+    if (finePaid !== undefined) issue.finePaid = finePaid;
+    if (finePaid) issue.finePaidDate = returnDate;
+    if (notes) issue.notes = notes;
+    if (returnCondition) issue.returnCondition = returnCondition;
+
+    // Return copy to available stock
+    await Book.findByIdAndUpdate(issue.bookId, { $inc: { availableCopies: 1 } });
+    await issue.save();
+
+    // Release and update the individual copy
+    if (issue.copyId) {
+      const copyUpdate = { status: 'available' };
+      if (returnCondition) copyUpdate.condition = returnCondition;
+      await BookCopy.findByIdAndUpdate(issue.copyId, { $set: copyUpdate });
+    }
+
+    res.json({ issue, fineAmount });
+  } catch (error) {
+    if (error.name === 'ZodError') {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
+    }
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * POST /api/v1/library/issues/reserve
  * Reserve a book for a student
  */
-router.post(
-  '/issues/reserve',
-  checkPermission('library', 'create'),
-  async (req, res) => {
-    try {
-      const { bookId, studentId, notes } = reserveBookSchema.parse(req.body);
-      const schoolId = req.user.schoolId;
+router.post('/issues/reserve', checkPermission('library', 'create'), async (req, res) => {
+  try {
+    const { bookId, studentId, notes } = reserveBookSchema.parse(req.body);
+    const schoolId = req.user.schoolId;
 
-      const book = await Book.findOne(
-        buildSchoolScopedQuery(schoolId, { _id: bookId, isActive: true })
-      );
-      if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
+    const book = await Book.findOne(
+      buildSchoolScopedQuery(schoolId, { _id: bookId, isActive: true })
+    );
+    if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
-      // Check no existing reservation
-      const existing = await BookIssue.findOne(
-        buildSchoolScopedQuery(schoolId, { bookId, studentId, status: 'reserved' })
-      );
-      if (existing)
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.studentAlreadyHasAReservationForThisBook') });
+    // Check no existing reservation
+    const existing = await BookIssue.findOne(
+      buildSchoolScopedQuery(schoolId, { bookId, studentId, status: 'reserved' })
+    );
+    if (existing)
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.studentAlreadyHasAReservationForThisBook') });
 
-      const reservation = new BookIssue({
-        schoolId,
-        bookId,
-        bookTitle: book.title,
-        bookIsbn: book.isbn,
-        studentId,
-        issuedBy: req.user._id || req.user.id,
-        issuedByName: req.user.name,
-        issueDate: new Date(),
-        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days to claim
-        status: 'reserved',
-        notes,
-      });
+    const reservation = new BookIssue({
+      schoolId,
+      bookId,
+      bookTitle: book.title,
+      bookIsbn: book.isbn,
+      studentId,
+      issuedBy: req.user._id || req.user.id,
+      issuedByName: req.user.name,
+      issueDate: new Date(),
+      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days to claim
+      status: 'reserved',
+      notes,
+    });
 
-      book.reservedCopies = (book.reservedCopies || 0) + 1;
+    book.reservedCopies = (book.reservedCopies || 0) + 1;
 
-      await Promise.all([reservation.save(), book.save()]);
+    await Promise.all([reservation.save(), book.save()]);
 
-      res.status(201).json({ reservation });
-    } catch (error) {
-      if (error.name === 'ZodError') {
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
-      }
-      res.status(500).json({ error: error.message });
+    res.status(201).json({ reservation });
+  } catch (error) {
+    if (error.name === 'ZodError') {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
     }
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * PUT /api/v1/library/issues/:id/cancel
  * Cancel a reservation
  */
-router.put(
-  '/issues/:id/cancel',
-  checkPermission('library', 'edit'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const issue = await BookIssue.findOne(
-        buildSchoolScopedQuery(schoolId, { _id: req.params.id, status: 'reserved' })
-      );
-      if (!issue)
-        return res.status(404).json({ error: req.t('common:routes.reservationNotFound') });
+router.put('/issues/:id/cancel', checkPermission('library', 'edit'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const issue = await BookIssue.findOne(
+      buildSchoolScopedQuery(schoolId, { _id: req.params.id, status: 'reserved' })
+    );
+    if (!issue) return res.status(404).json({ error: req.t('common:routes.reservationNotFound') });
 
-      issue.status = 'cancelled';
-      await Book.findByIdAndUpdate(issue.bookId, { $inc: { reservedCopies: -1 } });
-      await issue.save();
+    issue.status = 'cancelled';
+    await Book.findByIdAndUpdate(issue.bookId, { $inc: { reservedCopies: -1 } });
+    await issue.save();
 
-      res.json({ message: req.t('common:routes.reservationCancelled') });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
+    res.json({ message: req.t('common:routes.reservationCancelled') });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // ─── Student History ───────────────────────────────────────────────────────────
 
@@ -591,24 +588,20 @@ router.put(
  * GET /api/v1/library/students/:studentId/history
  * Full reading history for a student
  */
-router.get(
-  '/students/:studentId/history',
-  checkPermission('library', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const { studentId } = req.params;
+router.get('/students/:studentId/history', checkPermission('library', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const { studentId } = req.params;
 
-      const issues = await BookIssue.find(buildSchoolScopedQuery(schoolId, { studentId }))
-        .populate('bookId', 'title isbn author category coverImageUrl')
-        .sort({ issueDate: -1 });
+    const issues = await BookIssue.find(buildSchoolScopedQuery(schoolId, { studentId }))
+      .populate('bookId', 'title isbn author category coverImageUrl')
+      .sort({ issueDate: -1 });
 
-      res.json({ issues });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
+    res.json({ issues });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // ─── Overdue Sync ─────────────────────────────────────────────────────────────
 
@@ -778,56 +771,48 @@ router.get('/reports', checkPermission('library', 'view'), async (req, res) => {
  * GET /api/v1/library/students/:studentId/card
  * Library card data for a student
  */
-router.get(
-  '/students/:studentId/card',
-  checkPermission('library', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const { studentId } = req.params;
+router.get('/students/:studentId/card', checkPermission('library', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const { studentId } = req.params;
 
-      const [activeIssues, totalBorrowed] = await Promise.all([
-        BookIssue.find(
-          buildSchoolScopedQuery(schoolId, {
-            studentId,
-            status: { $in: ['issued', 'overdue', 'reserved'] },
-          })
-        )
-          .populate('bookId', 'title isbn author category')
-          .sort({ issueDate: -1 }),
-        BookIssue.countDocuments(
-          buildSchoolScopedQuery(schoolId, {
-            studentId,
-            status: { $in: ['issued', 'returned', 'overdue'] },
-          })
-        ),
-      ]);
+    const [activeIssues, totalBorrowed] = await Promise.all([
+      BookIssue.find(
+        buildSchoolScopedQuery(schoolId, {
+          studentId,
+          status: { $in: ['issued', 'overdue', 'reserved'] },
+        })
+      )
+        .populate('bookId', 'title isbn author category')
+        .sort({ issueDate: -1 }),
+      BookIssue.countDocuments(
+        buildSchoolScopedQuery(schoolId, {
+          studentId,
+          status: { $in: ['issued', 'returned', 'overdue'] },
+        })
+      ),
+    ]);
 
-      const unpaidFines = activeIssues
-        .filter((i) => i.fineAmount > 0 && !i.finePaid)
-        .reduce((sum, i) => sum + i.fineAmount, 0);
+    const unpaidFines = activeIssues
+      .filter((i) => i.fineAmount > 0 && !i.finePaid)
+      .reduce((sum, i) => sum + i.fineAmount, 0);
 
-      // Compute accrued fines for currently outstanding overdue issues
-      const now = new Date();
-      const accruedFines = activeIssues.reduce((sum, i) => {
-        const dueDate = new Date(i.dueDate);
-        if (
-          (i.status === 'issued' || i.status === 'overdue') &&
-          dueDate < now &&
-          i.finePerDay > 0
-        ) {
-          const daysLate = Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24));
-          return sum + daysLate * i.finePerDay;
-        }
-        return sum;
-      }, 0);
+    // Compute accrued fines for currently outstanding overdue issues
+    const now = new Date();
+    const accruedFines = activeIssues.reduce((sum, i) => {
+      const dueDate = new Date(i.dueDate);
+      if ((i.status === 'issued' || i.status === 'overdue') && dueDate < now && i.finePerDay > 0) {
+        const daysLate = Math.ceil((now - dueDate) / (1000 * 60 * 60 * 24));
+        return sum + daysLate * i.finePerDay;
+      }
+      return sum;
+    }, 0);
 
-      res.json({ studentId, activeIssues, totalBorrowed, unpaidFines, accruedFines });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
+    res.json({ studentId, activeIssues, totalBorrowed, unpaidFines, accruedFines });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // ─── Book Copies ──────────────────────────────────────────────────────────────
 
@@ -835,148 +820,132 @@ router.get(
  * GET /api/v1/library/books/:id/copies
  * List all individual copies for a book
  */
-router.get(
-  '/books/:id/copies',
-  checkPermission('library', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const copies = await BookCopy.find(
-        buildSchoolScopedQuery(schoolId, { bookId: req.params.id, isActive: true })
-      ).sort({ copyNumber: 1 });
-      res.json({ copies });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
+router.get('/books/:id/copies', checkPermission('library', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const copies = await BookCopy.find(
+      buildSchoolScopedQuery(schoolId, { bookId: req.params.id, isActive: true })
+    ).sort({ copyNumber: 1 });
+    res.json({ copies });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * POST /api/v1/library/books/:id/copies
  * Add a single physical copy to a book
  */
-router.post(
-  '/books/:id/copies',
-  checkPermission('library', 'create'),
-  async (req, res) => {
-    try {
-      const data = addCopySchema.parse(req.body);
-      const schoolId = req.user.schoolId;
+router.post('/books/:id/copies', checkPermission('library', 'create'), async (req, res) => {
+  try {
+    const data = addCopySchema.parse(req.body);
+    const schoolId = req.user.schoolId;
 
-      const book = await Book.findOne(
-        buildSchoolScopedQuery(schoolId, { _id: req.params.id, isActive: true })
-      );
-      if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
+    const book = await Book.findOne(
+      buildSchoolScopedQuery(schoolId, { _id: req.params.id, isActive: true })
+    );
+    if (!book) return res.status(404).json({ error: req.t('common:routes.bookNotFound') });
 
-      // Auto-generate copy number if not provided
-      let copyNumber = data.copyNumber;
-      if (!copyNumber) {
-        const count = await BookCopy.countDocuments({ schoolId, bookId: req.params.id });
-        copyNumber = String(count + 1).padStart(3, '0');
-      }
-
-      // Check uniqueness within this book
-      const existing = await BookCopy.findOne(
-        buildSchoolScopedQuery(schoolId, { bookId: req.params.id, copyNumber })
-      );
-      if (existing)
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.copyNumberAlreadyExistsForThisBook') });
-
-      const copy = new BookCopy({
-        schoolId,
-        bookId: req.params.id,
-        copyNumber,
-        barcode: data.barcode,
-        condition: data.condition || 'good',
-        notes: data.notes,
-      });
-
-      // Keep book stock in sync
-      book.totalCopies += 1;
-      book.availableCopies += 1;
-
-      await Promise.all([copy.save(), book.save()]);
-      res.status(201).json({ copy });
-    } catch (error) {
-      if (error.name === 'ZodError') {
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
-      }
-      res.status(500).json({ error: error.message });
+    // Auto-generate copy number if not provided
+    let copyNumber = data.copyNumber;
+    if (!copyNumber) {
+      const count = await BookCopy.countDocuments({ schoolId, bookId: req.params.id });
+      copyNumber = String(count + 1).padStart(3, '0');
     }
+
+    // Check uniqueness within this book
+    const existing = await BookCopy.findOne(
+      buildSchoolScopedQuery(schoolId, { bookId: req.params.id, copyNumber })
+    );
+    if (existing)
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.copyNumberAlreadyExistsForThisBook') });
+
+    const copy = new BookCopy({
+      schoolId,
+      bookId: req.params.id,
+      copyNumber,
+      barcode: data.barcode,
+      condition: data.condition || 'good',
+      notes: data.notes,
+    });
+
+    // Keep book stock in sync
+    book.totalCopies += 1;
+    book.availableCopies += 1;
+
+    await Promise.all([copy.save(), book.save()]);
+    res.status(201).json({ copy });
+  } catch (error) {
+    if (error.name === 'ZodError') {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
+    }
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * PUT /api/v1/library/copies/:copyId
  * Update condition, barcode, or notes on a copy
  */
-router.put(
-  '/copies/:copyId',
-  checkPermission('library', 'edit'),
-  async (req, res) => {
-    try {
-      const data = updateCopySchema.parse(req.body);
-      const schoolId = req.user.schoolId;
+router.put('/copies/:copyId', checkPermission('library', 'edit'), async (req, res) => {
+  try {
+    const data = updateCopySchema.parse(req.body);
+    const schoolId = req.user.schoolId;
 
-      const copy = await BookCopy.findOne(
-        buildSchoolScopedQuery(schoolId, { _id: req.params.copyId, isActive: true })
-      );
-      if (!copy) return res.status(404).json({ error: req.t('common:routes.copyNotFound') });
+    const copy = await BookCopy.findOne(
+      buildSchoolScopedQuery(schoolId, { _id: req.params.copyId, isActive: true })
+    );
+    if (!copy) return res.status(404).json({ error: req.t('common:routes.copyNotFound') });
 
-      Object.assign(copy, data);
-      await copy.save();
-      res.json({ copy });
-    } catch (error) {
-      if (error.name === 'ZodError') {
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
-      }
-      res.status(500).json({ error: error.message });
+    Object.assign(copy, data);
+    await copy.save();
+    res.json({ copy });
+  } catch (error) {
+    if (error.name === 'ZodError') {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.validationFailed'), details: error.errors });
     }
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * DELETE /api/v1/library/copies/:copyId
  * Decommission a copy (soft delete)
  */
-router.delete(
-  '/copies/:copyId',
-  checkPermission('library', 'delete'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user.schoolId;
-      const copy = await BookCopy.findOne(
-        buildSchoolScopedQuery(schoolId, { _id: req.params.copyId, isActive: true })
-      );
-      if (!copy) return res.status(404).json({ error: req.t('common:routes.copyNotFound') });
+router.delete('/copies/:copyId', checkPermission('library', 'delete'), async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const copy = await BookCopy.findOne(
+      buildSchoolScopedQuery(schoolId, { _id: req.params.copyId, isActive: true })
+    );
+    if (!copy) return res.status(404).json({ error: req.t('common:routes.copyNotFound') });
 
-      if (copy.status === 'issued') {
-        return res
-          .status(400)
-          .json({ error: req.t('common:routes.cannotDecommissionACopyThatIsCurrentlyIssued') });
-      }
-
-      // Keep book stock in sync
-      const stockUpdate = { $inc: { totalCopies: -1 } };
-      if (copy.status === 'available') stockUpdate.$inc.availableCopies = -1;
-      if (copy.status === 'reserved') stockUpdate.$inc.reservedCopies = -1;
-      await Book.findByIdAndUpdate(copy.bookId, stockUpdate);
-
-      copy.status = 'decommissioned';
-      copy.isActive = false;
-      await copy.save();
-
-      res.json({ message: req.t('common:routes.copyDecommissioned') });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+    if (copy.status === 'issued') {
+      return res
+        .status(400)
+        .json({ error: req.t('common:routes.cannotDecommissionACopyThatIsCurrentlyIssued') });
     }
+
+    // Keep book stock in sync
+    const stockUpdate = { $inc: { totalCopies: -1 } };
+    if (copy.status === 'available') stockUpdate.$inc.availableCopies = -1;
+    if (copy.status === 'reserved') stockUpdate.$inc.reservedCopies = -1;
+    await Book.findByIdAndUpdate(copy.bookId, stockUpdate);
+
+    copy.status = 'decommissioned';
+    copy.isActive = false;
+    await copy.save();
+
+    res.json({ message: req.t('common:routes.copyDecommissioned') });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 export default router;

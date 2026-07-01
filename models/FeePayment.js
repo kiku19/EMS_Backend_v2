@@ -67,9 +67,14 @@ feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
 feePaymentSchema.index({ studentId: 1, academicYear: 1 });
 feePaymentSchema.index({ classId: 1, academicYear: 1 });
 feePaymentSchema.index({ schoolId: 1, receiptNumber: 1 }, { unique: true });
+// Partial unique index: only documents with a real string idempotencyKey
+// participate, so payments made without a key (null/missing) never collide.
+// NOTE: MongoDB partial indexes reject `$ne` (compiles to `$not: {$eq}`), so
+// we filter with `$type: 'string'` instead — `$exists: true` alone would still
+// include nulls and re-introduce a null-collision. See SCH-210.
 feePaymentSchema.index(
   { schoolId: 1, idempotencyKey: 1 },
-  { unique: true, partialFilterExpression: { idempotencyKey: { $exists: true, $ne: null } } }
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
 );
 feePaymentSchema.index({ schoolId: 1, paymentDate: -1 });
 

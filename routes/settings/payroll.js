@@ -10,6 +10,20 @@ import { validateZod } from '../../validators/zodHelpers.js';
 const router = express.Router();
 router.use(authenticate);
 
+// ─── Defaults / Normalizers ──────────────────────────────────────
+const PAYMENT_METHODS = ['bank_transfer', 'cheque', 'cash', 'upi'];
+
+const normalizePayroll = (raw = {}) => ({
+  disburseDate: typeof raw.disburseDate === 'number' ? raw.disburseDate : 1,
+  payrollCycle: raw.payrollCycle || 'monthly',
+  paymentMethod: PAYMENT_METHODS.includes(raw.paymentMethod) ? raw.paymentMethod : 'bank_transfer',
+  autoReminder: typeof raw.autoReminder === 'boolean' ? raw.autoReminder : true,
+  reminderDays:
+    typeof raw.reminderDays === 'number' && raw.reminderDays >= 1 && raw.reminderDays <= 30
+      ? raw.reminderDays
+      : 3,
+});
+
 // ─── Zod Validation ──────────────────────────────────────────────
 const updatePayrollSettingsSchema = z
   .object({
@@ -22,8 +36,23 @@ const updatePayrollSettingsSchema = z
     payrollCycle: z
       .enum(['weekly', 'biweekly', 'monthly'], { message: 'Must be weekly, biweekly, or monthly' })
       .optional(),
+    paymentMethod: z
+      .enum(PAYMENT_METHODS, {
+        message: 'Must be one of bank_transfer, cheque, cash, upi',
+      })
+      .optional(),
+    autoReminder: z.boolean().optional(),
+    reminderDays: z
+      .number()
+      .int()
+      .min(1, 'Must be between 1 and 30')
+      .max(30, 'Must be between 1 and 30')
+      .optional(),
   })
   .strict();
+
+// Shape the payroll block for responses (defaults applied for missing fields).
+// `normalizePayroll` above is the single source of truth for defaults.
 
 // GET /settings/payroll — fetch payroll settings from SchoolSettings
 router.get('/payroll', authenticate, async (req, res) => {
@@ -35,10 +64,7 @@ router.get('/payroll', authenticate, async (req, res) => {
     ).lean();
 
     res.json({
-      data: {
-        disburseDate: settings?.payroll?.disburseDate || 1,
-        payrollCycle: settings?.payroll?.payrollCycle || 'monthly',
-      },
+      data: normalizePayroll(settings?.payroll),
     });
   } catch (error) {
     console.error('Error fetching payroll settings:', error);
@@ -56,7 +82,7 @@ router.put(
     try {
       await ensureSchoolSettings(req.user?.schoolId);
 
-      const { disburseDate, payrollCycle } = req.body;
+      const { disburseDate, payrollCycle, paymentMethod, autoReminder, reminderDays } = req.body;
 
       const update = {};
       if (disburseDate !== undefined) {
@@ -64,6 +90,15 @@ router.put(
       }
       if (payrollCycle !== undefined) {
         update['payroll.payrollCycle'] = payrollCycle;
+      }
+      if (paymentMethod !== undefined) {
+        update['payroll.paymentMethod'] = paymentMethod;
+      }
+      if (autoReminder !== undefined) {
+        update['payroll.autoReminder'] = autoReminder;
+      }
+      if (reminderDays !== undefined) {
+        update['payroll.reminderDays'] = reminderDays;
       }
 
       const settings = await SchoolSettings.findOneAndUpdate(
@@ -73,10 +108,7 @@ router.put(
       );
 
       res.json({
-        data: {
-          disburseDate: settings?.payroll?.disburseDate || 1,
-          payrollCycle: settings?.payroll?.payrollCycle || 'monthly',
-        },
+        data: normalizePayroll(settings?.payroll),
         message: 'Payroll settings updated successfully',
       });
     } catch (error) {

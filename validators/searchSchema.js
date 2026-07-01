@@ -1,6 +1,19 @@
 import { z } from 'zod';
 
-const SEARCH_TYPES = ['students', 'staff', 'classes', 'fees', 'exams', 'announcements'];
+// [PAG-32] CommandPalette now also queries books, assets, rooms, routes via /search
+// so the palette can find entities beyond the first 50 of each list.
+const SEARCH_TYPES = [
+  'students',
+  'staff',
+  'classes',
+  'fees',
+  'exams',
+  'announcements',
+  'books',
+  'assets',
+  'rooms',
+  'routes',
+];
 
 export const searchQuerySchema = z.object({
   q: z.string().min(1, 'Search query is required').max(200, 'Search query too long').trim(),

@@ -51,8 +51,10 @@
 
 import express from 'express';
 import mongoose from 'mongoose';
-import { Student, Staff, Class, Exam, Announcement } from '../database.js';
+import { Student, Staff, Class, Exam, Announcement, TransportRoute, Asset } from '../database.js';
 import FeePayment from '../models/FeePayment.js';
+import Book from '../models/Book.js';
+import HostelRoom from '../models/HostelRoom.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { searchQuerySchema } from '../validators/searchSchema.js';
@@ -308,6 +310,69 @@ async function regexSearchAnnouncements(q, schoolId, limit, skip) {
     .lean();
 }
 
+// [PAG-32] Server-backed palette search — extend /search to the remaining
+// entities so the CommandPalette can find books/assets/rooms/routes beyond
+// the first 50 fetched on open. Always uses regex (no Atlas index for these).
+
+async function regexSearchBooks(q, schoolId, limit, skip) {
+  const regex = new RegExp(escapeRegex(q), 'i');
+  return Book.find({
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    isActive: true,
+    isDeleted: { $ne: true },
+    $or: [{ title: regex }, { author: regex }, { isbn: regex }, { subject: regex }],
+  })
+    .select('title author isbn subject category')
+    .skip(skip)
+    .limit(limit)
+    .sort({ title: 1 })
+    .lean();
+}
+
+async function regexSearchAssets(q, schoolId, limit, skip) {
+  const regex = new RegExp(escapeRegex(q), 'i');
+  return Asset.find({
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    isDeleted: { $ne: true },
+    $or: [{ name: regex }, { category: regex }, { assetTag: regex }, { location: regex }],
+  })
+    .select('name category status condition location assetTag')
+    .skip(skip)
+    .limit(limit)
+    .sort({ updatedAt: -1 })
+    .lean();
+}
+
+async function regexSearchRooms(q, schoolId, limit, skip) {
+  const regex = new RegExp(escapeRegex(q), 'i');
+  return HostelRoom.find({
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    isActive: true,
+    isDeleted: { $ne: true },
+    $or: [{ roomNumber: regex }, { type: regex }, { description: regex }],
+  })
+    .select('roomNumber type capacity hostelId')
+    .populate('hostelId', 'name')
+    .skip(skip)
+    .limit(limit)
+    .sort({ roomNumber: 1 })
+    .lean();
+}
+
+async function regexSearchRoutes(q, schoolId, limit, skip) {
+  const regex = new RegExp(escapeRegex(q), 'i');
+  return TransportRoute.find({
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    isDeleted: { $ne: true },
+    $or: [{ routeName: regex }, { routeNumber: regex }, { 'stops.name': regex }, { notes: regex }],
+  })
+    .select('routeName routeNumber vehicleId status')
+    .skip(skip)
+    .limit(limit)
+    .sort({ routeName: 1 })
+    .lean();
+}
+
 // ─── Route ────────────────────────────────────────────────────────────────────
 
 /**
@@ -324,7 +389,7 @@ async function regexSearchAnnouncements(q, schoolId, limit, skip) {
  *         description: Search query string
  *       - in: query
  *         name: types
- *         schema: { type: string, example: "students,staff,classes" }
+ *         schema: { type: string, example: "students,staff,classes,fees,exams,announcements,books,assets,rooms,routes" }
  *         description: "Comma-separated entity types to search (default: all)"
  *       - in: query
  *         name: limit
@@ -356,6 +421,41 @@ async function regexSearchAnnouncements(q, schoolId, limit, skip) {
  *                     results: { type: array }
  *                     count: { type: integer }
  *                 classes:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 fees:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 exams:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 announcements:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 books:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 assets:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 rooms:
+ *                   type: object
+ *                   properties:
+ *                     results: { type: array }
+ *                     count: { type: integer }
+ *                 routes:
  *                   type: object
  *                   properties:
  *                     results: { type: array }
@@ -426,6 +526,30 @@ router.get('/', validateZod(searchQuerySchema, 'query'), async (req, res) => {
         if (!types.includes('announcements')) return;
         const docs = await regexSearchAnnouncements(q, schoolId, limit, skip);
         results.announcements = { results: docs, count: docs.length };
+      })(),
+
+      (async () => {
+        if (!types.includes('books')) return;
+        const docs = await regexSearchBooks(q, schoolId, limit, skip);
+        results.books = { results: docs, count: docs.length };
+      })(),
+
+      (async () => {
+        if (!types.includes('assets')) return;
+        const docs = await regexSearchAssets(q, schoolId, limit, skip);
+        results.assets = { results: docs, count: docs.length };
+      })(),
+
+      (async () => {
+        if (!types.includes('rooms')) return;
+        const docs = await regexSearchRooms(q, schoolId, limit, skip);
+        results.rooms = { results: docs, count: docs.length };
+      })(),
+
+      (async () => {
+        if (!types.includes('routes')) return;
+        const docs = await regexSearchRoutes(q, schoolId, limit, skip);
+        results.routes = { results: docs, count: docs.length };
       })(),
     ]);
 

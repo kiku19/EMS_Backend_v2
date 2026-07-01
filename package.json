@@ -10,6 +10,7 @@
     "dev": "node --watch start.js",
     "backup:db": "node scripts/renderDbBackup.js",
     "backup:verify": "node scripts/verifyBackupRestore.js",
+    "backup:restore": "node scripts/restoreFromS3.js",
     "tenant:bootstrap": "node scripts/bootstrapDefaultSchoolTenant.js",
     "create:admin": "node scripts/createAdmin.js",
     "create:signup-invite": "node scripts/createSignupInvite.js",
@@ -43,7 +44,7 @@
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
+    "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "express-mongo-sanitize": "^2.2.0",
@@ -58,7 +59,7 @@
     "mongoose": "^8.9.3",
     "multer": "^2.0.2",
     "node-fetch": "^2.7.0",
-    "nodemailer": "^8.0.7",
+    "nodemailer": "^9.0.1",
     "otplib": "^13.3.0",
     "pdfkit": "^0.17.2",
     "peer": "^1.0.2",
@@ -92,11 +93,11 @@
     "globals": "^17.4.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "mongodb-memory-server": "^11.0.1",
+    "mongodb-memory-server": "^11.2.0",
     "prettier": "^3.8.1",
     "socket.io-client": "^4.8.3",
     "supertest": "^7.2.2",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.9"
   },
   "lint-staged": {
     "*.js": [
