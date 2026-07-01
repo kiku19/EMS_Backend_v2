@@ -67,9 +67,15 @@ feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
 feePaymentSchema.index({ studentId: 1, academicYear: 1 });
 feePaymentSchema.index({ classId: 1, academicYear: 1 });
 feePaymentSchema.index({ schoolId: 1, receiptNumber: 1 }, { unique: true });
+// Unique idempotency index. MongoDB partial indexes do NOT support $ne (it
+// compiles to $not:{$eq} and createIndexes rejects it with "Expression not
+// supported in partial index"), so scope the filter to `$type: 'string'`.
+// This indexes only real string keys and excludes null/missing values — which
+// is exactly the intent. `$exists: true` alone would still include null values
+// and re-introduce a null collision.
 feePaymentSchema.index(
   { schoolId: 1, idempotencyKey: 1 },
-  { unique: true, partialFilterExpression: { idempotencyKey: { $exists: true, $ne: null } } }
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
 );
 feePaymentSchema.index({ schoolId: 1, paymentDate: -1 });
 
