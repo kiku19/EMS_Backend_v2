@@ -270,6 +270,143 @@ describe('dashboard routes', () => {
     });
   });
 
+  // ─── Analytics Summary (SCH-204) ───────────────────────────────────────
+  describe('GET /api/dashboard/analytics-summary', () => {
+    it('returns 401 when no auth token is provided', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/analytics-summary').expect(401);
+    });
+
+    it('returns a zeroed summary for a school with no students', async () => {
+      const { app, headers } = await setup('admin', ['Admin']);
+
+      const res = await request(app)
+        .get('/api/dashboard/analytics-summary')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.students).toEqual({
+        total: 0,
+        active: 0,
+        inactive: 0,
+        graduated: 0,
+        transferred: 0,
+        alumni: 0,
+      });
+      expect(res.body.fees.collectionRate).toBe(0);
+      expect(res.body.fees.defaulters).toBe(0);
+      expect(res.body.classDistribution).toEqual([]);
+    });
+
+    it('aggregates status, fee and class breakdowns server-side', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classA = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 1',
+        section: 'A',
+      });
+      const classB = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 2',
+        section: 'B',
+      });
+
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classA._id,
+        name: 'A1',
+        status: 'active',
+        feeStatus: 'paid',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classA._id,
+        name: 'A2',
+        status: 'active',
+        feeStatus: 'overdue',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classB._id,
+        name: 'B1',
+        status: 'active',
+        feeStatus: 'pending',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classB._id,
+        name: 'B2',
+        status: 'transferred',
+        feeStatus: 'paid',
+      });
+
+      const res = await request(app)
+        .get('/api/dashboard/analytics-summary')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.students.total).toBe(4);
+      expect(res.body.students.active).toBe(3);
+      expect(res.body.students.transferred).toBe(1);
+
+      expect(res.body.fees.paid).toBe(2);
+      expect(res.body.fees.pending).toBe(1);
+      expect(res.body.fees.overdue).toBe(1);
+      expect(res.body.fees.defaulters).toBe(2); // pending + overdue
+      expect(res.body.fees.collectionRate).toBe(50); // 2 paid / 4 total
+
+      // classDistribution counts ACTIVE students only, sorted by count desc.
+      expect(res.body.classDistribution).toHaveLength(2);
+      const byName = Object.fromEntries(res.body.classDistribution.map((c) => [c.name, c.count]));
+      expect(byName['Class 1 A']).toBe(2);
+      expect(byName['Class 2 B']).toBe(1);
+      expect(res.body.classDistribution[0].count).toBe(2); // largest first
+    });
+
+    it("scopes results to the caller's school", async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+
+      const otherSchool = await createSchoolRecord({
+        name: `Other School ${nextSeq()}`,
+        code: `OT-${nextSeq()}`,
+      });
+      const otherClass = await createClassRecord({
+        schoolId: otherSchool._id,
+        name: 'Foreign',
+        section: 'X',
+      });
+      await createStudentRecord({
+        schoolId: otherSchool._id,
+        classId: otherClass._id,
+        name: 'Foreign Student',
+        status: 'active',
+        feeStatus: 'paid',
+      });
+
+      const myClass = await createClassRecord({
+        schoolId: school._id,
+        name: 'Mine',
+        section: 'Z',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: myClass._id,
+        name: 'My Student',
+        status: 'active',
+        feeStatus: 'paid',
+      });
+
+      const res = await request(app)
+        .get('/api/dashboard/analytics-summary')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.students.total).toBe(1);
+      expect(res.body.classDistribution).toHaveLength(1);
+      expect(res.body.classDistribution[0].name).toBe('Mine Z');
+    });
+  });
+
   // ─── Error handling ────────────────────────────────────────────────────
   describe('error handling', () => {
     it('returns 400 for invalid query parameters', async () => {
