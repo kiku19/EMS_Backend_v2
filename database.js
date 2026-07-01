@@ -11,6 +11,30 @@ const MONGODB_URI =
   process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
 const logger = createLogger('Database');
 
+/**
+ * Whether Mongoose should auto-ensure (build) indexes when it connects.
+ *
+ * Default: ON everywhere — indexes are re-ensured on every boot (current
+ * behavior, and what several migrations rely on: "New indexes will be created
+ * automatically on next server start").
+ *
+ * In production only, this can be turned OFF by setting
+ * `DB_DISABLE_AUTOINDEX=true`. Doing so avoids re-ensuring indexes for ~129
+ * models on every cold start — each a ~250ms round-trip to the remote Atlas
+ * cluster — which dominates production startup.
+ *
+ * ⚠️ Turn it off ONLY after index management has been wired into the deploy
+ * flow: run `npm run migrate:indexes` (which now syncs ALL models) on deploy,
+ * otherwise production can end up missing indexes. See SCH-202. Left ON by
+ * default so this change is a no-op until an operator deliberately opts in.
+ */
+export function resolveAutoIndex(env = process.env) {
+  if (env.NODE_ENV === 'production' && env.DB_DISABLE_AUTOINDEX === 'true') {
+    return false;
+  }
+  return true;
+}
+
 // DR-02: Replica set failover connection options.
 // These settings ensure MongoDB Atlas (or self-hosted RS) failover is handled
 // automatically. In Atlas the typical election completes in 10-30 s, giving:
@@ -40,10 +64,16 @@ const FAILOVER_CONNECTION_OPTIONS = {
   // Faster cold starts in production: skip eagerly issuing a `create` collection
   // command for every model on boot. With ~129 models against a remote Atlas
   // cluster, that burst of DDL round-trips (~250ms each) dominates startup and
-  // floods the slow-query log. Collections are still created on first write,
-  // and autoIndex stays enabled so indexes are still ensured on boot. Kept on
-  // in dev/test so the local suite (mongodb-memory-server) behaves unchanged.
+  // floods the slow-query log. Collections are still created on first write.
+  // Kept on in dev/test so the local suite (mongodb-memory-server) behaves
+  // unchanged.
   autoCreate: process.env.NODE_ENV !== 'production',
+
+  // Ensure (build) indexes on connect. ON by default; can be disabled in
+  // production via DB_DISABLE_AUTOINDEX=true to skip re-ensuring indexes for
+  // ~129 models on every cold start — safe ONLY after wiring
+  // `npm run migrate:indexes` into the deploy flow. See resolveAutoIndex above.
+  autoIndex: resolveAutoIndex(),
 };
 
 export async function connectDB() {
