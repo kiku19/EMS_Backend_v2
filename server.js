@@ -266,7 +266,9 @@ if (config.cloudinary.configured) {
     api_secret: config.cloudinary.apiSecret,
   });
 } else {
-  logger.warn('Cloudinary not configured. File uploads will use base64 fallback.');
+  logger.warn(
+    'Cloudinary not configured. Document and chat-attachment uploads will return 503; only staff profile photos fall back to base64 storage. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.'
+  );
 }
 
 logger.debug({ corsOrigins: config.corsOrigins }, 'CORS origins configured');
