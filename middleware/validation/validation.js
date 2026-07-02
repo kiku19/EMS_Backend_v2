@@ -859,6 +859,7 @@ export function sanitizeQueryId(val) {
 // Zod Validation Schemas (new code uses Zod per project rules)
 // ============================================================
 import { z } from 'zod';
+import { selfSignupSchema } from '../../validators/signup.js';
 
 const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
@@ -1074,6 +1075,9 @@ export const zodSchemas = {
   // Calendar Events
   createCalendarEvent: createCalendarEventSchema,
   updateCalendarEvent: updateCalendarEventSchema,
+
+  // Self-serve school signup (no invite required). Mounted behind ENABLE_SELF_SIGNUP.
+  selfSignup: selfSignupSchema,
 
   // POST /api/timetable — Create timetable
   createTimetable: z.object({
@@ -1636,7 +1640,9 @@ export function validateObjectIdParam(paramName) {
         success: false,
         error: req.t ? req.t('common:errors.invalidId') : 'Invalid ID format',
         statusCode: 400,
-        details: [{ field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` }],
+        details: [
+          { field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` },
+        ],
       });
     }
     next();

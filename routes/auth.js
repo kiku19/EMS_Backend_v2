@@ -228,7 +228,10 @@ import School from '../models/School.js';
 import AuditTrail from '../models/AuditTrail.js';
 import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.js';
 import { issueTwoFactorToken, isTrustedDevice } from './twoFactor.js';
-import { piiMatch } from '../utils/encryption.js';
+import { createSchoolWithAdmin } from '../services/schoolProvisioningService.js';
+import Parent from '../models/Parent.js';
+import { selfSignupRateLimiters } from '../middleware/security/selfSignupLimiter.js';
+import { hmac, piiMatch } from '../utils/encryption.js';
 
 // Write an auth audit entry — never throws, always fire-and-forget
 function logAuthEvent(action, staff, req) {
@@ -326,6 +329,42 @@ const router = express.Router();
 const TOKEN_EXPIRES_IN_MS = 8 * 60 * 60 * 1000; // Must match JWT_EXPIRES_IN in auth.js
 
 const getJwtRefreshSecret = () => getRequiredSecret('JWT_REFRESH_SECRET');
+
+// Optional CAPTCHA verification (Turnstile or hCaptcha). Only enforced when
+// CAPTCHA_SECRET is set; dev/test always skip. Both providers use the same
+// `siteverify` endpoint shape, so a single helper covers both.
+async function verifyCaptchaToken(token, remoteIp) {
+  const secret = process.env.CAPTCHA_SECRET?.trim();
+  if (!secret) return { required: false, ok: true };
+  if (!token || typeof token !== 'string') {
+    return { required: true, ok: false, reason: 'missing' };
+  }
+
+  const params = new URLSearchParams();
+  params.set('secret', secret);
+  params.set('response', token);
+  if (remoteIp) params.set('remoteip', remoteIp);
+
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      logger.warn({ status: response.status }, 'CAPTCHA siteverify non-OK status');
+      return { required: true, ok: false, reason: 'verification_failed' };
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    const success = payload?.success === true;
+    return { required: true, ok: success, reason: success ? null : 'invalid_token' };
+  } catch (err) {
+    logger.warn({ err: err?.message || err }, 'CAPTCHA verification threw — failing closed');
+    return { required: true, ok: false, reason: 'verification_failed' };
+  }
+}
 
 // The auth/credential rate limiters below relax outside production (covers
 // local dev and the test runner) so iterating locally isn't locked out after a
@@ -610,6 +649,239 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
     logger.error({ err: error }, 'Signup error');
     res.status(500).json({ error: req.t('auth:errors.signupFailed') });
   }
+});
+
+function isSelfSignupEnabled() {
+  return process.env.ENABLE_SELF_SIGNUP === 'true';
+}
+
+async function checkSelfSignupUniqueness({ email, phone, code }) {
+  const conflicts = [];
+
+  if (email) {
+    const existingStaff = await Staff.findOne({
+      ...piiMatch('email', email),
+      isDeleted: { $ne: true },
+    }).lean();
+    if (existingStaff) conflicts.push({ field: 'adminEmail', reason: 'email_taken' });
+  }
+
+  if (phone) {
+    const existingStaffByPhone = await Staff.findOne({
+      ...piiMatch('phone', phone),
+      isDeleted: { $ne: true },
+    }).lean();
+    if (existingStaffByPhone) conflicts.push({ field: 'adminPhone', reason: 'phone_taken' });
+
+    const phoneHash = hmac(phone);
+    const existingParent = await Parent.findOne({
+      $or: [{ phoneHash }, { phone }],
+      status: { $ne: 'deleted' },
+    }).lean();
+    if (existingParent) conflicts.push({ field: 'adminPhone', reason: 'phone_taken_parent' });
+  }
+
+  if (code) {
+    const existingSchool = await School.findOne({ code }).lean();
+    if (existingSchool) conflicts.push({ field: 'schoolCode', reason: 'code_taken' });
+  }
+
+  return conflicts;
+}
+
+function logSelfSignupConflict(req, conflicts, payload) {
+  logger.warn(
+    {
+      conflicts: conflicts.map((c) => c.field),
+      ip: req.ip,
+      ua: req.headers['user-agent'],
+      schoolNameHash: payload?.schoolName ? hmac(payload.schoolName) : null,
+    },
+    'Self-serve signup duplicate preflight failed'
+  );
+}
+
+// Self-serve signup: public, no invite token, no auth middleware. Mounted
+// behind the ENABLE_SELF_SIGNUP feature flag (404 when off). This endpoint
+// is the ONLY unscoped query path in the platform — every lookup below
+// either (a) needs to run before the school exists (uniqueness checks,
+// rate limiters keyed by IP/email) or (b) writes a new school+admin pair
+// (the provisioning service). Audit line-by-line before extending.
+async function handleSelfSignup(req, res) {
+  try {
+    if (!isSelfSignupEnabled()) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const body = req.body || {};
+
+    // Honeypot: bots auto-fill every field. A non-empty `company_website` is a
+    // strong signal. Return a fake 201 so the bot can't distinguish; do not
+    // create anything and do not advance the rate-limit counter visibly
+    // (the limiters still ran, but no side effect occurred).
+    if (body.company_website && String(body.company_website).trim() !== '') {
+      logger.warn({ ip: req.ip }, 'Self-serve honeypot triggered');
+      return res.status(201).json({
+        success: true,
+        message: 'Account created. Please check your email to verify.',
+        user: null,
+        school: null,
+        verificationRequired: true,
+      });
+    }
+
+    const captchaResult = await verifyCaptchaToken(
+      body.captchaToken,
+      req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip
+    );
+    if (captchaResult.required && !captchaResult.ok) {
+      return res.status(400).json({
+        error: 'CAPTCHA verification failed',
+        reason: captchaResult.reason,
+      });
+    }
+
+    const { adminEmail, adminPhone, schoolCode } = body;
+    const conflicts = await checkSelfSignupUniqueness({
+      email: adminEmail,
+      phone: adminPhone,
+      code: schoolCode,
+    });
+
+    if (conflicts.length > 0) {
+      logSelfSignupConflict(req, conflicts, body);
+      // Email-enumeration resistance: generic message; structured per-field
+      // detail so the dashboard can surface field-level errors. PR3 reads
+      // `errors[].field` and `errors[].reason`.
+      return res.status(409).json({
+        error: 'Unable to create account with these details',
+        errors: conflicts,
+      });
+    }
+
+    let result;
+    try {
+      result = await createSchoolWithAdmin({
+        school: {
+          name: body.schoolName,
+          code: body.schoolCode,
+          contactEmail: body.adminEmail,
+          contactPhone: body.adminPhone,
+          source: body.source || 'self-signup',
+          timezone: body.timezone,
+          currency: body.currency,
+        },
+        admin: {
+          name: body.adminName,
+          email: body.adminEmail,
+          phone: body.adminPhone,
+          password: body.password,
+        },
+      });
+    } catch (err) {
+      // Race: two concurrent signups with the same email/code slip past the
+      // preflight check; surface the same generic 409 shape.
+      if (err?.code === 11000) {
+        logSelfSignupConflict(req, [{ field: 'adminEmail', reason: 'race_conflict' }], body);
+        return res.status(409).json({
+          error: 'Unable to create account with these details',
+          errors: [{ field: 'adminEmail', reason: 'race_conflict' }],
+        });
+      }
+      throw err;
+    }
+
+    const { school, admin } = result;
+
+    // Issue access + refresh JWTs and set httpOnly cookies exactly like login.
+    const authPayload = await buildStaffAuthPayload(admin);
+    const sessionId = randomUUID();
+    const token = generateToken(admin._id.toString(), admin.role, {
+      schoolId: authPayload.schoolId,
+      userType: 'staff',
+      sessionId,
+    });
+    const refreshToken = generateStaffRefreshToken(
+      admin._id.toString(),
+      authPayload.schoolId,
+      admin.tokenVersion || 1,
+      sessionId
+    );
+    await createSessionRecord(admin, req, sessionId);
+    logAuthEvent('signup', admin, req);
+
+    setAuthCookie(res, token);
+    setRefreshCookie(res, refreshToken);
+
+    // 24h email-verification token. Fire-and-forget the welcome email — do
+    // not block the response on SMTP; failures are logged but never fail
+    // the request.
+    try {
+      const jwtSecret = getRequiredSecret('JWT_SECRET');
+      const verificationToken = jwt.sign(
+        {
+          purpose: 'email-verification',
+          schoolId: school._id.toString(),
+          email: adminEmail,
+        },
+        jwtSecret,
+        { expiresIn: '24h' }
+      );
+
+      sendSchoolWelcomeEmail(
+        { name: admin.name, email: adminEmail },
+        { name: school.name, code: school.code, trialEndsAt: school.trialEndsAt },
+        verificationToken
+      ).catch((err) =>
+        logger.warn({ err: err?.message || err }, 'Failed to send self-signup welcome email')
+      );
+    } catch (emailErr) {
+      logger.warn(
+        { err: emailErr?.message || emailErr },
+        'Failed to issue verification token for self-signup'
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: req.t('auth:success.schoolCreated'),
+      school: serializeSchool(school),
+      user: {
+        id: admin._id.toString(),
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+        schoolId: school._id.toString(),
+        emailVerified: false,
+      },
+      token,
+      refreshToken,
+      tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
+      verificationRequired: true,
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({
+        error: 'Unable to create account with these details',
+        errors: [{ field: 'adminEmail', reason: 'race_conflict' }],
+      });
+    }
+    logger.error({ err: err?.message || err }, 'Self-serve signup failed');
+    return res.status(500).json({ error: req.t('auth:errors.signupFailed') });
+  }
+}
+
+// Self-serve signup endpoint. Mounted behind ENABLE_SELF_SIGNUP (404 when off).
+// Rate limiters run before validation so abusive callers can't probe the
+// validation schema for free.
+router.post('/self-signup', ...selfSignupRateLimiters, async (req, res, next) => {
+  if (!isSelfSignupEnabled()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  validateZod(zodSchemas.selfSignup)(req, res, (err) => {
+    if (err) return next(err);
+    return handleSelfSignup(req, res);
+  });
 });
 
 // Shared handler for email verification (used by both GET and POST)
