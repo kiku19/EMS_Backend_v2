@@ -79,6 +79,7 @@ import googleClassroomRoutes from '../../routes/googleClassroom.js';
 import ssoRoutes from '../../routes/sso.js';
 import apiKeysRoutes from '../../routes/apiKeys.js';
 import auditLogsRoutes from '../../routes/auditLogs.js';
+import onboardingRoutes from '../../routes/onboarding.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
 import { authenticateParent } from '../../middleware/auth/parentAuth.js';
 
@@ -197,6 +198,7 @@ export function createTestApp() {
   v1Router.use('/google-classroom', googleClassroomRoutes);
   v1Router.use('/api-keys', apiKeysRoutes);
   v1Router.use('/audit-logs', auditLogsRoutes);
+  v1Router.use('/onboarding', onboardingRoutes);
 
   // Canonical versioned mount
   app.use('/api/v1', v1Router);
