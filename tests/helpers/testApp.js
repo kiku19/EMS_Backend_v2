@@ -48,6 +48,11 @@ import staffAttendanceRoutes from '../../routes/staffAttendance.js';
 import studentFeesRoutes from '../../routes/studentFees.js';
 import studentsRoutes from '../../routes/students.js';
 import superAdminRoutes from '../../routes/superAdmin.js';
+import superAdminActivityRoutes from '../../routes/superAdminActivity.js';
+import superAdminTrashRoutes from '../../routes/superAdminTrash.js';
+import superAdminBillingRoutes from '../../routes/superAdminBilling.js';
+import superAdminLifecycleRoutes from '../../routes/superAdminLifecycle.js';
+import schoolStatusGuard from '../../middleware/auth/schoolStatusGuard.js';
 import transportRoutes from '../../routes/transport.js';
 import hostelRoutes from '../../routes/hostel.js';
 import libraryRoutes from '../../routes/library.js';
@@ -123,6 +128,19 @@ export function createTestApp() {
   v1Router.use('/auth', authRoutes);
   v1Router.use('/public', publicRoutes);
   v1Router.use('/super-admin', superAdminRoutes);
+  v1Router.use('/super-admin/activity', superAdminActivityRoutes);
+  v1Router.use('/super-admin/trash', superAdminTrashRoutes);
+  v1Router.use('/super-admin/billing', superAdminBillingRoutes);
+  v1Router.use('/super-admin/lifecycle', superAdminLifecycleRoutes);
+
+  // Test-only: chains authenticate → schoolStatusGuard so enforcement can be
+  // exercised end-to-end. Mirrors the server.js mount (guard after auth).
+  v1Router.use(
+    '/__test/status-guard',
+    authenticate,
+    schoolStatusGuard,
+    (_req, res) => res.json({ ok: true })
+  );
   // Parent routes must mount before wildcard routers (academics, examSchedule,
   // etc.) which apply router-level `authenticate`. Without this ordering,
   // /parent/auth/login falls through into the academics router and is blocked.

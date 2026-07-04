@@ -24,6 +24,7 @@ import {
 } from './helpers.js';
 import { authenticate } from '../../middleware/auth.js';
 import { objectIdParamHandler } from '../../middleware/validation.js';
+import { buildPaginationResponse } from '../../utils/pagination.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -221,6 +222,59 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
       resultMap[_id.toString()] = percentage != null ? Math.round(percentage) : null;
     });
 
+    // ── Global aggregates (footer KPIs) ────────────────────────────────────
+    // These run over the FULL filtered student set (`query`), not just the
+    // current page, so the dashboard footer can show true school-wide totals
+    // (total dues, average attendance) regardless of which page is loaded.
+    // Without this, switching to server-side pagination would make the footer
+    // reflect only the current page's rows.
+    const allFilteredIds = await Student.distinct('_id', query);
+    const [globalFeeAgg, globalAttAgg] = await Promise.all([
+      StudentFeeStructure.aggregate([
+        {
+          $match: {
+            ...(schoolId ? { schoolId } : {}),
+            studentId: { $in: allFilteredIds },
+            academicYear: feeYear,
+          },
+        },
+        { $group: { _id: null, totalDue: { $sum: '$totalBalance' } } },
+      ]),
+      Attendance.aggregate([
+        {
+          $match: {
+            studentId: { $in: allFilteredIds },
+            ...(schoolId ? { schoolId } : {}),
+            ...(feeYear && feeYear !== 'all' ? { academicYear: feeYear } : {}),
+          },
+        },
+        {
+          $group: {
+            _id: '$studentId',
+            total: { $sum: 1 },
+            present: {
+              $sum: {
+                $switch: {
+                  branches: [
+                    { case: { $in: ['$status', ['present', 'late']] }, then: 1 },
+                    { case: { $eq: ['$status', 'halfday'] }, then: 0.5 },
+                  ],
+                  default: 0,
+                },
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+    const totalDue = globalFeeAgg[0]?.totalDue ?? 0;
+    const attPercentages = globalAttAgg
+      .map(({ total, present }) => (total > 0 ? (present / total) * 100 : null))
+      .filter((v) => v != null && Number.isFinite(v));
+    const avgAttendance = attPercentages.length
+      ? Math.round(attPercentages.reduce((a, b) => a + b, 0) / attPercentages.length)
+      : null;
+
     const formatted = students.map((student) => {
       const classInfo = formatStudentClass(student);
       const currentFeeStatus = feeStatusMap[student._id.toString()] || student.feeStatus || 'pending';
@@ -273,18 +327,19 @@ router.get('/', checkPermission('students', 'view'), async (req, res) => {
       };
     });
 
-    res.json({
-      data: formatted,
-      statusCounts,
-      pagination: {
-        currentPage: noPagination ? 1 : pageNum,
-        totalPages: noPagination ? 1 : Math.ceil(total / limitNum),
-        totalItems: total,
-        itemsPerPage: noPagination ? total : limitNum,
-        hasNextPage: noPagination ? false : pageNum < Math.ceil(total / limitNum),
-        hasPrevPage: noPagination ? false : pageNum > 1,
-      },
-    });
+    res.json(
+      buildPaginationResponse({
+        data: formatted,
+        page: pageNum,
+        limit: limitNum,
+        total,
+        noPagination,
+        aggregates: { totalDue, avgAttendance, statusCounts },
+        // statusCounts stays a top-level field too for back-compat with
+        // existing consumers that read it directly off the response.
+        extra: { statusCounts },
+      })
+    );
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

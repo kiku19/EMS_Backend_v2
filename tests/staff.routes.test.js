@@ -162,12 +162,22 @@ describe('staff routes', () => {
       expect(response.body).toHaveProperty('pagination');
       expect(Array.isArray(response.body.data)).toBe(true);
       expect(response.body.data.length).toBe(3);
+      // Canonical pagination envelope (currentPage/totalPages/totalItems/
+      // itemsPerPage/hasNextPage/hasPrevPage). The old staff-specific
+      // {page,limit,total,totalPages} shape was standardized via
+      // buildPaginationResponse.
       expect(response.body.pagination).toMatchObject({
-        page: 1,
-        limit: 3,
-        total: 6, // admin + 5 teachers
+        currentPage: 1,
+        itemsPerPage: 3,
+        totalItems: 6, // admin + 5 teachers
         totalPages: 2,
+        hasNextPage: true,
+        hasPrevPage: false,
       });
+      // Aggregates (tab counts) are now part of the paginated response.
+      expect(response.body.aggregates).toEqual(
+        expect.objectContaining({ total: 6 })
+      );
     });
 
     it('does not return soft-deleted staff in the list', async () => {
@@ -240,7 +250,7 @@ describe('staff routes', () => {
           .expect(200);
 
         expect(response.body.data).toHaveLength(0);
-        expect(response.body.pagination.total).toBe(0);
+        expect(response.body.pagination.totalItems).toBe(0);
       });
     });
 
@@ -503,7 +513,7 @@ describe('staff routes', () => {
     });
 
     describe('SCH-126 — backward compatibility', () => {
-      it('unchanged pagination contract: page/limit/total/totalPages', async () => {
+      it('canonical pagination contract: currentPage/itemsPerPage/totalItems/totalPages', async () => {
         const { school, admin } = await setupSchoolWithAdmin();
         for (let i = 0; i < 5; i++) {
           await createTeacherInSchool(school._id, { name: `Paged ${i}` });
@@ -517,11 +527,15 @@ describe('staff routes', () => {
           .set(authHeaders)
           .expect(200);
 
+        // Canonical envelope (standardized via buildPaginationResponse) —
+        // replaces the former staff-specific {page,limit,total,totalPages}.
         expect(response.body.pagination).toMatchObject({
-          page: 1,
-          limit: 3,
-          total: 6,
+          currentPage: 1,
+          itemsPerPage: 3,
+          totalItems: 6,
           totalPages: 2,
+          hasNextPage: true,
+          hasPrevPage: false,
         });
       });
 

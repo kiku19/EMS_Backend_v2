@@ -99,3 +99,19 @@ export function validateZod(schema, source = 'body') {
     next();
   };
 }
+
+// ─── PAGINATION QUERY PRIMITIVE ──────────────────────────────────
+// The canonical pagination query shape shared by every list endpoint.
+// `page` is 1-indexed; `limit` is clamped to [1, 100] with a 50 default.
+// `limit: 0` is the documented "no pagination" opt-in preserved on the
+// endpoints that already expose it (students list, front-desk admissions);
+// it is intentionally NOT advertised elsewhere.
+export const paginationQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(0, 'limit must be 0 or greater')
+    .max(100, 'limit must not exceed 100')
+    .default(50),
+});

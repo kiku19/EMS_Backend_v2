@@ -31,6 +31,7 @@ import {
   validateReporter,
   generatePassword,
 } from './helpers.js';
+import { buildPaginationResponse } from '../../utils/pagination.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -209,18 +210,59 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
         };
       }
 
-      return res.json({
-        data: staffList.map((staff) =>
-          formatStaffResponse(staff, classMap.get(staff._id.toString()))
-        ),
-        pagination: {
+      // Global aggregates (tab counts) over the FULL filtered roster — not
+      // just the current page. The dashboard's All/Present-today/On-leave/
+      // Inactive tabs need school-wide counts; under server pagination the
+      // page only sees its own rows, so these are computed here. `present` and
+      // `onLeave` derive from today's StaffAttendance records; `inactive` is a
+      // status on the Staff doc itself.
+      const today = new Date().toISOString().split('T')[0];
+      const aggregateBase = facetBaseQuery(schoolId);
+      if (q) aggregateBase.$and = [buildSearchClause(q)];
+      const [presentTodayIds, onLeaveIds, inactiveCount] = await Promise.all([
+        StaffAttendance.find(
+          scopeBySchool(schoolId, { date: today, status: 'present' })
+        )
+          .select('staffId')
+          .lean(),
+        StaffAttendance.find(
+          scopeBySchool(schoolId, { date: today, status: 'leave' })
+        )
+          .select('staffId')
+          .lean(),
+        Staff.countDocuments({ ...aggregateBase, status: { $in: ['inactive', 'suspended'] } }),
+      ]);
+      const presentTodaySet = new Set(presentTodayIds.map((record) => String(record.staffId)));
+      const onLeaveSet = new Set(onLeaveIds.map((record) => String(record.staffId)));
+      // Present/leave counts are bounded by the filtered roster (the tab
+      // shows "X of the currently-filtered staff are present today").
+      const allFilteredIds = await Staff.distinct('_id', aggregateBase);
+      let presentToday = 0;
+      let onLeave = 0;
+      for (const id of allFilteredIds) {
+        const idStr = String(id);
+        if (presentTodaySet.has(idStr)) presentToday++;
+        if (onLeaveSet.has(idStr)) onLeave++;
+      }
+      const aggregates = {
+        presentToday,
+        onLeave,
+        inactive: inactiveCount,
+        total: allFilteredIds.length,
+      };
+
+      return res.json(
+        buildPaginationResponse({
+          data: staffList.map((staff) =>
+            formatStaffResponse(staff, classMap.get(staff._id.toString()))
+          ),
           page,
           limit,
           total,
-          totalPages: Math.ceil(total / limit),
-        },
-        ...(facets ? { facets } : {}),
-      });
+          aggregates,
+          extra: facets ? { facets } : {},
+        })
+      );
     }
 
     // Backward compatible: return plain array when no page param.

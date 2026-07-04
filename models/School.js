@@ -18,7 +18,12 @@ const schoolSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['active', 'inactive'],
+      // active     — normal operation
+      // inactive   — dormant (legacy soft state; NOT access-blocked)
+      // suspended  — access blocked (e.g. non-payment); data intact, reactivate to restore
+      // locked     — admin/security lock; harder to reactivate
+      // churned    — offboarded permanently (sessions revoked, subscription cancelled)
+      enum: ['active', 'inactive', 'suspended', 'locked', 'churned'],
       default: 'active',
       index: true,
     },
@@ -30,7 +35,9 @@ const schoolSchema = new mongoose.Schema(
     },
     planStatus: {
       type: String,
-      enum: ['trialing', 'active', 'past_due', 'cancelled'],
+      // 'paused' mirrors SchoolSubscription.status so the denormalized cache can
+      // represent the full billing lifecycle without validation drift.
+      enum: ['trialing', 'active', 'past_due', 'cancelled', 'paused'],
       default: 'trialing',
       index: true,
     },

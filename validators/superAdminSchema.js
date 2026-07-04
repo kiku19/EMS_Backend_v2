@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { objectId, optionalString } from './zodHelpers.js';
+import { TOGGLEABLE_MODULE_KEYS } from '../config/moduleRegistry.js';
 
 const planEnum = z.enum(['starter', 'growth', 'scale']);
 const planStatusEnum = z.enum(['trialing', 'active', 'past_due', 'cancelled']);
@@ -53,7 +54,7 @@ export const superAdminUpdateSchoolSchema = z
       .trim()
       .optional(),
     schoolCode: optionalString(40),
-    status: z.enum(['active', 'inactive']).optional(),
+    status: z.enum(['active', 'inactive', 'suspended', 'locked', 'churned']).optional(),
     contactEmail: z
       .string()
       .email('Contact email must be a valid email address')
@@ -100,4 +101,11 @@ export const superAdminProvisionSchoolSchema = z
 // ─── MONGO ID PARAM ───────────────────────────────────────────────
 export const mongoIdParamSchema = z.object({
   id: objectId,
+});
+
+// ─── SET SCHOOL MODULES (Phase 4 control plane) ───────────────────
+// Super-admin toggling which modules a school can use. Keys must be a subset
+// of TOGGLEABLE_MODULE_KEYS (core modules are implicit and never stored).
+export const superAdminModulesSchema = z.object({
+  enabledModules: z.array(z.enum(TOGGLEABLE_MODULE_KEYS)).default([]),
 });
