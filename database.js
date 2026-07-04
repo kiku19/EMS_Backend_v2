@@ -46,7 +46,13 @@ const FAILOVER_CONNECTION_OPTIONS = {
   retryReads: true, // Automatically retry reads on transient network errors
   w: 'majority', // Wait for majority of RS members to acknowledge write (RPO = 0)
   j: true, // Journal writes before acknowledging (survive crashes)
-  readPreference: 'primaryPreferred', // Fall back to secondary reads if primary unreachable
+  // readPreference MUST be 'primary'. Transactions (student create, billing,
+  // provisioning, …) reject any other read preference with
+  // "Read preference in a transaction must be primary". The previous
+  // 'primaryPreferred' only differed during a primary election window (~10-30s),
+  // when transactions are impossible anyway — and retryReads already handles
+  // transient read failures during failover.
+  readPreference: 'primary',
 
   // Failure detection — detect primary outage within ~10 s
   heartbeatFrequencyMS: 10000, // Check RS member health every 10 s

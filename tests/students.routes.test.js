@@ -345,7 +345,10 @@ describe('students routes', () => {
       expect(response.body.error).toBeTruthy();
     });
 
-    it('returns 400 when admissionId is missing', async () => {
+    it('auto-generates an admissionId when none is provided', async () => {
+      // admissionId is optional on create — the route handler generates one
+      // per school (routes/students/createUpdate.js) when omitted. The UI relies
+      // on this ("Admission ID is generated automatically once the student is saved").
       const admin = await createStaffUser();
       const classRecord = await createClassRecord();
       const { app } = createTestApp();
@@ -355,14 +358,14 @@ describe('students routes', () => {
         .post('/api/students')
         .set(authHeaders)
         .send({
-          name: 'No Admission ID Student',
+          name: 'Auto Admission ID Student',
           academicYear: CURRENT_ACADEMIC_YEAR,
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
-        .expect(400);
+        .expect(201);
 
-      expect(response.body.error).toBeTruthy();
+      expect(response.body.admissionId).toBeTruthy();
     });
 
     it('returns 400 when classId is missing', async () => {

@@ -143,10 +143,14 @@ export const createStudentSchema = z
       .min(2, 'Student name must be at least 2 characters')
       .max(100, 'Student name must not exceed 100 characters')
       .trim(),
+    // admissionId is optional on create — the route handler auto-generates one
+    // per school (routes/students/createUpdate.js) when it's omitted. Requiring
+    // it here blocked that auto-generation path.
     admissionId: z
       .string({ required_error: 'Admission ID is required' })
       .min(1, 'Admission ID is required')
-      .max(50, 'Admission ID must not exceed 50 characters'),
+      .max(50, 'Admission ID must not exceed 50 characters')
+      .nullish(),
     academicYear: academicYear,
     classId: objectId,
 

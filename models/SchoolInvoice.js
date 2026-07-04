@@ -44,7 +44,10 @@ const schoolInvoiceSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['draft', 'issued', 'paid', 'failed', 'void'],
+      // 'refunded' marks a paid invoice that an operator refunded at the
+      // gateway (Razorpay) — recorded here so financials + the billing
+      // overview stay accurate.
+      enum: ['draft', 'issued', 'paid', 'failed', 'void', 'refunded'],
       default: 'draft',
       index: true,
     },

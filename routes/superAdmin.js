@@ -8,6 +8,7 @@ import {
   superAdminCreateSchoolSchema,
   superAdminUpdateSchoolSchema,
   superAdminProvisionSchoolSchema,
+  superAdminModulesSchema,
   mongoIdParamSchema,
 } from '../validators/index.js';
 import {
@@ -17,7 +18,14 @@ import {
   serializeProvisioningResult,
 } from '../services/schoolProvisioningService.js';
 import { normalizeSchoolCode, serializeSchool } from '../utils/schoolContext.js';
-import { getAllSchoolsUsage } from '../services/billingService.js';
+import { getAllSchoolsUsage, BILLING_PLANS } from '../services/billingService.js';
+import { getSchoolFeatures } from '../services/featureFlagsService.js';
+import FeatureFlag from '../models/FeatureFlag.js';
+import {
+  TOGGLEABLE_MODULES,
+  resolveEnabledModules,
+  normalizeToggleableSelection,
+} from '../config/moduleRegistry.js';
 import {
   getAllSchoolsMetricsSummary,
   getDauMauWau,
@@ -225,6 +233,108 @@ router.post(
     } catch (error) {
       console.error('Error provisioning school:', error);
       res.status(500).json({ error: 'Failed to provision school' });
+    }
+  }
+);
+
+// ─── Phase 4: unified feature control plane ────────────────────────────────
+// Returns one school's full feature posture: which modules are on/off, the
+// effective plan + its built-in capabilities, and every feature flag's
+// effective state + whether a per-school override is in force. This is the
+// single read the ops console needs to render the per-school control panel.
+
+router.get(
+  '/schools/:id/features',
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const school = await School.findById(req.params.id).lean();
+      if (!school) {
+        return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
+      }
+
+      const { managed, enabled } = resolveEnabledModules(school.enabledModules);
+      const modules = TOGGLEABLE_MODULES.map((m) => ({
+        key: m.key,
+        label: m.label,
+        group: m.group,
+        description: m.description,
+        enabled: enabled.has(m.key),
+      }));
+
+      // Effective feature values + plan (getSchoolFeatures auto-provisions a
+      // subscription if one doesn't exist yet, so this never 404s on billing).
+      const { features, planKey, planCapabilities } = await getSchoolFeatures(school._id);
+      const plan = BILLING_PLANS[planKey] || BILLING_PLANS.starter;
+
+      // Flag metadata + override presence per flag for this school.
+      const flagDocs = await FeatureFlag.find({}).sort({ key: 1 }).lean();
+      const flags = flagDocs.map((flag) => {
+        const override = flag.overrideSchools?.find(
+          (o) => String(o.schoolId) === String(school._id)
+        );
+        return {
+          key: flag.key,
+          name: flag.name,
+          description: flag.description,
+          status: flag.status,
+          minimumPlan: flag.minimumPlan,
+          effectiveEnabled: Boolean(features[flag.key]),
+          hasOverride: Boolean(override),
+          overrideEnabled: override ? override.enabled : null,
+        };
+      });
+
+      res.json({
+        school: {
+          id: school._id,
+          name: school.name,
+          code: school.code,
+          status: school.status,
+          plan: planKey,
+          planStatus: school.planStatus,
+        },
+        managed,
+        modules,
+        plan: {
+          key: plan.key,
+          name: plan.name,
+          capabilities: planCapabilities,
+          limits: plan.limits,
+        },
+        flags,
+      });
+    } catch (error) {
+      console.error('Error loading school features:', error);
+      res.status(500).json({ error: 'Failed to load school features' });
+    }
+  }
+);
+
+router.patch(
+  '/schools/:id/modules',
+  validateZod(mongoIdParamSchema, 'params'),
+  validateZod(superAdminModulesSchema),
+  async (req, res) => {
+    try {
+      const school = await School.findById(req.params.id);
+      if (!school) {
+        return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
+      }
+
+      // Normalize so core keys can never be stored and unknown keys are dropped.
+      school.enabledModules = normalizeToggleableSelection(req.body.enabledModules);
+      await school.save();
+
+      const { enabled } = resolveEnabledModules(school.enabledModules);
+      res.json({
+        school: { id: school._id, name: school.name, code: school.code },
+        enabledModules: school.enabledModules,
+        modules: TOGGLEABLE_MODULES.map((m) => ({ key: m.key, enabled: enabled.has(m.key) })),
+      });
+    } catch (error) {
+      console.error('Error updating school modules:', error);
+      res.status(500).json({ error: 'Failed to update modules' });
     }
   }
 );

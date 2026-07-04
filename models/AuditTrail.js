@@ -12,8 +12,20 @@ const changeEntrySchema = new mongoose.Schema(
 
 const auditTrailSchema = new mongoose.Schema(
   {
-    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
+    // schoolId is optional so platform-scope super-admin actions (which have no
+    // owning school) can be recorded. School-user entries always carry schoolId.
+    schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null, index: true },
+    // userId is optional because super-admin is a single env-var account whose
+    // id ('super-admin') is not an ObjectId. School-user entries always carry it.
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', default: null },
+    // Distinguishes who performed the action. Drives the cross-school activity
+    // feed (super-admin queries) without polluting school-scoped audit views.
+    actorType: {
+      type: String,
+      enum: ['school-user', 'super-admin'],
+      default: 'school-user',
+      index: true,
+    },
     userName: { type: String }, // denormalized for fast display without populate
     action: {
       type: String,
@@ -60,5 +72,11 @@ auditTrailSchema.index({ schoolId: 1, createdAt: -1 });
 auditTrailSchema.index({ schoolId: 1, entity: 1, createdAt: -1 });
 auditTrailSchema.index({ schoolId: 1, userId: 1, createdAt: -1 });
 auditTrailSchema.index({ schoolId: 1, action: 1, createdAt: -1 });
+// Platform-wide activity feed (super-admin console). Partial filter on null
+// schoolId so it stays small and doesn't slow school-scoped queries above.
+auditTrailSchema.index(
+  { actorType: 1, createdAt: -1 },
+  { partialFilterExpression: { schoolId: null } }
+);
 
 export default mongoose.model('AuditTrail', auditTrailSchema);
