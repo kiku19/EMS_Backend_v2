@@ -230,7 +230,10 @@ import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.
 import { issueTwoFactorToken, isTrustedDevice } from './twoFactor.js';
 import { createSchoolWithAdmin } from '../services/schoolProvisioningService.js';
 import Parent from '../models/Parent.js';
-import { selfSignupRateLimiters } from '../middleware/security/selfSignupLimiter.js';
+import {
+  selfSignupRateLimiters,
+  resendVerificationLimiter,
+} from '../middleware/security/selfSignupLimiter.js';
 import { hmac, piiMatch } from '../utils/encryption.js';
 
 // Write an auth audit entry — never throws, always fire-and-forget
@@ -884,8 +887,19 @@ router.post('/self-signup', ...selfSignupRateLimiters, async (req, res, next) =>
   });
 });
 
-// Shared handler for email verification (used by both GET and POST)
+// Shared handler for email verification (used by both GET and POST).
+//
+// PR2 (SCH-218): gated by ENABLE_SELF_SIGNUP — verification only exists for the
+// self-serve flow. Sets Staff.emailVerified = true (the spec'd truth) and
+// mirrors the flag onto school.metadata.emailVerified so the dashboard banner
+// can read from either source. Writes an audit entry on success and returns
+// the updated Staff user so the dashboard can refresh AuthContext without an
+// extra round-trip.
 async function handleVerifyEmail(token, req, res) {
+  if (!isSelfSignupEnabled()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
   if (!token) {
     return res.status(400).json({ error: req.t('auth:errors.verificationTokenRequired') });
   }
@@ -912,7 +926,25 @@ async function handleVerifyEmail(token, req, res) {
       return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
     }
 
-    if (school.metadata?.emailVerified) {
+    // Token carries the verified address (PR1 self-signup signs it as
+    // `email: adminEmail`). Use it to find the matching Staff across both
+    // legacy invite-based and self-serve signups; piiMatch keeps the lookup
+    // stable against the encrypted email field.
+    const verifiedEmail = payload.email;
+    const staffQuery = verifiedEmail
+      ? { schoolId: school._id, ...piiMatch('email', verifiedEmail) }
+      : { schoolId: school._id, role: 'Administrator', isDeleted: { $ne: true } };
+    const staff = await Staff.findOne(staffQuery);
+
+    if (!staff) {
+      // The token is structurally valid (signed + unexpired + right purpose)
+      // but the staff row has been deleted. We must not leak whether it ever
+      // existed — collapse to the same generic response shape used for
+      // already-verified so enumeration is impossible.
+      logger.warn(
+        { schoolId: school._id.toString(), hasEmail: !!verifiedEmail },
+        'Verify-email token references a missing staff account'
+      );
       return res.json({
         success: true,
         message: req.t('auth:success.emailAlreadyVerified'),
@@ -920,15 +952,59 @@ async function handleVerifyEmail(token, req, res) {
       });
     }
 
+    if (staff.emailVerified) {
+      return res.json({
+        success: true,
+        message: req.t('auth:success.emailAlreadyVerified'),
+        alreadyVerified: true,
+        user: { id: staff._id.toString(), emailVerified: true },
+      });
+    }
+
+    const verifiedAt = new Date();
+    staff.emailVerified = true;
+    staff.emailVerifiedAt = verifiedAt;
+    await staff.save();
+
+    // Mirror the flag onto the school metadata so dashboard code reading
+    // school.metadata.emailVerified (banner, onboarding check, etc.) keeps
+    // working without having to denormalise the Staff collection.
     school.metadata = {
       ...(school.metadata || {}),
       emailVerified: true,
-      emailVerifiedAt: new Date().toISOString(),
+      emailVerifiedAt: verifiedAt.toISOString(),
     };
     school.markModified('metadata');
     await school.save();
 
-    return res.json({ success: true, message: req.t('auth:success.emailVerified') });
+    AuditTrail.create({
+      schoolId: school._id,
+      userId: staff._id,
+      userName: staff.name || staff.email || null,
+      action: 'email.verified',
+      entity: 'auth',
+      entityId: staff._id.toString(),
+      method: req.method,
+      path: req.path,
+      ipAddress:
+        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip,
+      userAgent: req.headers['user-agent'] || null,
+    }).catch(() => {});
+
+    return res.json({
+      success: true,
+      message: req.t('auth:success.emailVerified'),
+      user: {
+        id: staff._id.toString(),
+        name: staff.name,
+        email: staff.email,
+        emailVerified: true,
+        emailVerifiedAt: verifiedAt.toISOString(),
+        schoolId: school._id.toString(),
+      },
+    });
   } catch (err) {
     logger.error({ err }, 'Email verification error');
     return res.status(500).json({ error: req.t('auth:errors.verificationFailed') });
@@ -936,7 +1012,7 @@ async function handleVerifyEmail(token, req, res) {
 }
 
 // POST preferred — token in body avoids exposure in URL/browser history/Referer
-router.post('/verify-email', async (req, res) => {
+router.post('/verify-email', validateZod(zodSchemas.verifyEmail), async (req, res) => {
   const token = String(req.body.token || '').trim();
   return handleVerifyEmail(token, req, res);
 });
@@ -948,64 +1024,93 @@ router.get('/verify-email', async (req, res) => {
   return handleVerifyEmail(token, req, res);
 });
 
-const resendVerificationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 3,
-  handler: (req, res) =>
-    res.status(429).json({ error: req.t('auth:errors.tooManyResendAttempts') }),
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: skipAuthRateLimitOutsideProd,
-});
-
-router.post('/resend-verification', resendVerificationLimiter, authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const school = await School.findById(schoolId);
-
-    if (!school) {
-      return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
+// Public, idempotent resend. Body carries the address; we look up the staff
+// and re-issue a fresh 24h token. If the address is already verified, return
+// 200 with alreadyVerified=true and skip the send — leaking verification
+// state via differential responses is what we explicitly want to avoid.
+// Rate-limited by the email-keyed limiter in middleware/security/selfSignupLimiter.
+router.post(
+  '/resend-verification',
+  resendVerificationLimiter,
+  validateZod(zodSchemas.resendVerification),
+  async (req, res) => {
+    if (!isSelfSignupEnabled()) {
+      return res.status(404).json({ error: 'Not found' });
     }
 
-    if (school.metadata?.emailVerified) {
+    const email = String(req.body.email || '')
+      .trim()
+      .toLowerCase();
+
+    try {
+      const staff = await Staff.findOne({
+        ...piiMatch('email', email),
+        isDeleted: { $ne: true },
+      });
+
+      // Generic 200 either way: never disclose whether the account exists.
+      if (!staff) {
+        logger.info({ emailHash: hmac(email) }, 'Resend verification: no matching staff');
+        return res.json({
+          success: true,
+          message: 'If an account exists for that email, a verification link has been sent.',
+        });
+      }
+
+      if (staff.emailVerified) {
+        return res.json({
+          success: true,
+          message: 'If an account exists for that email, a verification link has been sent.',
+          alreadyVerified: true,
+        });
+      }
+
+      const school = await School.findById(staff.schoolId);
+      if (!school) {
+        logger.warn(
+          { staffId: staff._id.toString() },
+          'Resend verification: staff has no school — bailing'
+        );
+        return res.json({
+          success: true,
+          message: 'If an account exists for that email, a verification link has been sent.',
+        });
+      }
+
+      const jwtSecret = getRequiredSecret('JWT_SECRET');
+      const verificationToken = jwt.sign(
+        {
+          purpose: 'email-verification',
+          schoolId: school._id.toString(),
+          email,
+        },
+        jwtSecret,
+        { expiresIn: '24h' }
+      );
+
+      const adminName =
+        staff.name || school.metadata?.ownerName || school.billingContactName || 'Admin';
+
+      sendSchoolWelcomeEmail(
+        { name: adminName, email },
+        { name: school.name, code: school.code, trialEndsAt: school.trialEndsAt },
+        verificationToken
+      ).catch((err) =>
+        logger.warn({ err: err?.message || err }, 'Failed to resend verification email')
+      );
+
       return res.json({
         success: true,
-        message: req.t('auth:success.emailAlreadyVerified'),
-        alreadyVerified: true,
+        message: 'If an account exists for that email, a verification link has been sent.',
+      });
+    } catch (err) {
+      logger.error({ err: err?.message || err }, 'Resend verification error');
+      return res.status(500).json({
+        error: 'Failed to resend verification email. Please try again.',
       });
     }
-
-    const jwtSecret = getRequiredSecret('JWT_SECRET');
-
-    const email = school.contactEmail || school.billingEmail;
-    if (!email) {
-      return res.status(400).json({ error: 'No email address found for this school' });
-    }
-
-    const verificationToken = jwt.sign(
-      { purpose: 'email-verification', schoolId: school._id.toString(), email },
-      jwtSecret,
-      { expiresIn: '48h' }
-    );
-
-    const adminName = school.metadata?.ownerName || school.billingContactName || 'Admin';
-    sendSchoolWelcomeEmail(
-      { name: adminName, email },
-      { name: school.name, code: school.code, trialEndsAt: school.trialEndsAt },
-      verificationToken
-    ).catch((err) => logger.warn({ err }, 'Failed to resend verification email'));
-
-    return res.json({
-      success: true,
-      message: 'Verification email sent. Please check your inbox.',
-    });
-  } catch (err) {
-    logger.error({ err }, 'Resend verification error');
-    return res
-      .status(500)
-      .json({ error: 'Failed to resend verification email. Please try again.' });
   }
-});
+);
 
 router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, res) => {
   try {

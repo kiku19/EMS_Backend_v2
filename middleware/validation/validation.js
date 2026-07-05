@@ -860,6 +860,7 @@ export function sanitizeQueryId(val) {
 // ============================================================
 import { z } from 'zod';
 import { selfSignupSchema } from '../../validators/signup.js';
+import { verifyEmailSchema, resendVerificationSchema } from '../../validators/verifyEmail.js';
 
 const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
@@ -1078,6 +1079,10 @@ export const zodSchemas = {
 
   // Self-serve school signup (no invite required). Mounted behind ENABLE_SELF_SIGNUP.
   selfSignup: selfSignupSchema,
+
+  // PR2 — email verification + resend. Both public, gated by ENABLE_SELF_SIGNUP.
+  verifyEmail: verifyEmailSchema,
+  resendVerification: resendVerificationSchema,
 
   // POST /api/timetable — Create timetable
   createTimetable: z.object({
