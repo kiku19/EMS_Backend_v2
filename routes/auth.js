@@ -229,6 +229,15 @@ import AuditTrail from '../models/AuditTrail.js';
 import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.js';
 import { issueTwoFactorToken, isTrustedDevice } from './twoFactor.js';
 import { piiMatch } from '../utils/encryption.js';
+import { resendVerificationLimiter } from '../middleware/security/resendVerificationLimiter.js';
+import { issueEmailVerificationToken } from '../services/emailVerificationService.js';
+
+// Self-serve signup feature flag (PR1 / PR2 of the Self-Serve School
+// Onboarding Flow epic). Default false; PR6 flips on staging for soak
+// before production. Verification routes also gate on this flag per the
+// PR2 acceptance criteria — when off, no verification emails can be
+// consumed by clients.
+const isSelfSignupEnabled = () => process.env.ENABLE_SELF_SIGNUP === 'true';
 
 // Write an auth audit entry — never throws, always fire-and-forget
 function logAuthEvent(action, staff, req) {
@@ -612,7 +621,11 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
   }
 });
 
-// Shared handler for email verification (used by both GET and POST)
+// Shared handler for email verification (used by both GET and POST).
+// Extended in PR2 / SCH-218 to also flip the per-staff `emailVerified`
+// flag and emit an `email.verified` audit-log entry, so the dashboard's
+// "verify to continue" interstitial can be driven off the staff record
+// even for self-serve signups where no school-level audit entry exists.
 async function handleVerifyEmail(token, req, res) {
   if (!token) {
     return res.status(400).json({ error: req.t('auth:errors.verificationTokenRequired') });
@@ -640,100 +653,173 @@ async function handleVerifyEmail(token, req, res) {
       return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
     }
 
-    if (school.metadata?.emailVerified) {
-      return res.json({
-        success: true,
-        message: req.t('auth:success.emailAlreadyVerified'),
-        alreadyVerified: true,
-      });
+    // Idempotent: if the school-level flag is already set, still try to
+    // flip the staff-level flag below (the staff may have been created
+    // after the school-level verification, e.g. for an additional admin).
+    const schoolAlreadyVerified = Boolean(school.metadata?.emailVerified);
+
+    if (!schoolAlreadyVerified) {
+      school.metadata = {
+        ...(school.metadata || {}),
+        emailVerified: true,
+        emailVerifiedAt: new Date().toISOString(),
+      };
+      school.markModified('metadata');
+      await school.save();
     }
 
-    school.metadata = {
-      ...(school.metadata || {}),
-      emailVerified: true,
-      emailVerifiedAt: new Date().toISOString(),
-    };
-    school.markModified('metadata');
-    await school.save();
+    // Flip the per-staff flag when we can locate the staff by email. The
+    // PII-encrypted `email` field is searched via `piiMatch`, which is the
+    // established lookup pattern for Staff email uniqueness checks. We do
+    // NOT fail the verification when the staff can't be found — that would
+    // regress legacy invite-based schools whose staff record predates the
+    // `emailVerified` field.
+    let staffForAudit = null;
+    if (payload.email) {
+      const staff = await Staff.findOne({
+        ...piiMatch('email', payload.email),
+        schoolId: school._id,
+        isDeleted: { $ne: true },
+      });
+      if (staff && !staff.emailVerified) {
+        staff.emailVerified = true;
+        staff.emailVerifiedAt = new Date();
+        await staff.save();
+        staffForAudit = staff;
+      } else if (staff?.emailVerified) {
+        staffForAudit = staff;
+      }
+    }
 
-    return res.json({ success: true, message: req.t('auth:success.emailVerified') });
+    if (staffForAudit) {
+      // PR6 audit-action conventions: actor is the staff themselves, entity
+      // is "email_verification", and we tag with the schoolId so future
+      // runs can scope audit-log queries.
+      logAuthEvent('email_verified', staffForAudit, req);
+    } else {
+      // Fallback: log against the school so we still get an audit row even
+      // for legacy invite-based schools where staff is missing.
+      AuditTrail.create({
+        schoolId: school._id,
+        action: 'email.verified',
+        entity: 'school',
+        entityId: school._id.toString(),
+        method: req.method,
+        path: req.path,
+        ipAddress:
+          req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+          req.connection?.remoteAddress ||
+          req.ip,
+        userAgent: req.headers['user-agent'] || null,
+        metadata: { source: schoolAlreadyVerified ? 'already_verified' : 'fresh' },
+      }).catch(() => {});
+    }
+
+    return res.json({
+      success: true,
+      message: req.t('auth:success.emailVerified'),
+      alreadyVerified: schoolAlreadyVerified,
+    });
   } catch (err) {
     logger.error({ err }, 'Email verification error');
     return res.status(500).json({ error: req.t('auth:errors.verificationFailed') });
   }
 }
 
-// POST preferred — token in body avoids exposure in URL/browser history/Referer
-router.post('/verify-email', async (req, res) => {
-  const token = String(req.body.token || '').trim();
-  return handleVerifyEmail(token, req, res);
+// POST preferred — token in body avoids exposure in URL/browser history/Referer.
+// Gated behind ENABLE_SELF_SIGNUP per PR2 acceptance criteria: the spec
+// rolls both verification routes in with the self-serve flow.
+router.post('/verify-email', validateZod(zodSchemas.verifyEmail), async (req, res) => {
+  if (!isSelfSignupEnabled()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  return handleVerifyEmail(req.body.token, req, res);
 });
 
 // GET kept for backward-compat email links; Referrer-Policy mitigates leakage
-router.get('/verify-email', async (req, res) => {
+router.get('/verify-email', (req, res) => {
+  if (!isSelfSignupEnabled()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
   res.setHeader('Referrer-Policy', 'no-referrer');
-  const token = String(req.query.token || '').trim();
-  return handleVerifyEmail(token, req, res);
+  return handleVerifyEmail(String(req.query.token || '').trim(), req, res);
 });
 
-const resendVerificationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 3,
-  handler: (req, res) =>
-    res.status(429).json({ error: req.t('auth:errors.tooManyResendAttempts') }),
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: skipAuthRateLimitOutsideProd,
-});
-
-router.post('/resend-verification', resendVerificationLimiter, authenticate, async (req, res) => {
-  try {
-    const schoolId = req.user.schoolId;
-    const school = await School.findById(schoolId);
-
-    if (!school) {
-      return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
+// Public, idempotent resend endpoint (PR2 / SCH-218).
+// Body: { email }. Rate-limited 3/hour/email (skipped outside production).
+//
+// Email-enumeration resistance: the response is the same 200 success shape
+// whether the email is registered, unverified, already verified, or
+// unknown. The rate limiter + idempotency are the only signals an attacker
+// gets. We deliberately do NOT differentiate the cases in the response.
+router.post(
+  '/resend-verification',
+  validateZod(zodSchemas.resendVerification),
+  resendVerificationLimiter,
+  async (req, res) => {
+    if (!isSelfSignupEnabled()) {
+      return res.status(404).json({ error: 'Not found' });
     }
 
-    if (school.metadata?.emailVerified) {
+    const email = String(req.body.email || '')
+      .trim()
+      .toLowerCase();
+
+    try {
+      // Locate the staff by encrypted-email match. `piiMatch` handles the
+      // PII encryption layer; we then pick the most recent active staff as
+      // the canonical admin for the school.
+      const staff = await Staff.findOne({
+        ...piiMatch('email', email),
+        isDeleted: { $ne: true },
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      // Idempotent success path: unknown email OR already verified.
+      if (!staff || staff.emailVerified) {
+        logger.debug(
+          { emailExists: Boolean(staff), alreadyVerified: Boolean(staff?.emailVerified) },
+          'Resend verification: idempotent 200 returned'
+        );
+        return res.json({
+          success: true,
+          message: req.t('auth:success.emailVerified'),
+        });
+      }
+
+      const school = await School.findById(staff.schoolId).lean();
+      if (!school) {
+        // School was deleted after the staff was created — same idempotent
+        // 200 to avoid leaking school existence.
+        return res.json({
+          success: true,
+          message: req.t('auth:success.emailVerified'),
+        });
+      }
+
+      const token = issueEmailVerificationToken({ school, staff, email, req });
+
+      if (!token) {
+        // JWT_SECRET missing — surface a 500 because we can't honor the
+        // request, but never leak why.
+        return res.status(500).json({
+          error: req.t('auth:errors.verificationFailed'),
+        });
+      }
+
       return res.json({
         success: true,
-        message: req.t('auth:success.emailAlreadyVerified'),
-        alreadyVerified: true,
+        message: req.t('auth:success.emailVerified'),
+      });
+    } catch (err) {
+      logger.error({ err: err?.message || err, email }, 'Resend verification error');
+      return res.status(500).json({
+        error: req.t('auth:errors.verificationFailed'),
       });
     }
-
-    const jwtSecret = getRequiredSecret('JWT_SECRET');
-
-    const email = school.contactEmail || school.billingEmail;
-    if (!email) {
-      return res.status(400).json({ error: 'No email address found for this school' });
-    }
-
-    const verificationToken = jwt.sign(
-      { purpose: 'email-verification', schoolId: school._id.toString(), email },
-      jwtSecret,
-      { expiresIn: '48h' }
-    );
-
-    const adminName = school.metadata?.ownerName || school.billingContactName || 'Admin';
-    sendSchoolWelcomeEmail(
-      { name: adminName, email },
-      { name: school.name, code: school.code, trialEndsAt: school.trialEndsAt },
-      verificationToken
-    ).catch((err) => logger.warn({ err }, 'Failed to resend verification email'));
-
-    return res.json({
-      success: true,
-      message: 'Verification email sent. Please check your inbox.',
-    });
-  } catch (err) {
-    logger.error({ err }, 'Resend verification error');
-    return res
-      .status(500)
-      .json({ error: 'Failed to resend verification email. Please try again.' });
   }
-});
+);
 
 router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, res) => {
   try {

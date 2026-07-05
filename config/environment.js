@@ -145,6 +145,21 @@ const envSchema = z
     TURN_SERVER_URL: z.string().optional(),
     TURN_SERVER_USERNAME: z.string().optional(),
     TURN_SERVER_PASSWORD: z.string().optional(),
+
+    // ── Self-serve signup (PR1–PR6 of the Self-Serve School Onboarding Flow) ─
+    // ENABLE_SELF_SIGNUP: master switch for the new public signup flow
+    // (POST /auth/self-signup + the verify-email / resend-verification
+    // routes added in PR2). Default false; PR6 flips on staging for soak
+    // before production.
+    //
+    // REQUIRE_EMAIL_VERIFICATION: when true, the dashboard renders a hard
+    // "verify to continue" interstitial for staff with `emailVerified=false`
+    // past the 24h grace window. When false (default), the dashboard shows
+    // a non-dismissable banner instead — lower friction at the cost of
+    // letting unverified staff poke around for 24h. The spec recommends
+    // keeping this off for the initial rollout.
+    ENABLE_SELF_SIGNUP: z.enum(['true', 'false']).optional(),
+    REQUIRE_EMAIL_VERIFICATION: z.enum(['true', 'false']).optional(),
   })
   .passthrough(); // allow platform-injected vars (Render, Railway, etc.) to pass through
 

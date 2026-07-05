@@ -337,10 +337,14 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
     expect(res.body.error).toMatch(/expired/i);
   });
 
-  it('12) resend verification email succeeds for authenticated user with unverified school', async () => {
+  it('12) resend verification email succeeds for an unverified signup email (public, idempotent)', async () => {
+    // PR2 (SCH-218) rewrote /api/auth/resend-verification: it is now a
+    // public, body-keyed-by-{email} endpoint that returns the same 200
+    // success shape for unknown, already-verified, and unverified emails
+    // (email-enumeration resistance). The legacy auth-required behavior
+    // is gone; this test exercises the new contract.
     const { app } = createTestApp();
 
-    // Signup creates an unverified school
     const inviteToken = generateSignupInvite({
       email: 'resend@example.com',
       schoolName: 'Resend School',
@@ -357,23 +361,19 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
       })
       .expect(201);
 
-    // Login to get a token
-    const loginRes = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'resend@example.com', password: 'ResendPass1' })
-      .expect(200);
-
-    const token = loginRes.body.token;
-
+    // Public, no Authorization header — body carries the email.
     const resendRes = await request(app)
       .post('/api/auth/resend-verification')
-      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'resend@example.com' })
       .expect(200);
 
-    expect(resendRes.body).toMatchObject({
-      success: true,
-      message: expect.stringContaining('Verification email sent'),
-    });
+    expect(resendRes.body).toMatchObject({ success: true });
+
+    // Idempotent: a second call still returns 200.
+    await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'resend@example.com' })
+      .expect(200);
   });
 
   // ─── Login with remember-me / cookie session ────────────────────────────────

@@ -169,6 +169,13 @@ const staffSchema = new mongoose.Schema(
         linkedAt: { type: Date, default: Date.now },
       },
     ],
+
+    // Email verification (self-serve signup flow, PR2 / SCH-218).
+    // Defaults to false so existing CLI-provisioned staff stay un-flagged
+    // until they click through their verify-email link; once flipped the
+    // dashboard can hide the "verify to continue" interstitial.
+    emailVerified: { type: Boolean, default: false, index: true },
+    emailVerifiedAt: { type: Date },
   },
   { timestamps: true, strict: true }
 );

@@ -992,6 +992,26 @@ const resetPasswordSchema = z.object({
     .regex(/[0-9]/, 'Password must contain at least one number'),
 });
 
+// Self-serve signup email verification (PR2 / SCH-218).
+// Schema fields are kept loose on the token side so a tampered payload
+// surfaces as 400 / 410 from `jwt.verify` rather than a generic Zod 400.
+const verifyEmailSchema = z.object({
+  token: z
+    .string()
+    .trim()
+    .min(10, 'Verification token is required')
+    .max(4096, 'Verification token is too long'),
+});
+
+const resendVerificationSchema = z.object({
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email('Must be a valid email address')
+    .max(254, 'Email address is too long'),
+});
+
 // Calendar Event schemas
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD format');
 const timeOrEmpty = z
@@ -1065,6 +1085,10 @@ export const zodSchemas = {
   // Password reset
   forgotPassword: forgotPasswordSchema,
   resetPassword: resetPasswordSchema,
+
+  // Self-serve signup email verification (PR2 / SCH-218)
+  verifyEmail: verifyEmailSchema,
+  resendVerification: resendVerificationSchema,
 
   // 2FA
   twoFactorVerifyLogin: twoFactorVerifyLoginSchema,
@@ -1636,7 +1660,9 @@ export function validateObjectIdParam(paramName) {
         success: false,
         error: req.t ? req.t('common:errors.invalidId') : 'Invalid ID format',
         statusCode: 400,
-        details: [{ field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` }],
+        details: [
+          { field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` },
+        ],
       });
     }
     next();

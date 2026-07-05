@@ -122,3 +122,4 @@ export {
   studentLeaveQuerySchema,
 } from './leaveSchema.js';
 export { aiChatSchema, aiChatMessageSchema } from './aiSchema.js';
+export { verifyEmailSchema, resendVerificationSchema } from './verifyEmail.js';
