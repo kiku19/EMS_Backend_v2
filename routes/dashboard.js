@@ -647,4 +647,91 @@ router.get('/analytics-summary', checkPermission('dashboard', 'view'), async (re
   }
 });
 
+// GET /api/v1/dashboard/birthdays-today
+// [SCH-212] Today's birthdays (students + staff) for the main Dashboard widget.
+// PAG-05 removed the global student roster from AppContext, so the frontend can no
+// longer derive birthdays from `useApp().students` (it's permanently []). This
+// endpoint stays server-side: it does NOT duplicate the analytics-summary aggregate
+// because it returns per-person DOBs (which analytics-summary deliberately omits).
+// Limit is bounded so a large school can't blow up the payload.
+router.get('/birthdays-today', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+
+    // Match month/day regardless of year. `$expr` lets us compare two halves of
+    // the date string without parsing on the client. Field names differ between
+    // collections (Student.dateOfBirth vs Staff.dob), so build one match per side.
+    const studentMonthDay = {
+      $expr: {
+        $and: [
+          { $eq: [{ $month: { $toDate: '$dateOfBirth' } }, month] },
+          { $eq: [{ $dayOfMonth: { $toDate: '$dateOfBirth' } }, day] },
+        ],
+      },
+    };
+    const staffMonthDay = {
+      $expr: {
+        $and: [
+          { $eq: [{ $month: { $toDate: '$dob' } }, month] },
+          { $eq: [{ $dayOfMonth: { $toDate: '$dob' } }, day] },
+        ],
+      },
+    };
+
+    const [studentRows, staffRows] = await Promise.allSettled([
+      Student.find({ schoolId: schoolObjId, isDeleted: { $ne: true }, ...studentMonthDay })
+        .select('_id name classId dateOfBirth photo')
+        .populate('classId', 'name section')
+        .limit(limit)
+        .lean(),
+      Staff.find({ schoolId: schoolObjId, isDeleted: { $ne: true }, ...staffMonthDay })
+        .select('_id name dob role department photo picture')
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const students =
+      studentRows.status === 'fulfilled'
+        ? studentRows.value.map((s) => ({
+            id: `s-${String(s._id)}`,
+            studentId: String(s._id),
+            name: s.name,
+            classId: s.classId ? String(s.classId._id || s.classId) : null,
+            className: s.classId
+              ? `${s.classId.name || ''} ${s.classId.section || ''}`.trim()
+              : null,
+            dob: s.dateOfBirth || null,
+            photo: s.photo || null,
+          }))
+        : [];
+
+    const staff =
+      staffRows.status === 'fulfilled'
+        ? staffRows.value.map((s) => ({
+            id: `st-${String(s._id)}`,
+            staffId: String(s._id),
+            name: s.name,
+            role: Array.isArray(s.role) ? s.role[0] : s.role || null,
+            department: s.department || null,
+            dob: s.dob || null,
+            photo: s.picture || s.photo || null,
+          }))
+        : [];
+
+    return res.json({ students, staff, count: students.length + staff.length });
+  } catch (error) {
+    logger.error('Dashboard birthdays-today error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
 export default router;
