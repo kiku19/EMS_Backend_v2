@@ -9,6 +9,7 @@ import {
   attendanceRecordOutputSchema,
   applyOutputSchema,
 } from '../../validators/parentOutputSchemas.js';
+import { withEffectiveStatus } from '../../utils/examStatus.js';
 
 const router = express.Router();
 
@@ -117,13 +118,19 @@ router.get('/students/:id/exams', validateParentChildAccess, async (req, res) =>
       .limit(limitNum)
       .lean();
 
+    // Surface a date-derived `effectiveStatus` so parents see the same
+    // scheduled/ongoing/completed/results_published vocabulary as the
+    // dashboard. The stored `status` field is left untouched (it never holds
+    // 'ongoing'/'completed' on disk — see utils/examStatus.js).
+    const examsWithStatus = exams.map((exam) => withEffectiveStatus(exam));
+
     const examsHasMore = skipNum + exams.length < total;
     res.json({
       success: true,
       data: {
         studentId: id,
         studentName: student.name,
-        exams: applyOutputSchema(examOutputSchema, exams),
+        exams: applyOutputSchema(examOutputSchema, examsWithStatus),
         hasMore: examsHasMore,
         nextCursor: examsHasMore ? String(skipNum + limitNum) : undefined,
         total,
@@ -222,16 +229,14 @@ router.get(
 
       const student = await Student.findOne({ _id: id, schoolId: req.schoolId })
         .populate({ path: 'classId', select: 'name section' })
-        .select('name rollNo admissionNo classId')
+        .select('name rollNo admissionId classId')
         .lean();
 
       if (!student) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: { code: 'STUDENT_NOT_FOUND', message: 'Student not found' },
-          });
+        return res.status(404).json({
+          success: false,
+          error: { code: 'STUDENT_NOT_FOUND', message: 'Student not found' },
+        });
       }
 
       const exam = await Exam.findOne({
@@ -242,12 +247,10 @@ router.get(
       }).lean();
 
       if (!exam) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: { code: 'EXAM_NOT_FOUND', message: 'Published exam not found' },
-          });
+        return res.status(404).json({
+          success: false,
+          error: { code: 'EXAM_NOT_FOUND', message: 'Published exam not found' },
+        });
       }
 
       const result = await Result.findOne({
@@ -258,12 +261,10 @@ router.get(
       }).lean();
 
       if (!result) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: { code: 'RESULT_NOT_FOUND', message: 'Result not found' },
-          });
+        return res.status(404).json({
+          success: false,
+          error: { code: 'RESULT_NOT_FOUND', message: 'Result not found' },
+        });
       }
 
       const school = await School.findById(req.schoolId)
@@ -309,7 +310,7 @@ router.get(
       doc.text(`Exam: ${exam.name}`);
       doc.text(`Student Name: ${student.name}`);
       if (student.rollNo) doc.text(`Roll No: ${student.rollNo}`);
-      if (student.admissionNo) doc.text(`Admission No: ${student.admissionNo}`);
+      if (student.admissionId) doc.text(`Admission No: ${student.admissionId}`);
       if (student.classId) {
         const className =
           student.classId.name + (student.classId.section ? ` (${student.classId.section})` : '');
@@ -394,12 +395,10 @@ router.get(
     } catch (error) {
       console.error('Report card generation error:', error);
       if (!res.headersSent) {
-        res
-          .status(500)
-          .json({
-            success: false,
-            error: { code: 'SERVER_ERROR', message: 'Failed to generate report card' },
-          });
+        res.status(500).json({
+          success: false,
+          error: { code: 'SERVER_ERROR', message: 'Failed to generate report card' },
+        });
       }
     }
   }

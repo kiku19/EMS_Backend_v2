@@ -46,6 +46,7 @@ const feePaymentAuditSchema = new mongoose.Schema(
         'refund_rejected',
         'refund_updated',
         'refund_deleted',
+        'invoice_sent',
       ],
     },
 
@@ -73,6 +74,8 @@ const feePaymentAuditSchema = new mongoose.Schema(
       reason: String,
       paymentMode: String,
       refundNumber: String,
+      deliveryChannels: [String],
+      deliveryResults: mongoose.Schema.Types.Mixed,
     },
 
     // Metadata

@@ -1,6 +1,6 @@
 import express from 'express';
 import { resolveAcademicYear } from '../../utils/academicYear.js';
-import { Student, FeePayment, getNextReceiptNumber } from '../../database.js';
+import { Student, FeePayment, getNextAvailableReceiptNumber } from '../../database.js';
 import { getFeePaymentGateway } from '../../services/paymentGateway/index.js';
 import { validateParentChildAccess } from '../../middleware/parentAuth.js';
 import { validateZod, zodSchemas } from '../../middleware/validation.js';
@@ -254,10 +254,15 @@ router.post(
 
       const year = academicYear || student.classId?.academicYear || (await resolveAcademicYear());
 
-      // Build fee heads breakdown for payment record
+      // Build fee heads breakdown for payment record.
+      // F5: keep feeHeadId so the persisted record can be reversed by id
+      // (routes/fees.js cancel path matches feeHeadId first, then name).
+      // Previously the mapping kept only {name, amount}, so a cancellation
+      // fell back to fragile name matching that almost never hit.
       let paymentFeeHeads = [];
       if (feeHeadPayments && feeHeadPayments.length > 0) {
         paymentFeeHeads = feeHeadPayments.map((fhp) => ({
+          feeHeadId: fhp.feeHeadId,
           name: fhp.name || fhp.feeHeadName || '',
           amount: fhp.amount,
         }));
@@ -265,7 +270,7 @@ router.post(
 
       // Create FeePayment record (atomic counter — prevents duplicate receipt numbers)
       const schoolId = await resolveRequestSchoolId(req);
-      const receiptNumber = await getNextReceiptNumber(schoolId);
+      const receiptNumber = await getNextAvailableReceiptNumber(schoolId);
       const payment = new FeePayment({
         schoolId,
         studentId,
@@ -279,6 +284,14 @@ router.post(
         transactionId: razorpay_payment_id || `mock_${Date.now()}`,
         status: 'completed',
         remarks: `Online payment via parent app. Order: ${razorpay_order_id || 'N/A'}`,
+        // F4: persist the gateway reconciliation fields. The signature was
+        // verified above (verifyPayment → valid), but the result was never
+        // stored, so gatewayVerified stayed false despite a valid payment.
+        // (gatewayPaymentId is intentionally omitted — the model has no such
+        // field; the payment id is already stored as transactionId above.)
+        gatewayOrderId: razorpay_order_id,
+        gatewaySignature: razorpay_signature,
+        gatewayVerified: !mock,
       });
 
       await payment.save();

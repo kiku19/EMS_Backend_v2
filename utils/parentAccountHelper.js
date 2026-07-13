@@ -1,6 +1,6 @@
+import mongoose from 'mongoose';
 import Parent from '../models/Parent.js';
 import { Student } from '../database.js';
-import { ensureDefaultSchool } from './schoolContext.js';
 import { piiMatch } from './encryption.js';
 
 /**
@@ -97,8 +97,11 @@ function collectStudentParents(studentDoc) {
  * entry inside Student.parents. Keeps the two systems consistent when the
  * authoritative Parent record is the source of truth.
  */
-export async function syncParentToStudent(parentDoc) {
+async function syncParentToStudentInSession(parentDoc, session) {
   if (!parentDoc?._id || !parentDoc.children?.length) return;
+  if (!parentDoc.schoolId) {
+    throw new Error('schoolId is required to synchronize a parent account');
+  }
 
   const parentId = parentDoc._id;
   const source = {
@@ -118,32 +121,46 @@ export async function syncParentToStudent(parentDoc) {
     const studentId = child.studentId;
     if (!studentId) continue;
 
-    try {
-      // Load the student and mutate the embedded parents array so the PII
-      // encryption pre-save hook runs. updateOne would leave nested PII in
-      // plaintext and break consistency with the rest of the codebase.
-      const student = await Student.findById(studentId);
-      if (!student || !Array.isArray(student.parents)) continue;
+    // Load the student and mutate the embedded parents array so the PII
+    // encryption pre-save hook runs. The school predicate is mandatory: even
+    // a corrupt/forged Parent.children link cannot update another tenant.
+    const student = await Student.findOne({
+      _id: studentId,
+      schoolId: parentDoc.schoolId,
+    }).session(session);
+    if (!student || !Array.isArray(student.parents)) continue;
 
-      let changed = false;
-      for (const entry of student.parents) {
-        if (entry.parentId?.toString?.() !== parentId.toString()) continue;
+    let changed = false;
+    for (const entry of student.parents) {
+      if (entry.parentId?.toString?.() !== parentId.toString()) continue;
 
-        for (const key of Object.keys(source)) {
-          if (entry[key] !== source[key]) {
-            entry[key] = source[key];
-            changed = true;
-          }
+      for (const key of Object.keys(source)) {
+        if (entry[key] !== source[key]) {
+          entry[key] = source[key];
+          changed = true;
         }
       }
-
-      if (changed) {
-        student.markModified('parents');
-        await student.save({ validateBeforeSave: false });
-      }
-    } catch (err) {
-      console.error(`⚠️ Error syncing Parent ${parentId} to Student ${studentId}:`, err.message);
     }
+
+    if (changed) {
+      student.markModified('parents');
+      await student.save({ validateBeforeSave: false, session });
+    }
+  }
+}
+
+export async function syncParentToStudent(parentDoc, options = {}) {
+  if (options.session) {
+    return syncParentToStudentInSession(parentDoc, options.session);
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    return await session.withTransaction((transactionSession) =>
+      syncParentToStudentInSession(parentDoc, transactionSession)
+    );
+  } finally {
+    await session.endSession();
   }
 }
 
@@ -154,19 +171,19 @@ export async function syncParentToStudent(parentDoc) {
  * Also writes the matching parentId back into Student.parents so the
  * embedded cache and the canonical Parent collection are reconciled.
  */
-export async function createOrUpdateParentAccount(studentDoc, options = {}) {
+async function reconcileParentAccountsInSession(studentDoc, session) {
   if (!studentDoc?._id) return;
 
-  const { session } = options;
   const parentsToProcess = collectStudentParents(studentDoc);
-  const defaultSchool =
-    studentDoc.schoolId || parentsToProcess.length === 0 ? null : await ensureDefaultSchool();
-  const targetSchoolId = studentDoc.schoolId || defaultSchool?._id || null;
+  const targetSchoolId = studentDoc.schoolId;
+  if (!targetSchoolId) {
+    throw new Error('schoolId is required to synchronize parent accounts');
+  }
   const currentPhones = new Set(parentsToProcess.map((parent) => parent.phone));
 
   const previouslyLinkedParents = await Parent.find({
     'children.studentId': studentDoc._id,
-    ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
+    schoolId: targetSchoolId,
   }).session(session);
 
   // Unlink parents that are no longer associated with this student
@@ -181,19 +198,15 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
     );
     await linkedParent.save({ session });
 
-    // Clear parentId from the detached Student.parents entry on a best-effort basis
-    try {
-      await Student.updateOne(
-        { _id: studentDoc._id, 'parents.parentId': linkedParent._id },
-        { $set: { 'parents.$[elem].parentId': null } },
-        { arrayFilters: [{ 'elem.parentId': linkedParent._id }], session }
-      );
-    } catch (err) {
-      console.error(
-        `⚠️ Error clearing parentId for detached parent ${linkedParent._id}:`,
-        err.message
-      );
-    }
+    await Student.updateOne(
+      {
+        _id: studentDoc._id,
+        schoolId: targetSchoolId,
+        'parents.parentId': linkedParent._id,
+      },
+      { $set: { 'parents.$[elem].parentId': null } },
+      { arrayFilters: [{ 'elem.parentId': linkedParent._id }], session }
+    );
   }
 
   if (parentsToProcess.length === 0) return;
@@ -203,114 +216,121 @@ export async function createOrUpdateParentAccount(studentDoc, options = {}) {
   const linkedParentIds = [];
 
   for (const parentInfo of parentsToProcess) {
-    try {
-      const relationship = parentInfo.relationship || 'guardian';
+    const relationship = parentInfo.relationship || 'guardian';
 
-      // Prefer an existing link by parentId, otherwise fall back to phone match
-      let parent = null;
-      if (parentInfo.parentId) {
-        parent = await Parent.findOne({
-          _id: parentInfo.parentId,
-          ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
-        }).session(session);
+    // Prefer an existing link by parentId, otherwise fall back to a phone match
+    // within the same school. A parent id from another tenant is never reused.
+    let parent = null;
+    if (parentInfo.parentId) {
+      parent = await Parent.findOne({
+        _id: parentInfo.parentId,
+        schoolId: targetSchoolId,
+      }).session(session);
+    }
+
+    if (!parent) {
+      parent = await Parent.findOne({
+        ...piiMatch('phone', parentInfo.phone),
+        schoolId: targetSchoolId,
+      }).session(session);
+    }
+
+    if (parent) {
+      // Check if this child is already linked
+      const alreadyLinked = parent.children.some(
+        (c) => c.studentId.toString() === studentDoc._id.toString()
+      );
+
+      if (!alreadyLinked) {
+        parent.children.push({
+          studentId: studentDoc._id,
+          relationship,
+          isPrimary: parent.children.length === 0,
+        });
       }
 
-      if (!parent) {
-        parent = await Parent.findOne({
-          ...piiMatch('phone', parentInfo.phone),
-          ...(targetSchoolId ? { schoolId: targetSchoolId } : {}),
-        }).session(session);
+      if (parentInfo.name && parent.name !== parentInfo.name) {
+        parent.name = parentInfo.name;
       }
 
-      if (parent) {
-        // Check if this child is already linked
-        const alreadyLinked = parent.children.some(
-          (c) => c.studentId.toString() === studentDoc._id.toString()
-        );
+      if (parentInfo.email && parent.email !== parentInfo.email) {
+        parent.email = parentInfo.email;
+      }
 
-        if (!alreadyLinked) {
-          parent.children.push({
+      // Set password if not already set and we have one
+      if (!parent.password && plainPassword) {
+        parent.password = plainPassword;
+      }
+
+      await parent.save({ session });
+    } else {
+      // Create new parent
+      parent = new Parent({
+        schoolId: targetSchoolId,
+        name: parentInfo.name,
+        phone: parentInfo.phone,
+        email: parentInfo.email,
+        password: plainPassword,
+        status: 'active',
+        children: [
+          {
             studentId: studentDoc._id,
             relationship,
-            isPrimary: parent.children.length === 0,
-          });
-        }
-
-        if (parentInfo.name && parent.name !== parentInfo.name) {
-          parent.name = parentInfo.name;
-        }
-
-        if (parentInfo.email && parent.email !== parentInfo.email) {
-          parent.email = parentInfo.email;
-        }
-
-        // Set password if not already set and we have one
-        if (!parent.password && plainPassword) {
-          parent.password = plainPassword;
-        }
-
-        if (!parent.schoolId && targetSchoolId) {
-          parent.schoolId = targetSchoolId;
-        }
-
-        await parent.save({ session });
-      } else {
-        // Create new parent
-        parent = new Parent({
-          schoolId: targetSchoolId,
-          name: parentInfo.name,
-          phone: parentInfo.phone,
-          email: parentInfo.email,
-          password: plainPassword,
-          status: 'active',
-          children: [
-            {
-              studentId: studentDoc._id,
-              relationship,
-              isPrimary: true,
-            },
-          ],
-        });
-        await parent.save({ session });
-      }
-
-      linkedParentIds.push({
-        phone: parentInfo.phone,
-        parentId: parent._id,
+            isPrimary: true,
+          },
+        ],
       });
-    } catch (err) {
-      console.error(
-        `⚠️ Error creating/updating parent account for ${parentInfo.phone}:`,
-        err.message
-      );
+      await parent.save({ session });
     }
+
+    linkedParentIds.push({
+      phone: parentInfo.phone,
+      parentId: parent._id,
+    });
   }
 
   // Write the linked parentId(s) back into the Student.parents array so the
   // two parent data systems are explicitly reconciled.
   if (linkedParentIds.length > 0) {
-    try {
-      const student = await Student.findById(studentDoc._id).session(session);
-      if (student && Array.isArray(student.parents)) {
-        let changed = false;
-        for (const link of linkedParentIds) {
-          const entry = student.parents.find((p) => normalizePhone(p.phone) === link.phone);
-          if (entry) {
-            const currentId = entry.parentId?.toString?.();
-            const newId = link.parentId.toString();
-            if (currentId !== newId) {
-              entry.parentId = link.parentId;
-              changed = true;
-            }
+    const student = await Student.findOne({
+      _id: studentDoc._id,
+      schoolId: targetSchoolId,
+    }).session(session);
+    if (student && Array.isArray(student.parents)) {
+      let changed = false;
+      for (const link of linkedParentIds) {
+        const entry = student.parents.find((p) => normalizePhone(p.phone) === link.phone);
+        if (entry) {
+          const currentId = entry.parentId?.toString?.();
+          const newId = link.parentId.toString();
+          if (currentId !== newId) {
+            entry.parentId = link.parentId;
+            changed = true;
           }
         }
-        if (changed) {
-          student.markModified('parents');
-          await student.save({ validateBeforeSave: false, session });
-        }
       }
-    } catch {
-      console.error(`⚠️ Error writing parentId back to Student ${studentDoc._id}:`);
+      if (changed) {
+        student.markModified('parents');
+        await student.save({ validateBeforeSave: false, session });
+      }
     }
+  }
+}
+
+export async function createOrUpdateParentAccount(studentDoc, options = {}) {
+  if (options.session) {
+    return reconcileParentAccountsInSession(studentDoc, options.session);
+  }
+
+  // Standalone callers (bulk parent creation, AI-assisted student creation,
+  // maintenance scripts) receive the same all-or-nothing guarantee as the
+  // student create/update routes instead of committing one side at a time.
+  const session = await mongoose.startSession();
+  try {
+    return await session.withTransaction((transactionSession) =>
+      reconcileParentAccountsInSession(studentDoc, transactionSession)
+    );
+  } finally {
+    await session.endSession();
   }
 }

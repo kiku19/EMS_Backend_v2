@@ -254,6 +254,37 @@ export function determineRole(userRole) {
 }
 
 /**
+ * Programmatic permission check (non-middleware).
+ * Mirrors checkPermission's evaluation but returns a boolean instead of ending
+ * the response — for routes that need to OR several permissions together
+ * (e.g. trash restore = settings:edit OR the originating module's delete).
+ *
+ * @param {object} req - Express request (needs req.user)
+ * @param {string} module - Module name (e.g. 'students')
+ * @param {string} action - 'view' | 'create' | 'edit' | 'delete' | 'publish'
+ * @returns {Promise<boolean>}
+ */
+export async function userHasPermission(req, module, action) {
+  if (isSuperAdminUser(req.user)) return true;
+
+  const userId = req.user?.id;
+  const schoolId = req.user?.schoolId;
+  if (!userId || !schoolId) return false;
+
+  const userPermission = await UserPermission.findOne({ userId, schoolId });
+  if (!userPermission) return false;
+
+  await ensurePermissionDocument(userPermission, userPermission.role);
+
+  const modulePermission = userPermission.permissions.find((p) => p.module === module);
+  if (!modulePermission) {
+    // Same policy as checkPermission: admin gets modules not yet in the template.
+    return userPermission.role === 'admin';
+  }
+  return Boolean(modulePermission[action]);
+}
+
+/**
  * Middleware to check if user is admin
  */
 export const requireAdmin = async (req, res, next) => {

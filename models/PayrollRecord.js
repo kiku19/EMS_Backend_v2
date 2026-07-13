@@ -78,6 +78,7 @@ const payrollRecordSchema = new mongoose.Schema(
     netPay: {
       type: Number,
       required: true,
+      min: 0,
     },
     status: {
       type: String,
@@ -117,6 +118,7 @@ const payrollRecordSchema = new mongoose.Schema(
         reason: String,
         previousStatus: String,
         previousPaymentDate: Date,
+        previousPaymentReference: String,
       },
     ],
   },
@@ -139,16 +141,13 @@ function asNumber(n) {
   return v;
 }
 payrollRecordSchema.pre('save', function (next) {
-  this.totalAllowances = (this.allowances || []).reduce(
-    (sum, a) => sum + asNumber(a?.amount),
-    0
-  );
-  this.totalDeductions = (this.deductions || []).reduce(
-    (sum, d) => sum + asNumber(d?.amount),
-    0
-  );
+  this.totalAllowances = (this.allowances || []).reduce((sum, a) => sum + asNumber(a?.amount), 0);
+  this.totalDeductions = (this.deductions || []).reduce((sum, d) => sum + asNumber(d?.amount), 0);
   this.grossPay = asNumber(this.baseSalary) + this.totalAllowances;
   this.netPay = this.grossPay - this.totalDeductions;
+  if (this.netPay < 0) {
+    this.invalidate('netPay', 'Net pay cannot be negative; deductions exceed gross pay.');
+  }
   next();
 });
 

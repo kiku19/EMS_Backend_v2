@@ -130,6 +130,7 @@ import {
   Substitution,
   StudentFeeStructure,
 } from '../database.js';
+import Parent from '../models/Parent.js';
 import StaffAttendance from '../models/StaffAttendance.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import TeacherLeave from '../models/TeacherLeave.js';
@@ -643,6 +644,112 @@ router.get('/analytics-summary', checkPermission('dashboard', 'view'), async (re
     return res.json({ students, fees, classDistribution });
   } catch (error) {
     logger.error('Dashboard analytics-summary error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
+// GET /api/v1/dashboard/birthdays
+// Today's student & staff birthdays. [PAG-05] removed the global student roster
+// from the app shell, so the dashboard can no longer compute birthdays
+// client-side. This endpoint does the month/day match in MongoDB and returns
+// only the people whose birthday is today (plus an optional upcoming window),
+// capped for the dashboard card.
+//
+// Staff.dob is a Mixed field that may hold a legacy String ("DD/MM/YYYY" or
+// ISO) or a Date; Student.dateOfBirth is a validated Date. We normalise both to
+// a Date in the aggregation so $month/$dayOfMonth match reliably.
+router.get('/birthdays', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+    const now = new Date();
+    const todayMonth = now.getMonth() + 1; // 1-12
+    const todayDay = now.getDate();
+
+    // Parse a Staff.dob / Student.dateOfBirth value into a Date. Returns null if
+    // unparseable. Both fields are stored as Strings ("YYYY-MM-DD" or legacy
+    // "DD/MM/YYYY"), so date-only strings are parsed as LOCAL time (not UTC) to
+    // keep getMonth()/getDate() aligned with the user's calendar.
+    const parseDob = (raw) => {
+      if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw;
+      if (typeof raw === 'string') {
+        // "DD/MM/YYYY" legacy format
+        const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (m) {
+          const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+          return isNaN(d.getTime()) ? null : d;
+        }
+        // "YYYY-MM-DD" — parse as local, not UTC (avoids off-by-one across tz).
+        const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) {
+          const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+          return isNaN(d.getTime()) ? null : d;
+        }
+        const d = new Date(raw);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    };
+
+    const [studentRows, staffRows] = await Promise.allSettled([
+      Student.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+        dateOfBirth: { $exists: true, $ne: null },
+      })
+        .populate('classId', 'name section')
+        .select('name dateOfBirth classId')
+        .lean(),
+      Staff.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+      })
+        .select('name dob dobParsed role department')
+        .lean(),
+    ]);
+
+    const students =
+      studentRows.status === 'fulfilled'
+        ? studentRows.value
+            .map((s) => {
+              const d = s.dateOfBirth instanceof Date ? s.dateOfBirth : parseDob(s.dateOfBirth);
+              if (!d) return null;
+              if (d.getMonth() + 1 !== todayMonth || d.getDate() !== todayDay) return null;
+              const cls = s.classId;
+              const label = cls
+                ? `${cls.name || ''}${cls.section ? ' ' + cls.section : ''}`.trim()
+                : 'Student';
+              return { id: `s-${s._id}`, name: s.name, type: 'student', sub: label };
+            })
+            .filter(Boolean)
+        : [];
+
+    const staff =
+      staffRows.status === 'fulfilled'
+        ? staffRows.value
+            .map((s) => {
+              // Prefer the migrated parsed Date; fall back to the Mixed dob.
+              const d = s.dobParsed instanceof Date ? s.dobParsed : parseDob(s.dob);
+              if (!d) return null;
+              if (d.getMonth() + 1 !== todayMonth || d.getDate() !== todayDay) return null;
+              const sub = [s.role, s.department].filter(Boolean).join(' · ') || 'Staff';
+              return { id: `st-${s._id}`, name: s.name, type: 'staff', sub };
+            })
+            .filter(Boolean)
+        : [];
+
+    // Mirror the dashboard's own cap (3 students + 2 staff).
+    const birthdays = [...students.slice(0, 3), ...staff.slice(0, 2)];
+
+    return res.json({ birthdays, count: birthdays.length });
+  } catch (error) {
+    logger.error('Dashboard birthdays error', { error: error.message });
     return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
   }
 });

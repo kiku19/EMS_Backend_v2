@@ -14,6 +14,12 @@ function scopeBySchool(schoolId, query = {}) {
   return { ...query, schoolId: normalizedSchoolId };
 }
 
+function hasEnteredResult(result) {
+  if (result?.status === 'absent') return true;
+  if (result?.marksObtained != null) return true;
+  return Array.isArray(result?.marks) && result.marks.some((mark) => mark?.marksObtained != null);
+}
+
 // GET /academic-performance/dashboard
 // Returns school-wide aggregated performance stats for the dashboard
 router.get('/dashboard', checkPermission('academics', 'view'), async (req, res) => {
@@ -138,16 +144,14 @@ router.get('/dashboard', checkPermission('academics', 'view'), async (req, res) 
 
 // GET /academic-performance/class/:classId
 // Returns class-level performance detail with per-student breakdown
-router.get(
-  '/class/:classId',
-  checkPermission('academics', 'view'),
-  async (req, res) => {
-    try {
-      const { classId } = req.params;
-      const schoolId = req.user?.schoolId;
-      const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+router.get('/class/:classId', checkPermission('academics', 'view'), async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const schoolId = req.user?.schoolId;
+    const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
 
-      const results = await Result.find(
+    const [allResults, enrolledStudentCount] = await Promise.all([
+      Result.find(
         scopeBySchool(schoolId, {
           classId,
           isPublished: true,
@@ -156,514 +160,573 @@ router.get(
         })
       )
         .populate('studentId', 'name rollNo')
-        .populate('examId', 'name subjectName')
-        .lean();
+        .populate('examId', 'name type subjectName startDate maxMarks')
+        .lean(),
+      Student.countDocuments(
+        scopeBySchool(schoolId, {
+          classId,
+          status: 'active',
+          isDeleted: { $ne: true },
+        })
+      ),
+    ]);
 
-      // Per-student aggregation
-      const studentMap = {};
-      for (const r of results) {
-        const sid = r.studentId?._id?.toString() || r.studentId?.toString();
-        if (!sid) continue;
-        if (!studentMap[sid]) {
-          studentMap[sid] = {
-            studentId: sid,
-            name: r.studentId?.name || 'Unknown',
-            rollNo: r.studentId?.rollNo || '-',
-            totalPct: 0,
-            count: 0,
-            grades: [],
-            passed: 0,
-            total: 0,
-          };
-        }
-        studentMap[sid].totalPct += r.percentage || 0;
-        studentMap[sid].count++;
-        if (r.grade) studentMap[sid].grades.push(r.grade);
-        studentMap[sid].total++;
-        if (r.status === 'passed') studentMap[sid].passed++;
+    // A published exam can contain pending placeholder rows created when the
+    // roster was initialised. Those rows are not participants and must not
+    // lower averages/pass rates or receive a class rank.
+    const results = allResults.filter(hasEnteredResult);
+
+    // Per-student aggregation
+    const studentMap = {};
+    for (const r of results) {
+      const sid = r.studentId?._id?.toString() || r.studentId?.toString();
+      if (!sid) continue;
+      if (!studentMap[sid]) {
+        studentMap[sid] = {
+          studentId: sid,
+          name: r.studentId?.name || 'Unknown',
+          rollNo: r.studentId?.rollNo || '-',
+          totalPct: 0,
+          count: 0,
+          grades: [],
+          passed: 0,
+          total: 0,
+        };
       }
-
-      function mostFrequent(arr) {
-        const counts = {};
-        let maxCount = 0,
-          maxItem = arr[0];
-        for (const item of arr) {
-          counts[item] = (counts[item] || 0) + 1;
-          if (counts[item] > maxCount) {
-            maxCount = counts[item];
-            maxItem = item;
-          }
-        }
-        return maxItem;
-      }
-
-      const students = Object.values(studentMap)
-        .map((s) => ({
-          studentId: s.studentId,
-          name: s.name,
-          rollNo: s.rollNo,
-          overallPercentage: Math.round((s.totalPct / s.count) * 10) / 10,
-          overallGrade: s.grades.length > 0 ? mostFrequent(s.grades) : null,
-          classRank: 0,
-          trend: null,
-        }))
-        .sort((a, b) => b.overallPercentage - a.overallPercentage);
-
-      students.forEach((s, idx) => {
-        s.classRank = idx + 1;
-      });
-
-      // Subject breakdown
-      const subjectMap = {};
-      for (const r of results) {
-        const subj = r.examId?.subjectName;
-        if (!subj) continue;
-        if (!subjectMap[subj]) {
-          subjectMap[subj] = { subjectName: subj, percentages: [], passed: 0, total: 0 };
-        }
-        if (r.percentage != null) subjectMap[subj].percentages.push(r.percentage);
-        subjectMap[subj].total++;
-        if (r.status === 'passed') subjectMap[subj].passed++;
-      }
-      const subjectBreakdown = Object.values(subjectMap).map((s) => ({
-        subjectName: s.subjectName,
-        average:
-          s.percentages.length > 0
-            ? Math.round((s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length) * 10) /
-              10
-            : 0,
-        highest: s.percentages.length > 0 ? Math.round(Math.max(...s.percentages) * 10) / 10 : 0,
-        lowest: s.percentages.length > 0 ? Math.round(Math.min(...s.percentages) * 10) / 10 : 0,
-        passRate: s.total > 0 ? Math.round((s.passed / s.total) * 100) : 0,
-      }));
-
-      // Overall stats
-      const allPcts = results.map((r) => r.percentage).filter((p) => p != null);
-      const totalPassed = results.filter((r) => r.status === 'passed').length;
-
-      const hasResults = results.length > 0;
-
-      res.json({
-        classId,
-        academicYear,
-        students,
-        subjectBreakdown,
-        stats: {
-          totalStudents: Object.keys(studentMap).length,
-          averageScore:
-            allPcts.length > 0
-              ? Math.round((allPcts.reduce((a, b) => a + b, 0) / allPcts.length) * 10) / 10
-              : null,
-          topScore: allPcts.length > 0 ? Math.round(Math.max(...allPcts) * 10) / 10 : null,
-          passingRate: hasResults ? Math.round((totalPassed / results.length) * 100) : null,
-        },
-      });
-    } catch (error) {
-      console.error('Error fetching class performance:', error);
-      res.status(500).json({ error: 'Failed to fetch class performance' });
+      studentMap[sid].totalPct += r.percentage || 0;
+      studentMap[sid].count++;
+      if (r.grade) studentMap[sid].grades.push(r.grade);
+      studentMap[sid].total++;
+      if (r.status === 'passed') studentMap[sid].passed++;
     }
+
+    function mostFrequent(arr) {
+      const counts = {};
+      let maxCount = 0,
+        maxItem = arr[0];
+      for (const item of arr) {
+        counts[item] = (counts[item] || 0) + 1;
+        if (counts[item] > maxCount) {
+          maxCount = counts[item];
+          maxItem = item;
+        }
+      }
+      return maxItem;
+    }
+
+    const students = Object.values(studentMap)
+      .map((s) => ({
+        studentId: s.studentId,
+        name: s.name,
+        rollNo: s.rollNo,
+        overallPercentage: Math.round((s.totalPct / s.count) * 10) / 10,
+        overallGrade: s.grades.length > 0 ? mostFrequent(s.grades) : null,
+        classRank: 0,
+        trend: null,
+      }))
+      .sort((a, b) => b.overallPercentage - a.overallPercentage);
+
+    let denseRank = 0;
+    let previousPercentage = null;
+    students.forEach((student) => {
+      if (previousPercentage === null || student.overallPercentage !== previousPercentage) {
+        denseRank += 1;
+        previousPercentage = student.overallPercentage;
+      }
+      student.classRank = denseRank;
+    });
+
+    // Subject breakdown
+    const subjectMap = {};
+    for (const r of results) {
+      const subj = r.examId?.subjectName;
+      if (!subj) continue;
+      if (!subjectMap[subj]) {
+        subjectMap[subj] = { subjectName: subj, percentages: [], passed: 0, total: 0 };
+      }
+      if (r.percentage != null) subjectMap[subj].percentages.push(r.percentage);
+      subjectMap[subj].total++;
+      if (r.status === 'passed') subjectMap[subj].passed++;
+    }
+    const subjectBreakdown = Object.values(subjectMap).map((s) => ({
+      subjectName: s.subjectName,
+      average:
+        s.percentages.length > 0
+          ? Math.round((s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length) * 10) / 10
+          : 0,
+      highest: s.percentages.length > 0 ? Math.round(Math.max(...s.percentages) * 10) / 10 : 0,
+      lowest: s.percentages.length > 0 ? Math.round(Math.min(...s.percentages) * 10) / 10 : 0,
+      passRate: s.total > 0 ? Math.round((s.passed / s.total) * 100) : 0,
+    }));
+
+    // Overall stats
+    const allPcts = results.map((r) => r.percentage).filter((p) => p != null);
+    const totalPassed = results.filter((r) => r.status === 'passed').length;
+
+    const hasResults = results.length > 0;
+
+    // Per-exam rollup (additive). Groups the already-fetched published
+    // results by examId so the class dashboard can render one summary row
+    // per exam (avg %, pass %, fail %, participant count).
+    const examMap = {};
+    for (const r of results) {
+      const eid = r.examId?._id?.toString();
+      if (!eid) continue;
+      if (!examMap[eid]) {
+        examMap[eid] = {
+          examId: eid,
+          examName: r.examId?.name || '—',
+          subjectName: r.examId?.subjectName || null,
+          examType: r.examId?.type || null,
+          date: r.examId?.startDate || null,
+          maxMarks: r.examId?.maxMarks || null,
+          marks: [],
+          percentages: [],
+          passed: 0,
+          total: 0,
+        };
+      }
+      const e = examMap[eid];
+      if (r.marksObtained != null) e.marks.push(r.marksObtained);
+      if (r.percentage != null) e.percentages.push(r.percentage);
+      e.total++;
+      if (r.status === 'passed') e.passed++;
+    }
+    const exams = Object.values(examMap)
+      .map((e) => {
+        const avgPct =
+          e.percentages.length > 0
+            ? Math.round((e.percentages.reduce((a, b) => a + b, 0) / e.percentages.length) * 10) /
+              10
+            : null;
+        const avgMarks =
+          e.marks.length > 0
+            ? Math.round((e.marks.reduce((a, b) => a + b, 0) / e.marks.length) * 10) / 10
+            : null;
+        const passRate = e.total > 0 ? Math.round((e.passed / e.total) * 100) : 0;
+        return {
+          examId: e.examId,
+          examName: e.examName,
+          subjectName: e.subjectName,
+          examType: e.examType,
+          date: e.date,
+          maxMarks: e.maxMarks,
+          averageMarks: avgMarks,
+          averagePercentage: avgPct,
+          passRate,
+          failRate: 100 - passRate,
+          participantCount: e.total,
+        };
+      })
+      .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+
+    res.json({
+      classId,
+      academicYear,
+      students,
+      subjectBreakdown,
+      exams,
+      stats: {
+        totalStudents: Object.keys(studentMap).length,
+        participantCount: Object.keys(studentMap).length,
+        enrolledStudentCount,
+        averageScore:
+          allPcts.length > 0
+            ? Math.round((allPcts.reduce((a, b) => a + b, 0) / allPcts.length) * 10) / 10
+            : null,
+        topScore: allPcts.length > 0 ? Math.round(Math.max(...allPcts) * 10) / 10 : null,
+        passingRate: hasResults ? Math.round((totalPassed / results.length) * 100) : null,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching class performance:', error);
+    res.status(500).json({ error: 'Failed to fetch class performance' });
   }
-);
+});
 
 // GET /academic-performance/student/:studentId
 // Returns computed analytics summary for a student
-router.get(
-  '/student/:studentId',
-  checkPermission('students', 'view'),
-  async (req, res) => {
-    try {
-      const { studentId } = req.params;
-      const schoolId = req.user?.schoolId;
-      const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+router.get('/student/:studentId', checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const schoolId = req.user?.schoolId;
+    const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
 
-      const student = await Student.findOne(
-        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-      ).lean();
-      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
+    const student = await Student.findOne(
+      scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    ).lean();
+    if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
-      const results = await Result.find(
-        scopeBySchool(schoolId, {
-          studentId,
-          isPublished: true,
-          isDeleted: { $ne: true },
-          academicYear,
-        })
-      )
-        .populate('examId', 'name type startDate subjectName subject')
-        .sort({ createdAt: -1 })
-        .lean();
-
-      const gradeDistribution = {};
-      let totalPercentage = 0;
-
-      for (const r of results) {
-        if (r.grade) gradeDistribution[r.grade] = (gradeDistribution[r.grade] || 0) + 1;
-        if (r.percentage) totalPercentage += r.percentage;
-      }
-
-      const averagePercentage =
-        results.length > 0 ? Math.round((totalPercentage / results.length) * 10) / 10 : null;
-
-      const latest = results[0];
-      const latestGrade = latest?.grade || null;
-      const latestRank = latest?.rank || null;
-      const latestTotalMarks =
-        latest?.totalMarksObtained != null && latest?.totalMaxMarks
-          ? `${latest.totalMarksObtained}/${latest.totalMaxMarks}`
-          : latest?.marksObtained != null
-            ? `${latest.marksObtained}/${latest.maxMarks}`
-            : null;
-
-      // Attendance — last 6 months
-      const sixMonthsAgo = new Date();
-      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-      const startDate = sixMonthsAgo.toISOString().split('T')[0];
-      const endDate = new Date().toISOString().split('T')[0];
-
-      const attendanceRecords = await Attendance.find(
-        scopeBySchool(schoolId, { studentId, date: { $gte: startDate, $lte: endDate } })
-      ).lean();
-
-      let attendancePercentage = null;
-      if (attendanceRecords.length > 0) {
-        const present = attendanceRecords.filter(
-          (r) => r.status === 'present' || r.status === 'late'
-        ).length;
-        attendancePercentage = Math.round((present / attendanceRecords.length) * 100);
-      }
-
-      res.json({
+    const results = await Result.find(
+      scopeBySchool(schoolId, {
         studentId,
+        isPublished: true,
+        isDeleted: { $ne: true },
         academicYear,
-        totalExams: results.length,
-        averagePercentage,
-        latestGrade,
-        latestRank,
-        latestTotalMarks,
-        gradeDistribution,
-        attendancePercentage,
-      });
-    } catch (error) {
-      console.error('Error fetching student academic performance:', error);
-      res.status(500).json({ error: 'Failed to fetch academic performance' });
+      })
+    )
+      .populate('examId', 'name type startDate subjectName subject')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const gradeDistribution = {};
+    let totalPercentage = 0;
+
+    for (const r of results) {
+      if (r.grade) gradeDistribution[r.grade] = (gradeDistribution[r.grade] || 0) + 1;
+      if (r.percentage) totalPercentage += r.percentage;
     }
+
+    const averagePercentage =
+      results.length > 0 ? Math.round((totalPercentage / results.length) * 10) / 10 : null;
+
+    const latest = results[0];
+    const latestGrade = latest?.grade || null;
+    const latestRank = latest?.rank || null;
+    const latestTotalMarks =
+      latest?.totalMarksObtained != null && latest?.totalMaxMarks
+        ? `${latest.totalMarksObtained}/${latest.totalMaxMarks}`
+        : latest?.marksObtained != null
+          ? `${latest.marksObtained}/${latest.maxMarks}`
+          : null;
+
+    // Attendance — last 6 months
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const startDate = sixMonthsAgo.toISOString().split('T')[0];
+    const endDate = new Date().toISOString().split('T')[0];
+
+    const attendanceRecords = await Attendance.find(
+      scopeBySchool(schoolId, { studentId, date: { $gte: startDate, $lte: endDate } })
+    ).lean();
+
+    let attendancePercentage = null;
+    if (attendanceRecords.length > 0) {
+      const present = attendanceRecords.filter(
+        (r) => r.status === 'present' || r.status === 'late'
+      ).length;
+      attendancePercentage = Math.round((present / attendanceRecords.length) * 100);
+    }
+
+    res.json({
+      studentId,
+      academicYear,
+      totalExams: results.length,
+      averagePercentage,
+      latestGrade,
+      latestRank,
+      latestTotalMarks,
+      gradeDistribution,
+      attendancePercentage,
+    });
+  } catch (error) {
+    console.error('Error fetching student academic performance:', error);
+    res.status(500).json({ error: 'Failed to fetch academic performance' });
   }
-);
+});
 
 // GET /academic-performance/trends/:studentId
 // Returns per-exam performance trend data for charting
-router.get(
-  '/trends/:studentId',
-  checkPermission('students', 'view'),
-  async (req, res) => {
-    try {
-      const { studentId } = req.params;
-      const schoolId = req.user?.schoolId;
-      const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+router.get('/trends/:studentId', checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const schoolId = req.user?.schoolId;
+    const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
 
-      const student = await Student.findOne(
-        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-      ).lean();
-      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
+    const student = await Student.findOne(
+      scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    ).lean();
+    if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
-      const results = await Result.find(
-        scopeBySchool(schoolId, {
-          studentId,
-          isPublished: true,
-          isDeleted: { $ne: true },
-          academicYear,
-        })
-      )
-        .populate('examId', 'name type startDate subjectName subject')
-        .sort({ createdAt: 1 }) // ascending for trend chart
-        .lean();
+    const results = await Result.find(
+      scopeBySchool(schoolId, {
+        studentId,
+        isPublished: true,
+        isDeleted: { $ne: true },
+        academicYear,
+      })
+    )
+      .populate('examId', 'name type startDate subjectName subject')
+      .sort({ createdAt: 1 }) // ascending for trend chart
+      .lean();
 
-      const trends = results.map((r) => ({
-        examId: r.examId?._id || r.examId,
-        examName: r.examId?.name || 'Exam',
-        examType: r.examId?.type || null,
-        date: r.examId?.startDate || r.createdAt,
-        percentage: r.percentage ?? null,
-        grade: r.grade || null,
-        rank: r.rank || null,
-        marksObtained: r.totalMarksObtained ?? r.marksObtained ?? null,
-        maxMarks: r.totalMaxMarks ?? r.maxMarks ?? null,
-      }));
+    const trends = results.map((r) => ({
+      examId: r.examId?._id || r.examId,
+      examName: r.examId?.name || 'Exam',
+      examType: r.examId?.type || null,
+      date: r.examId?.startDate || r.createdAt,
+      percentage: r.percentage ?? null,
+      grade: r.grade || null,
+      rank: r.rank || null,
+      marksObtained: r.totalMarksObtained ?? r.marksObtained ?? null,
+      maxMarks: r.totalMaxMarks ?? r.maxMarks ?? null,
+    }));
 
-      res.json({ studentId, academicYear, trends });
-    } catch (error) {
-      console.error('Error fetching student performance trends:', error);
-      res.status(500).json({ error: 'Failed to fetch performance trends' });
-    }
+    res.json({ studentId, academicYear, trends });
+  } catch (error) {
+    console.error('Error fetching student performance trends:', error);
+    res.status(500).json({ error: 'Failed to fetch performance trends' });
   }
-);
+});
 
 // GET /academic-performance/report-card/:studentId
 // Returns a structured report card: all results, attendance, and academic remarks
-router.get(
-  '/report-card/:studentId',
-  checkPermission('students', 'view'),
-  async (req, res) => {
-    try {
-      const { studentId } = req.params;
-      const schoolId = req.user?.schoolId;
-      const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+router.get('/report-card/:studentId', checkPermission('students', 'view'), async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const schoolId = req.user?.schoolId;
+    const academicYear = req.query.academicYear || CURRENT_ACADEMIC_YEAR;
 
-      const student = await Student.findOne(
-        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-      )
-        .populate('classId', 'name section')
-        .lean();
-      if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
+    const student = await Student.findOne(
+      scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    )
+      .populate('classId', 'name section')
+      .lean();
+    if (!student) return res.status(404).json({ error: req.t('students:errors.notFound') });
 
-      // All published results for the student
-      const results = await Result.find(
-        scopeBySchool(schoolId, {
-          studentId,
-          isPublished: true,
-          isDeleted: { $ne: true },
-          academicYear,
-        })
-      )
-        .populate('examId', 'name type startDate subjectName subject')
-        .sort({ createdAt: -1 })
-        .lean();
-
-      // Compute overall stats
-      let totalPercentage = 0;
-      let resultsWithPercentage = 0;
-      for (const r of results) {
-        if (r.percentage != null) {
-          totalPercentage += r.percentage;
-          resultsWithPercentage++;
-        }
-      }
-      const overallPercentage =
-        resultsWithPercentage > 0
-          ? Math.round((totalPercentage / resultsWithPercentage) * 10) / 10
-          : null;
-
-      const latest = results[0];
-      const overallGrade = latest?.grade || null;
-      const overallRank = latest?.rank || null;
-
-      // Attendance for the academic year (approximate by 12 months window)
-      const yearStart = `${academicYear.split('-')[0]}-04-01`;
-      const yearEnd = new Date().toISOString().split('T')[0];
-
-      const attendanceRecords = await Attendance.find(
-        scopeBySchool(schoolId, { studentId, date: { $gte: yearStart, $lte: yearEnd } })
-      ).lean();
-
-      let attendancePercentage = null;
-      let presentDays = 0;
-      const totalDays = attendanceRecords.length;
-      if (totalDays > 0) {
-        presentDays = attendanceRecords.filter(
-          (r) => r.status === 'present' || r.status === 'late'
-        ).length;
-        attendancePercentage = Math.round((presentDays / totalDays) * 100);
-      }
-
-      // Latest academic remarks (up to 5)
-      const remarks = await Remark.find(
-        scopeBySchool(schoolId, {
-          studentId,
-          category: 'academic',
-          isDeleted: { $ne: true },
-        })
-      )
-        .populate('authorId', 'name')
-        .sort({ date: -1 })
-        .limit(5)
-        .lean();
-
-      // Shape results for frontend
-      const examResults = results.map((r) => ({
-        examId: r.examId?._id || r.examId,
-        examName: r.examId?.name || 'Exam',
-        examType: r.examId?.type || null,
-        examDate: r.examId?.startDate || r.createdAt,
-        // Multi-subject breakdown
-        subjects: (r.marks || []).map((m) => ({
-          subjectName: m.subjectName,
-          marksObtained: m.marksObtained,
-          maxMarks: m.maxMarks,
-          grade: m.grade || null,
-          remarks: m.remarks || null,
-        })),
-        // Single-subject fallback
-        marksObtained: r.totalMarksObtained ?? r.marksObtained ?? null,
-        maxMarks: r.totalMaxMarks ?? r.maxMarks ?? null,
-        percentage: r.percentage ?? null,
-        grade: r.grade || null,
-        rank: r.rank || null,
-        status: r.status || null,
-        teacherRemarks: r.remarks || null,
-      }));
-
-      res.json({
+    // All published results for the student
+    const results = await Result.find(
+      scopeBySchool(schoolId, {
         studentId,
+        isPublished: true,
+        isDeleted: { $ne: true },
         academicYear,
-        student: {
-          name: student.name,
-          admissionNo: student.admissionNumber || student.admissionNo,
-          rollNo: student.rollNo,
-          className: student.classId?.name
-            ? `${student.classId.name}${student.classId.section ? ' ' + student.classId.section : ''}`
-            : student.class || null,
-          phone: student.phone,
-          email: student.email,
-        },
-        summary: {
-          totalExams: results.length,
-          overallPercentage,
-          overallGrade,
-          overallRank,
-          attendancePercentage,
-          presentDays,
-          totalDays,
-        },
-        examResults,
-        remarks: remarks.map((r) => ({
-          title: r.title,
-          description: r.description,
-          authorName: r.authorId?.name || null,
-          date: r.date || r.createdAt,
-        })),
-      });
-    } catch (error) {
-      console.error('Error fetching report card:', error);
-      res.status(500).json({ error: 'Failed to fetch report card' });
+      })
+    )
+      .populate('examId', 'name type startDate subjectName subject')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Compute overall stats
+    let totalPercentage = 0;
+    let resultsWithPercentage = 0;
+    for (const r of results) {
+      if (r.percentage != null) {
+        totalPercentage += r.percentage;
+        resultsWithPercentage++;
+      }
     }
+    const overallPercentage =
+      resultsWithPercentage > 0
+        ? Math.round((totalPercentage / resultsWithPercentage) * 10) / 10
+        : null;
+
+    const latest = results[0];
+    const overallGrade = latest?.grade || null;
+    const overallRank = latest?.rank || null;
+
+    // Attendance for the academic year (approximate by 12 months window)
+    const yearStart = `${academicYear.split('-')[0]}-04-01`;
+    const yearEnd = new Date().toISOString().split('T')[0];
+
+    const attendanceRecords = await Attendance.find(
+      scopeBySchool(schoolId, { studentId, date: { $gte: yearStart, $lte: yearEnd } })
+    ).lean();
+
+    let attendancePercentage = null;
+    let presentDays = 0;
+    const totalDays = attendanceRecords.length;
+    if (totalDays > 0) {
+      presentDays = attendanceRecords.filter(
+        (r) => r.status === 'present' || r.status === 'late'
+      ).length;
+      attendancePercentage = Math.round((presentDays / totalDays) * 100);
+    }
+
+    // Latest academic remarks (up to 5)
+    const remarks = await Remark.find(
+      scopeBySchool(schoolId, {
+        studentId,
+        category: 'academic',
+        isDeleted: { $ne: true },
+      })
+    )
+      .populate('authorId', 'name')
+      .sort({ date: -1 })
+      .limit(5)
+      .lean();
+
+    // Shape results for frontend
+    const examResults = results.map((r) => ({
+      examId: r.examId?._id || r.examId,
+      examName: r.examId?.name || 'Exam',
+      examType: r.examId?.type || null,
+      examDate: r.examId?.startDate || r.createdAt,
+      // Multi-subject breakdown
+      subjects: (r.marks || []).map((m) => ({
+        subjectName: m.subjectName,
+        marksObtained: m.marksObtained,
+        maxMarks: m.maxMarks,
+        grade: m.grade || null,
+        remarks: m.remarks || null,
+      })),
+      // Single-subject fallback
+      marksObtained: r.totalMarksObtained ?? r.marksObtained ?? null,
+      maxMarks: r.totalMaxMarks ?? r.maxMarks ?? null,
+      percentage: r.percentage ?? null,
+      grade: r.grade || null,
+      rank: r.rank || null,
+      status: r.status || null,
+      teacherRemarks: r.remarks || null,
+    }));
+
+    res.json({
+      studentId,
+      academicYear,
+      student: {
+        name: student.name,
+        admissionNo: student.admissionNumber || student.admissionNo,
+        rollNo: student.rollNo,
+        className: student.classId?.name
+          ? `${student.classId.name}${student.classId.section ? ' ' + student.classId.section : ''}`
+          : student.class || null,
+        phone: student.phone,
+        email: student.email,
+      },
+      summary: {
+        totalExams: results.length,
+        overallPercentage,
+        overallGrade,
+        overallRank,
+        attendancePercentage,
+        presentDays,
+        totalDays,
+      },
+      examResults,
+      remarks: remarks.map((r) => ({
+        title: r.title,
+        description: r.description,
+        authorName: r.authorId?.name || null,
+        date: r.date || r.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching report card:', error);
+    res.status(500).json({ error: 'Failed to fetch report card' });
   }
-);
+});
 
 // POST /academic-performance/recalculate/:studentId
 // Recalculate grades, percentages, and ranks for a student's results
-router.post(
-  '/recalculate/:studentId',
-  checkPermission('academics', 'edit'),
-  async (req, res) => {
-    try {
-      const { studentId } = req.params;
-      const schoolId = req.user?.schoolId;
-      const academicYear = req.body.academicYear || req.query.academicYear || CURRENT_ACADEMIC_YEAR;
+router.post('/recalculate/:studentId', checkPermission('academics', 'edit'), async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const schoolId = req.user?.schoolId;
+    const academicYear = req.body.academicYear || req.query.academicYear || CURRENT_ACADEMIC_YEAR;
 
-      // Verify student exists and belongs to this school
-      const student = await Student.findOne(
-        scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
-      ).lean();
-      if (!student) {
-        return res.status(404).json({ error: 'Student not found' });
-      }
+    // Verify student exists and belongs to this school
+    const student = await Student.findOne(
+      scopeBySchool(schoolId, { _id: studentId, isDeleted: { $ne: true } })
+    ).lean();
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
 
-      // Find all results for this student in the given academic year
-      const results = await Result.find(
-        scopeBySchool(schoolId, {
-          studentId,
-          isDeleted: { $ne: true },
-          academicYear,
-        })
-      ).populate('examId', 'maxMarks passingMarks');
+    // Find all results for this student in the given academic year
+    const results = await Result.find(
+      scopeBySchool(schoolId, {
+        studentId,
+        isDeleted: { $ne: true },
+        academicYear,
+      })
+    ).populate('examId', 'maxMarks passingMarks');
 
-      if (results.length === 0) {
-        return res.json({ message: 'No results to recalculate', count: 0 });
-      }
+    if (results.length === 0) {
+      return res.json({ message: 'No results to recalculate', count: 0 });
+    }
 
-      const bulkOps = [];
-      // Track unique exam+class pairs for rank recalculation
-      const examClassPairs = new Set();
+    const bulkOps = [];
+    // Track unique exam+class pairs for rank recalculation
+    const examClassPairs = new Set();
 
-      for (const result of results) {
-        const maxMarks = result.examId?.maxMarks || result.maxMarks || 100;
-        const passingMarks = result.examId?.passingMarks || 35;
-        const marksObtained = result.marksObtained || 0;
+    for (const result of results) {
+      const maxMarks = result.examId?.maxMarks || result.maxMarks || 100;
+      const passingMarks = result.examId?.passingMarks || 35;
+      const marksObtained = result.marksObtained || 0;
 
-        const rawPercentage = maxMarks > 0 ? (marksObtained / maxMarks) * 100 : 0;
-        const percentage = Math.round(rawPercentage * 100) / 100;
+      const rawPercentage = maxMarks > 0 ? (marksObtained / maxMarks) * 100 : 0;
+      const percentage = Math.round(rawPercentage * 100) / 100;
 
-        // Grade calculation (same logic as academics.js computeGrade)
-        let grade;
-        if (percentage >= 90) grade = 'A+';
-        else if (percentage >= 80) grade = 'A';
-        else if (percentage >= 70) grade = 'B+';
-        else if (percentage >= 60) grade = 'B';
-        else if (percentage >= 50) grade = 'C';
-        else if (percentage >= 40) grade = 'D';
-        else grade = 'F';
+      // Grade calculation (same logic as academics.js computeGrade)
+      let grade;
+      if (percentage >= 90) grade = 'A+';
+      else if (percentage >= 80) grade = 'A';
+      else if (percentage >= 70) grade = 'B+';
+      else if (percentage >= 60) grade = 'B';
+      else if (percentage >= 50) grade = 'C';
+      else if (percentage >= 40) grade = 'D';
+      else grade = 'F';
 
-        const status = marksObtained >= passingMarks ? 'passed' : 'failed';
+      const status = marksObtained >= passingMarks ? 'passed' : 'failed';
 
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: result._id },
-            update: {
-              $set: {
-                percentage,
-                grade,
-                status,
-                maxMarks,
-                totalMaxMarks: maxMarks,
-                totalMarksObtained: marksObtained,
-              },
+      bulkOps.push({
+        updateOne: {
+          filter: { _id: result._id },
+          update: {
+            $set: {
+              percentage,
+              grade,
+              status,
+              maxMarks,
+              totalMaxMarks: maxMarks,
+              totalMarksObtained: marksObtained,
             },
           },
-        });
-
-        // Collect exam+class for rank recomputation
-        const examId = result.examId?._id || result.examId;
-        const classId = result.classId;
-        if (examId && classId) {
-          examClassPairs.add(`${examId}::${classId}`);
-        }
-      }
-
-      if (bulkOps.length > 0) {
-        await Result.bulkWrite(bulkOps);
-      }
-
-      // Recompute ranks for each affected exam+class
-      const normalizedSchoolId = scopeBySchool(schoolId, {}).schoolId;
-      for (const pair of examClassPairs) {
-        const [examId, classId] = pair.split('::');
-        // Inline rank computation
-        const allResults = await Result.find({
-          examId,
-          classId,
-          schoolId: normalizedSchoolId,
-          isDeleted: { $ne: true },
-        }).sort({ percentage: -1 });
-
-        const rankOps = [];
-        let currentRank = 1;
-        for (let i = 0; i < allResults.length; i++) {
-          if (i > 0 && allResults[i].percentage < allResults[i - 1].percentage) {
-            currentRank++;
-          }
-          rankOps.push({
-            updateOne: {
-              filter: { _id: allResults[i]._id },
-              update: { $set: { rank: currentRank } },
-            },
-          });
-        }
-        if (rankOps.length > 0) {
-          await Result.bulkWrite(rankOps);
-        }
-      }
-
-      res.json({
-        message: 'Results recalculated successfully',
-        count: results.length,
-        studentId,
-        academicYear,
+        },
       });
-    } catch (error) {
-      console.error('Error recalculating student performance:', error);
-      res.status(500).json({ error: 'Failed to recalculate performance' });
+
+      // Collect exam+class for rank recomputation
+      const examId = result.examId?._id || result.examId;
+      const classId = result.classId;
+      if (examId && classId) {
+        examClassPairs.add(`${examId}::${classId}`);
+      }
     }
+
+    if (bulkOps.length > 0) {
+      await Result.bulkWrite(bulkOps);
+    }
+
+    // Recompute ranks for each affected exam+class
+    const normalizedSchoolId = scopeBySchool(schoolId, {}).schoolId;
+    for (const pair of examClassPairs) {
+      const [examId, classId] = pair.split('::');
+      // Inline rank computation
+      const allResults = await Result.find({
+        examId,
+        classId,
+        schoolId: normalizedSchoolId,
+        isDeleted: { $ne: true },
+      }).sort({ percentage: -1 });
+
+      const rankOps = [];
+      let currentRank = 1;
+      for (let i = 0; i < allResults.length; i++) {
+        if (i > 0 && allResults[i].percentage < allResults[i - 1].percentage) {
+          currentRank++;
+        }
+        rankOps.push({
+          updateOne: {
+            filter: { _id: allResults[i]._id },
+            update: { $set: { rank: currentRank } },
+          },
+        });
+      }
+      if (rankOps.length > 0) {
+        await Result.bulkWrite(rankOps);
+      }
+    }
+
+    res.json({
+      message: 'Results recalculated successfully',
+      count: results.length,
+      studentId,
+      academicYear,
+    });
+  } catch (error) {
+    console.error('Error recalculating student performance:', error);
+    res.status(500).json({ error: 'Failed to recalculate performance' });
   }
-);
+});
 
 export default router;

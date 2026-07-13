@@ -8,8 +8,7 @@ import {
   getNextAdmissionId,
   peekNextAdmissionId,
 } from '../../database.js';
-import { permanentlyDeleteStudentData } from '../../services/studentDataErasureService.js';
-import { logToTrash } from '../../services/trashService.js';
+import { archiveStudent } from '../../services/studentArchiveService.js';
 import { checkPermission } from '../../middleware/permissions.js';
 import { resolveAcademicYear, getConfiguredAcademicYear } from '../../utils/academicYear.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
@@ -25,325 +24,282 @@ import {
 import { authenticate } from '../../middleware/auth.js';
 import { objectIdParamHandler } from '../../middleware/validation.js';
 import { buildPaginationResponse } from '../../utils/pagination.js';
+import { validateZod, studentListQuerySchema } from '../../validators/index.js';
 
 const router = express.Router();
 router.use(authenticate);
 router.param('id', objectIdParamHandler);
 
-router.get('/', checkPermission('students', 'view'), async (req, res) => {
-  try {
-    const {
-      classId,
-      page = 1,
-      limit = 50,
-      search = '',
-      status = 'all',
-      feeStatus = 'all',
-      academicYear = 'all',
-      sortBy = 'name',
-      sortOrder = 'asc',
-    } = req.query;
-    const rawLimit = parseInt(limit, 10);
-    const noPagination = rawLimit === 0;
-    const pageNum = noPagination ? 1 : Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = noPagination ? 0 : Math.min(Math.max(rawLimit || 50, 1), 100);
-    const skip = noPagination ? 0 : (pageNum - 1) * limitNum;
-    const resolvedAcademicYear = await resolveAcademicYear(academicYear);
-    const schoolId = await resolveRequestSchoolId(req);
-    const query = await buildStudentListQuery(
-      {
+router.get(
+  '/',
+  checkPermission('students', 'view'),
+  validateZod(studentListQuerySchema, 'query'),
+  async (req, res) => {
+    try {
+      const {
         classId,
-        status,
-        academicYear,
-        search,
-        feeStatus,
-        schoolId,
-      },
-      resolvedAcademicYear
-    );
-    const sort = getStudentListSort(sortBy, sortOrder);
-
-    const baseQuery = await buildStudentListQuery(
-      {
-        classId,
-        status: 'all',
-        academicYear,
-        search,
-        feeStatus,
-        schoolId,
-      },
-      resolvedAcademicYear
-    );
-
-    const [total, statusCountsAgg] = await Promise.all([
-      Student.countDocuments(query),
-      Student.aggregate([
-        { $match: baseQuery },
-        { $group: { _id: '$status', count: { $sum: 1 } } },
-      ]),
-    ]);
-
-    const statusCounts = {
-      all: 0,
-      active: 0,
-      inactive: 0,
-      alumni: 0,
-      transferred: 0,
-      graduated: 0,
-    };
-    for (const { _id, count } of statusCountsAgg) {
-      const key = _id || 'active';
-      statusCounts[key] = count;
-      statusCounts.all += count;
-    }
-
-    let students;
-
-    if (sortBy === 'class') {
-      // First run aggregation to get sorted + paginated Student._id list —
-      // we can't return Student.aggregate() directly because it bypasses
-      // the piiPlugin post('find') hook and returns encrypted ciphertext
-      // for phone/email/aadhaarNumber/address/parents.phone.
-      const pipeline = [
-        { $match: query },
+        page = 1,
+        limit = 50,
+        search = '',
+        status = 'all',
+        feeStatus = 'all',
+        academicYear = 'all',
+        sortBy = 'name',
+        sortOrder = 'asc',
+      } = req.query;
+      const rawLimit = parseInt(limit, 10);
+      const noPagination = rawLimit === 0;
+      const pageNum = noPagination ? 1 : Math.max(parseInt(page, 10) || 1, 1);
+      const limitNum = noPagination ? 0 : Math.min(Math.max(rawLimit || 50, 1), 100);
+      const skip = noPagination ? 0 : (pageNum - 1) * limitNum;
+      const firstAcademicYear = String(academicYear).split(',')[0];
+      const resolvedAcademicYear = await resolveAcademicYear(
+        firstAcademicYear === 'all' ? undefined : firstAcademicYear
+      );
+      const schoolId = await resolveRequestSchoolId(req);
+      const query = await buildStudentListQuery(
         {
-          $lookup: {
-            from: 'classes',
-            localField: 'classId',
-            foreignField: '_id',
-            as: 'classId',
-          },
+          classId,
+          status,
+          academicYear,
+          search,
+          feeStatus,
+          schoolId,
         },
-        {
-          $unwind: { path: '$classId', preserveNullAndEmptyArrays: true },
-        },
-        { $sort: sort },
-        { $project: { _id: 1 } },
-      ];
-      if (!noPagination) {
-        pipeline.push({ $skip: skip }, { $limit: limitNum });
-      }
-      const idRows = await Student.aggregate(pipeline);
-      const ids = idRows.map((r) => r._id);
-      // Re-fetch via find() so piiPlugin decrypts PII, then reorder to match
-      // the aggregation's sort.
-      const unsorted = await Student.find({ _id: { $in: ids } })
-        .populate('classId', 'name section')
-        .lean();
-      const byId = new Map(unsorted.map((s) => [String(s._id), s]));
-      students = ids.map((id) => byId.get(String(id))).filter(Boolean);
-    } else {
-      let q = Student.find(query).populate('classId', 'name section').sort(sort);
-      if (!noPagination) {
-        q = q.skip(skip).limit(limitNum);
-      }
-      students = await q.lean();
-    }
+        resolvedAcademicYear
+      );
+      const sort = getStudentListSort(sortBy, sortOrder);
 
-    const studentIds = students.map((student) => student._id);
-    // When academicYear is 'all', use the school's configured year for fee lookups
-    const feeYear =
-      resolvedAcademicYear === 'all'
-        ? await getConfiguredAcademicYear(schoolId)
-        : resolvedAcademicYear;
-
-    // Batch fetch attendance, fee structures, and latest results in parallel
-    const [feeStructures, attendanceAgg, latestResults] = await Promise.all([
-      StudentFeeStructure.find({
-        ...(schoolId ? { schoolId } : {}),
-        studentId: { $in: studentIds },
-        academicYear: feeYear,
-      }),
-      Attendance.aggregate([
+      const baseQuery = await buildStudentListQuery(
         {
-          $match: {
-            studentId: { $in: studentIds },
-            ...(schoolId ? { schoolId } : {}),
-            ...(feeYear && feeYear !== 'all' ? { academicYear: feeYear } : {}),
-          },
+          classId,
+          status: 'all',
+          academicYear,
+          search,
+          feeStatus,
+          schoolId,
         },
-        {
-          $group: {
-            _id: '$studentId',
-            total: { $sum: 1 },
-            // halfday counts as 0.5 attendance to match the authoritative
-            // calculation in routes/attendance.js reports endpoint. Before
-            // this fix the student list counted halfday as absent and the
-            // report counted it as 0.5 — two different percentages for the
-            // same student.
-            present: {
-              $sum: {
-                $switch: {
-                  branches: [
-                    { case: { $in: ['$status', ['present', 'late']] }, then: 1 },
-                    { case: { $eq: ['$status', 'halfday'] }, then: 0.5 },
-                  ],
-                  default: 0,
-                },
-              },
-            },
-          },
-        },
-      ]),
-      Result.aggregate([
-        {
-          $match: {
-            studentId: { $in: studentIds },
-            isPublished: true,
-            // aggregate's $match doesn't cast schoolId via Mongoose's normal
-            // cast, so `req.user?.schoolId` as a raw string silently matched
-            // zero rows when the stored value was an ObjectId. Use the
-            // extracted / normalised schoolId that everything else uses.
-            ...(schoolId ? { schoolId } : {}),
-          },
-        },
-        { $sort: { createdAt: -1 } },
-        {
-          $group: {
-            _id: '$studentId',
-            percentage: { $first: '$percentage' },
-          },
-        },
-      ]),
-    ]);
+        resolvedAcademicYear
+      );
 
-    const feeStatusMap = {};
-    feeStructures.forEach((feeStructure) => {
-      feeStatusMap[feeStructure.studentId.toString()] = feeStructure.overallStatus || 'pending';
-    });
+      const [total, statusCountsAgg] = await Promise.all([
+        Student.countDocuments(query),
+        Student.aggregate([
+          { $match: baseQuery },
+          { $group: { _id: '$status', count: { $sum: 1 } } },
+        ]),
+      ]);
 
-    const attendanceMap = {};
-    attendanceAgg.forEach(({ _id, total, present }) => {
-      attendanceMap[_id.toString()] = total > 0 ? Math.round((present / total) * 100) : null;
-    });
-
-    const resultMap = {};
-    latestResults.forEach(({ _id, percentage }) => {
-      resultMap[_id.toString()] = percentage != null ? Math.round(percentage) : null;
-    });
-
-    // ── Global aggregates (footer KPIs) ────────────────────────────────────
-    // These run over the FULL filtered student set (`query`), not just the
-    // current page, so the dashboard footer can show true school-wide totals
-    // (total dues, average attendance) regardless of which page is loaded.
-    // Without this, switching to server-side pagination would make the footer
-    // reflect only the current page's rows.
-    const allFilteredIds = await Student.distinct('_id', query);
-    const [globalFeeAgg, globalAttAgg] = await Promise.all([
-      StudentFeeStructure.aggregate([
-        {
-          $match: {
-            ...(schoolId ? { schoolId } : {}),
-            studentId: { $in: allFilteredIds },
-            academicYear: feeYear,
-          },
-        },
-        { $group: { _id: null, totalDue: { $sum: '$totalBalance' } } },
-      ]),
-      Attendance.aggregate([
-        {
-          $match: {
-            studentId: { $in: allFilteredIds },
-            ...(schoolId ? { schoolId } : {}),
-            ...(feeYear && feeYear !== 'all' ? { academicYear: feeYear } : {}),
-          },
-        },
-        {
-          $group: {
-            _id: '$studentId',
-            total: { $sum: 1 },
-            present: {
-              $sum: {
-                $switch: {
-                  branches: [
-                    { case: { $in: ['$status', ['present', 'late']] }, then: 1 },
-                    { case: { $eq: ['$status', 'halfday'] }, then: 0.5 },
-                  ],
-                  default: 0,
-                },
-              },
-            },
-          },
-        },
-      ]),
-    ]);
-    const totalDue = globalFeeAgg[0]?.totalDue ?? 0;
-    const attPercentages = globalAttAgg
-      .map(({ total, present }) => (total > 0 ? (present / total) * 100 : null))
-      .filter((v) => v != null && Number.isFinite(v));
-    const avgAttendance = attPercentages.length
-      ? Math.round(attPercentages.reduce((a, b) => a + b, 0) / attPercentages.length)
-      : null;
-
-    const formatted = students.map((student) => {
-      const classInfo = formatStudentClass(student);
-      const currentFeeStatus = feeStatusMap[student._id.toString()] || student.feeStatus || 'pending';
-
-      const sid = student._id.toString();
-      return {
-        id: student._id,
-        name: student.name,
-        admissionId: student.admissionId,
-        academicYear: student.academicYear,
-        rollNo: student.rollNo,
-        classId: student.classId?._id?.toString() || student.classId?.toString(),
-        class: classInfo,
-        className: student.classId ? `${student.classId.name} ${student.classId.section}` : null,
-        attendancePercentage: attendanceMap[sid] ?? null,
-        latestResultPercentage: resultMap[sid] ?? null,
-        gender: student.gender,
-        dateOfBirth: student.dateOfBirth,
-        bloodGroup: student.bloodGroup,
-        nationality: student.nationality,
-        religion: student.religion,
-        category: student.category,
-        motherTongue: student.motherTongue,
-        phone: student.phone,
-        email: student.email,
-        address: student.address,
-        parents: student.parents,
-        siblings: student.siblings,
-        previousSchool: student.previousSchool,
-        tcNumber: student.tcNumber,
-        medicalConditions: student.medicalConditions,
-        emergencyContactName: student.emergencyContactName,
-        emergencyContactPhone: student.emergencyContactPhone,
-        transportRequired: student.transportRequired,
-        hostelRequired: student.hostelRequired,
-        feeStatus: currentFeeStatus,
-        status: student.status,
-        isPinned: student.isPinned,
-        pinnedAt: student.pinnedAt,
-        documents: student.documents,
-        photo: student.photo,
-        aadhaarNumber: student.aadhaarNumber,
-        city: student.city,
-        state: student.state,
-        zipCode: student.zipCode,
-        isWhatsapp: student.isWhatsapp,
-        whatsappNumber: student.whatsappNumber,
-        mediumOfInstruction: student.mediumOfInstruction,
-        house: student.house,
+      const statusCounts = {
+        all: 0,
+        active: 0,
+        inactive: 0,
+        alumni: 0,
+        transferred: 0,
+        graduated: 0,
       };
-    });
+      for (const { _id, count } of statusCountsAgg) {
+        const key = _id || 'active';
+        statusCounts[key] = count;
+        statusCounts.all += count;
+      }
 
-    res.json(
-      buildPaginationResponse({
-        data: formatted,
-        page: pageNum,
-        limit: limitNum,
-        total,
-        noPagination,
-        aggregates: { totalDue, avgAttendance, statusCounts },
-        // statusCounts stays a top-level field too for back-compat with
-        // existing consumers that read it directly off the response.
-        extra: { statusCounts },
-      })
-    );
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+      let students;
+
+      if (sortBy === 'class') {
+        // First run aggregation to get sorted + paginated Student._id list —
+        // we can't return Student.aggregate() directly because it bypasses
+        // the piiPlugin post('find') hook and returns encrypted ciphertext
+        // for phone/email/aadhaarNumber/address/parents.phone.
+        const pipeline = [
+          { $match: query },
+          {
+            $lookup: {
+              from: 'classes',
+              localField: 'classId',
+              foreignField: '_id',
+              as: 'classId',
+            },
+          },
+          {
+            $unwind: { path: '$classId', preserveNullAndEmptyArrays: true },
+          },
+          { $sort: sort },
+          { $project: { _id: 1 } },
+        ];
+        if (!noPagination) {
+          pipeline.push({ $skip: skip }, { $limit: limitNum });
+        }
+        const idRows = await Student.aggregate(pipeline);
+        const ids = idRows.map((r) => r._id);
+        // Re-fetch via find() so piiPlugin decrypts PII, then reorder to match
+        // the aggregation's sort.
+        const unsorted = await Student.find({ _id: { $in: ids } })
+          .populate('classId', 'name section')
+          .lean();
+        const byId = new Map(unsorted.map((s) => [String(s._id), s]));
+        students = ids.map((id) => byId.get(String(id))).filter(Boolean);
+      } else {
+        let q = Student.find(query).populate('classId', 'name section').sort(sort);
+        if (!noPagination) {
+          q = q.skip(skip).limit(limitNum);
+        }
+        students = await q.lean();
+      }
+
+      const studentIds = students.map((student) => student._id);
+      // When academicYear is 'all', use the school's configured year for fee lookups
+      const feeYear =
+        resolvedAcademicYear === 'all'
+          ? await getConfiguredAcademicYear(schoolId)
+          : resolvedAcademicYear;
+
+      // Batch fetch attendance, fee structures, and latest results in parallel
+      const [feeStructures, attendanceAgg, latestResults] = await Promise.all([
+        StudentFeeStructure.find({
+          ...(schoolId ? { schoolId } : {}),
+          studentId: { $in: studentIds },
+          academicYear: feeYear,
+        }),
+        Attendance.aggregate([
+          {
+            $match: {
+              studentId: { $in: studentIds },
+              ...(schoolId ? { schoolId } : {}),
+              ...(feeYear && feeYear !== 'all' ? { academicYear: feeYear } : {}),
+            },
+          },
+          {
+            $group: {
+              _id: '$studentId',
+              total: { $sum: 1 },
+              // halfday counts as 0.5 attendance to match the authoritative
+              // calculation in routes/attendance.js reports endpoint. Before
+              // this fix the student list counted halfday as absent and the
+              // report counted it as 0.5 — two different percentages for the
+              // same student.
+              present: {
+                $sum: {
+                  $switch: {
+                    branches: [
+                      { case: { $in: ['$status', ['present', 'late']] }, then: 1 },
+                      { case: { $eq: ['$status', 'halfday'] }, then: 0.5 },
+                    ],
+                    default: 0,
+                  },
+                },
+              },
+            },
+          },
+        ]),
+        Result.aggregate([
+          {
+            $match: {
+              studentId: { $in: studentIds },
+              isPublished: true,
+              // aggregate's $match doesn't cast schoolId via Mongoose's normal
+              // cast, so `req.user?.schoolId` as a raw string silently matched
+              // zero rows when the stored value was an ObjectId. Use the
+              // extracted / normalised schoolId that everything else uses.
+              ...(schoolId ? { schoolId } : {}),
+            },
+          },
+          { $sort: { createdAt: -1 } },
+          {
+            $group: {
+              _id: '$studentId',
+              percentage: { $first: '$percentage' },
+            },
+          },
+        ]),
+      ]);
+
+      const feeStatusMap = {};
+      feeStructures.forEach((feeStructure) => {
+        feeStatusMap[feeStructure.studentId.toString()] = feeStructure.overallStatus || 'pending';
+      });
+
+      const attendanceMap = {};
+      attendanceAgg.forEach(({ _id, total, present }) => {
+        attendanceMap[_id.toString()] = total > 0 ? Math.round((present / total) * 100) : null;
+      });
+
+      const resultMap = {};
+      latestResults.forEach(({ _id, percentage }) => {
+        resultMap[_id.toString()] = percentage != null ? Math.round(percentage) : null;
+      });
+
+      const formatted = students.map((student) => {
+        const classInfo = formatStudentClass(student);
+        const currentFeeStatus =
+          feeStatusMap[student._id.toString()] || student.feeStatus || 'pending';
+
+        const sid = student._id.toString();
+        return {
+          id: student._id,
+          name: student.name,
+          admissionId: student.admissionId,
+          academicYear: student.academicYear,
+          rollNo: student.rollNo,
+          classId: student.classId?._id?.toString() || student.classId?.toString(),
+          class: classInfo,
+          className: student.classId ? `${student.classId.name} ${student.classId.section}` : null,
+          attendancePercentage: attendanceMap[sid] ?? null,
+          latestResultPercentage: resultMap[sid] ?? null,
+          gender: student.gender,
+          dateOfBirth: student.dateOfBirth,
+          bloodGroup: student.bloodGroup,
+          nationality: student.nationality,
+          religion: student.religion,
+          category: student.category,
+          motherTongue: student.motherTongue,
+          phone: student.phone,
+          email: student.email,
+          address: student.address,
+          parents: student.parents,
+          siblings: student.siblings,
+          previousSchool: student.previousSchool,
+          tcNumber: student.tcNumber,
+          medicalConditions: student.medicalConditions,
+          emergencyContactName: student.emergencyContactName,
+          emergencyContactPhone: student.emergencyContactPhone,
+          transportRequired: student.transportRequired,
+          hostelRequired: student.hostelRequired,
+          feeStatus: currentFeeStatus,
+          status: student.status,
+          isPinned: student.isPinned,
+          pinnedAt: student.pinnedAt,
+          documents: student.documents,
+          photo: student.photo,
+          aadhaarNumber: student.aadhaarNumber,
+          city: student.city,
+          state: student.state,
+          zipCode: student.zipCode,
+          isWhatsapp: student.isWhatsapp,
+          whatsappNumber: student.whatsappNumber,
+          mediumOfInstruction: student.mediumOfInstruction,
+          house: student.house,
+        };
+      });
+
+      res.json(
+        buildPaginationResponse({
+          data: formatted,
+          page: pageNum,
+          limit: limitNum,
+          total,
+          noPagination,
+          aggregates: { statusCounts },
+          // statusCounts stays a top-level field too for back-compat with
+          // existing consumers that read it directly off the response.
+          extra: { statusCounts },
+        })
+      );
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   }
-});
+);
 
 // Read-only preview — does NOT increment the counter.
 // The actual admission ID is generated atomically by POST /students at creation time.
@@ -388,64 +344,18 @@ router.get('/:id', checkPermission('students', 'view'), async (req, res) => {
 
 router.delete('/:id', checkPermission('students', 'delete'), async (req, res) => {
   try {
-    // Verify student belongs to this school before deleting
-    const student = await Student.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-    );
-    if (!student) {
-      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
-    }
+    const { student, trashItem, wasActive } = await archiveStudent({
+      studentId: req.params.id,
+      schoolId: req.user?.schoolId,
+      deletedBy: req.user?.id || req.user?._id,
+    });
 
-    // AUDIT-284: Capture active status BEFORE mutation for billing metric
-    const wasActive = student.status === 'active';
-
-    // Snapshot before mutation for trash logging
-    const studentSnapshot = student.toObject();
-
-    // Soft delete: mark as deleted instead of permanent removal
-    student.isDeleted = true;
-    student.deletedAt = new Date();
-    student.status = 'inactive';
-    await student.save();
-
-    // Cascade cleanup: remove orphaned child records for this student.
-    //
-    // StudentFeeStructure is deliberately NOT touched here. Soft-delete is
-    // reversible via /api/trash/:id/restore which flips Student.isDeleted
-    // false — if we hard-deleted the fee structures we'd restore a student
-    // with zero payment history across every academic year, even though
-    // FeePayment receipts still point at them. Fee structures scope by
-    // studentId; while the student is soft-deleted they remain dormant in
-    // the collection. Permanent-delete is handled separately by
-    // permanentlyDeleteStudentData (studentDataErasureService).
-    await Promise.all([
-      // Soft-delete exam results (schema supports isDeleted)
-      Result.updateMany(
-        { studentId: student._id, schoolId: student.schoolId },
-        { isDeleted: true, deletedAt: new Date() }
-      ),
-      // Hard-delete attendance records (no isDeleted field; records are genuinely orphaned)
-      Attendance.deleteMany({ studentId: student._id, schoolId: student.schoolId }),
-    ]);
-
-    // Log to trash for restore capability (await to return trashItemId for undo)
-    let trashItemId = null;
-    try {
-      const trashItem = await logToTrash({
-        itemType: 'Student',
-        itemId: student._id,
-        itemName: student.name || 'Student',
-        originalData: studentSnapshot,
-        deletedBy: req.user?.id || req.user?._id,
-        schoolId: req.user?.schoolId,
-      });
-      trashItemId = trashItem?._id || null;
-    } catch (trashErr) {
-      console.error('Failed to log student to trash:', trashErr);
-    }
-
+    // Billing and activity are secondary projections. The reversible archive
+    // itself has already committed atomically; a metrics outage must not turn
+    // a successful archive into an ambiguous 500 response.
+    const sideEffects = [];
     if (req.user?.schoolId && wasActive) {
-      await incrementUsageMetric(req.user.schoolId, 'students', -1);
+      sideEffects.push(incrementUsageMetric(req.user.schoolId, 'students', -1));
     }
 
     dispatchWebhookEvent(req.user?.schoolId, 'student.deleted', {
@@ -457,24 +367,28 @@ router.delete('/:id', checkPermission('students', 'delete'), async (req, res) =>
     }).catch(() => {});
 
     if (req.user?.schoolId) {
-      await ActivityLog.create({
-        schoolId: extractSchoolId(req.user.schoolId),
-        activityType: 'student_deleted',
-        description: `Student ${student.name} soft-deleted`,
-        performedBy: req.user?.id,
-        details: { studentId: student._id, name: student.name, admissionId: student.admissionId },
-      });
+      sideEffects.push(
+        ActivityLog.create({
+          schoolId: extractSchoolId(req.user.schoolId),
+          activityType: 'student_deleted',
+          description: `Student ${student.name} archived`,
+          performedBy: req.user?.id,
+          details: { studentId: student._id, name: student.name, admissionId: student.admissionId },
+        })
+      );
     }
+    await Promise.allSettled(sideEffects);
 
     res.json({
       success: true,
-      message: 'Student deleted successfully',
+      message: 'Student archived successfully',
       deletedStudentId: student._id,
-      trashItemId,
+      trashItemId: trashItem?._id || null,
     });
   } catch (error) {
     console.error('Error deleting student:', error);
-    res.status(error.status || 500).json({ error: error.message });
+    const message = error.status === 404 ? req.t('common:routes.studentNotFound1') : error.message;
+    res.status(error.status || 500).json({ error: message });
   }
 });
 

@@ -28,7 +28,7 @@ const defaultParent = [
 ];
 
 describe('students routes', () => {
-  it('supports create, read, update, and permanent deletion for a student', async () => {
+  it('supports create, read, update, and reversible archive for a student', async () => {
     const admin = await createStaffUser();
     const classRecord = await createClassRecord();
     const { app } = createTestApp();
@@ -176,10 +176,11 @@ describe('students routes', () => {
     const attendanceCount = await Attendance.countDocuments({ studentId });
 
     // Soft-delete: document remains with isDeleted=true so trash-restore is
-    // lossless. Attendance is hard-deleted (no isDeleted field on that schema).
+    // lossless. Attendance remains present but is hidden by its soft-delete flag.
     expect(deletedStudent).not.toBeNull();
     expect(deletedStudent.isDeleted).toBe(true);
-    expect(attendanceCount).toBe(0);
+    expect(attendanceCount).toBe(1);
+    expect(await Attendance.countDocuments({ studentId, isDeleted: true })).toBe(1);
 
     await request(app).get(`/api/students/${studentId}`).set(authHeaders).expect(404);
   });
@@ -287,13 +288,15 @@ describe('students routes', () => {
       });
     });
 
-    it('returns 409 when rollNo already exists in the same class and academic year', async () => {
+    it('auto-assigns sequential roll numbers within a class and ignores client input', async () => {
       const admin = await createStaffUser();
       const classRecord = await createClassRecord();
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
 
-      await request(app)
+      // Client attempts to force rollNo 10 — server must ignore it and assign
+      // the next free slot (1) instead.
+      const first = await request(app)
         .post('/api/students')
         .set(authHeaders)
         .send({
@@ -305,8 +308,11 @@ describe('students routes', () => {
           parents: defaultParent,
         })
         .expect(201);
+      expect(first.body.rollNo).toBe(1);
 
-      const response = await request(app)
+      // Second student in the same class gets the next sequential number (2),
+      // not a 409 — the server no longer trusts client-supplied rollNo.
+      const second = await request(app)
         .post('/api/students')
         .set(authHeaders)
         .send({
@@ -317,12 +323,8 @@ describe('students routes', () => {
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
-        .expect(409);
-
-      expect(response.body).toMatchObject({
-        error: expect.stringContaining('Roll number'),
-        field: 'rollNo',
-      });
+        .expect(201);
+      expect(second.body.rollNo).toBe(2);
     });
 
     it('returns 400 when name is missing', async () => {

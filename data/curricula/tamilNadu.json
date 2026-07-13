@@ -1,0 +1,19 @@
+{
+  "id": "tamilNadu",
+  "name": "Tamil Nadu State Board (Samacheer Kalvi)",
+  "description": "Tamil Nadu Directorate of School Education syllabus (Samacheer Kalvi). Grades 1-5 follow the three-language core + EVS; 6-10 follow Tamil, English, Mathematics, Science, Social Science; 11-12 are higher-secondary streams under the HSC board (Science stream shown as representative — Commerce and Arts streams can be trimmed by the admin).",
+  "grades": {
+    "1": ["Tamil", "English", "Mathematics", "EVS", "Art", "Music", "Physical Education"],
+    "2": ["Tamil", "English", "Mathematics", "EVS", "Art", "Music", "Physical Education"],
+    "3": ["Tamil", "English", "Mathematics", "EVS", "Art", "Music", "Physical Education"],
+    "4": ["Tamil", "English", "Mathematics", "EVS", "Art", "Music", "Physical Education", "Computer Science"],
+    "5": ["Tamil", "English", "Mathematics", "EVS", "Art", "Music", "Physical Education", "Computer Science"],
+    "6": ["Tamil", "English", "Mathematics", "Science", "Social Science", "Computer Science", "Art", "Physical Education"],
+    "7": ["Tamil", "English", "Mathematics", "Science", "Social Science", "Computer Science", "Art", "Physical Education"],
+    "8": ["Tamil", "English", "Mathematics", "Science", "Social Science", "Computer Science", "Art", "Physical Education"],
+    "9": ["Tamil", "English", "Mathematics", "Science", "Social Science", "Computer Science", "Physical Education"],
+    "10": ["Tamil", "English", "Mathematics", "Science", "Social Science", "Computer Science", "Physical Education"],
+    "11": ["Tamil", "English", "Physics", "Chemistry", "Biology", "Mathematics", "Computer Science"],
+    "12": ["Tamil", "English", "Physics", "Chemistry", "Biology", "Mathematics", "Computer Science"]
+  }
+}

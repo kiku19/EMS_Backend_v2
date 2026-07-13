@@ -1,10 +1,26 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import mongoose from 'mongoose';
-import { Staff } from '../database.js';
+import { Class, Staff } from '../database.js';
 import StaffAttendance from '../models/StaffAttendance.js';
-import { createSchoolRecord, createStaffUser, authHeadersFor } from './helpers/factories.js';
+import Session from '../models/Session.js';
+import TeacherLeave from '../models/TeacherLeave.js';
+import Conversation from '../models/Conversation.js';
+import Message from '../models/Message.js';
+import PushToken from '../models/PushToken.js';
+import TrashItem from '../models/TrashItem.js';
+import {
+  createClassRecord,
+  createSchoolRecord,
+  createStaffUser,
+  authHeadersFor,
+} from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
+import { hmac } from '../utils/encryption.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /**
  * Helper: create a school with an admin user, returning both.
@@ -121,6 +137,21 @@ describe('staff routes', () => {
     });
   });
 
+  // ─── GET /api/staff/next-code — Next staff code ────────────────────
+
+  describe('GET /api/staff/next-code — Next staff code', () => {
+    it('returns the next auto-generated staff code', async () => {
+      const { admin } = await setupSchoolWithAdmin();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const response = await request(app).get('/api/staff/next-code').set(authHeaders).expect(200);
+
+      expect(response.body).toHaveProperty('nextCode');
+      expect(response.body.nextCode).toMatch(/^EMP\d+/);
+    });
+  });
+
   // ─── GET /api/staff — List staff ──────────────────────────────────
 
   describe('GET /api/staff — List staff', () => {
@@ -141,6 +172,54 @@ describe('staff routes', () => {
       expect(response.body[0]).toHaveProperty('id');
       expect(response.body[0]).toHaveProperty('name');
       expect(response.body[0]).toHaveProperty('role');
+    });
+
+    it('does not expose payroll and bank details to a staff viewer without payroll permission', async () => {
+      const { school } = await setupSchoolWithAdmin();
+      const viewer = await createTeacherInSchool(school._id, { name: 'Staff Viewer' });
+      const target = await createTeacherInSchool(school._id, { name: 'Private Payroll Staff' });
+      await Staff.findByIdAndUpdate(target._id, {
+        salary: 72000,
+        accountNumber: '1234567890',
+        ifscCode: 'ABCD0123456',
+        bankName: 'Private Bank',
+        panNumber: 'ABCDE1234F',
+        salaryBreakdown: [{ component: 'Basic', amount: 72000 }],
+      });
+
+      const { app } = createTestApp();
+      const viewerHeaders = authHeadersFor(viewer, 'teacher');
+      const listResponse = await request(app).get('/api/staff').set(viewerHeaders).expect(200);
+      const listTarget = listResponse.body.find((staff) => staff.id === target._id.toString());
+
+      expect(listTarget).not.toHaveProperty('salary');
+      expect(listTarget).not.toHaveProperty('salaryBreakdown');
+      expect(listTarget).not.toHaveProperty('accountNumber');
+      expect(listTarget).not.toHaveProperty('ifscCode');
+      expect(listTarget).not.toHaveProperty('bankName');
+      expect(listTarget).not.toHaveProperty('panNumber');
+
+      const detailResponse = await request(app)
+        .get(`/api/staff/${target._id}`)
+        .set(viewerHeaders)
+        .expect(200);
+      expect(detailResponse.body).not.toHaveProperty('salary');
+      expect(detailResponse.body).not.toHaveProperty('accountNumber');
+      expect(detailResponse.body).not.toHaveProperty('panNumber');
+    });
+
+    it('returns payroll details to a viewer with payroll permission', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const target = await createTeacherInSchool(school._id, { name: 'Payroll Visible Staff' });
+      await Staff.findByIdAndUpdate(target._id, { salary: 64000 });
+
+      const { app } = createTestApp();
+      const response = await request(app)
+        .get(`/api/staff/${target._id}`)
+        .set(authHeadersFor(admin, 'admin'))
+        .expect(200);
+
+      expect(response.body.salary).toBe(64000);
     });
 
     it('returns paginated results when page param is provided', async () => {
@@ -175,9 +254,7 @@ describe('staff routes', () => {
         hasPrevPage: false,
       });
       // Aggregates (tab counts) are now part of the paginated response.
-      expect(response.body.aggregates).toEqual(
-        expect.objectContaining({ total: 6 })
-      );
+      expect(response.body.aggregates).toEqual(expect.objectContaining({ total: 6 }));
     });
 
     it('does not return soft-deleted staff in the list', async () => {
@@ -419,6 +496,37 @@ describe('staff routes', () => {
         const deptValues = response.body.facets.department.map((d) => d.value);
         expect(deptValues).toContain('Math');
         expect(deptValues).not.toContain('Science');
+      });
+
+      it('facets and aggregates exclude deleted staff and honor the other active filters', async () => {
+        const { school, admin } = await setupSchoolWithAdmin();
+        await createTeacherInSchool(school._id, {
+          name: 'Filtered Teacher',
+          staffRole: ['Teacher'],
+          department: 'Math',
+        });
+        await createTeacherInSchool(school._id, {
+          name: 'Different Department',
+          staffRole: ['Librarian'],
+          department: 'Library',
+        });
+        const deleted = await createTeacherInSchool(school._id, {
+          name: 'Deleted Accountant',
+          staffRole: ['Accountant'],
+          department: 'Math',
+        });
+        await Staff.findByIdAndUpdate(deleted._id, { isDeleted: true });
+
+        const { app } = createTestApp();
+        const response = await request(app)
+          .get('/api/staff?page=1&limit=50&department=Math')
+          .set(authHeadersFor(admin, 'admin'))
+          .expect(200);
+
+        expect(response.body.data.map((member) => member.name)).toEqual(['Filtered Teacher']);
+        expect(response.body.facets.role.map((entry) => entry.value)).toContain('Teacher');
+        expect(response.body.facets.role.map((entry) => entry.value)).not.toContain('Accountant');
+        expect(response.body.aggregates.total).toBe(1);
       });
 
       it('skips facets when includeFacets=false', async () => {
@@ -670,6 +778,82 @@ describe('staff routes', () => {
       expect(response.body.id).toBeTruthy();
     });
 
+    it('creates the Staff and Class sides of a class-teacher assignment together', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const classDoc = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class Teacher Create',
+        section: 'A',
+      });
+      const { app } = createTestApp();
+
+      const response = await request(app)
+        .post('/api/staff')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({
+          name: 'Atomic Class Teacher',
+          role: ['Teacher'],
+          assignedClassId: classDoc._id.toString(),
+        })
+        .expect(201);
+
+      const created = await Staff.findById(response.body.id).lean();
+      const assigned = await Class.findById(classDoc._id).lean();
+      expect(created.isClassTeacher).toBe(true);
+      expect(created.classTeacherOf).toBe('Class Teacher Create-A');
+      expect(String(assigned.classTeacherId)).toBe(String(created._id));
+    });
+
+    it('rolls back staff creation when the class-teacher relationship cannot commit', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const classDoc = await createClassRecord({
+        schoolId: school._id,
+        name: 'Rollback Create',
+        section: 'A',
+      });
+      const { app } = createTestApp();
+      vi.spyOn(Staff, 'updateOne').mockRejectedValueOnce(new Error('forced assignment failure'));
+
+      await request(app)
+        .post('/api/staff')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({
+          name: 'Must Not Partially Exist',
+          role: ['Teacher'],
+          assignedClassId: classDoc._id.toString(),
+        })
+        .expect(500);
+
+      expect(
+        await Staff.exists({ schoolId: school._id, name: 'Must Not Partially Exist' })
+      ).toBeNull();
+      expect((await Class.findById(classDoc._id).lean()).classTeacherId).toBeFalsy();
+    });
+
+    it('canonicalises Teaching to Teacher while preserving additional roles', async () => {
+      const { admin } = await setupSchoolWithAdmin();
+      const { app } = createTestApp();
+
+      const response = await request(app)
+        .post('/api/staff')
+        .set(authHeadersFor(admin, 'admin'))
+        .send({
+          name: 'Multi Role Staff',
+          role: ['Teaching', 'Accountant', 'Teacher'],
+          phone: '9876501234',
+          qualification: 'Senior educator',
+          professionalQualifications: [{ name: 'B.Ed', year: '2020', documents: [] }],
+        })
+        .expect(201);
+
+      expect(response.body.role).toEqual(['Teacher', 'Accountant']);
+      expect(response.body.qualification).toBe('Senior educator');
+      expect(response.body.professionalQualifications).toHaveLength(1);
+
+      const stored = await Staff.findById(response.body.id).select('+phoneHash').lean();
+      expect(stored.phoneHash).toBe(hmac('9876501234'));
+    });
+
     it('rejects duplicate email within the same school', async () => {
       const { admin } = await setupSchoolWithAdmin();
       const { app } = createTestApp();
@@ -701,6 +885,19 @@ describe('staff routes', () => {
     // ─── Zod validation tests ───────────────────────────────────
 
     describe('Zod validation', () => {
+      it('requires a selected class when isClassTeacher is true', async () => {
+        const { admin } = await setupSchoolWithAdmin();
+        const { app } = createTestApp();
+
+        const response = await request(app)
+          .post('/api/staff')
+          .set(authHeadersFor(admin, 'admin'))
+          .send({ name: 'Unassigned Class Teacher', role: ['Teacher'], isClassTeacher: true })
+          .expect(400);
+
+        expect(JSON.stringify(response.body)).toMatch(/select a class/i);
+      });
+
       it('returns 400 when name is missing', async () => {
         const { admin } = await setupSchoolWithAdmin();
         const { app } = createTestApp();
@@ -881,6 +1078,38 @@ describe('staff routes', () => {
       });
     });
 
+    it('hashes a reset password exactly once and revokes the target staff sessions', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacherInSchool(school._id, {
+        name: 'Password Reset Target',
+        password: 'OldPassword123',
+      });
+      const previousTokenVersion = teacher.tokenVersion;
+      const session = await Session.create({
+        sessionId: `staff-reset-${teacher._id}`,
+        userId: teacher._id,
+        schoolId: school._id,
+        userType: 'staff',
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const { app } = createTestApp();
+      await request(app)
+        .put(`/api/staff/${teacher._id}`)
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ password: 'NewPassword456' })
+        .expect(200);
+
+      const updated = await Staff.findById(teacher._id);
+      expect(await updated.comparePassword('NewPassword456')).toBe(true);
+      expect(await updated.comparePassword('OldPassword123')).toBe(false);
+      expect(updated.tokenVersion).toBe(previousTokenVersion + 1);
+
+      const revokedSession = await Session.findById(session._id).lean();
+      expect(revokedSession.isRevoked).toBe(true);
+      expect(revokedSession.revokedAt).toBeInstanceOf(Date);
+    });
+
     it('returns 404 when updating a non-existent staff member', async () => {
       const { admin } = await setupSchoolWithAdmin();
       const { app } = createTestApp();
@@ -966,6 +1195,30 @@ describe('staff routes', () => {
       expect(updatedClass.classTeacherId?.toString()).toBe(teacher._id.toString());
     });
 
+    it('rolls back both sides when a class-teacher update fails mid-transaction', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacherInSchool(school._id, { name: 'Rollback Teacher' });
+      const targetClass = await createClassRecord({
+        schoolId: school._id,
+        name: 'Rollback Class',
+        section: 'A',
+      });
+      const { app } = createTestApp();
+      vi.spyOn(Staff, 'updateOne').mockRejectedValueOnce(new Error('forced assignment failure'));
+
+      await request(app)
+        .put(`/api/staff/${teacher._id}`)
+        .set(authHeadersFor(admin, 'admin'))
+        .send({ assignedClassId: targetClass._id.toString() })
+        .expect(500);
+
+      const unchangedTeacher = await Staff.findById(teacher._id).lean();
+      const unchangedClass = await Class.findById(targetClass._id).lean();
+      expect(unchangedTeacher.isClassTeacher).not.toBe(true);
+      expect(unchangedTeacher.classTeacherOf).toBeFalsy();
+      expect(unchangedClass.classTeacherId).toBeFalsy();
+    });
+
     it('validates update payload with Zod (rejects invalid status)', async () => {
       const { school, admin } = await setupSchoolWithAdmin();
       const teacher = await createTeacherInSchool(school._id);
@@ -1046,6 +1299,169 @@ describe('staff routes', () => {
 
       const names = listResponse.body.map((s) => s.name);
       expect(names).not.toContain('Vanishing Staff');
+    });
+
+    it('archives and restores staff without deleting historical records', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacherInSchool(school._id, { name: 'Restorable Teacher' });
+      const classDoc = await createClassRecord({
+        schoolId: school._id,
+        name: 'Restore Class',
+        section: 'A',
+        classTeacherId: teacher._id,
+      });
+      await Staff.findByIdAndUpdate(teacher._id, {
+        isClassTeacher: true,
+        classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+      });
+      const attendance = await StaffAttendance.create({
+        schoolId: school._id,
+        staffId: teacher._id,
+        date: '2025-03-03',
+        status: 'present',
+      });
+      const leave = await TeacherLeave.create({
+        schoolId: school._id,
+        teacherId: teacher._id,
+        leaveType: 'Sick',
+        reason: 'Recovery',
+        startDate: new Date('2025-03-04T00:00:00.000Z'),
+        endDate: new Date('2025-03-04T00:00:00.000Z'),
+        days: 1,
+      });
+      const conversation = await Conversation.create({
+        schoolId: school._id,
+        participants: [
+          { userId: teacher._id, userModel: 'Staff', name: teacher.name },
+          { userId: admin._id, userModel: 'Staff', name: admin.name },
+        ],
+      });
+      const message = await Message.create({
+        schoolId: school._id,
+        conversationId: conversation._id,
+        senderId: teacher._id,
+        senderModel: 'Staff',
+        receiverId: admin._id,
+        receiverModel: 'Staff',
+        content: 'Historical message',
+      });
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+      await request(app).delete(`/api/staff/${teacher._id}`).set(authHeaders).expect(200);
+
+      expect(await StaffAttendance.exists({ _id: attendance._id })).toBeTruthy();
+      expect(await TeacherLeave.exists({ _id: leave._id })).toBeTruthy();
+      expect(await Conversation.exists({ _id: conversation._id })).toBeTruthy();
+      expect(await Message.exists({ _id: message._id })).toBeTruthy();
+      expect((await Class.findById(classDoc._id).lean()).classTeacherId).toBeFalsy();
+
+      const trashItem = await TrashItem.findOne({
+        schoolId: school._id,
+        itemType: 'Staff',
+        itemId: teacher._id,
+      });
+      expect(trashItem).toBeTruthy();
+      expect(trashItem.deletionContext.assignedClasses).toHaveLength(1);
+
+      await request(app).post(`/api/trash/${trashItem._id}/restore`).set(authHeaders).expect(200);
+
+      const restored = await Staff.findById(teacher._id).lean();
+      const restoredClass = await Class.findById(classDoc._id).lean();
+      expect(restored.isDeleted).toBe(false);
+      expect(restored.status).toBe('active');
+      expect(restored.isClassTeacher).toBe(true);
+      expect(String(restoredClass.classTeacherId)).toBe(String(teacher._id));
+      expect(await TrashItem.findById(trashItem._id)).toBeNull();
+      expect(await StaffAttendance.exists({ _id: attendance._id })).toBeTruthy();
+      expect(await TeacherLeave.exists({ _id: leave._id })).toBeTruthy();
+      expect(await Conversation.exists({ _id: conversation._id })).toBeTruthy();
+      expect(await Message.exists({ _id: message._id })).toBeTruthy();
+    });
+
+    it('rolls back account, class, session, and push-token changes if archiving fails', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacherInSchool(school._id, { name: 'Archive Rollback' });
+      const classDoc = await createClassRecord({
+        schoolId: school._id,
+        name: 'Archive Rollback Class',
+        section: 'A',
+        classTeacherId: teacher._id,
+      });
+      await Staff.findByIdAndUpdate(teacher._id, {
+        isClassTeacher: true,
+        classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+      });
+      const loginSession = await Session.create({
+        sessionId: `archive-rollback-${teacher._id}`,
+        userId: teacher._id,
+        schoolId: school._id,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      const pushToken = await PushToken.create({
+        user: teacher._id,
+        userModel: 'Staff',
+        schoolId: school._id,
+        token: `archive-rollback-token-${teacher._id}`,
+        platform: 'web',
+      });
+      vi.spyOn(TrashItem, 'create').mockRejectedValueOnce(new Error('forced trash failure'));
+      const { app } = createTestApp();
+
+      await request(app)
+        .delete(`/api/staff/${teacher._id}`)
+        .set(authHeadersFor(admin, 'admin'))
+        .expect(500);
+
+      const unchangedTeacher = await Staff.findById(teacher._id).lean();
+      const unchangedClass = await Class.findById(classDoc._id).lean();
+      const unchangedSession = await Session.findById(loginSession._id).lean();
+      const unchangedPushToken = await PushToken.findById(pushToken._id).lean();
+      expect(unchangedTeacher.isDeleted).not.toBe(true);
+      expect(unchangedTeacher.status).toBe('active');
+      expect(unchangedTeacher.isClassTeacher).toBe(true);
+      expect(String(unchangedClass.classTeacherId)).toBe(String(teacher._id));
+      expect(unchangedSession.isRevoked).toBe(false);
+      expect(unchangedPushToken.isActive).toBe(true);
+      expect(await TrashItem.exists({ schoolId: school._id, itemId: teacher._id })).toBeNull();
+    });
+
+    it('keeps an archived staff member deleted when their former class now has another teacher', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacherInSchool(school._id, { name: 'Archived Teacher' });
+      const replacement = await createTeacherInSchool(school._id, { name: 'Replacement Teacher' });
+      const classDoc = await createClassRecord({
+        schoolId: school._id,
+        name: 'Conflict Class',
+        section: 'A',
+        classTeacherId: teacher._id,
+      });
+      await Staff.findByIdAndUpdate(teacher._id, {
+        isClassTeacher: true,
+        classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+      await request(app).delete(`/api/staff/${teacher._id}`).set(authHeaders).expect(200);
+
+      await Class.findByIdAndUpdate(classDoc._id, { classTeacherId: replacement._id });
+      await Staff.findByIdAndUpdate(replacement._id, {
+        isClassTeacher: true,
+        classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+      });
+      const trashItem = await TrashItem.findOne({
+        schoolId: school._id,
+        itemType: 'Staff',
+        itemId: teacher._id,
+      });
+
+      await request(app).post(`/api/trash/${trashItem._id}/restore`).set(authHeaders).expect(500);
+
+      expect((await Staff.findById(teacher._id).lean()).isDeleted).toBe(true);
+      expect(String((await Class.findById(classDoc._id).lean()).classTeacherId)).toBe(
+        String(replacement._id)
+      );
+      expect(await TrashItem.findById(trashItem._id)).toBeTruthy();
     });
   });
 

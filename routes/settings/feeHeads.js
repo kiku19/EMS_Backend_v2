@@ -40,6 +40,12 @@ router.post(
         applicableClasses,
         frequency,
         autoApply,
+        // F7: headType / customType / applicableStreams were validated by Zod
+        // and exist on the FeeHead model, but the handler's fixed field-pick
+        // silently discarded them.
+        headType,
+        customType,
+        applicableStreams,
       } = req.body;
 
       // Create fee head
@@ -53,6 +59,9 @@ router.post(
         frequency: frequency || 'yearly',
         schoolId: req.user?.schoolId,
         autoApply: autoApply !== undefined ? autoApply : true,
+        headType,
+        customType,
+        applicableStreams,
       });
 
       await feeHead.save();
@@ -83,6 +92,10 @@ router.put(
         frequency,
         autoApply,
         isActive,
+        // F7: include the classified head fields on update too.
+        headType,
+        customType,
+        applicableStreams,
       } = req.body;
 
       const feeHead = await FeeHead.findOneAndUpdate(
@@ -97,6 +110,9 @@ router.put(
           frequency,
           autoApply,
           isActive,
+          headType,
+          customType,
+          applicableStreams,
         },
         { new: true }
       );

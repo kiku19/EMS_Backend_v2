@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { objectId, optionalObjectId, academicYear, optionalString } from './zodHelpers.js';
 
+// Empty select values from the dashboard mean "unassigned". Normalize them
+// before Mongoose sees the payload; casting an empty string as ObjectId would
+// otherwise turn a valid teacher-clear action into a 500/CastError.
+const nullableClassTeacherId = optionalObjectId.transform((value) => (value === '' ? null : value));
+
 // ─── CREATE CLASS ────────────────────────────────────────────────
 export const createClassSchema = z
   .object({
@@ -14,7 +19,7 @@ export const createClassSchema = z
       .trim()
       .min(1, 'Section is required')
       .max(10, 'Section must not exceed 10 characters'),
-    classTeacherId: optionalObjectId,
+    classTeacherId: nullableClassTeacherId,
     subjects: z
       .array(z.string().max(100, 'Subject name must not exceed 100 characters').trim())
       .default([]),
@@ -45,6 +50,37 @@ export const createClassSchema = z
   })
   .strip();
 
+export const createClassesSchema = z
+  .object({
+    classes: z.array(createClassSchema).min(1).max(20),
+  })
+  .strip()
+  .superRefine(({ classes }, ctx) => {
+    const classKeys = new Set();
+    const teacherIds = new Set();
+    classes.forEach((classData, index) => {
+      const key = `${classData.name.trim().toLowerCase()}|${classData.section.trim().toLowerCase()}|${classData.academicYear}`;
+      if (classKeys.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['classes', index, 'section'],
+          message: 'Duplicate class section in request',
+        });
+      }
+      classKeys.add(key);
+      if (classData.classTeacherId) {
+        if (teacherIds.has(classData.classTeacherId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['classes', index, 'classTeacherId'],
+            message: 'A teacher can only be assigned to one class',
+          });
+        }
+        teacherIds.add(classData.classTeacherId);
+      }
+    });
+  });
+
 // ─── UPDATE CLASS (all fields optional) ──────────────────────────
 export const updateClassSchema = z
   .object({
@@ -55,7 +91,7 @@ export const updateClassSchema = z
       .max(50, 'Class name must not exceed 50 characters')
       .optional(),
     section: z.string().trim().max(10, 'Section must not exceed 10 characters').optional(),
-    classTeacherId: optionalObjectId,
+    classTeacherId: nullableClassTeacherId,
     subjects: z.array(z.string().max(100).trim()).optional(),
     assignedSubjects: z.array(z.string().max(100).trim()).optional(),
     academicYear: academicYear.optional(),
@@ -85,7 +121,7 @@ export const updateClassSchema = z
 // ─── UPDATE CLASS TEACHER ─────────────────────────────────────────
 export const updateClassTeacherSchema = z
   .object({
-    classTeacherId: optionalObjectId,
+    classTeacherId: nullableClassTeacherId,
     force: z.boolean().optional(),
   })
   .strip();
@@ -200,5 +236,19 @@ export const weekAttendanceQuerySchema = z
       .regex(/^\d{4}-\d{2}-\d{2}$/, 'weekStart must be in YYYY-MM-DD format')
       .optional(),
     academicYear: academicYear.optional(),
+  })
+  .strip();
+
+export const classRosterQuerySchema = z
+  .object({
+    skip: z.coerce.number().int().min(0).optional().default(0),
+    limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+  })
+  .strip();
+
+export const classListQuerySchema = z
+  .object({
+    academicYear: academicYear.optional(),
+    teacherId: objectId.optional(),
   })
   .strip();

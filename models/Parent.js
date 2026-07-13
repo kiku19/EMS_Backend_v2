@@ -133,11 +133,16 @@ parentSchema.plugin(piiPlugin, {
   searchableFields: ['phone', 'email'],
 });
 
-// Index for frequently queried fields
-parentSchema.index({ schoolId: 1, phone: 1 }, { unique: true });
+// AES-GCM ciphertext is intentionally non-deterministic, so uniqueness must be
+// enforced on the deterministic companion hashes produced by piiPlugin. The
+// old encrypted-value indexes allowed duplicate guardian accounts under load.
 parentSchema.index(
-  { schoolId: 1, email: 1 },
-  { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+  { schoolId: 1, phoneHash: 1 },
+  { unique: true, partialFilterExpression: { phoneHash: { $type: 'string' } } }
+);
+parentSchema.index(
+  { schoolId: 1, emailHash: 1 },
+  { unique: true, partialFilterExpression: { emailHash: { $type: 'string' } } }
 );
 parentSchema.index({ 'children.studentId': 1 });
 parentSchema.index({ createdAt: -1 });

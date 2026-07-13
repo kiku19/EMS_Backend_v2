@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import piiPlugin from '../utils/piiPlugin.js';
+import { STAFF_ROLES } from '../constants/staffRoles.js';
 
 const staffSchema = new mongoose.Schema(
   {
@@ -11,22 +12,7 @@ const staffSchema = new mongoose.Schema(
       type: [
         {
           type: String,
-          enum: [
-            'Admin',
-            'Super Admin',
-            'Teacher',
-            'Accountant',
-            'Librarian',
-            'Principal',
-            'Vice Principal',
-            'Lab Assistant',
-            'Receptionist',
-            'Counselor',
-            'Driver',
-            'Security',
-            'Administrative',
-            'Teaching',
-          ],
+          enum: STAFF_ROLES,
         },
       ],
       required: true,
@@ -256,10 +242,10 @@ staffSchema.index(
   }
 );
 staffSchema.index(
-  { schoolId: 1, phone: 1 },
+  { schoolId: 1, phoneHash: 1 },
   {
     unique: true,
-    partialFilterExpression: { phone: { $type: 'string' }, isDeleted: false },
+    partialFilterExpression: { phoneHash: { $type: 'string' }, isDeleted: false },
   }
 );
 staffSchema.index({ schoolId: 1, status: 1, isDeleted: 1 });

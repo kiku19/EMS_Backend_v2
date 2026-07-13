@@ -104,7 +104,7 @@ export async function ensureUniqueUsername(baseUsername, schoolId) {
 
 // Fix 2.15: Remove hardcoded fake PAN 'ABCDE1234F'
 // Fix 3.18: designation maps to staff.designation instead of staff.role
-export function formatStaffResponse(staff, assignedClass = null) {
+export function formatStaffResponse(staff, assignedClass = null, { includePayroll = false } = {}) {
   return {
     id: staff._id,
     schoolId: extractSchoolId(staff.schoolId),
@@ -135,7 +135,9 @@ export function formatStaffResponse(staff, assignedClass = null) {
     photo: staff.photo || staff.picture,
     idDocuments: staff.idDocuments,
     professionalQualifications: staff.professionalQualifications || [],
-    qualification: staff.professionalQualifications?.map((item) => item.name).join(', ') || '',
+    // The free-text qualification headline and the structured professional
+    // qualifications are separate fields; neither should overwrite the other.
+    qualification: staff.qualification || '',
     totalExperience: staff.totalExperience,
     experience: staff.experience ?? (parseInt(staff.totalExperience, 10) || 0),
     previousOrganization: staff.previousOrganization,
@@ -150,15 +152,19 @@ export function formatStaffResponse(staff, assignedClass = null) {
     classTeacherOf: staff.classTeacherOf,
     classes: staff.assignedClasses,
     shift: staff.shift || 'Morning',
-    accountNumber: staff.accountNumber,
-    accountHolder: staff.name,
-    ifscCode: staff.ifscCode,
-    bankName: staff.bankName,
-    branchName: staff.branchName,
-    panNumber: staff.panNumber || '',
-    salary: staff.salary || 0,
-    salaryTemplate: staff.salaryTemplate,
-    salaryBreakdown: staff.salaryBreakdown,
+    ...(includePayroll
+      ? {
+          accountNumber: staff.accountNumber,
+          accountHolder: staff.name,
+          ifscCode: staff.ifscCode,
+          bankName: staff.bankName,
+          branchName: staff.branchName,
+          panNumber: staff.panNumber || '',
+          salary: staff.salary || 0,
+          salaryTemplate: staff.salaryTemplate,
+          salaryBreakdown: staff.salaryBreakdown,
+        }
+      : {}),
     assignedClass: assignedClass ? `${assignedClass.name} ${assignedClass.section}` : null,
     assignedClassId: assignedClass?._id,
     reporterId: staff.reporterId?._id || staff.reporterId || null,

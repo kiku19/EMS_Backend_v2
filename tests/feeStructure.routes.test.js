@@ -68,6 +68,12 @@ describe('fee-structure routes', () => {
               frequency: 'yearly',
             },
           ],
+          collectionSchedule: {
+            mode: 'yearly',
+            installments: [
+              { name: 'Annual', dueDate: '2025-04-15', amount: 20000, status: 'pending' },
+            ],
+          },
         })
         .expect(201);
 
@@ -85,6 +91,21 @@ describe('fee-structure routes', () => {
           classId: classRecord._id.toString(),
           academicYear: '2025-26',
           totalAnnualFee: 10000,
+          feeHeads: [
+            {
+              name: 'Tuition',
+              category: 'Academic',
+              amount: 10000,
+              mandatory: true,
+              frequency: 'yearly',
+            },
+          ],
+          collectionSchedule: {
+            mode: 'yearly',
+            installments: [
+              { name: 'Annual', dueDate: '2025-04-15', amount: 10000, status: 'pending' },
+            ],
+          },
         })
         .expect(201);
 
@@ -96,6 +117,21 @@ describe('fee-structure routes', () => {
           classId: classRecord._id.toString(),
           academicYear: '2025-26',
           totalAnnualFee: 15000,
+          feeHeads: [
+            {
+              name: 'Tuition',
+              category: 'Academic',
+              amount: 15000,
+              mandatory: true,
+              frequency: 'yearly',
+            },
+          ],
+          collectionSchedule: {
+            mode: 'yearly',
+            installments: [
+              { name: 'Annual', dueDate: '2025-04-15', amount: 15000, status: 'pending' },
+            ],
+          },
         })
         .expect(201);
 
@@ -116,6 +152,190 @@ describe('fee-structure routes', () => {
         .set(headers)
         .send({ academicYear: '2025-26', totalAnnualFee: 10000 })
         .expect(400);
+    });
+
+    // ── Auto-apply on save (the bug fix) ──────────────────────────────────
+    it('auto-applies the saved structure to existing students in the class', async () => {
+      // Two students already in the class before the structure is saved.
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        name: 'S1',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        name: 'S2',
+      });
+
+      const res = await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          classId: classRecord._id.toString(),
+          academicYear: '2025-26',
+          totalAnnualFee: 20000,
+          feeHeads: [
+            {
+              name: 'Tuition',
+              category: 'Academic',
+              amount: 20000,
+              mandatory: true,
+              frequency: 'yearly',
+            },
+          ],
+          collectionSchedule: {
+            mode: 'yearly',
+            installments: [
+              { name: 'Annual', dueDate: '2025-04-15', amount: 20000, status: 'pending' },
+            ],
+          },
+        })
+        .expect(201);
+
+      expect(res.body.appliedCount).toBe(2);
+      expect(res.body.appliedTo).toHaveLength(2);
+
+      // Each student now has a StudentFeeStructure carrying the class amount.
+      const sfs = await StudentFeeStructure.find({
+        schoolId: school._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+      });
+      expect(sfs.length).toBe(2);
+      expect(sfs.every((s) => s.totalFee === 20000)).toBe(true);
+    });
+
+    it('preserves paid amounts when re-saving an already-applied structure', async () => {
+      const student = await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        name: 'S1',
+      });
+
+      // First save → applies.
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          classId: classRecord._id.toString(),
+          academicYear: '2025-26',
+          totalAnnualFee: 20000,
+          feeHeads: [
+            {
+              name: 'Tuition',
+              category: 'Academic',
+              amount: 20000,
+              mandatory: true,
+              frequency: 'yearly',
+            },
+          ],
+          collectionSchedule: {
+            mode: 'yearly',
+            installments: [
+              { name: 'Annual', dueDate: '2025-04-15', amount: 20000, status: 'pending' },
+            ],
+          },
+        })
+        .expect(201);
+
+      // Simulate a partial payment directly on the SFS.
+      await StudentFeeStructure.updateOne(
+        { studentId: student._id, academicYear: '2025-26' },
+        {
+          $set: {
+            'feeHeads.0.paidAmount': 5000,
+            'feeHeads.0.balanceAmount': 15000,
+            totalPaid: 5000,
+            totalBalance: 15000,
+            overallStatus: 'partial',
+          },
+        }
+      );
+
+      // Re-save the structure with the same amount.
+      const res = await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          classId: classRecord._id.toString(),
+          academicYear: '2025-26',
+          totalAnnualFee: 20000,
+          feeHeads: [
+            {
+              name: 'Tuition',
+              category: 'Academic',
+              amount: 20000,
+              mandatory: true,
+              frequency: 'yearly',
+            },
+          ],
+          collectionSchedule: {
+            mode: 'yearly',
+            installments: [
+              { name: 'Annual', dueDate: '2025-04-15', amount: 20000, status: 'pending' },
+            ],
+          },
+        })
+        .expect(201);
+
+      const sfs = await StudentFeeStructure.findOne({
+        studentId: student._id,
+        academicYear: '2025-26',
+      });
+      expect(sfs.feeHeads[0].paidAmount).toBe(5000); // preserved
+      expect(sfs.totalPaid).toBe(5000);
+    });
+
+    it('annualizes periodic fee heads and creates student installment tracking', async () => {
+      const student = await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        name: 'Monthly Fee Student',
+      });
+
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          classId: classRecord._id.toString(),
+          academicYear: '2025-26',
+          totalAnnualFee: 12000,
+          feeHeads: [
+            {
+              name: 'Monthly Tuition',
+              category: 'Academic',
+              amount: 1000,
+              mandatory: true,
+              frequency: 'monthly',
+            },
+          ],
+          collectionSchedule: {
+            mode: 'monthly',
+            installments: Array.from({ length: 12 }, (_, index) => ({
+              name: `Month ${index + 1}`,
+              dueDate: `2025-${String(index + 1).padStart(2, '0')}-10`,
+              amount: 1000,
+              status: 'pending',
+            })),
+          },
+        })
+        .expect(201);
+
+      const structure = await StudentFeeStructure.findOne({ studentId: student._id }).lean();
+      expect(structure.feeHeads[0].baseAmount).toBe(1000);
+      expect(structure.feeHeads[0].amount).toBe(12000);
+      expect(structure.totalFee).toBe(12000);
+      expect(structure.installments[0]).toMatchObject({
+        name: 'Month 1',
+        amount: 1000,
+        paidAmount: 0,
+        balanceAmount: 1000,
+      });
     });
   });
 
@@ -203,7 +423,7 @@ describe('fee-structure routes', () => {
       expect(structs[0].totalFee).toBe(12000);
     });
 
-    it('skips students who already have a fee structure', async () => {
+    it('updates students who already have a fee structure', async () => {
       const student = await createStudentRecord({
         name: 'Already Has Structure',
         classId: classRecord._id,
@@ -239,7 +459,7 @@ describe('fee-structure routes', () => {
         .send({ classId: classRecord._id.toString(), academicYear: '2025-26' })
         .expect(200);
 
-      expect(res.body.appliedCount).toBe(0);
+      expect(res.body.appliedCount).toBe(1);
     });
 
     it('returns 404 when no class fee structure exists', async () => {

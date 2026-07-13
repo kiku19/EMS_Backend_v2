@@ -19,15 +19,23 @@ class SubstitutionService {
     try {
       const dayOfWeek = this.getDayOfWeek(date);
 
-      // Get all staff who are marked absent for this date
-      const absentStaff = await Staff.find({
-        status: 'absent',
-        // You might have an attendance collection to check instead
-        // For now, we'll check staff with 'absent' status or use a different approach
-      });
-
-      // Alternative: Check via staff attendance records if you have that collection
-      // For this implementation, we'll generate alerts based on requested absences
+      // [SUBS-FIX] The original code queried Staff.find({ status: 'absent' }),
+      // but 'absent' is not a valid Staff.status enum value
+      // (['active','inactive','on-leave','suspended','terminated']), so it
+      // ALWAYS returned [] — meaning this function could never generate alerts
+      // from staff absence, only from pre-existing pending Substitution docs.
+      //
+      // Absence is a per-day fact recorded in StaffAttendance (see
+      // checkTeacherAbsent below). Build the set of absent teacher ids so the
+      // timetable loop below can flag slots whose teacher is actually absent
+      // today, rather than blindly emitting every pending substitution.
+      const { StaffAttendance } = await import('../database.js');
+      const absenceRecords = await StaffAttendance.find({ date, status: 'absent' })
+        .select('staffId')
+        .lean();
+      const absentTeacherIds = new Set(
+        absenceRecords.map((rec) => rec.staffId?.toString()).filter(Boolean)
+      );
 
       const alerts = [];
 
@@ -52,6 +60,14 @@ class SubstitutionService {
           // Skip empty slots and breaks
           if (!slot || !slot.subject || !slot.teacherId) continue;
 
+          // [SUBS-FIX] A slot needs coverage only if its scheduled teacher is
+          // actually absent today (sourced from StaffAttendance above). The
+          // previous code emitted an alert for ANY pending substitution
+          // regardless of whether the teacher was absent — and, because the
+          // absent-staff query was broken, could never have known anyway.
+          const slotTeacherId = slot.teacherId?._id?.toString?.() || slot.teacherId?.toString?.();
+          if (!slotTeacherId || !absentTeacherIds.has(slotTeacherId)) continue;
+
           // Check if there's already a substitution for this slot
           const existingSubstitution = await Substitution.findOne({
             date,
@@ -59,8 +75,6 @@ class SubstitutionService {
             period: String(periodIndex + 1),
           });
 
-          // Check if teacher is absent (you'd check attendance here)
-          // For now, we'll check if substitution exists and is pending
           if (existingSubstitution && existingSubstitution.status === 'pending') {
             alerts.push({
               id: `alert-${timetable.classId._id}-${periodIndex}`,
@@ -96,17 +110,31 @@ class SubstitutionService {
 
   /**
    * Get available teachers for substitution
-   * @param {Object} params - { classId, subject, day, period, date, academicYear }
+   * @param {Object} params - { classId, subject, day, period, date, academicYear, schoolId }
    * @returns {Promise<Object>} Available and suggested teachers
    */
   async getAvailableTeachersForSubstitution(params) {
-    const { classId, subject, day, period, date, academicYear = CURRENT_ACADEMIC_YEAR } = params;
+    const {
+      classId,
+      subject,
+      day,
+      period,
+      date,
+      academicYear = CURRENT_ACADEMIC_YEAR,
+      schoolId,
+    } = params;
 
     try {
       const periodIndex = parseInt(period) - 1;
 
+      // [SUBS-FIX] Tenant scope: every query below is filtered by schoolId when
+      // provided. Without this, a cross-tenant caller could read teachers and
+      // timetables belonging to other schools.
+      const schoolFilter = schoolId ? { schoolId } : {};
+
       // 1. Find teachers qualified for this subject
       const qualifiedTeachers = await Staff.find({
+        ...schoolFilter,
         status: 'active',
         $or: [
           { role: { $in: ['Teacher', 'teacher'] } },
@@ -120,7 +148,7 @@ class SubstitutionService {
       }).select('_id name code department teacherAssignments');
 
       // 2. Get all timetables to check for conflicts
-      const allTimetables = await Timetable.find({ academicYear });
+      const allTimetables = await Timetable.find({ ...schoolFilter, academicYear });
 
       // 3. Build conflict map
       const teacherConflicts = new Map();
@@ -187,6 +215,7 @@ class SubstitutionService {
 
       // 5. Also check for any teacher who might be free (not just qualified)
       const allTeachers = await Staff.find({
+        ...schoolFilter,
         status: 'active',
         $or: [
           { role: { $in: ['Teacher', 'teacher'] } },
@@ -352,11 +381,18 @@ class SubstitutionService {
   }
 
   /**
-   * Get day of week from date string
+   * Get day of week from a YYYY-MM-DD date string.
+   *
+   * [SUBS-FIX] Parse the date in LOCAL time, not UTC. `new Date('2026-07-12')`
+   * is interpreted as UTC midnight, so in negative-offset zones (Americas)
+   * getDay() returns the previous weekday and the wrong timetable slot is
+   * read. Splitting on '-' and constructing with local parts keeps the
+   * weekday stable regardless of server timezone.
    */
   getDayOfWeek(dateString) {
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const date = new Date(dateString);
+    const [year, month, day] = String(dateString).split('-').map(Number);
+    const date = new Date(year, (month || 1) - 1, day || 1);
     return days[date.getDay()];
   }
 
@@ -431,6 +467,22 @@ class SubstitutionService {
         substitutions.map(async (sub) => {
           const dayOfWeek = this.getDayOfWeek(date);
 
+          // [SUBS-FIX] Guard against orphaned refs. populate() yields null when
+          // the referenced Class/Staff was deleted. Dereferencing sub.classId._id
+          // threw a TypeError and 500'd the whole endpoint. Skip gracefully.
+          if (!sub.classId) {
+            return {
+              ...sub.toObject(),
+              classId: null,
+              subject: 'Unknown',
+              periodName: `Period ${sub.period}`,
+              timeSlot: null,
+              availableTeachers: [],
+              backupTeachers: [],
+              skipped: 'orphaned class reference',
+            };
+          }
+
           // Get class timetable to find subject
           const timetable = await Timetable.findOne({
             classId: sub.classId._id,
@@ -440,12 +492,15 @@ class SubstitutionService {
           const periodIndex = parseInt(sub.period) - 1;
           const slot = daySchedule?.[periodIndex];
 
+          // [SUBS-FIX] Pass schoolId so the inner lookup is tenant-scoped —
+          // previously this read teachers/timetables across ALL schools.
           const availableTeachers = await this.getAvailableTeachersForSubstitution({
             classId: sub.classId._id,
             subject: slot?.subject || '',
             day: dayOfWeek,
             period: sub.period,
             date,
+            schoolId: schoolId || undefined,
             academicYear: timetable?.academicYear || CURRENT_ACADEMIC_YEAR,
           });
 

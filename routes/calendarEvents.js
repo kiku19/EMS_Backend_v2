@@ -3,7 +3,14 @@ import mongoose from 'mongoose';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
-import { validateZod, zodSchemas } from '../middleware/validation.js';
+import { validateZod } from '../validators/zodHelpers.js';
+import {
+  calendarEventOperationQuerySchema,
+  calendarEventParamsSchema,
+  calendarEventsQuerySchema,
+  createCalendarEventSchema,
+  updateCalendarEventSchema,
+} from '../validators/calendarSchema.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -20,33 +27,61 @@ function scopeBySchool(schoolId, query = {}) {
 const calendarEventSchema = new mongoose.Schema(
   {
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
-    academicYear: { type: String, default: '' }, // e.g. "2025-2026"
-    title: { type: String, required: true },
-    date: { type: String, required: true }, // YYYY-MM-DD format
+    academicYear: {
+      type: String,
+      default: '',
+      validate: /^\d{4}-(?:\d{2}|\d{4})$|^$/,
+    },
+    title: { type: String, required: true, trim: true, maxlength: 200 },
+    date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
     type: { type: String, enum: ['event', 'meeting', 'exam', 'holiday'], default: 'event' },
     startTime: { type: String, default: '' },
     endTime: { type: String, default: '' },
     allDay: { type: Boolean, default: false },
-    description: { type: String, default: '' },
+    description: { type: String, default: '', maxlength: 1000 },
     holidayType: { type: String, enum: ['National', 'Regional', 'School'], default: null },
     recurrence: {
-      freq: { type: String, enum: ['weekly', 'monthly', 'yearly'] },
-      interval: { type: Number, default: 1 },
+      freq: { type: String, enum: ['daily', 'weekly', 'monthly', 'yearly'] },
+      interval: { type: Number, default: 1, min: 1, max: 52 },
       endDate: { type: String },
-      endCount: { type: Number },
+      endCount: { type: Number, min: 1, max: 365 },
+      excludedDates: [{ type: String }],
     },
+    recurrenceParentId: { type: mongoose.Schema.Types.ObjectId, ref: 'CalendarEvent' },
+    originalOccurrenceDate: { type: String },
     isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-const transformEvent = (doc, dateOverride) => {
+calendarEventSchema.index({ schoolId: 1, date: 1, isDeleted: 1 });
+calendarEventSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1, date: 1 });
+calendarEventSchema.index({
+  schoolId: 1,
+  academicYear: 1,
+  isDeleted: 1,
+  'recurrence.freq': 1,
+  date: 1,
+  'recurrence.endDate': 1,
+});
+calendarEventSchema.index(
+  { schoolId: 1, recurrenceParentId: 1, originalOccurrenceDate: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { recurrenceParentId: { $exists: true }, isDeleted: false },
+  }
+);
+
+const transformEvent = (doc, dateOverride, { recurrenceInstance = false } = {}) => {
   if (!doc) return null;
   const obj = doc.toObject ? doc.toObject() : doc;
+  const documentId = obj._id.toString();
+  const occurrenceDate = dateOverride || obj.date;
+  const masterEventId = obj.recurrenceParentId?.toString?.() || documentId;
   return {
-    id: obj._id.toString(),
+    id: recurrenceInstance ? `${documentId}_${occurrenceDate}` : documentId,
     title: obj.title,
-    date: dateOverride || obj.date,
+    date: occurrenceDate,
     type: obj.type || 'event',
     startTime: obj.startTime || '',
     endTime: obj.endTime || '',
@@ -55,8 +90,47 @@ const transformEvent = (doc, dateOverride) => {
     holidayType: obj.holidayType || null,
     academicYear: obj.academicYear || '',
     recurrence: obj.recurrence?.freq ? obj.recurrence : null,
+    source: 'calendar-event',
+    masterEventId,
+    seriesStartDate: obj.recurrence?.freq ? obj.date : null,
+    occurrenceDate: recurrenceInstance ? occurrenceDate : obj.originalOccurrenceDate || null,
+    isRecurrenceInstance: recurrenceInstance || Boolean(obj.recurrenceParentId),
+    isRecurrenceOverride: Boolean(obj.recurrenceParentId),
   };
 };
+
+function parseDateUtc(date) {
+  return new Date(`${date}T00:00:00Z`);
+}
+
+function formatDateUtc(date) {
+  return date.toISOString().split('T')[0];
+}
+
+function daysInUtcMonth(year, monthIndex) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+function advanceOccurrence(current, frequency, interval, anchorDay, anchorMonth) {
+  const next = new Date(current);
+  if (frequency === 'daily') {
+    next.setUTCDate(next.getUTCDate() + interval);
+  } else if (frequency === 'weekly') {
+    next.setUTCDate(next.getUTCDate() + 7 * interval);
+  } else if (frequency === 'monthly') {
+    const targetMonth = next.getUTCMonth() + interval;
+    next.setUTCDate(1);
+    next.setUTCMonth(targetMonth);
+    next.setUTCDate(Math.min(anchorDay, daysInUtcMonth(next.getUTCFullYear(), next.getUTCMonth())));
+  } else if (frequency === 'yearly') {
+    const targetYear = next.getUTCFullYear() + interval;
+    next.setUTCDate(1);
+    next.setUTCFullYear(targetYear);
+    next.setUTCMonth(anchorMonth);
+    next.setUTCDate(Math.min(anchorDay, daysInUtcMonth(targetYear, anchorMonth)));
+  }
+  return next;
+}
 
 /**
  * Expand a single recurring event into occurrences within [rangeStart, rangeEnd].
@@ -68,46 +142,77 @@ function expandRecurringEvent(event, rangeStart, rangeEnd) {
 
   // Guard: skip expansion if base date is missing or invalid
   if (!event.date) return [transformEvent(event)];
-  const cur = new Date(event.date + 'T00:00:00');
-  if (isNaN(cur.getTime())) return [transformEvent(event)];
+  let current = parseDateUtc(event.date);
+  if (isNaN(current.getTime())) return [transformEvent(event)];
 
   const occurrences = [];
   const interval = rec.interval || 1;
   const recEndDate = rec.endDate || rangeEnd;
   const effectiveEnd = recEndDate < rangeEnd ? recEndDate : rangeEnd;
-  const maxOccurrences = rec.endCount || 365; // safety cap
+  const maxIterations = rec.endCount || 10000;
+  const excludedDates = new Set(rec.excludedDates || []);
+  const anchorDay = current.getUTCDate();
+  const anchorMonth = current.getUTCMonth();
 
-  let count = 0;
+  let occurrenceNumber = 0;
+  let iterations = 0;
 
-  while (count < maxOccurrences) {
-    const dateStr = cur.toISOString().split('T')[0];
-
-    if (dateStr > effectiveEnd) break;
-
-    if (dateStr >= rangeStart) {
-      const transformed = transformEvent(event, dateStr);
-      // Mark expanded occurrences with a unique id suffix so frontend can differentiate
-      if (dateStr !== event.date) {
-        transformed.id = `${event._id.toString()}_${dateStr}`;
-        transformed.isRecurrenceInstance = true;
-      }
-      occurrences.push(transformed);
-      count++;
-    }
-
-    // Advance by interval
-    if (rec.freq === 'weekly') {
-      cur.setDate(cur.getDate() + 7 * interval);
-    } else if (rec.freq === 'monthly') {
-      cur.setMonth(cur.getMonth() + interval);
-    } else if (rec.freq === 'yearly') {
-      cur.setFullYear(cur.getFullYear() + interval);
-    } else {
-      break;
+  // Daily and weekly series can jump directly near the requested window.
+  // Without this, a long-running daily series was replayed one date at a time
+  // from its original start on every month navigation. Preserve the absolute
+  // occurrence number so endCount semantics remain unchanged.
+  if (rec.freq === 'daily' || rec.freq === 'weekly') {
+    const rangeStartDate = parseDateUtc(rangeStart);
+    const stepDays = interval * (rec.freq === 'weekly' ? 7 : 1);
+    const diffDays = Math.floor((rangeStartDate.getTime() - current.getTime()) / 86400000);
+    const skippedOccurrences = Math.max(0, Math.floor(diffDays / stepDays));
+    if (skippedOccurrences > 0) {
+      current.setUTCDate(current.getUTCDate() + skippedOccurrences * stepDays);
+      occurrenceNumber = skippedOccurrences;
+      iterations = skippedOccurrences;
     }
   }
 
+  while (iterations < maxIterations) {
+    iterations += 1;
+    occurrenceNumber += 1;
+    const dateStr = formatDateUtc(current);
+
+    if (dateStr > effectiveEnd) break;
+    if (rec.endCount && occurrenceNumber > rec.endCount) break;
+
+    if (dateStr >= rangeStart && !excludedDates.has(dateStr)) {
+      occurrences.push(transformEvent(event, dateStr, { recurrenceInstance: true }));
+    }
+
+    current = advanceOccurrence(current, rec.freq, interval, anchorDay, anchorMonth);
+  }
+
   return occurrences;
+}
+
+function parseEventReference(rawId, explicitOccurrenceDate) {
+  const syntheticMatch = String(rawId).match(/^([0-9a-fA-F]{24})_(\d{4}-\d{2}-\d{2})$/);
+  if (syntheticMatch) {
+    return {
+      masterId: syntheticMatch[1],
+      occurrenceDate: explicitOccurrenceDate || syntheticMatch[2],
+      isSynthetic: true,
+    };
+  }
+  if (!mongoose.Types.ObjectId.isValid(String(rawId))) return null;
+  return {
+    masterId: String(rawId),
+    occurrenceDate: explicitOccurrenceDate || null,
+    isSynthetic: false,
+  };
+}
+
+function isOccurrenceDate(event, occurrenceDate) {
+  if (!event?.recurrence?.freq || !occurrenceDate) return false;
+  return expandRecurringEvent(event, occurrenceDate, occurrenceDate).some(
+    (occurrence) => occurrence.date === occurrenceDate
+  );
 }
 
 const CalendarEvent =
@@ -618,24 +723,55 @@ router.get('/calendar/events/export.ics', async (req, res) => {
 router.get(
   '/calendar/events',
   checkPermission('timetable', 'view'),
+  validateZod(calendarEventsQuerySchema, 'query'),
   async (req, res) => {
     try {
-      const { startDate, endDate } = req.query;
+      const { startDate, endDate, academicYear } = req.query;
       const query = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
+
+      if (academicYear) {
+        query.academicYear = { $in: [academicYear, ''] };
+      }
 
       // When a date range is provided, fetch events whose base date falls in range
       // OR have recurrence (may generate occurrences in range even if base date is earlier)
       if (startDate && endDate) {
         query.$or = [
           { date: { $gte: startDate, $lte: endDate } },
-          { 'recurrence.freq': { $exists: true, $ne: null } },
+          {
+            'recurrence.freq': { $exists: true, $ne: null },
+            date: { $lte: endDate },
+            $or: [
+              { 'recurrence.endDate': { $exists: false } },
+              { 'recurrence.endDate': null },
+              { 'recurrence.endDate': '' },
+              { 'recurrence.endDate': { $gte: startDate } },
+            ],
+          },
         ];
       }
 
-      const events = await CalendarEvent.find(query).sort({
-        date: 1,
-        startTime: 1,
-      });
+      const events = await CalendarEvent.find(query).sort({ date: 1, startTime: 1 }).lean();
+
+      // A moved occurrence can fall outside its series' bounded end date. Load
+      // only the missing parent documents so the occurrence retains recurrence
+      // metadata without reverting to the former "fetch every series" query.
+      const loadedIds = new Set(events.map((event) => event._id.toString()));
+      const missingParentIds = [
+        ...new Set(
+          events
+            .map((event) => event.recurrenceParentId?.toString?.())
+            .filter((id) => id && !loadedIds.has(id))
+        ),
+      ];
+      if (missingParentIds.length > 0) {
+        const parentQuery = scopeBySchool(req.user?.schoolId, {
+          _id: { $in: missingParentIds },
+          isDeleted: { $ne: true },
+          ...(academicYear ? { academicYear: { $in: [academicYear, ''] } } : {}),
+        });
+        events.push(...(await CalendarEvent.find(parentQuery).lean()));
+      }
 
       // Default range for expansion: if no range provided, use current year +/- 6 months
       const rangeStart =
@@ -644,18 +780,32 @@ router.get(
 
       // Expand recurring events into individual occurrences
       const expanded = [];
+      const masterEventMap = new Map(
+        events
+          .filter((event) => event.recurrence?.freq)
+          .map((event) => [event._id.toString(), event])
+      );
       for (const event of events) {
         if (event.recurrence?.freq) {
           expanded.push(...expandRecurringEvent(event, rangeStart, rangeEnd));
         } else {
-          expanded.push(transformEvent(event));
+          const transformed = transformEvent(event);
+          const parent = event.recurrenceParentId
+            ? masterEventMap.get(event.recurrenceParentId.toString())
+            : null;
+          if (parent) {
+            transformed.recurrence = parent.recurrence;
+            transformed.seriesStartDate = parent.date;
+          }
+          expanded.push(transformed);
         }
       }
 
       // Sort by date after expansion — guard against null/undefined dates
       expanded.sort(
         (a, b) =>
-          (a.date || '').localeCompare(b.date || '') || (a.startTime || '').localeCompare(b.startTime || '')
+          (a.date || '').localeCompare(b.date || '') ||
+          (a.startTime || '').localeCompare(b.startTime || '')
       );
 
       res.json(expanded);
@@ -670,7 +820,7 @@ router.get(
 router.post(
   '/calendar/events',
   checkPermission('timetable', 'create'),
-  validateZod(zodSchemas.createCalendarEvent),
+  validateZod(createCalendarEventSchema),
   async (req, res) => {
     try {
       const {
@@ -697,7 +847,7 @@ router.post(
         allDay: allDay || false,
         description: description || '',
         holidayType: holidayType || null,
-        ...(recurrence?.freq ? { recurrence } : {}),
+        recurrence: recurrence?.freq ? recurrence : undefined,
       });
 
       await event.save();
@@ -713,16 +863,186 @@ router.post(
 router.put(
   '/calendar/events/:id',
   checkPermission('timetable', 'edit'),
-  validateZod(zodSchemas.updateCalendarEvent),
+  validateZod(calendarEventParamsSchema, 'params'),
+  validateZod(calendarEventOperationQuerySchema, 'query'),
+  validateZod(updateCalendarEventSchema),
   async (req, res) => {
     try {
       const { id } = req.params;
+      const reference = parseEventReference(id, req.query.occurrenceDate);
+      if (!reference) {
+        return res.status(400).json({ error: 'Invalid event reference' });
+      }
+      const schoolId = extractSchoolId(req.user?.schoolId);
+      const requestedScope = req.query.scope || (reference.isSynthetic ? 'occurrence' : null);
+      const target = await CalendarEvent.findOne(
+        scopeBySchool(schoolId, { _id: reference.masterId, isDeleted: { $ne: true } })
+      );
+
+      if (!target) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const effectiveScope =
+        requestedScope || (target.recurrenceParentId ? 'occurrence' : 'series');
+
+      if (effectiveScope === 'occurrence' && target.recurrenceParentId) {
+        const overrideData = {
+          title: req.body.title ?? target.title,
+          date: req.body.date ?? target.date,
+          type: req.body.type ?? target.type,
+          startTime: req.body.startTime ?? target.startTime ?? '',
+          endTime: req.body.endTime ?? target.endTime ?? '',
+          allDay: req.body.allDay ?? target.allDay ?? false,
+          description: req.body.description ?? target.description ?? '',
+          holidayType:
+            req.body.holidayType !== undefined
+              ? req.body.holidayType
+              : (target.holidayType ?? null),
+          recurrence: null,
+          academicYear: req.body.academicYear ?? target.academicYear ?? '',
+        };
+        const validatedOverride = createCalendarEventSchema.safeParse(overrideData);
+        if (!validatedOverride.success) {
+          return res.status(400).json({ error: 'Validation failed' });
+        }
+        const updatedOverride = await CalendarEvent.findOneAndUpdate(
+          scopeBySchool(schoolId, { _id: target._id, isDeleted: { $ne: true } }),
+          { $set: { ...validatedOverride.data, recurrence: undefined, updatedAt: new Date() } },
+          { new: true, runValidators: true }
+        );
+        return res.json(transformEvent(updatedOverride));
+      }
+
+      if (effectiveScope === 'occurrence') {
+        if (!reference.occurrenceDate || !isOccurrenceDate(target, reference.occurrenceDate)) {
+          return res.status(400).json({
+            error: 'The requested date is not an active occurrence of this recurring event.',
+          });
+        }
+
+        const overrideData = {
+          title: req.body.title ?? target.title,
+          date: req.body.date ?? reference.occurrenceDate,
+          type: req.body.type ?? target.type,
+          startTime: req.body.startTime ?? target.startTime ?? '',
+          endTime: req.body.endTime ?? target.endTime ?? '',
+          allDay: req.body.allDay ?? target.allDay ?? false,
+          description: req.body.description ?? target.description ?? '',
+          holidayType:
+            req.body.holidayType !== undefined
+              ? req.body.holidayType
+              : (target.holidayType ?? null),
+          recurrence: null,
+          academicYear: req.body.academicYear ?? target.academicYear ?? '',
+        };
+        const validatedOverride = createCalendarEventSchema.safeParse(overrideData);
+        if (!validatedOverride.success) {
+          return res.status(400).json({
+            error: 'Validation failed',
+            details: validatedOverride.error.issues.map((issue) => ({
+              field: issue.path.join('.'),
+              message: issue.message,
+            })),
+          });
+        }
+
+        const session = await mongoose.startSession();
+        let override;
+        try {
+          await session.withTransaction(async () => {
+            await CalendarEvent.updateOne(
+              scopeBySchool(schoolId, { _id: target._id, isDeleted: { $ne: true } }),
+              {
+                $addToSet: { 'recurrence.excludedDates': reference.occurrenceDate },
+                $set: { updatedAt: new Date() },
+              },
+              { session }
+            );
+            override = await CalendarEvent.findOneAndUpdate(
+              scopeBySchool(schoolId, {
+                recurrenceParentId: target._id,
+                originalOccurrenceDate: reference.occurrenceDate,
+                isDeleted: { $ne: true },
+              }),
+              {
+                $set: {
+                  ...validatedOverride.data,
+                  recurrence: undefined,
+                  updatedAt: new Date(),
+                },
+                $setOnInsert: {
+                  schoolId,
+                  recurrenceParentId: target._id,
+                  originalOccurrenceDate: reference.occurrenceDate,
+                  isDeleted: false,
+                },
+              },
+              { new: true, upsert: true, runValidators: true, session }
+            );
+          });
+        } finally {
+          await session.endSession();
+        }
+
+        return res.json(transformEvent(override));
+      }
+
+      const seriesTarget = target.recurrenceParentId
+        ? await CalendarEvent.findOne(
+            scopeBySchool(schoolId, {
+              _id: target.recurrenceParentId,
+              isDeleted: { $ne: true },
+            })
+          )
+        : target;
+      if (!seriesTarget) {
+        return res.status(404).json({ error: 'Recurring series not found' });
+      }
+
       const updates = { ...req.body, updatedAt: new Date() };
+      if (updates.recurrence?.freq && seriesTarget.recurrence?.freq) {
+        updates.recurrence = {
+          ...seriesTarget.recurrence.toObject(),
+          ...updates.recurrence,
+          excludedDates: seriesTarget.recurrence.excludedDates || [],
+        };
+      }
+
+      const mergedSeries = createCalendarEventSchema.safeParse({
+        title: updates.title ?? seriesTarget.title,
+        date: updates.date ?? seriesTarget.date,
+        type: updates.type ?? seriesTarget.type,
+        startTime: updates.startTime ?? seriesTarget.startTime ?? '',
+        endTime: updates.endTime ?? seriesTarget.endTime ?? '',
+        allDay: updates.allDay ?? seriesTarget.allDay ?? false,
+        description: updates.description ?? seriesTarget.description ?? '',
+        holidayType:
+          updates.holidayType !== undefined
+            ? updates.holidayType
+            : (seriesTarget.holidayType ?? null),
+        recurrence:
+          updates.recurrence !== undefined
+            ? updates.recurrence
+            : seriesTarget.recurrence?.freq
+              ? seriesTarget.recurrence.toObject()
+              : null,
+        academicYear: updates.academicYear ?? seriesTarget.academicYear ?? '',
+      });
+      if (!mergedSeries.success) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          details: mergedSeries.error.issues.map((issue) => ({
+            field: issue.path.join('.'),
+            message: issue.message,
+          })),
+        });
+      }
 
       const event = await CalendarEvent.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: id, isDeleted: { $ne: true } }),
+        scopeBySchool(schoolId, { _id: seriesTarget._id, isDeleted: { $ne: true } }),
         { $set: updates },
-        { new: true }
+        { new: true, runValidators: true }
       );
 
       if (!event) {
@@ -741,21 +1061,90 @@ router.put(
 router.delete(
   '/calendar/events/:id',
   checkPermission('timetable', 'delete'),
+  validateZod(calendarEventParamsSchema, 'params'),
+  validateZod(calendarEventOperationQuerySchema, 'query'),
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      const event = await CalendarEvent.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: id, isDeleted: { $ne: true } }),
-        { $set: { isDeleted: true, updatedAt: new Date() } },
-        { new: true }
+      const reference = parseEventReference(id, req.query.occurrenceDate);
+      if (!reference) {
+        return res.status(400).json({ error: 'Invalid event reference' });
+      }
+      const schoolId = extractSchoolId(req.user?.schoolId);
+      const requestedScope = req.query.scope || (reference.isSynthetic ? 'occurrence' : null);
+      const target = await CalendarEvent.findOne(
+        scopeBySchool(schoolId, { _id: reference.masterId, isDeleted: { $ne: true } })
       );
+
+      if (!target) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const effectiveScope =
+        requestedScope || (target.recurrenceParentId ? 'occurrence' : 'series');
+
+      if (effectiveScope === 'occurrence' && target.recurrenceParentId) {
+        await CalendarEvent.updateOne(
+          scopeBySchool(schoolId, { _id: target._id, isDeleted: { $ne: true } }),
+          { $set: { isDeleted: true, updatedAt: new Date() } }
+        );
+        return res.json({
+          message: 'Recurring occurrence deleted successfully',
+          scope: 'occurrence',
+          occurrenceDate: target.originalOccurrenceDate || target.date,
+        });
+      }
+
+      if (effectiveScope === 'occurrence') {
+        if (!reference.occurrenceDate || !isOccurrenceDate(target, reference.occurrenceDate)) {
+          return res.status(400).json({
+            error: 'The requested date is not an active occurrence of this recurring event.',
+          });
+        }
+        await CalendarEvent.updateOne(
+          scopeBySchool(schoolId, { _id: target._id, isDeleted: { $ne: true } }),
+          {
+            $addToSet: { 'recurrence.excludedDates': reference.occurrenceDate },
+            $set: { updatedAt: new Date() },
+          }
+        );
+        return res.json({
+          message: 'Recurring occurrence deleted successfully',
+          scope: 'occurrence',
+          occurrenceDate: reference.occurrenceDate,
+        });
+      }
+
+      const seriesTargetId = target.recurrenceParentId || target._id;
+      const session = await mongoose.startSession();
+      let event;
+      try {
+        await session.withTransaction(async () => {
+          event = await CalendarEvent.findOneAndUpdate(
+            scopeBySchool(schoolId, { _id: seriesTargetId, isDeleted: { $ne: true } }),
+            { $set: { isDeleted: true, updatedAt: new Date() } },
+            { new: true, session }
+          );
+          if (event?.recurrence?.freq) {
+            await CalendarEvent.updateMany(
+              scopeBySchool(schoolId, {
+                recurrenceParentId: event._id,
+                isDeleted: { $ne: true },
+              }),
+              { $set: { isDeleted: true, updatedAt: new Date() } },
+              { session }
+            );
+          }
+        });
+      } finally {
+        await session.endSession();
+      }
 
       if (!event) {
         return res.status(404).json({ error: 'Event not found' });
       }
 
-      res.json({ message: 'Event deleted successfully' });
+      res.json({ message: 'Event series deleted successfully', scope: 'series' });
     } catch (error) {
       console.error('Error deleting calendar event:', error);
       res.status(500).json({ error: 'Failed to delete calendar event' });

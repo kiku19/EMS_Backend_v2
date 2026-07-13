@@ -78,8 +78,16 @@ export function computeFeeHeadStatus(head) {
  * @param {{ totalFee: number, totalPaid: number, totalBalance: number, discountApplied?: number, overallStatus: string, lastPaymentDate?: Date }} feeStructure
  */
 export async function syncStudentFeeDetails(studentId, feeStructure, session) {
-  await Student.findByIdAndUpdate(
-    studentId,
+  const filter = {
+    _id: studentId,
+    // Student.feeDetails is a current-year convenience projection, not a
+    // historical ledger. Never let a backdated payment/refund overwrite the
+    // summary for the student's active academic year.
+    academicYear: feeStructure.academicYear,
+    ...(feeStructure.schoolId ? { schoolId: feeStructure.schoolId } : {}),
+  };
+  await Student.findOneAndUpdate(
+    filter,
     {
       feeStatus: feeStructure.overallStatus,
       feeDetails: {

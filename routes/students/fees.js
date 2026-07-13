@@ -6,6 +6,7 @@ import { resolveAcademicYear } from '../../utils/academicYear.js';
 import { scopeBySchool, sendReminderSchema, sendRemindersBulkSchema } from './helpers.js';
 import { createLogger } from '../../utils/logger.js';
 import { objectIdParamHandler } from '../../middleware/validation.js';
+import { generateFeeInvoicePdf } from '../../services/feeInvoiceService.js';
 
 const router = express.Router();
 const logger = createLogger('StudentFees');
@@ -68,7 +69,7 @@ router.get(
       const year = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
       const feeStructure = await StudentFeeStructure.findOne(
         scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
-      ).populate('feeHeads.feeHeadId');
+      );
 
       if (!feeStructure) {
         return res.json({
@@ -256,9 +257,7 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
 
     const feeStructure = await StudentFeeStructure.findOne(
       scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
-    )
-      .populate('feeHeads.feeHeadId')
-      .lean();
+    ).lean();
 
     // Fetch payment history for this student and academic year
     const payments = await FeePayment.find(
@@ -337,5 +336,27 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
     res.status(500).json({ error: 'Failed to generate fee invoice' });
   }
 });
+
+// GET /:id/fee-invoice.pdf — full-year fee invoice as a PDF stream.
+router.get(
+  '/:id/fee-invoice.pdf',
+  authenticate,
+  checkPermission('fees', 'view'),
+  async (req, res) => {
+    try {
+      const doc = await generateFeeInvoicePdf({
+        studentId: req.params.id,
+        schoolId: req.user?.schoolId,
+        academicYear: req.query.academicYear,
+      });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="fee-invoice.pdf"`);
+      doc.pipe(res);
+    } catch (error) {
+      logger.error('Error generating fee invoice PDF:', error);
+      res.status(error.status || 500).json({ error: 'Failed to generate invoice PDF' });
+    }
+  }
+);
 
 export default router;

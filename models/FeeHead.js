@@ -34,7 +34,7 @@ const feeHeadSchema = new mongoose.Schema(
     },
     customType: String, // For custom fee heads
 
-    amount: { type: Number, required: true },
+    amount: { type: Number, required: true, min: 0 },
     mandatory: { type: Boolean, default: true },
     description: String,
 

@@ -3,6 +3,7 @@ import { Staff, Timetable, TeacherTimetable, ConflictLog } from '../database.js'
 import { debounceAsync } from '../utils/debounce.js';
 import cacheService from './cacheService.js';
 import { createLogger } from '../utils/logger.js';
+import { SCHEDULE_DAYS } from '../utils/weekdays.js';
 
 const logger = createLogger('ConflictDetection');
 
@@ -88,7 +89,7 @@ class ConflictDetectionService {
       // academicYear MUST scope the query — without it, a teacher still listed
       // in last-year's Timetable at the same day/period produced a false
       // conflict against their this-year assignment.
-      const query = {};
+      const query = { isDeleted: { $ne: true } };
       query[`schedule.${day}.teacherId`] = teacherId;
       if (schoolId) query.schoolId = schoolId;
       if (academicYear) query.academicYear = academicYear;
@@ -119,7 +120,9 @@ class ConflictDetectionService {
 
       // If conflicts found, return the first one with details
       if (conflicts.length > 0) {
-        const teacher = await Staff.findById(teacherId).select('name code');
+        const teacherQuery = { _id: teacherId };
+        if (schoolId) teacherQuery.schoolId = schoolId;
+        const teacher = await Staff.findOne(teacherQuery).select('name code');
         return {
           type: 'double_booking',
           teacherId: teacherId,
@@ -148,7 +151,7 @@ class ConflictDetectionService {
   async getTeacherConflicts(teacherId, academicYear = CURRENT_ACADEMIC_YEAR, schoolId = null) {
     try {
       const conflicts = [];
-      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const days = SCHEDULE_DAYS;
 
       // Get all timetables for this academic year where the teacher is assigned
       const findQuery = {
@@ -185,11 +188,14 @@ class ConflictDetectionService {
         }
       }
 
+      const teacherQuery = { _id: teacherId };
+      if (schoolId) teacherQuery.schoolId = schoolId;
+      const teacher = await Staff.findOne(teacherQuery).select('name code');
+
       // Find conflicts (where teacher is assigned to multiple classes at same time)
       for (const [key, assignments] of Object.entries(assignmentMap)) {
         if (assignments.length > 1) {
           const [day, periodIndex] = key.split('-');
-          const teacher = await Staff.findById(teacherId).select('name code');
 
           conflicts.push({
             type: 'double_booking',
@@ -250,7 +256,9 @@ class ConflictDetectionService {
       }
 
       // Check if teacher is qualified (has assignment for this subject and class)
-      const teacher = await Staff.findById(teacherId);
+      const teacherQuery = { _id: teacherId };
+      if (schoolId) teacherQuery.schoolId = schoolId;
+      const teacher = await Staff.findOne(teacherQuery);
       if (!teacher) {
         return {
           isValid: false,

@@ -318,6 +318,7 @@ export async function logToTrash({
   schoolId,
   deletionContext,
   bulkCleanup,
+  session,
 }) {
   const registry = ENTITY_REGISTRY[itemType];
   if (!registry) {
@@ -328,7 +329,7 @@ export async function logToTrash({
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + TRASH_RETENTION_DAYS);
 
-  return TrashItem.create({
+  const payload = {
     itemType,
     itemId,
     itemName: itemName || 'Unknown',
@@ -342,7 +343,14 @@ export async function logToTrash({
     softDeleteField: registry.softDeleteField || 'isDeleted',
     deletionContext,
     bulkCleanup,
-  });
+  };
+
+  if (session) {
+    const [trashItem] = await TrashItem.create([payload], { session });
+    return trashItem;
+  }
+
+  return TrashItem.create(payload);
 }
 
 /**
@@ -351,8 +359,7 @@ export async function logToTrash({
  * Shared by the school-scoped trash routes and the super-admin cross-school routes.
  */
 export async function restoreTrashItem(trashItem) {
-  const { itemType, restoreStrategy, modelName, softDeleteField, itemId, originalData } =
-    trashItem;
+  const { itemType, restoreStrategy, modelName, softDeleteField, itemId, originalData } = trashItem;
 
   // BulkCleanup has its own restore path
   if (itemType === 'BulkCleanup') {
@@ -384,7 +391,262 @@ export async function restoreTrashItem(trashItem) {
       delete updateFields.deletedBy;
     }
 
-    await Model.findByIdAndUpdate(itemId, { $set: updateFields });
+    // Restore the pre-delete `status`. Soft-delete routes flip `status` to
+    // 'inactive' alongside `isDeleted` (see students/staff delete handlers), but
+    // clearing only `isDeleted` on restore left the record `status: 'inactive'`
+    // — invisible in the default "Active" list tab, so an "undo" appeared to do
+    // nothing. `originalData` is snapshotted BEFORE the delete mutation, so it
+    // carries the correct prior value.
+    if (originalData && typeof originalData === 'object' && originalData.status !== undefined) {
+      updateFields.status = originalData.status;
+    }
+
+    if (itemType === 'ExamSchedule') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const restored = await Model.findOneAndUpdate(
+            { _id: itemId, schoolId: trashItem.schoolId, isDeleted: true },
+            { $set: updateFields },
+            { new: true, session }
+          );
+          if (!restored) throw new Error('Exam schedule is no longer available to restore');
+
+          const cascadeDeletedAt = trashItem.deletionContext?.cascadeDeletedAt;
+          const generatedExamIds = originalData?.generatedExamIds || [];
+          if (cascadeDeletedAt && generatedExamIds.length > 0) {
+            const Exam = mongoose.model('Exam');
+            const Result = mongoose.model('Result');
+            const cascadeFilter = {
+              schoolId: trashItem.schoolId,
+              isDeleted: true,
+              deletedAt: cascadeDeletedAt,
+            };
+            await Exam.updateMany(
+              { ...cascadeFilter, _id: { $in: generatedExamIds }, examScheduleId: itemId },
+              { $set: { isDeleted: false, deletedAt: null } },
+              { session }
+            );
+            await Result.updateMany(
+              { ...cascadeFilter, examId: { $in: generatedExamIds } },
+              { $set: { isDeleted: false, deletedAt: null } },
+              { session }
+            );
+          }
+        });
+      } finally {
+        await session.endSession();
+      }
+      return;
+    }
+
+    if (itemType === 'Exam') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const restored = await Model.findOneAndUpdate(
+            { _id: itemId, schoolId: trashItem.schoolId, isDeleted: true },
+            { $set: updateFields },
+            { new: true, session }
+          );
+          if (!restored) throw new Error('Exam is no longer available to restore');
+
+          const cascadeDeletedAt = trashItem.deletionContext?.cascadeDeletedAt;
+          if (cascadeDeletedAt) {
+            const Result = mongoose.model('Result');
+            await Result.updateMany(
+              {
+                examId: itemId,
+                schoolId: trashItem.schoolId,
+                isDeleted: true,
+                deletedAt: cascadeDeletedAt,
+              },
+              { $set: { isDeleted: false, deletedAt: null } },
+              { session }
+            );
+          }
+
+          // Deletion removes the generated-exam backlink from its originating
+          // schedule. Recreate only that snapshotted relationship on restore.
+          if (originalData?.examScheduleId && mongoose.models.ExamSchedule) {
+            const ExamSchedule = mongoose.model('ExamSchedule');
+            await ExamSchedule.updateOne(
+              { _id: originalData.examScheduleId, schoolId: trashItem.schoolId },
+              { $addToSet: { generatedExamIds: itemId } },
+              { session }
+            );
+          }
+        });
+      } finally {
+        await session.endSession();
+      }
+      return;
+    }
+
+    if (itemType === 'Class') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const teacherId = originalData?.classTeacherId;
+          if (teacherId) {
+            const Class = mongoose.model('Class');
+            const Staff = mongoose.model('Staff');
+            const teacher = await Staff.findOne({
+              _id: teacherId,
+              schoolId: trashItem.schoolId,
+            }).session(session);
+            const conflictingClass = await Class.findOne({
+              _id: { $ne: itemId },
+              schoolId: trashItem.schoolId,
+              classTeacherId: teacherId,
+              isDeleted: { $ne: true },
+            }).session(session);
+            if (!teacher) throw new Error('Original class teacher is no longer available');
+            if (conflictingClass) {
+              throw new Error('Original class teacher is now assigned to another class');
+            }
+            await Staff.updateOne(
+              { _id: teacherId, schoolId: trashItem.schoolId },
+              {
+                $set: {
+                  classTeacherOf: `${originalData.name}-${originalData.section}`,
+                  isClassTeacher: true,
+                },
+              },
+              { session }
+            );
+          }
+
+          const restored = await Model.findOneAndUpdate(
+            { _id: itemId, schoolId: trashItem.schoolId, isDeleted: true },
+            { $set: updateFields },
+            { new: true, session }
+          );
+          if (!restored) throw new Error('Class is no longer available to restore');
+        });
+      } finally {
+        await session.endSession();
+      }
+      return;
+    }
+
+    if (itemType === 'Staff') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const Staff = mongoose.model('Staff');
+          const Class = mongoose.model('Class');
+          const PushToken = mongoose.model('PushToken');
+          const assignments = trashItem.deletionContext?.assignedClasses || [];
+
+          for (const assignment of assignments) {
+            const classDoc = await Class.findOne({
+              _id: assignment.classId,
+              schoolId: trashItem.schoolId,
+              isDeleted: { $ne: true },
+            }).session(session);
+            if (!classDoc) {
+              throw new Error(
+                `Original class ${assignment.name || ''}-${assignment.section || ''} is no longer available`
+              );
+            }
+            if (classDoc.classTeacherId && String(classDoc.classTeacherId) !== String(itemId)) {
+              throw new Error(
+                `Original class ${classDoc.name}-${classDoc.section} now has another class teacher`
+              );
+            }
+          }
+
+          const restored = await Staff.findOneAndUpdate(
+            { _id: itemId, schoolId: trashItem.schoolId, isDeleted: true },
+            {
+              $set: {
+                ...updateFields,
+                isClassTeacher: Boolean(originalData?.isClassTeacher && assignments.length > 0),
+                classTeacherOf:
+                  originalData?.isClassTeacher && assignments.length > 0
+                    ? originalData.classTeacherOf
+                    : null,
+              },
+            },
+            { new: true, session }
+          );
+          if (!restored) throw new Error('Staff member is no longer available to restore');
+
+          for (const assignment of assignments) {
+            await Class.updateOne(
+              {
+                _id: assignment.classId,
+                schoolId: trashItem.schoolId,
+                isDeleted: { $ne: true },
+              },
+              { $set: { classTeacherId: itemId } },
+              { session }
+            );
+          }
+
+          // Push delivery was paused on archive. Restoring the account may
+          // safely reactivate registered devices; revoked login sessions stay
+          // revoked so the user must authenticate again.
+          await PushToken.updateMany(
+            { user: itemId, userModel: 'Staff', schoolId: trashItem.schoolId },
+            { $set: { isActive: true } },
+            { session }
+          );
+          await TrashItem.deleteOne(
+            { _id: trashItem._id, schoolId: trashItem.schoolId },
+            { session }
+          );
+        });
+      } finally {
+        await session.endSession();
+      }
+      return;
+    }
+
+    if (itemType === 'Student') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const restored = await Model.findOneAndUpdate(
+            { _id: itemId, schoolId: trashItem.schoolId, isDeleted: true },
+            { $set: updateFields },
+            { new: true, session }
+          );
+          if (!restored) throw new Error('Student is no longer available to restore');
+
+          const cascadeDeletedAt = trashItem.deletionContext?.cascadeDeletedAt;
+          if (cascadeDeletedAt) {
+            const cascadeFilter = {
+              studentId: itemId,
+              schoolId: trashItem.schoolId,
+              isDeleted: true,
+              deletedAt: cascadeDeletedAt,
+            };
+            const Attendance = mongoose.model('Attendance');
+            const Result = mongoose.model('Result');
+            await Attendance.updateMany(
+              cascadeFilter,
+              { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+              { session }
+            );
+            await Result.updateMany(
+              cascadeFilter,
+              { $set: { isDeleted: false, deletedAt: null } },
+              { session }
+            );
+          }
+        });
+      } finally {
+        await session.endSession();
+      }
+      return;
+    }
+
+    await Model.findOneAndUpdate(
+      { _id: itemId, schoolId: trashItem.schoolId },
+      { $set: updateFields }
+    );
   } else {
     // hard-delete restore: re-insert the original document
     if (!originalData || typeof originalData !== 'object') {
@@ -410,7 +672,7 @@ export async function restoreTrashItem(trashItem) {
  * Shared by school + super-admin routes.
  */
 export async function permanentlyDeleteTrashItem(trashItem) {
-  const { itemType, modelName, restoreStrategy, itemId } = trashItem;
+  const { itemType, modelName, restoreStrategy, itemId, schoolId, originalData } = trashItem;
 
   // Student has special GDPR-compliant cascading erasure
   if (itemType === 'Student') {
@@ -421,10 +683,45 @@ export async function permanentlyDeleteTrashItem(trashItem) {
   // BulkCleanup — data already deleted from source, nothing to do
   if (itemType === 'BulkCleanup') return;
 
+  if (itemType === 'Exam' || itemType === 'ExamSchedule') {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const Exam = mongoose.model('Exam');
+        const Result = mongoose.model('Result');
+        const ExamSchedule = mongoose.model('ExamSchedule');
+
+        if (itemType === 'Exam') {
+          await Result.deleteMany({ examId: itemId, schoolId }, { session });
+          await ExamSchedule.updateMany(
+            { schoolId, generatedExamIds: itemId },
+            { $pull: { generatedExamIds: itemId } },
+            { session }
+          );
+          await Exam.deleteOne({ _id: itemId, schoolId }, { session });
+          return;
+        }
+
+        const generatedExamIds = originalData?.generatedExamIds || [];
+        if (generatedExamIds.length > 0) {
+          await Result.deleteMany({ schoolId, examId: { $in: generatedExamIds } }, { session });
+          await Exam.deleteMany(
+            { schoolId, _id: { $in: generatedExamIds }, examScheduleId: itemId },
+            { session }
+          );
+        }
+        await ExamSchedule.deleteOne({ _id: itemId, schoolId }, { session });
+      });
+    } finally {
+      await session.endSession();
+    }
+    return;
+  }
+
   // For soft-deleted items, the document still exists — hard-delete it now
   if (restoreStrategy === 'soft-delete' && modelName) {
     const Model = mongoose.model(modelName);
-    await Model.findByIdAndDelete(itemId);
+    await Model.findOneAndDelete({ _id: itemId, schoolId });
   }
   // For hard-deleted items, the document is already gone — nothing to do
 }

@@ -93,13 +93,13 @@ describe('Student Create Drawer — Zod Validation', () => {
     expect(res.body.error).toBeTruthy();
   });
 
-  it('rejects when admissionId is missing', async () => {
+  it('auto-generates admissionId when it is missing', async () => {
     const res = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { admissionId: undefined }))
-      .expect(400);
-    expect(res.body.error).toBeTruthy();
+      .expect(201);
+    expect(res.body.admissionId).toMatch(/\S+/);
   });
 
   it('rejects when academicYear is missing', async () => {
@@ -448,7 +448,9 @@ describe('Student Create Drawer — DB Persistence', () => {
 
     expect(student.name).toBe('Priya Sharma');
     expect(student.admissionId).toBe('ADM-FULL-001');
-    expect(student.rollNo).toBe(15);
+    // rollNo is server-auto-assigned (client value 15 ignored) — first student
+    // in this class gets slot 1.
+    expect(student.rollNo).toBe(1);
     expect(student.gender).toBe('Female');
     expect(student.bloodGroup).toBe('B+');
     expect(student.nationality).toBe('Indian');
@@ -706,36 +708,42 @@ describe('Student Create Drawer — Uniqueness', () => {
     expect(res.body.field).toBe('admissionId');
   });
 
-  it('rejects duplicate rollNo in the same class and academic year', async () => {
-    await request(app)
+  it('auto-assigns rollNo and ignores client input to avoid duplicates', async () => {
+    // Client forces the same rollNo twice; the server assigns sequential slots
+    // (1, then 2) instead of rejecting the second request.
+    const first = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { admissionId: 'ADM-ROLL-A', rollNo: 42 }))
       .expect(201);
+    expect(first.body.rollNo).toBe(1);
 
-    const res = await request(app)
+    const second = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { admissionId: 'ADM-ROLL-B', rollNo: 42 }))
-      .expect(409);
-
-    expect(res.body.field).toBe('rollNo');
+      .expect(201);
+    expect(second.body.rollNo).toBe(2);
   });
 
-  it('allows same rollNo in different classes', async () => {
+  it('numbers rollNo independently per class', async () => {
     const classB = await createClassRecord({ name: 'Class 9', section: 'B' });
 
-    await request(app)
+    const a = await request(app)
       .post('/api/students')
       .set(authHeaders)
-      .send(validStudentPayload(classId, { admissionId: 'ADM-DIFFCLASS-A', rollNo: 1 }))
+      .send(validStudentPayload(classId, { admissionId: 'ADM-DIFFCLASS-A' }))
       .expect(201);
 
-    await request(app)
+    const b = await request(app)
       .post('/api/students')
       .set(authHeaders)
-      .send(validStudentPayload(classB._id, { admissionId: 'ADM-DIFFCLASS-B', rollNo: 1 }))
+      .send(validStudentPayload(classB._id, { admissionId: 'ADM-DIFFCLASS-B' }))
       .expect(201);
+
+    // Both are the first student in their respective classes → rollNo 1.
+    expect(a.body.rollNo).toBe(1);
+    expect(b.body.rollNo).toBe(1);
   });
 
   it('rejects when classId does not exist in the database', async () => {

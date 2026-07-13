@@ -39,13 +39,13 @@ export function resolveAutoIndex(env = process.env) {
 // These settings ensure MongoDB Atlas (or self-hosted RS) failover is handled
 // automatically. In Atlas the typical election completes in 10-30 s, giving:
 //   RTO ≤ 30 s  (automatic — driver retries after primary re-election)
-//   RPO  = 0    (w:"majority" + j:true means committed writes survive failover)
+//   RPO  = 0    (w:"majority" + journal:true means committed writes survive failover)
 const FAILOVER_CONNECTION_OPTIONS = {
   // Replica set resilience
   retryWrites: true, // Automatically retry writes on transient network errors
   retryReads: true, // Automatically retry reads on transient network errors
   w: 'majority', // Wait for majority of RS members to acknowledge write (RPO = 0)
-  j: true, // Journal writes before acknowledging (survive crashes)
+  journal: true, // Journal writes before acknowledging (survive crashes)
   // readPreference MUST be 'primary'. Transactions (student create, billing,
   // provisioning, …) reject any other read preference with
   // "Read preference in a transaction must be primary". The previous
@@ -183,6 +183,7 @@ import StudentModel from './models/Student.js';
 import AttendanceModel from './models/Attendance.js';
 import ExamScheduleModel from './models/ExamSchedule.js';
 import ExamModel from './models/Exam.js';
+import ExamHallModel from './models/ExamHall.js';
 import ResultModel from './models/Result.js';
 import TimetableModel from './models/Timetable.js';
 import TeacherTimetableModel from './models/TeacherTimetable.js';
@@ -263,6 +264,7 @@ export const Student = StudentModel;
 export const Attendance = AttendanceModel;
 export const ExamSchedule = ExamScheduleModel;
 export const Exam = ExamModel;
+export const ExamHall = ExamHallModel;
 export const Result = ResultModel;
 export const Timetable = TimetableModel;
 export const TeacherTimetable = TeacherTimetableModel;
@@ -394,6 +396,59 @@ export async function getNextReceiptNumber(schoolId) {
   return `RCP-${year}-${String(counter.seq).padStart(6, '0')}`;
 }
 
+/**
+ * Self-healing receipt-number generator. Same as getNextReceiptNumber, but if
+ * the candidate `RCP-{year}-{seq}` already exists (because receipts were
+ * created out-of-band — manual DB inserts, a restore, test seeding, or the
+ * counter was reset), it advances the counter to the highest existing seq for
+ * the current year and continues from there.
+ *
+ * Use this in retry paths so a lagging counter self-corrects instead of
+ * looping forever or returning a hard error.
+ */
+export async function getNextAvailableReceiptNumber(schoolId) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate receipt number');
+  }
+  const year = new Date().getFullYear();
+  const prefix = `RCP-${year}-`;
+
+  // Find the highest existing receipt number for this school + year to learn
+  // the true high-water mark (in case the counter is behind it).
+  const [highest] = await FeePaymentModel.find(
+    { schoolId, receiptNumber: { $regex: `^${prefix}` } },
+    { receiptNumber: 1 }
+  )
+    .sort({ receiptNumber: -1 })
+    .limit(1)
+    .lean();
+
+  let seqFromDb = 0;
+  if (highest?.receiptNumber) {
+    const tail = String(highest.receiptNumber).slice(prefix.length);
+    const parsed = Number.parseInt(tail, 10);
+    if (Number.isFinite(parsed)) seqFromDb = parsed;
+  }
+
+  // Bump the counter atomically; then ensure it's at least seqFromDb + 1.
+  const counter = await CounterModel.findByIdAndUpdate(
+    `receiptNumber_${schoolId}`,
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  const nextSeq = Math.max(counter.seq, seqFromDb + 1);
+  if (nextSeq !== counter.seq) {
+    // Counter lagged behind real receipts — fast-forward it so subsequent
+    // calls don't re-collide.
+    await CounterModel.findByIdAndUpdate(
+      `receiptNumber_${schoolId}`,
+      { $set: { seq: nextSeq } },
+      { new: true }
+    );
+  }
+  return `RCP-${year}-${String(nextSeq).padStart(6, '0')}`;
+}
+
 export async function getNextRefundNumber(schoolId) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate refund number');
@@ -405,6 +460,69 @@ export async function getNextRefundNumber(schoolId) {
   );
   const year = new Date().getFullYear();
   return `RFD-${year}-${String(counter.seq).padStart(6, '0')}`;
+}
+
+/**
+ * Reserve the next transfer-certificate number for one school and calendar
+ * year. The counter increment is atomic, so concurrent operators cannot be
+ * handed the same number. Before incrementing, `$max` self-heals a missing or
+ * stale counter from the highest already-issued certificate without creating
+ * a duplicate after restores or legacy imports.
+ *
+ * Reserving happens when the number is requested; cancelled forms may leave a
+ * harmless gap, which is preferable to ever reusing a legal document number.
+ */
+export async function getNextTransferCertificateNumber(schoolId, year = new Date().getFullYear()) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate transfer certificate number');
+  }
+
+  const normalizedYear = Number(year);
+  if (!Number.isInteger(normalizedYear) || normalizedYear < 2000 || normalizedYear > 9999) {
+    throw new Error('A valid four-digit year is required to generate transfer certificate number');
+  }
+
+  const prefix = `TC-${normalizedYear}-`;
+  const [highest] = await StudentModel.aggregate([
+    {
+      $match: {
+        schoolId: new mongoose.Types.ObjectId(String(schoolId)),
+        'transferCertificate.tcNumber': { $regex: `^${prefix}\\d+$` },
+      },
+    },
+    {
+      $project: {
+        sequence: {
+          $convert: {
+            input: {
+              $arrayElemAt: [{ $split: ['$transferCertificate.tcNumber', '-'] }, -1],
+            },
+            to: 'int',
+            onError: 0,
+            onNull: 0,
+          },
+        },
+      },
+    },
+    { $sort: { sequence: -1 } },
+    { $limit: 1 },
+  ]);
+
+  const highWaterMark = Math.max(0, highest?.sequence || 0);
+
+  const counterId = `transferCertificateNumber_${schoolId}_${normalizedYear}`;
+  await CounterModel.findByIdAndUpdate(
+    counterId,
+    { $max: { seq: highWaterMark } },
+    { upsert: true, setDefaultsOnInsert: true }
+  );
+  const counter = await CounterModel.findByIdAndUpdate(
+    counterId,
+    { $inc: { seq: 1 } },
+    { new: true }
+  );
+
+  return `${prefix}${String(counter.seq).padStart(4, '0')}`;
 }
 
 export async function getNextAdmissionId(schoolId) {

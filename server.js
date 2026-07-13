@@ -14,6 +14,7 @@ import messageRoutes from './routes/messages.js';
 import feeHeadsRoutes from './routes/feeHeads.js';
 import studentFeesRoutes from './routes/studentFees.js';
 import feeSettingsRoutes from './routes/feeSettings.js';
+import feeReminderConfigRoutes from './routes/feeReminderConfig.js';
 import feesRoutes from './routes/fees.js';
 import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
@@ -40,6 +41,7 @@ import dataCleanupRoutes from './routes/dataCleanup.js';
 import seedDummyDataRoutes from './routes/seedDummyData.js';
 import demoRoutes from './routes/demo.js';
 import settingsRoutes from './routes/settings.js';
+import curriculaRoutes from './routes/curricula.js';
 import trashRoutes from './routes/trash.js';
 import backupRoutes from './routes/backup.js';
 import parentAuthRoutes from './routes/parentAuth.js';
@@ -74,6 +76,7 @@ import cbseReportCardRoutes from './routes/cbseReportCard.js';
 import icseReportCardRoutes from './routes/icseReportCard.js';
 import cceRoutes from './routes/cce.js';
 import examScheduleRoutes from './routes/examSchedule.js';
+import examHallsRoutes from './routes/examHalls.js';
 import classesRoutes from './routes/classes.js';
 import studentsRoutes from './routes/students.js';
 import promotionRoutes from './routes/promotion.js';
@@ -590,6 +593,10 @@ v1Router.use('/', cceRoutes);
 v1Router.use('/hall-tickets', hallTicketsRoutes);
 v1Router.use('/', academicsRoutes);
 v1Router.use('/', examScheduleRoutes);
+// Routes inside examHalls.js are defined with the full `/exam-halls` prefix
+// (like examScheduleRoutes/academicsRoutes above), so mount at root — mounting
+// at '/exam-halls' would double the prefix to /exam-halls/exam-halls (404).
+v1Router.use('/', examHallsRoutes);
 v1Router.use('/homework', homeworkRoutes);
 
 // ─── Staff & HR ──────────────────────────────────────────────────────────────
@@ -610,6 +617,7 @@ v1Router.use('/substitution-alerts', substitutionAlertsRoutes);
 v1Router.use('/fee-heads', feeHeadsRoutes);
 v1Router.use('/student-fees', studentFeesRoutes);
 v1Router.use('/fee-settings', feeSettingsRoutes);
+v1Router.use('/fee-reminder-config', feeReminderConfigRoutes);
 v1Router.use('/fees', feesRoutes);
 v1Router.use('/fee-templates', feeTemplatesRoutes);
 v1Router.use('/fee-structure', feeStructureRoutes);
@@ -639,6 +647,7 @@ v1Router.use('/front-desk', frontDeskRoutes);
 
 // ─── Settings & Configuration ────────────────────────────────────────────────
 v1Router.use('/settings', settingsRoutes);
+v1Router.use('/curricula', curriculaRoutes);
 v1Router.use('/', systemConfigRoutes);
 v1Router.use('/', intakeFormsRoutes);
 v1Router.use('/', calendarEventsRoutes);
