@@ -205,10 +205,34 @@ router.get('/feed', checkPermission('dashboard', 'view'), async (req, res) => {
     const nextWeekDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const nextWeek = nextWeekDate.toISOString().split('T')[0];
 
+    // Aggregate fee structures with an outstanding balance, joining the owning
+    // student and dropping orphaned rows (student soft-deleted / inactive).
+    // Without this join, archived students leave "live" fee rows that surface
+    // as phantom "unpaid fees" priorities. Same $lookup pattern as
+    // /dashboard/fee-summary and /fees/class-summary. Aggregation $match does
+    // not auto-cast, so cast schoolId to ObjectId explicitly.
+    const schoolObjIdForFeed = new mongoose.Types.ObjectId(String(schoolId));
+
     const [feeStructures, pendingSubstitutions, calendarEvents] = await Promise.allSettled([
-      StudentFeeStructure.find({ schoolId, totalBalance: { $gt: 0 } })
-        .select('totalBalance')
-        .lean(),
+      StudentFeeStructure.aggregate([
+        { $match: { schoolId: schoolObjIdForFeed, totalBalance: { $gt: 0 } } },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: '$student' },
+        {
+          $match: {
+            'student.isDeleted': { $ne: true },
+            'student.status': 'active',
+          },
+        },
+        { $project: { _id: 0, totalBalance: 1 } },
+      ]),
       Substitution.find({
         schoolId,
         date: today,
@@ -644,6 +668,205 @@ router.get('/analytics-summary', checkPermission('dashboard', 'view'), async (re
     return res.json({ students, fees, classDistribution });
   } catch (error) {
     logger.error('Dashboard analytics-summary error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
+// GET /api/v1/dashboard/fee-summary
+// Bounded fee collection snapshot for the dashboard landing card.
+// [PERF-REFACTOR] Replaces the client walking `studentFeesApi.getAll()` (every
+// fee structure for the school/year) + `feesApi.getPayments()` (every payment)
+// just to compute four numbers and a 6-row recent list. This endpoint
+// aggregates the totals in MongoDB and returns a bounded recent-payment slice,
+// so the dashboard no longer downloads unbounded collections to render KPIs.
+//
+// Response:
+//   { totalCollected, totalPending, defaulters, feeStructuresExist,
+//     recentPayments: [{ _id, amount, paymentDate, receiptNumber,
+//                        paymentMethod, status, studentId }] }
+router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: req.t('common:routes.invalidQueryParameters'),
+        details: parsed.error.errors,
+      });
+    }
+
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    // StudentFeeStructure.schoolId is an ObjectId; aggregation `$match` does
+    // not auto-cast (unlike find/countDocuments), so convert explicitly. Same
+    // pattern as /dashboard/analytics-summary above.
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+
+    const academicYear = parsed.data.academicYear || undefined;
+
+    // Fee-structure scope: school + (optional) academic year, soft-delete safe.
+    // totalPaid/totalBalance are maintained on each StudentFeeStructure doc.
+    const structureMatch = {
+      schoolId: schoolObjId,
+      ...(academicYear ? { academicYear } : {}),
+    };
+
+    // One aggregation pass: join the owning student and drop orphaned fee
+    // structures (rows whose student was soft-deleted) before summing the
+    // money totals and counting defaulters. Without this join, archived
+    // students leave behind "live" fee rows that inflate the hero's unpaid-fees
+    // badge even though the school shows zero students — a visible trust bug.
+    // Same $lookup + 'student.isDeleted' pattern as /fees/class-summary.
+    //
+    // todayCollected/monthCollected are aggregated server-side from FeePayment
+    // rather than reduced client-side over a 50-row page. Previously the
+    // dashboard called feesApi.getPayments() (which defaults to page=1,
+    // limit=50) and summed those rows — so schools with >50 payments/year
+    // showed a fraction of the real "collected today/month" headline KPI.
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const monthPrefix = todayStr.slice(0, 7); // YYYY-MM
+    const paymentMatch = {
+      schoolId: schoolObjId,
+      status: { $ne: 'cancelled' },
+      ...(academicYear ? { academicYear } : {}),
+    };
+
+    const [totalsAgg, recentPayments, todayCollectedAgg, monthCollectedAgg] = await Promise.all([
+      StudentFeeStructure.aggregate([
+        { $match: structureMatch },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: '$student' },
+        {
+          $match: {
+            'student.isDeleted': { $ne: true },
+            'student.status': 'active',
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalCollected: { $sum: '$totalPaid' },
+            totalPending: { $sum: '$totalBalance' },
+            structureCount: { $sum: 1 },
+            // "Defaulters" = joined fee structures with an outstanding balance,
+            // matching the client-side definition (fs.totalBalance > 0).
+            defaulters: {
+              $sum: { $cond: [{ $gt: ['$totalBalance', 0] }, 1, 0] },
+            },
+          },
+        },
+      ]).catch(() => []),
+      // Bounded recent-payments slice (newest first). The {schoolId, paymentDate:-1}
+      // index makes this a cheap index scan; we only ever return 6 rows.
+      FeePayment.find({ schoolId: schoolObjId, ...(academicYear ? { academicYear } : {}) })
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .limit(6)
+        .select('amount paymentDate receiptNumber paymentMethod status studentId classId')
+        .lean()
+        .catch(() => []),
+      // "Collected today" summed server-side across ALL of today's payments
+      // (not just a 50-row page). paymentDate is a stored "YYYY-MM-DD" string.
+      FeePayment.aggregate([
+        { $match: { ...paymentMatch, paymentDate: todayStr } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).catch(() => []),
+      // "Collected this month" — match the "YYYY-MM" prefix of paymentDate.
+      FeePayment.aggregate([
+        { $match: { ...paymentMatch, paymentDate: { $regex: `^${monthPrefix}` } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).catch(() => []),
+    ]);
+
+    const totals = totalsAgg[0] || {
+      totalCollected: 0,
+      totalPending: 0,
+      structureCount: 0,
+      defaulters: 0,
+    };
+
+    return res.json({
+      totalCollected: totals.totalCollected || 0,
+      totalPending: totals.totalPending || 0,
+      defaulters: totals.defaulters || 0,
+      feeStructuresExist: (totals.structureCount || 0) > 0,
+      recentPayments,
+      // Server-computed money KPIs — the true sum of all payments today / this
+      // month, not a reduce over a 50-row page.
+      todayCollected: todayCollectedAgg[0]?.total || 0,
+      monthCollected: monthCollectedAgg[0]?.total || 0,
+    });
+  } catch (error) {
+    logger.error('Dashboard fee-summary error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
+// GET /api/v1/dashboard/fee-summary
+// Bounded fee collection snapshot for the dashboard landing card. Replaces the
+// client walking studentFeesApi.getAll() (every fee structure) to compute four
+// totals. Aggregates in MongoDB; returns a bounded recent-payment slice.
+router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({
+          error: req.t('common:routes.invalidQueryParameters'),
+          details: parsed.error.errors,
+        });
+    }
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+    // Aggregation $match does not auto-cast, so convert to ObjectId explicitly.
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+    const academicYear = parsed.data.academicYear || undefined;
+    const structureMatch = { schoolId: schoolObjId, ...(academicYear ? { academicYear } : {}) };
+
+    const [totalsAgg, countAgg, recentPayments] = await Promise.all([
+      StudentFeeStructure.aggregate([
+        { $match: structureMatch },
+        {
+          $group: {
+            _id: null,
+            totalCollected: { $sum: '$totalPaid' },
+            totalPending: { $sum: '$totalBalance' },
+            structureCount: { $sum: 1 },
+          },
+        },
+      ]),
+      StudentFeeStructure.countDocuments({ ...structureMatch, totalBalance: { $gt: 0 } }).catch(
+        () => 0
+      ),
+      FeePayment.find({ schoolId: schoolObjId, ...(academicYear ? { academicYear } : {}) })
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .limit(6)
+        .select('amount paymentDate receiptNumber paymentMethod status studentId classId')
+        .lean()
+        .catch(() => []),
+    ]);
+    const totals = totalsAgg[0] || { totalCollected: 0, totalPending: 0, structureCount: 0 };
+    return res.json({
+      totalCollected: totals.totalCollected || 0,
+      totalPending: totals.totalPending || 0,
+      defaulters: countAgg || 0,
+      feeStructuresExist: (totals.structureCount || 0) > 0,
+      recentPayments,
+    });
+  } catch (error) {
+    logger.error('Dashboard fee-summary error', { error: error.message });
     return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
   }
 });

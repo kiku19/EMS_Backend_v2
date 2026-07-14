@@ -407,6 +407,123 @@ describe('dashboard routes', () => {
     });
   });
 
+  // ─── Bounded fee summary (PERF-REFACTOR) ───────────────────────────────
+  describe('GET /api/dashboard/fee-summary', () => {
+    it('returns 401 when no auth token is provided', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/fee-summary').expect(401);
+    });
+
+    it('returns zeroed totals for a school with no fee structures', async () => {
+      const { app, headers } = await setup('admin', ['Admin']);
+      const res = await request(app).get('/api/dashboard/fee-summary').set(headers).expect(200);
+
+      expect(res.body.totalCollected).toBe(0);
+      expect(res.body.totalPending).toBe(0);
+      expect(res.body.defaulters).toBe(0);
+      expect(res.body.feeStructuresExist).toBe(false);
+      expect(res.body.recentPayments).toEqual([]);
+    });
+
+    it('aggregates fee totals and counts defaulters server-side', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classRecord = await createClassRecord({ schoolId: school._id });
+      const [s1, s2, s3] = await Promise.all([
+        createStudentRecord({ schoolId: school._id, classId: classRecord._id, name: 'Paid' }),
+        createStudentRecord({ schoolId: school._id, classId: classRecord._id, name: 'Owing' }),
+        createStudentRecord({ schoolId: school._id, classId: classRecord._id, name: 'Partial' }),
+      ]);
+      await StudentFeeStructure.create([
+        {
+          schoolId: school._id,
+          studentId: s1._id,
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          totalFee: 10000,
+          totalPaid: 10000,
+          totalBalance: 0,
+          overallStatus: 'paid',
+        },
+        {
+          schoolId: school._id,
+          studentId: s2._id,
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          totalFee: 10000,
+          totalPaid: 0,
+          totalBalance: 10000,
+          overallStatus: 'pending',
+        },
+        {
+          schoolId: school._id,
+          studentId: s3._id,
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          totalFee: 10000,
+          totalPaid: 4000,
+          totalBalance: 6000,
+          overallStatus: 'partial',
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/api/dashboard/fee-summary?academicYear=2026-27')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.totalCollected).toBe(14000); // 10000 + 0 + 4000
+      expect(res.body.totalPending).toBe(16000); // 0 + 10000 + 6000
+      // defaulters = structures with totalBalance > 0 (s2 + s3)
+      expect(res.body.defaulters).toBe(2);
+      expect(res.body.feeStructuresExist).toBe(true);
+    });
+
+    it('does not count structures from other schools (multi-tenant isolation)', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const otherSchool = await createSchoolRecord({
+        name: `Other ${nextSeq()}`,
+        code: `OX-${nextSeq()}`,
+      });
+      const myClass = await createClassRecord({ schoolId: school._id });
+      const otherClass = await createClassRecord({ schoolId: otherSchool._id });
+      const myStudent = await createStudentRecord({ schoolId: school._id, classId: myClass._id });
+      const otherStudent = await createStudentRecord({
+        schoolId: otherSchool._id,
+        classId: otherClass._id,
+      });
+      await StudentFeeStructure.create([
+        {
+          schoolId: school._id,
+          studentId: myStudent._id,
+          classId: myClass._id,
+          academicYear: '2026-27',
+          totalPaid: 5000,
+          totalBalance: 1000,
+          overallStatus: 'partial',
+        },
+        {
+          schoolId: otherSchool._id,
+          studentId: otherStudent._id,
+          classId: otherClass._id,
+          academicYear: '2026-27',
+          totalPaid: 999999,
+          totalBalance: 999999,
+          overallStatus: 'pending',
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/api/dashboard/fee-summary?academicYear=2026-27')
+        .set(headers)
+        .expect(200);
+
+      // Only my school's structure counted — other school's 999999 excluded.
+      expect(res.body.totalCollected).toBe(5000);
+      expect(res.body.totalPending).toBe(1000);
+      expect(res.body.defaulters).toBe(1);
+    });
+  });
+
   // ─── Error handling ────────────────────────────────────────────────────
   describe('error handling', () => {
     it('returns 400 for invalid query parameters', async () => {
