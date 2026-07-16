@@ -82,4 +82,29 @@ describe('021_remove_legacy_identity_indexes migration', () => {
       expect.arrayContaining(['schoolId_1_phoneHash_1', 'schoolId_1_emailHash_1'])
     );
   });
+
+  it('removes a custom-named global receipt index by its key', async () => {
+    const db = mongoose.connection.client.db(`m021custom${Date.now().toString(36)}`);
+    await db.createCollection('feepayments');
+    await db
+      .collection('feepayments')
+      .createIndex({ receiptNumber: 1 }, { name: 'legacy_receipt_unique_custom', unique: true });
+    await db
+      .collection('feepayments')
+      .createIndex(
+        { schoolId: 1, receiptNumber: 1 },
+        { name: 'schoolId_1_receiptNumber_1', unique: true }
+      );
+
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      await legacyIdentityIndexesMigration.up(db, { dryRun: false });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(await indexNames(db, 'feepayments')).not.toContain('legacy_receipt_unique_custom');
+    expect(await indexNames(db, 'feepayments')).toContain('schoolId_1_receiptNumber_1');
+  });
 });

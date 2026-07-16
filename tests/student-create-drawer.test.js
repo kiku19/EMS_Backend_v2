@@ -227,6 +227,16 @@ describe('Student Create Drawer — Zod Validation', () => {
     expect(res.body).toBeTruthy();
   });
 
+  it('rejects a date of birth in the future', async () => {
+    const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const res = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(validStudentPayload(classId, { dateOfBirth: futureDate }))
+      .expect(400);
+    expect(res.body.error).toBeTruthy();
+  });
+
   it('rejects invalid phone number (not 10 digits)', async () => {
     const res = await request(app)
       .post('/api/students')

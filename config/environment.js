@@ -64,6 +64,9 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'staging', 'production', 'test']).default('development'),
     // Temporary local QA switch; keep false/unset in real deployments.
     DISABLE_AUTH_RATE_LIMITING: z.enum(['true', 'false']).optional(),
+    // Optional safety-net switch for local QA/incident response. The
+    // per-tenant limiter remains active for authenticated traffic.
+    DISABLE_GLOBAL_RATE_LIMITING: z.enum(['true', 'false']).optional(),
 
     // ── Database — at least one is required (checked in validateEnvironment) ────
     MONGO_URI: z.string().optional(),

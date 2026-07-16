@@ -265,6 +265,7 @@ export const createStudentSchema = z
       .string()
       .max(20)
       .refine((v) => !v || !isNaN(Date.parse(v)), 'dateOfBirth must be a valid date (YYYY-MM-DD)')
+      .refine((v) => !v || new Date(v) <= new Date(), 'dateOfBirth cannot be in the future')
       .nullish()
       .or(z.literal('')),
     bloodGroup: bloodGroupEnum.nullish().or(z.literal('')),

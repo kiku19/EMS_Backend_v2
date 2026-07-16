@@ -69,6 +69,15 @@ export function isAuthRateLimitingDisabled() {
   return process.env.DISABLE_AUTH_RATE_LIMITING === 'true';
 }
 
+/**
+ * Temporary operational escape hatch for the IP-wide safety-net limiter.
+ * The tenant limiter remains active for authenticated traffic, so disabling
+ * this global bucket does not remove per-school protection.
+ */
+export function isGlobalRateLimitingDisabled() {
+  return process.env.DISABLE_GLOBAL_RATE_LIMITING === 'true';
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -321,16 +330,34 @@ export function createGlobalRateLimiter() {
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     store: buildRedisStore(),
-    skip: (req) =>
-      req.path === '/health' ||
-      req.path === '/api/health' ||
-      req.path === '/healthz' ||
-      req.path === '/readyz' ||
-      req.path === '/startupz' ||
-      req.path.startsWith('/static') ||
-      req.path.startsWith('/api/docs') ||
-      req.path.startsWith('/api/ops') ||
-      req.path.startsWith('/api/metrics'),
+    skip: (req) => {
+      // The global bucket is a safety net for unauthenticated traffic. Once a
+      // request carries a valid school-scoped token, the tenant limiter above
+      // is the correct quota and an IP-wide NAT bucket must not log an entire
+      // school's dashboard out during a normal burst of requests.
+      const isAuthenticatedRequest = Boolean(req.user?.schoolId || extractSchoolIdFromRequest(req));
+      const isSessionProbe =
+        req.path === '/auth/session' ||
+        req.path === '/v1/auth/session' ||
+        req.path === '/api/auth/session' ||
+        req.path === '/api/v1/auth/session';
+
+      return (
+        isGlobalRateLimitingDisabled() ||
+        process.env.NODE_ENV === 'test' ||
+        isAuthenticatedRequest ||
+        isSessionProbe ||
+        req.path === '/health' ||
+        req.path === '/api/health' ||
+        req.path === '/healthz' ||
+        req.path === '/readyz' ||
+        req.path === '/startupz' ||
+        req.path.startsWith('/static') ||
+        req.path.startsWith('/api/docs') ||
+        req.path.startsWith('/api/ops') ||
+        req.path.startsWith('/api/metrics')
+      );
+    },
     handler: (req, res, _next, options) => {
       res
         .status(429)

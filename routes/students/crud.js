@@ -107,7 +107,15 @@ router.get(
         resolvedAcademicYear
       );
 
-      const [total, statusCountsAgg] = await Promise.all([
+      // Fee defaulters are derived from the authoritative fee structure, not
+      // Student.feeStatus. The latter is a legacy display field and defaults
+      // to `pending` even when a student has no fee structure yet.
+      const feeYear =
+        resolvedAcademicYear === 'all'
+          ? await getConfiguredAcademicYear(schoolId)
+          : resolvedAcademicYear;
+
+      const [total, statusCountsAgg, filteredStudentIds] = await Promise.all([
         Student.countDocuments(query),
         Student.aggregate([
           {
@@ -121,7 +129,18 @@ router.get(
           },
           { $group: { _id: '$status', count: { $sum: 1 } } },
         ]),
+        Student.find(baseQuery).distinct('_id'),
       ]);
+
+      const defaulterStudentIds = filteredStudentIds.length
+        ? await StudentFeeStructure.find({
+            ...(schoolId ? { schoolId } : {}),
+            studentId: { $in: filteredStudentIds },
+            academicYear: feeYear,
+            totalBalance: { $gt: 0 },
+            isDeleted: { $ne: true },
+          }).distinct('studentId')
+        : [];
 
       const statusCounts = {
         all: 0,
@@ -181,12 +200,6 @@ router.get(
       }
 
       const studentIds = students.map((student) => student._id);
-      // When academicYear is 'all', use the school's configured year for fee lookups
-      const feeYear =
-        resolvedAcademicYear === 'all'
-          ? await getConfiguredAcademicYear(schoolId)
-          : resolvedAcademicYear;
-
       // Batch fetch attendance, fee structures, and latest results in parallel
       const [feeStructures, attendanceAgg, latestResults] = await Promise.all([
         StudentFeeStructure.find({
@@ -323,7 +336,7 @@ router.get(
           limit: limitNum,
           total,
           noPagination,
-          aggregates: { statusCounts },
+          aggregates: { statusCounts, defaulters: defaulterStudentIds.length },
           // statusCounts stays a top-level field too for back-compat with
           // existing consumers that read it directly off the response.
           extra: { statusCounts },

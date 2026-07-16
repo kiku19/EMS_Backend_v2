@@ -48,7 +48,14 @@ async function removeLegacyIndex(db, spec, dryRun) {
   }
 
   const collection = db.collection(spec.collection);
-  const index = (await collection.indexes()).find((candidate) => candidate.name === spec.name);
+  // Prefer the known legacy name, but also match the exact key/options. A
+  // restored or hand-created index may have a custom name while still
+  // enforcing the same global uniqueness rule.
+  const index = (await collection.indexes()).find(
+    (candidate) =>
+      candidate.name === spec.name ||
+      (hasSameKey(candidate.key, spec.key) && (!spec.unique || candidate.unique === true))
+  );
   if (!index) {
     console.log(`    [OK]   ${spec.collection}.${spec.name}: not present`);
     return;
@@ -61,12 +68,12 @@ async function removeLegacyIndex(db, spec, dryRun) {
   }
 
   if (dryRun) {
-    console.log(`    [DROP] ${spec.collection}.${spec.name}: would remove obsolete index`);
+    console.log(`    [DROP] ${spec.collection}.${index.name}: would remove obsolete index`);
     return;
   }
 
-  await collection.dropIndex(spec.name);
-  console.log(`    [DROP] ${spec.collection}.${spec.name}: removed obsolete index`);
+  await collection.dropIndex(index.name);
+  console.log(`    [DROP] ${spec.collection}.${index.name}: removed obsolete index`);
 }
 
 export async function up(db, { dryRun }) {
