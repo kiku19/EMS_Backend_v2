@@ -1034,4 +1034,54 @@ describe('students routes', () => {
       await request(app).delete(`/api/students/${student._id.toString()}`).expect(401);
     });
   });
+
+  // [BUG-014/018] Regression: the statusCounts aggregate must match the table.
+  // aggregate() does not apply Mongoose schema casting, so a $match on the
+  // string schoolId matches nothing and the header / Active filter read 0 while
+  // the table renders the real rows. schoolId must be cast to ObjectId.
+  describe('GET /api/students — statusCounts aggregate', () => {
+    it('reports statusCounts that match the rendered rows', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      // Create 3 active + 1 inactive student in this school/class.
+      await Promise.all([
+        createStudentRecord({
+          name: 'Agg Active 1',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+        }),
+        createStudentRecord({
+          name: 'Agg Active 2',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+        }),
+        createStudentRecord({
+          name: 'Agg Active 3',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+        }),
+        createStudentRecord({
+          name: 'Agg Inactive',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+          status: 'inactive',
+        }),
+      ]);
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const res = await request(app).get('/api/students?status=all').set(authHeaders).expect(200);
+
+      // The table rows for this school/class.
+      const rowCount = (res.body.data || []).length;
+      expect(rowCount).toBe(4);
+
+      // The aggregate-derived counts MUST agree with the rows (previously 0).
+      const statusCounts = res.body.aggregates?.statusCounts;
+      expect(statusCounts).toBeDefined();
+      expect(statusCounts.all).toBe(rowCount);
+      expect(statusCounts.active).toBe(3);
+      expect(statusCounts.inactive).toBe(1);
+    });
+  });
 });

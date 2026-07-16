@@ -692,6 +692,44 @@ router.put(
 
       const { academicYear, academicYearStart, academicYearEnd } = parsed.data;
       const settings = await ensureSchoolSettings(req.user?.schoolId);
+      const currentYear = settings.academicYear || CURRENT_ACADEMIC_YEAR;
+
+      // Hard-block the year switch when the target year has no students or
+      // classes yet. The transition-preview endpoint surfaces these as soft
+      // warnings, but the actual PUT previously ignored them and pivoted the
+      // school onto an empty year with no data migration — leaving every
+      // class/fee lookup empty and forcing manual cleanup. Pivoting onto a
+      // target year that genuinely has no students is almost always a mistake
+      // (promotions/rollover not run), so block it with a clear error that
+      // points the operator at the preview. A no-op switch (same year) is fine.
+      if (academicYear !== currentYear) {
+        const scope = buildSchoolScopedQuery(req.user?.schoolId);
+        const [studentsInTargetYear, classesInTargetYear] = await Promise.all([
+          Student.countDocuments({ ...scope, academicYear, isDeleted: { $ne: true } }),
+          Class.countDocuments({ ...scope, academicYear, isDeleted: { $ne: true } }),
+        ]);
+        const blockers = [];
+        if (studentsInTargetYear === 0) {
+          blockers.push(
+            `No students exist for ${academicYear} yet. Run promotions or create admissions before switching.`
+          );
+        }
+        if (classesInTargetYear === 0) {
+          blockers.push(
+            `No classes exist for ${academicYear} yet. Create classes for ${academicYear} first.`
+          );
+        }
+        if (blockers.length > 0) {
+          return res.status(409).json({
+            error: 'Academic-year change blocked: target year is not ready.',
+            code: 'ACADEMIC_YEAR_NOT_READY',
+            blockers,
+            hint:
+              'Review GET /settings/academic-year/transition-preview?targetYear=' + academicYear,
+          });
+        }
+      }
+
       const { startYear, endYear } = parseAcademicYear(academicYear);
 
       settings.academicYear = academicYear;
@@ -754,6 +792,7 @@ router.get('/academic-year/transition-preview', authenticate, async (req, res) =
         ...scope,
         academicYear: currentYear,
         overallStatus: { $in: ['pending', 'partial'] },
+        isDeleted: { $ne: true },
       }),
       Student.countDocuments({ ...scope, academicYear: targetYear, isDeleted: { $ne: true } }),
       Class.countDocuments({ ...scope, academicYear: targetYear, isDeleted: { $ne: true } }),

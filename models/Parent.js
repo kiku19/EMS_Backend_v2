@@ -13,7 +13,6 @@ const parentSchema = new mongoose.Schema(
     phone: {
       type: String,
       required: true,
-      index: true,
       trim: true,
     },
     firebaseUid: {
@@ -31,11 +30,16 @@ const parentSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
       sparse: true,
-      index: true,
     },
     password: {
       type: String,
       default: null,
+    },
+    // Set to true when an admin generates/resets the password so the parent is
+    // forced to choose their own password on next login.
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
     },
     avatar: {
       type: String,

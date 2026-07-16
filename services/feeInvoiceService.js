@@ -68,7 +68,12 @@ export async function buildFeeInvoiceData({ studentId, schoolId, academicYear, p
   }
 
   const [feeStructure, payments, school] = await Promise.all([
-    StudentFeeStructure.findOne({ studentId, schoolId, academicYear: year })
+    StudentFeeStructure.findOne({
+      studentId,
+      schoolId,
+      academicYear: year,
+      isDeleted: { $ne: true },
+    })
       .populate('feeHeads.feeHeadId')
       .lean(),
     FeePayment.find({
@@ -76,6 +81,7 @@ export async function buildFeeInvoiceData({ studentId, schoolId, academicYear, p
       schoolId,
       academicYear: year,
       status: { $ne: 'cancelled' },
+      isDeleted: { $ne: true },
     })
       .sort({ paymentDate: -1 })
       .lean(),

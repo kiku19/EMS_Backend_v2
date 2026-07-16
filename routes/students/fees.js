@@ -32,7 +32,11 @@ router.get(
     try {
       const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
       const feeStructures = await StudentFeeStructure.find(
-        scopeBySchool(req.user?.schoolId, { classId: req.params.classId, academicYear })
+        scopeBySchool(req.user?.schoolId, {
+          classId: req.params.classId,
+          academicYear,
+          isDeleted: { $ne: true },
+        })
       ).populate('studentId', 'name admissionId rollNo');
 
       const result = feeStructures.map((feeStructure) => ({
@@ -68,7 +72,11 @@ router.get(
 
       const year = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
       const feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
+        scopeBySchool(req.user?.schoolId, {
+          studentId: req.params.id,
+          academicYear: year,
+          isDeleted: { $ne: true },
+        })
       );
 
       if (!feeStructure) {
@@ -256,7 +264,11 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
     const year = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
 
     const feeStructure = await StudentFeeStructure.findOne(
-      scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
+      scopeBySchool(req.user?.schoolId, {
+        studentId: req.params.id,
+        academicYear: year,
+        isDeleted: { $ne: true },
+      })
     ).lean();
 
     // Fetch payment history for this student and academic year
@@ -265,6 +277,7 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
         studentId: req.params.id,
         academicYear: year,
         status: { $ne: 'cancelled' },
+        isDeleted: { $ne: true },
       })
     )
       .sort({ paymentDate: -1 })

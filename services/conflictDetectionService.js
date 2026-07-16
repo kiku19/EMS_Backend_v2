@@ -25,6 +25,14 @@ class ConflictDetectionService {
    * @param {number} periodIndex - Index of the period
    * @param {string} excludeClassId - Optional class ID to exclude from conflict check
    * @param {boolean} skipDebounce - Skip debouncing for immediate checks
+   * @param {string} schoolId - School scope (prevents cross-tenant cache leaks)
+   * @param {string} academicYear - Academic year scope
+   * @param {boolean} skipCache - Bypass the read cache entirely. MUST be true
+   *   on write-path calls (slot save / generate / batch / class-switch): a
+   *   cached positive result from an earlier read could be 30s stale and mask
+   *   a booking made in the interim, creating a double-booking the check was
+   *   meant to prevent. Write paths must also see the freshest negative
+   *   result, which is never cached. (CT16)
    * @returns {Object|null} Conflict details if found, null otherwise
    */
   async checkTeacherConflict(
@@ -34,16 +42,19 @@ class ConflictDetectionService {
     excludeClassId = null,
     skipDebounce = false,
     schoolId = null,
-    academicYear = null
+    academicYear = null,
+    skipCache = false
   ) {
     // Cache key includes schoolId AND academicYear to prevent cross-tenant
     // leaks (on shared Redis) and cross-year collisions. Previously the key
     // was just `conflict:${teacherId}:${day}:${periodIndex}:${excludeClassId}`
     // which would collide across tenants and years.
     const cacheKey = `conflict:${schoolId || 'any'}:${academicYear || 'any'}:${teacherId}:${day}:${periodIndex}:${excludeClassId || 'none'}`;
-    const cached = await cacheService.get(cacheKey);
-    if (cached !== null) {
-      return cached;
+    if (!skipCache) {
+      const cached = await cacheService.get(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
     }
 
     // Skip debounce in test environment or when explicitly requested
@@ -67,8 +78,18 @@ class ConflictDetectionService {
           academicYear
         );
 
-    // Cache the result for 30 seconds
-    cacheService.set(cacheKey, result, 30000).catch(() => {}); // fire-and-forget
+    // Cache ONLY positive (conflict) results, and only when the caller did not
+    // ask to bypass the cache (write paths). Caching a null/no-conflict result
+    // for 30s let two admins assigning the same teacher in the same slot
+    // within that window BOTH pass the check (both read the stale "no
+    // conflict") and create a real double-booking. A positive result is stable
+    // (a conflicting assignment won't vanish in 30s) so it's safe to memoize
+    // for read paths; a null result is re-computed every call so writes always
+    // see the latest state. Write paths (skipCache=true) skip both read and
+    // write so a stale read can never green-light a conflicting write.
+    if (result && !skipCache) {
+      cacheService.set(cacheKey, result, 30000).catch(() => {}); // fire-and-forget
+    }
     return result;
   }
 
@@ -138,6 +159,74 @@ class ConflictDetectionService {
       return null;
     } catch (error) {
       logger.error({ err: error, teacherId }, 'Error checking teacher conflict');
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a room is already booked by another class at a specific time slot.
+   * Mirrors checkTeacherConflict but keyed on `schedule.${day}.room` instead of
+   * teacherId. A room holding two classes at the same day+period is a physical
+   * double-booking (two cohorts in one classroom). Never cached — room
+   * availability changes on every write, and caching a null result would let
+   * two concurrent slot-saves both book the same room (same race class as the
+   * teacher-conflict cache, fixed by not memoizing nulls there).
+   *
+   * @param {string} room - The room identifier
+   * @param {string} day - Day of the week (Monday, Tuesday, etc.)
+   * @param {number} periodIndex - Index of the period
+   * @param {string} excludeClassId - Optional class ID to exclude (the class being edited)
+   * @param {string|null} schoolId - School scope
+   * @param {string|null} academicYear - Academic year scope
+   * @returns {Object|null} Conflict details if found, null otherwise
+   */
+  async checkRoomConflict(
+    room,
+    day,
+    periodIndex,
+    excludeClassId = null,
+    schoolId = null,
+    academicYear = null
+  ) {
+    if (!room) return null; // No room assigned → nothing to conflict on
+    try {
+      // Find every non-deleted timetable whose slot at day/period holds this
+      // room. academicYear MUST scope the query so last-year's room layout
+      // doesn't produce a false conflict against this-year's assignment.
+      const query = { isDeleted: { $ne: true } };
+      query[`schedule.${day}.room`] = room;
+      if (schoolId) query.schoolId = schoolId;
+      if (academicYear) query.academicYear = academicYear;
+
+      const conflictingTimetables = await Timetable.find(query).populate('classId', 'name section');
+
+      for (const timetable of conflictingTimetables) {
+        const daySchedule = timetable.schedule?.[day];
+        const slot = daySchedule?.[periodIndex];
+        if (!slot || !slot.room || slot.room !== room) continue;
+        // Exclude the class being edited — editing a class's own room to the
+        // value it already holds is not a conflict.
+        if (excludeClassId && timetable.classId?._id?.toString() === excludeClassId.toString()) {
+          continue;
+        }
+        return {
+          type: 'room_conflict',
+          room,
+          classId: timetable.classId?._id,
+          className: timetable.classId
+            ? `${timetable.classId.name} ${timetable.classId.section}`
+            : 'Unknown',
+          subject: slot.subject,
+          teacherId: slot.teacherId,
+          day,
+          periodIndex,
+          message: `Room "${room}" is already booked by ${timetable.classId ? `${timetable.classId.name} ${timetable.classId.section}` : 'another class'} for ${slot.subject || 'a period'} at ${day} Period ${periodIndex + 1}`,
+        };
+      }
+
+      return null;
+    } catch (error) {
+      logger.error({ err: error, room }, 'Error checking room conflict');
       throw error;
     }
   }

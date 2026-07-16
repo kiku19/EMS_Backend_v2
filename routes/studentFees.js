@@ -276,17 +276,23 @@ import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
 import mongoose from 'mongoose';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
+import FeeRule from '../models/FeeRule.js';
 import { Student, FeePayment, getNextAvailableReceiptNumber } from '../database.js';
 import { emitFeeUpdate } from '../utils/socketEmitter.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
-import { buildStudentFeeHeads, buildStudentInstallments } from '../utils/applyClassFeeStructure.js';
+import {
+  buildStudentFeeHeads,
+  buildStudentInstallments,
+  computeStructureDueDate,
+} from '../utils/applyClassFeeStructure.js';
 import {
   computeFeeBalance,
   computeFeeHeadStatus,
   syncStudentFeeDetails,
 } from '../utils/feeCalculator.js';
+import { applyLateFeeToFeeStructure } from '../utils/lateFeeCalculator.js';
 import {
   validateZod,
   studentFeePaymentSchema,
@@ -319,6 +325,43 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
+// F4: enforce the school's active FeeRule partial-payment policy. No rule or
+// unset policy → behavior unchanged. Mirrors the helper in routes/fees.js so
+// both payment entry points apply the identical restriction.
+async function loadActiveFeeRule(schoolId, academicYear) {
+  if (!schoolId || !academicYear) return null;
+  try {
+    return await FeeRule.findOne({ schoolId, academicYear }).lean();
+  } catch {
+    return null;
+  }
+}
+
+function assertPaymentAllowedByRule(feeRule, amount, totalBalance) {
+  if (!feeRule) return;
+  const isFullSettlement = Number(amount) >= Number(totalBalance || 0) - 0.01;
+  if (isFullSettlement) return;
+  if (feeRule.allowPartialPayment === false) {
+    const err = new Error(
+      `Partial payments are not allowed. The full outstanding balance (₹${totalBalance || 0}) must be paid.`
+    );
+    err.code = 'PARTIAL_PAYMENT_NOT_ALLOWED';
+    throw err;
+  }
+  const minPercent = Number(feeRule.minimumPartialPaymentPercent || 0);
+  if (minPercent > 0 && Number(totalBalance || 0) > 0) {
+    const minimumAmount = (Number(totalBalance) * minPercent) / 100;
+    if (Number(amount) < minimumAmount - 0.01) {
+      const err = new Error(
+        `Payment amount (₹${amount}) is below the minimum partial payment of ${minPercent}% of the balance (₹${minimumAmount.toFixed(2)}).`
+      );
+      err.code = 'BELOW_MINIMUM_PARTIAL_PAYMENT';
+      err.minAmount = Math.round(minimumAmount * 100) / 100;
+      throw err;
+    }
+  }
+}
+
 function escapeRegex(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -343,7 +386,11 @@ router.get(
       }
 
       let feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
+        scopeBySchool(schoolId, {
+          studentId: req.params.studentId,
+          academicYear,
+          isDeleted: { $ne: true },
+        })
       )
         .populate('studentId', 'name admissionId rollNo')
         .populate('classId', 'name section');
@@ -379,6 +426,16 @@ router.get(
             status: 'pending',
           })),
           installments: classStructure ? buildStudentInstallments(classStructure) : [],
+          // Derive the top-level dueDate the same way the bulk-apply path does
+          // (earliest installment due date). Without this auto-initialised
+          // structures never carry a dueDate, so computeFeeBalance can never
+          // mark them overdue and the late-fee/reminder pipelines skip them.
+          ...(classStructure
+            ? (() => {
+                const d = computeStructureDueDate(classStructure);
+                return d ? { dueDate: d } : {};
+              })()
+            : {}),
         });
 
         feeStructure.totalFee = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
@@ -405,7 +462,11 @@ router.get(
           // Race condition: another request already created it — fetch the existing one
           if (saveError.code === 11000) {
             feeStructure = await StudentFeeStructure.findOne(
-              scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
+              scopeBySchool(schoolId, {
+                studentId: req.params.studentId,
+                academicYear,
+                isDeleted: { $ne: true },
+              })
             );
             if (!feeStructure) {
               throw new Error('Fee structure creation raced but neither version found', {
@@ -419,7 +480,11 @@ router.get(
 
         // Re-fetch with populated fields
         feeStructure = await StudentFeeStructure.findOne(
-          scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
+          scopeBySchool(schoolId, {
+            studentId: req.params.studentId,
+            academicYear,
+            isDeleted: { $ne: true },
+          })
         )
           .populate('studentId', 'name admissionId rollNo')
           .populate('classId', 'name section');
@@ -464,6 +529,7 @@ router.post(
         scopeBySchool(req.user?.schoolId, {
           studentId: { $in: ids },
           academicYear: year,
+          isDeleted: { $ne: true },
         })
       )
         .populate('studentId', 'name admissionId rollNo')
@@ -497,6 +563,7 @@ router.get(
       const ledgerMatch = {
         schoolId,
         academicYear: resolvedYear,
+        isDeleted: { $ne: true },
         ...(classId ? { classId: new mongoose.Types.ObjectId(classId) } : {}),
         ...(status ? { overallStatus: status } : {}),
       };
@@ -589,7 +656,11 @@ router.post(
 
       // Check if fee structure already exists
       let feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: student._id, academicYear: year })
+        scopeBySchool(schoolId, {
+          studentId: student._id,
+          academicYear: year,
+          isDeleted: { $ne: true },
+        })
       );
 
       if (feeStructure) {
@@ -630,6 +701,13 @@ router.post(
           status: 'pending',
         })),
         installments: classStructure ? buildStudentInstallments(classStructure) : [],
+        // Derive the top-level dueDate the same way the bulk-apply path does.
+        ...(classStructure
+          ? (() => {
+              const d = computeStructureDueDate(classStructure);
+              return d ? { dueDate: d } : {};
+            })()
+          : {}),
       });
 
       // Calculate totals
@@ -669,6 +747,7 @@ router.post(
           scopeBySchool(schoolId, {
             studentId: req.params.studentId,
             academicYear: year,
+            isDeleted: { $ne: true },
           })
         );
         if (existing) {
@@ -697,6 +776,7 @@ router.put(
         scopeBySchool(req.user?.schoolId, {
           studentId: req.params.studentId,
           academicYear: resolvedYear,
+          isDeleted: { $ne: true },
         })
       ).lean();
 
@@ -719,6 +799,9 @@ router.put(
             }
             fs.discountApplied = discountAmount || 0;
             fs.discountReason = discountReason || '';
+            // A discount changes the outstanding principal, so recompute
+            // late-fee liability before deriving the balance.
+            await applyLateFeeToFeeStructure(fs);
             const { totalBalance, overallStatus } = computeFeeBalance(fs);
             fs.totalBalance = totalBalance;
             fs.overallStatus = overallStatus;
@@ -819,6 +902,7 @@ router.post(
         scopeBySchool(req.user?.schoolId, {
           studentId: req.params.studentId,
           academicYear: resolvedAcademicYear,
+          isDeleted: { $ne: true },
         })
       );
       if (!preflight) {
@@ -828,6 +912,28 @@ router.post(
         return res.status(400).json({
           error: `Payment amount (₹${amount}) exceeds outstanding balance (₹${preflight.totalBalance || 0})`,
         });
+      }
+
+      // F4: enforce the active FeeRule's partial-payment policy before opening
+      // a transaction. No rule / unset policy → behavior unchanged.
+      try {
+        const activeFeeRule = await loadActiveFeeRule(
+          extractSchoolId(req.user?.schoolId),
+          resolvedAcademicYear
+        );
+        assertPaymentAllowedByRule(activeFeeRule, amount, preflight.totalBalance);
+      } catch (ruleError) {
+        if (
+          ruleError.code === 'PARTIAL_PAYMENT_NOT_ALLOWED' ||
+          ruleError.code === 'BELOW_MINIMUM_PARTIAL_PAYMENT'
+        ) {
+          return res.status(400).json({
+            error: ruleError.message,
+            code: ruleError.code,
+            ...(ruleError.minAmount !== undefined ? { minAmount: ruleError.minAmount } : {}),
+          });
+        }
+        throw ruleError;
       }
 
       // Idempotency: reject duplicate payment requests
@@ -930,6 +1036,7 @@ router.post(
 
               fs.totalPaid = Number(fs.totalPaid || 0) + amount;
               fs.lastPaymentDate = new Date();
+              await applyLateFeeToFeeStructure(fs);
               const { totalBalance, overallStatus } = computeFeeBalance(fs);
               fs.totalBalance = totalBalance;
               fs.overallStatus = overallStatus;
@@ -943,7 +1050,7 @@ router.post(
             throw err;
           }
 
-          const receiptNumber = await getNextAvailableReceiptNumber(schoolId);
+          const receiptNumber = await getNextAvailableReceiptNumber(schoolId, session);
           const studentDoc = await Student.findOne(
             scopeBySchool(schoolId, { _id: req.params.studentId })
           )
@@ -1100,16 +1207,23 @@ router.get('/defaulters', checkPermission('fees', 'view'), async (req, res) => {
       academicYear: await resolveAcademicYear(academicYear, schoolId),
       overallStatus: { $in: ['pending', 'partial'] },
       totalBalance: { $gt: 0 },
+      isDeleted: { $ne: true },
     });
 
-    // If searching by student name, find matching student IDs first
+    // Restrict to fee structures whose owning student is still active. A
+    // soft-deleted student leaves orphaned StudentFeeStructure rows behind
+    // (archiveStudent does not clean them up), so without this filter the
+    // defaulters list — and its pagination total — would include ghosts.
+    // The list+count share `filter`, so both stay consistent.
+    const activeStudentQuery = scopeBySchool(schoolId, {
+      isDeleted: { $ne: true },
+    });
     if (search) {
-      const matchingStudents = await Student.find(
-        scopeBySchool(schoolId, { name: { $regex: search, $options: 'i' } }),
-        '_id'
-      ).lean();
-      filter.studentId = { $in: matchingStudents.map((s) => s._id) };
+      // Narrow to name matches first, then the active set picks the survivors.
+      activeStudentQuery.name = { $regex: search, $options: 'i' };
     }
+    const eligibleStudents = await Student.find(activeStudentQuery, '_id').lean();
+    filter.studentId = { $in: eligibleStudents.map((s) => s._id) };
 
     // If filtering by min days overdue, compute the cutoff date
     if (minDaysOverdue) {
@@ -1161,7 +1275,11 @@ router.post(
 
       // Capture "before" from a one-shot read (only for the diff report below).
       const preSnapshot = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: req.params.studentId, academicYear })
+        scopeBySchool(schoolId, {
+          studentId: req.params.studentId,
+          academicYear,
+          isDeleted: { $ne: true },
+        })
       );
       if (!preSnapshot) {
         return res
@@ -1180,6 +1298,7 @@ router.post(
           studentId: req.params.studentId,
           academicYear,
           status: 'completed',
+          isDeleted: { $ne: true },
         })
       );
       const actualTotalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
@@ -1212,6 +1331,7 @@ router.post(
             }
           }
           fs.totalPaid = actualTotalPaid;
+          await applyLateFeeToFeeStructure(fs);
           const { totalBalance, overallStatus } = computeFeeBalance(fs);
           fs.totalBalance = totalBalance;
           fs.overallStatus = overallStatus;

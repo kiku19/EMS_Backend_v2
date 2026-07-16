@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { parseAcademicYear } from '../utils/academicYear.js';
 
 const classSchema = new mongoose.Schema(
   {
@@ -76,11 +77,37 @@ classSchema.statics.updateAverageAttendance = async function updateAverageAttend
   const settings = await SchoolSettings.findOne({ schoolId }).lean();
   const lateW = (settings?.attendanceRules?.lateWeight ?? 100) / 100;
 
+  // Bound the average to the class's academic year. The Attendance collection
+  // holds records for every year a student was enrolled, so without a date
+  // filter the average bled across years (last year's absences dragged down
+  // this year's Class.averageAttendance). `academicYear` is the class's own
+  // value (defaults to CURRENT_ACADEMIC_YEAR); the start/end month-day come
+  // from SchoolSettings (academicYearStart/End). Those are stored inconsistently
+  // across the codebase — getDefaultSchoolSettings writes full YYYY-MM-DD
+  // while routes/attendance.js treats them as MM-DD — so normalise both forms
+  // here, defaulting to Apr–Mar for Indian schools.
+  const toMonthDay = (value, fallback) => {
+    const v = String(value || '').trim();
+    if (/^\d{2}-\d{2}$/.test(v)) return v; // already MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v.slice(5); // YYYY-MM-DD → MM-DD
+    return fallback;
+  };
+  const classDoc = await this.findById(classId).select('academicYear').lean();
+  const academicYear = classDoc?.academicYear || CURRENT_ACADEMIC_YEAR;
+  const { startYear, endYear } = parseAcademicYear(academicYear);
+  const startMonthDay = toMonthDay(settings?.academicYearStart, '04-01');
+  const endMonthDay = toMonthDay(settings?.academicYearEnd, '03-31');
+  const dateRange = {
+    $gte: `${startYear}-${startMonthDay}`,
+    $lte: `${endYear}-${endMonthDay}`,
+  };
+
   const pipeline = [
     {
       $match: {
         classId: new mongoose.Types.ObjectId(String(classId)),
         schoolId: new mongoose.Types.ObjectId(String(schoolId)),
+        date: dateRange,
       },
     },
     {

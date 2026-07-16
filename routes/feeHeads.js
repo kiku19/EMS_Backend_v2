@@ -400,6 +400,7 @@ router.delete(
         StudentFeeStructure.exists({
           schoolId: req.user.schoolId,
           'feeHeads.feeHeadId': req.params.id,
+          isDeleted: { $ne: true },
         }),
         FeeStructure.exists({
           schoolId: req.user.schoolId,
@@ -543,6 +544,7 @@ async function applyFeeHeadToStudents(feeHead, schoolId, session) {
         studentId: student._id,
         schoolId,
         academicYear,
+        isDeleted: { $ne: true },
       }).session(session || null);
 
       if (!feeStructure) {
@@ -574,6 +576,17 @@ async function applyFeeHeadToStudents(feeHead, schoolId, session) {
           amount: ledgerAmount,
           mandatory: feeHead.mandatory,
           frequency: feeHead.frequency,
+          // F10: keep the propagated head in sync with the source FeeHead for
+          // the term/due/refund metadata. Previously the spread of
+          // existing.toObject() kept the OLD values, so lowering/editing a head
+          // never refreshed applicableTerms, dueDay or refundable. Source wins
+          // when present; otherwise preserve what was already on the subdoc.
+          applicableTerms:
+            feeHead.applicableTerms ??
+            existing.applicableTerms ??
+            existing.toObject().applicableTerms,
+          dueDay: feeHead.dueDay ?? existing.dueDay ?? existing.toObject().dueDay,
+          refundable: feeHead.refundable ?? existing.refundable ?? existing.toObject().refundable,
           // Preserve the payment data
           paidAmount: preservedPaidAmount,
         };
@@ -585,6 +598,13 @@ async function applyFeeHeadToStudents(feeHead, schoolId, session) {
         });
         feeStructure.feeHeads[existingIndex].balanceAmount = headResult.balanceAmount;
         feeStructure.feeHeads[existingIndex].status = headResult.status;
+
+        // Capture the surplus when a fee head is lowered below what was
+        // already paid. computeFeeHeadStatus clamps balanceAmount to 0, so
+        // without this the overpaid amount disappears from the ledger and
+        // the school can no longer see what it owes back to the student.
+        const overpaid = Math.max(Number(preservedPaidAmount || 0) - Number(ledgerAmount || 0), 0);
+        feeStructure.feeHeads[existingIndex].overpaidAmount = overpaid;
       } else {
         // Add new fee head with zero payments
         feeStructure.feeHeads.push({
@@ -595,6 +615,12 @@ async function applyFeeHeadToStudents(feeHead, schoolId, session) {
           amount: ledgerAmount,
           mandatory: feeHead.mandatory,
           frequency: feeHead.frequency,
+          // F10: propagate the term/due/refund metadata from the source FeeHead
+          // so a freshly-applied head carries the same scheduling info as one
+          // built via buildStudentFeeHeads (which copies these for every head).
+          applicableTerms: feeHead.applicableTerms,
+          dueDay: feeHead.dueDay,
+          refundable: feeHead.refundable,
           paidAmount: 0,
           balanceAmount: ledgerAmount,
           status: 'pending',

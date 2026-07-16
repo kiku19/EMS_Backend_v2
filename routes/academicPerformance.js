@@ -1,9 +1,10 @@
 import express from 'express';
-import { Student, Result, Attendance, Remark } from '../database.js';
+import { Student, Result, Attendance, Remark, SchoolSettings } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
+import { computeGrade, computePercentage } from '../utils/grading.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -635,6 +636,13 @@ router.post('/recalculate/:studentId', checkPermission('academics', 'edit'), asy
       return res.json({ message: 'No results to recalculate', count: 0 });
     }
 
+    // Load the school's configured grading scale so recomputed grades respect
+    // board/school-specific bands instead of the hardcoded CBSE default.
+    const schoolSettings = await SchoolSettings.findOne(scopeBySchool(schoolId, {})).select(
+      'gradingScale'
+    );
+    const gradingScale = schoolSettings?.gradingScale?.length ? schoolSettings.gradingScale : null;
+
     const bulkOps = [];
     // Track unique exam+class pairs for rank recalculation
     const examClassPairs = new Set();
@@ -642,20 +650,42 @@ router.post('/recalculate/:studentId', checkPermission('academics', 'edit'), asy
     for (const result of results) {
       const maxMarks = result.examId?.maxMarks || result.maxMarks || 100;
       const passingMarks = result.examId?.passingMarks || 35;
+
+      // Preserve 'absent' status: an absent student has no mark to score, so
+      // deriving passed/failed from marksObtained would corrupt the record
+      // and make absentees appear as failures in reports/percentages.
+      if (result.status === 'absent') {
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: result._id },
+            update: {
+              $set: {
+                status: 'absent',
+                maxMarks,
+                totalMaxMarks: maxMarks,
+              },
+            },
+          },
+        });
+
+        // Collect exam+class for rank recomputation
+        const examId = result.examId?._id || result.examId;
+        const classId = result.classId;
+        if (examId && classId) {
+          examClassPairs.add(`${examId}::${classId}`);
+        }
+        continue;
+      }
+
       const marksObtained = result.marksObtained || 0;
 
-      const rawPercentage = maxMarks > 0 ? (marksObtained / maxMarks) * 100 : 0;
-      const percentage = Math.round(rawPercentage * 100) / 100;
+      // Use the shared helper (rounds to 2dp + clamps 0-100) so percentage
+      // derivation matches academics.js single/bulk/update result paths.
+      const percentage = computePercentage(marksObtained, maxMarks);
 
-      // Grade calculation (same logic as academics.js computeGrade)
-      let grade;
-      if (percentage >= 90) grade = 'A+';
-      else if (percentage >= 80) grade = 'A';
-      else if (percentage >= 70) grade = 'B+';
-      else if (percentage >= 60) grade = 'B';
-      else if (percentage >= 50) grade = 'C';
-      else if (percentage >= 40) grade = 'D';
-      else grade = 'F';
+      // Use the canonical grading helper (utils/grading.js) instead of a
+      // hardcoded scale so school-configured grade bands are respected.
+      const grade = computeGrade(percentage, gradingScale);
 
       const status = marksObtained >= passingMarks ? 'passed' : 'failed';
 

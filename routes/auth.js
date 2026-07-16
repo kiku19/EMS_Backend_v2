@@ -192,6 +192,10 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 import { rateLimit } from 'express-rate-limit';
+import {
+  buildRedisStore,
+  isAuthRateLimitingDisabled,
+} from '../middleware/security/tenantRateLimit.js';
 import { Staff } from '../database.js';
 import Session from '../models/Session.js';
 import { createLogger } from '../utils/logger.js';
@@ -329,10 +333,12 @@ const getJwtRefreshSecret = () => getRequiredSecret('JWT_REFRESH_SECRET');
 
 // The auth/credential rate limiters below relax outside production (covers
 // local dev and the test runner) so iterating locally isn't locked out after a
-// handful of attempts. Production (NODE_ENV=production) enforces every limit.
+// handful of attempts. DISABLE_AUTH_RATE_LIMITING=true is a temporary QA
+// escape hatch for environments that must run with NODE_ENV=production.
 // Mirrors the codebase convention of gating non-prod behaviour on
 // `NODE_ENV !== 'production'` (see parentAuth.js, billingService.js).
-const skipAuthRateLimitOutsideProd = () => process.env.NODE_ENV !== 'production';
+const skipAuthRateLimitOutsideProd = () =>
+  isAuthRateLimitingDisabled() || process.env.NODE_ENV !== 'production';
 
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -356,10 +362,29 @@ const staffRefreshLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
-  handler: (req, res) => res.status(429).json({ error: req.t('auth:errors.tooManyLoginAttempts') }),
+  // [BUG-002/032] Aligned with the router-level auth limiter (createAuthRateLimiter):
+  // account + IP keying (a NAT'd school shares one egress IP but many accounts),
+  // a Redis store so the count is consistent across PM2 workers, and a Retry-After
+  // header + body field so the frontend can show "try again in X min" instead of a
+  // silent 429. Previously this was max:5, IP-only, in-memory, with no Retry-After.
+  max: 20,
+  keyGenerator: (req) => {
+    const account = req.body?.email || req.body?.phone || 'nocred';
+    return `auth:route:${account}:${req.ip}`;
+  },
+  handler: (req, res, _next, options) => {
+    const retryAfter = Math.ceil(options.windowMs / 1000);
+    res
+      .status(429)
+      .set('Retry-After', String(retryAfter))
+      .json({
+        error: req.t('auth:errors.tooManyLoginAttempts'),
+        retryAfter,
+      });
+  },
   standardHeaders: true,
   legacyHeaders: false,
+  store: buildRedisStore(),
   skipSuccessfulRequests: true,
   skip: skipAuthRateLimitOutsideProd,
 });
@@ -774,12 +799,20 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
     }
 
     // SSO-only mode: block password login if school requires SSO
-    const staffSchool = await School.findById(staff.schoolId).select('ssoConfig').lean();
+    const staffSchool = await School.findById(staff.schoolId).select('ssoConfig code').lean();
     if (staffSchool?.ssoConfig?.ssoOnly) {
       logAuthEvent('login_blocked_sso_only', staff, req);
+      // Surface the school code + an enabled provider so the frontend can build
+      // the correct SSO initiate URL (GET /auth/sso/:provider/initiate?schoolCode=).
+      const cfg = staffSchool.ssoConfig;
+      const ssoProvider = ['google', 'microsoft', 'saml'].find(
+        (p) => cfg[p]?.enabled && (p === 'saml' ? cfg[p].entryPoint : cfg[p].clientId)
+      );
       return res.status(403).json({
         error: 'Password login is disabled for this school. Please use Single Sign-On (SSO).',
         ssoOnly: true,
+        schoolCode: staffSchool.code || undefined,
+        ssoProvider: ssoProvider || undefined,
       });
     }
 

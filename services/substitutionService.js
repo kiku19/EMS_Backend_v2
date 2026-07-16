@@ -284,7 +284,12 @@ class SubstitutionService {
   async createSubstitutionFromAbsence(teacherId, date, reason = 'Absent', schoolId = null) {
     try {
       const dayOfWeek = this.getDayOfWeek(date);
-      const academicYear = CURRENT_ACADEMIC_YEAR; // Should be dynamic
+      // ST14: resolve the academic year per request from SchoolSettings (falling
+      // back to CURRENT_ACADEMIC_YEAR) instead of capturing it once at module
+      // load. A module-load constant is wrong the moment a school rolls over
+      // to a new academic year.
+      const { getConfiguredAcademicYear } = await import('../utils/academicYear.js');
+      const academicYear = await getConfiguredAcademicYear(schoolId);
 
       // Get teacher's timetable for the day (scoped by school)
       const ttQuery = { teacherId, academicYear };

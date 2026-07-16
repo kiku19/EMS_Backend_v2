@@ -110,6 +110,29 @@ export const ENTITY_REGISTRY = {
     restoreStrategy: 'hard-delete',
     displayNameField: 'name',
   },
+  // Student financial dependents. They are NOT independently trashable — they
+  // ride along with the Student: archiveStudent() soft-deletes them (they now
+  // carry isDeleted/deletedAt/deletedBy), and restoreTrashItem()'s Student
+  // branch flips them back via the cascadeDeletedAt match. The 'hard-delete'
+  // restoreStrategy below only governs the PERMANENT-purge path:
+  // permanentlyDeleteTrashItem() snapshots each dependent to trash before the
+  // GDPR erasure hard-deletes them, so an operator can still recover fee data
+  // via re-insert even after the Student record itself is gone.
+  StudentFeeStructure: {
+    modelName: 'StudentFeeStructure',
+    restoreStrategy: 'hard-delete',
+    displayNameField: 'academicYear',
+  },
+  FeePayment: {
+    modelName: 'FeePayment',
+    restoreStrategy: 'hard-delete',
+    displayNameField: 'receiptNumber',
+  },
+  Remark: {
+    modelName: 'Remark',
+    restoreStrategy: 'hard-delete',
+    displayNameField: 'text',
+  },
 
   // ── Operations ──
   Announcement: {
@@ -635,6 +658,50 @@ export async function restoreTrashItem(trashItem) {
               { $set: { isDeleted: false, deletedAt: null } },
               { session }
             );
+            // Remark is cascade soft-deleted alongside Attendance/Result in
+            // studentArchiveService (it carries isDeleted + deletedAt), so
+            // un-delete it here too — otherwise restoring a Student left its
+            // historical behaviour/notes remarks hidden.
+            if (mongoose.models.Remark) {
+              const Remark = mongoose.model('Remark');
+              await Remark.updateMany(
+                cascadeFilter,
+                { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+                { session }
+              );
+            }
+            // StudentFeeStructure / FeePayment / FeeRefund are cascade
+            // soft-deleted in studentArchiveService using the same
+            // cascadeDeletedAt timestamp, so restore them here too. Without
+            // this, archive+undo would permanently hide the student's fee
+            // history even though the Student itself came back.
+            if (mongoose.models.StudentFeeStructure) {
+              await mongoose
+                .model('StudentFeeStructure')
+                .updateMany(
+                  cascadeFilter,
+                  { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+                  { session }
+                );
+            }
+            if (mongoose.models.FeePayment) {
+              await mongoose
+                .model('FeePayment')
+                .updateMany(
+                  cascadeFilter,
+                  { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+                  { session }
+                );
+            }
+            if (mongoose.models.FeeRefund) {
+              await mongoose
+                .model('FeeRefund')
+                .updateMany(
+                  cascadeFilter,
+                  { $set: { isDeleted: false, deletedAt: null, deletedBy: null } },
+                  { session }
+                );
+            }
           }
         });
       } finally {
@@ -676,6 +743,89 @@ export async function permanentlyDeleteTrashItem(trashItem) {
 
   // Student has special GDPR-compliant cascading erasure
   if (itemType === 'Student') {
+    // Before the GDPR erasure hard-deletes the Student's financial and
+    // behavioural dependents, snapshot each one to the trash as an itemized,
+    // individually-restorable entry. permanentlyDeleteStudentData() wipes
+    // StudentFeeStructure / FeePayment / Remark forever (no soft-delete, no
+    // backup), so without this step a permanent-delete was a one-way door with
+    // zero recovery. Logging them here gives operators the same 60-day restore
+    // window the rest of the trash provides.
+    //
+    // Each dependent is logged under its own ENTITY_REGISTRY key so restore
+    // uses the right strategy (these are hard-delete restores — re-insert from
+    // the snapshot). Best-effort: a logging failure must NOT abort the
+    // permanent delete the operator already confirmed, so swallow + log.
+    try {
+      const cascadeDeletedBy = trashItem.deletedBy;
+      const cascadeSchoolId = schoolId || trashItem.schoolId;
+
+      if (mongoose.models.StudentFeeStructure) {
+        const StudentFeeStructure = mongoose.model('StudentFeeStructure');
+        const feeStructures = await StudentFeeStructure.find({
+          studentId: itemId,
+          schoolId: cascadeSchoolId,
+        }).lean();
+        for (const fs of feeStructures) {
+          await logToTrash({
+            itemType: 'StudentFeeStructure',
+            itemId: fs._id,
+            itemName: `Fee structure (${fs.academicYear || 'n/a'})`,
+            originalData: fs,
+            deletedBy: cascadeDeletedBy,
+            schoolId: cascadeSchoolId,
+            deletionContext: { studentId: itemId, source: 'student-permanent-delete' },
+          }).catch((err) =>
+            console.error('[TrashService] log StudentFeeStructure before purge failed:', err)
+          );
+        }
+      }
+
+      if (mongoose.models.FeePayment) {
+        const FeePayment = mongoose.model('FeePayment');
+        const payments = await FeePayment.find({
+          studentId: itemId,
+          schoolId: cascadeSchoolId,
+        }).lean();
+        for (const pmt of payments) {
+          await logToTrash({
+            itemType: 'FeePayment',
+            itemId: pmt._id,
+            itemName: `Fee payment (${pmt.receiptNumber || pmt._id})`,
+            originalData: pmt,
+            deletedBy: cascadeDeletedBy,
+            schoolId: cascadeSchoolId,
+            deletionContext: { studentId: itemId, source: 'student-permanent-delete' },
+          }).catch((err) =>
+            console.error('[TrashService] log FeePayment before purge failed:', err)
+          );
+        }
+      }
+
+      if (mongoose.models.Remark) {
+        const Remark = mongoose.model('Remark');
+        const remarks = await Remark.find({
+          studentId: itemId,
+          schoolId: cascadeSchoolId,
+        }).lean();
+        for (const rmk of remarks) {
+          await logToTrash({
+            itemType: 'Remark',
+            itemId: rmk._id,
+            itemName: rmk.text ? String(rmk.text).slice(0, 60) : 'Remark',
+            originalData: rmk,
+            deletedBy: cascadeDeletedBy,
+            schoolId: cascadeSchoolId,
+            deletionContext: { studentId: itemId, source: 'student-permanent-delete' },
+          }).catch((err) => console.error('[TrashService] log Remark before purge failed:', err));
+        }
+      }
+    } catch (snapshotError) {
+      console.error(
+        '[TrashService] itemized dependent logging before Student purge failed:',
+        snapshotError
+      );
+    }
+
     await permanentlyDeleteStudentData(itemId);
     return;
   }

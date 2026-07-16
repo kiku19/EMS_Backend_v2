@@ -157,10 +157,11 @@ function expandRecurringEvent(event, rangeStart, rangeEnd) {
   let occurrenceNumber = 0;
   let iterations = 0;
 
-  // Daily and weekly series can jump directly near the requested window.
-  // Without this, a long-running daily series was replayed one date at a time
-  // from its original start on every month navigation. Preserve the absolute
-  // occurrence number so endCount semantics remain unchanged.
+  // All frequencies can jump directly near the requested window.
+  // Without this, a long-running daily/monthly/yearly series was replayed one
+  // occurrence at a time from its original start on every month navigation.
+  // Preserve the absolute occurrence number so endCount semantics remain
+  // unchanged across the skip.
   if (rec.freq === 'daily' || rec.freq === 'weekly') {
     const rangeStartDate = parseDateUtc(rangeStart);
     const stepDays = interval * (rec.freq === 'weekly' ? 7 : 1);
@@ -170,6 +171,30 @@ function expandRecurringEvent(event, rangeStart, rangeEnd) {
       current.setUTCDate(current.getUTCDate() + skippedOccurrences * stepDays);
       occurrenceNumber = skippedOccurrences;
       iterations = skippedOccurrences;
+    }
+  } else if (rec.freq === 'monthly' || rec.freq === 'yearly') {
+    // Count whole intervals between the series start and the window start so
+    // we advance `current` by that many occurrences rather than iterating them
+    // one at a time. Whole-interval math keeps the occurrence counter accurate.
+    const rangeStartUtc = parseDateUtc(rangeStart);
+    if (rangeStartUtc.getTime() > current.getTime()) {
+      const elapsedIntervals =
+        rec.freq === 'monthly'
+          ? (rangeStartUtc.getUTCFullYear() - current.getUTCFullYear()) * 12 +
+            (rangeStartUtc.getUTCMonth() - current.getUTCMonth())
+          : rangeStartUtc.getUTCFullYear() - current.getUTCFullYear();
+      const skippedOccurrences = Math.max(0, Math.floor(elapsedIntervals / interval));
+      if (skippedOccurrences > 0) {
+        current = advanceOccurrence(
+          current,
+          rec.freq,
+          interval * skippedOccurrences,
+          anchorDay,
+          anchorMonth
+        );
+        occurrenceNumber = skippedOccurrences;
+        iterations = skippedOccurrences;
+      }
     }
   }
 

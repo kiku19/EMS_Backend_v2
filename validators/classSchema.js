@@ -199,6 +199,11 @@ export const bulkStudentPromoteSchema = z
           })
       )
       .min(1, 'At least one student is required'),
+    // Mirror single-promote override flags so bulk promotion can respect the
+    // same fee/attendance guards (default) but be bypassed when an admin
+    // explicitly opts in (e.g. end-of-year force promotion).
+    skipFeeCheck: z.boolean().optional().default(false),
+    skipAttendanceCheck: z.boolean().optional().default(false),
   })
   .strip();
 

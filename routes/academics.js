@@ -235,7 +235,7 @@ import { resolveAcademicYear } from '../utils/academicYear.js';
 import { buildSchoolScopedQuery, extractSchoolId } from '../utils/schoolContext.js';
 import { dispatchWebhookEvent } from '../services/webhookService.js';
 import { EVENTS, emitEvent } from '../utils/socketEvents.js';
-import { computeGrade } from '../utils/grading.js';
+import { computeGrade, computePercentage } from '../utils/grading.js';
 import { withEffectiveStatus } from '../utils/examStatus.js';
 import { logToTrash } from '../services/trashService.js';
 
@@ -1028,7 +1028,7 @@ router.get('/academic-board', checkPermission('academics', 'view'), async (req, 
       if (!examCountsByClass.has(cid)) {
         examCountsByClass.set(cid, {
           upcoming: 0,
-          drafts: 0,
+          scheduled: 0,
           published: 0,
           completed: 0,
           total: 0,
@@ -1037,7 +1037,10 @@ router.get('/academic-board', checkPermission('academics', 'view'), async (req, 
       const counts = examCountsByClass.get(cid);
       counts.total++;
       if (status === 'scheduled' || status === 'ongoing') counts.upcoming++;
-      if (status === 'scheduled') counts.drafts++;
+      // AC11: count scheduled exams under their own `scheduled` key instead of
+      // `drafts`. These exams have been scheduled (date/subject set) but not yet
+      // had results entered — labelling them "drafts" misrepresents their state.
+      if (status === 'scheduled') counts.scheduled++;
       if (status === 'results_published') counts.published++;
       if (status === 'completed') counts.completed++;
     }
@@ -1046,7 +1049,7 @@ router.get('/academic-board', checkPermission('academics', 'view'), async (req, 
       const classTeacherId = c.classTeacherId ? String(c.classTeacherId) : null;
       const examCounts = examCountsByClass.get(String(c._id)) || {
         upcoming: 0,
-        drafts: 0,
+        scheduled: 0,
         published: 0,
         completed: 0,
         total: 0,
@@ -1292,7 +1295,7 @@ router.put(
             if (results.length > 0) {
               const statusOps = results.map((result) => {
                 const marks = result.marksObtained || 0;
-                const pct = examMaxMarks > 0 ? Math.round((marks / examMaxMarks) * 10000) / 100 : 0;
+                const pct = computePercentage(marks, examMaxMarks);
                 return {
                   updateOne: {
                     filter: { _id: result._id },
@@ -1881,9 +1884,7 @@ router.post(
       // Issue #17 Fix: Compute all derived fields (percentage, grade, status, maxMarks, totals, academicYear)
       const bulkOps = validResults.map((result) => {
         const marksObtained = result.status === 'absent' ? 0 : (result.marksObtained ?? 0);
-        const rawPercentage =
-          examMaxMarks > 0 ? Math.round((marksObtained / examMaxMarks) * 100 * 100) / 100 : 0;
-        const percentage = Math.min(100, Math.max(0, rawPercentage));
+        const percentage = computePercentage(marksObtained, examMaxMarks);
         const grade = computeGrade(percentage, schoolGradingScale);
         // AUDIT-748: Respect 'absent' status from frontend; do not override it with pass/fail
         const status =
@@ -2031,9 +2032,7 @@ router.post(
 
       const bulkOps = results.map((result) => {
         const marksObtained = result.marksObtained || 0;
-        const rawPercentage =
-          examMaxMarks > 0 ? Math.round((marksObtained / examMaxMarks) * 100 * 100) / 100 : 0;
-        const percentage = Math.min(100, Math.max(0, rawPercentage));
+        const percentage = computePercentage(marksObtained, examMaxMarks);
         const grade = computeGrade(percentage, gradingScale);
         // AUDIT-748: Preserve 'absent' status; only recompute pass/fail for non-absent results
         const status =
@@ -2239,9 +2238,7 @@ router.post(
         ? schoolSettingsForResult.gradingScale
         : null;
 
-      const rawPercentage =
-        examMaxMarks > 0 ? Math.round((marks / examMaxMarks) * 100 * 100) / 100 : 0;
-      const percentage = Math.min(100, Math.max(0, rawPercentage));
+      const percentage = computePercentage(marks, examMaxMarks);
       const grade = computeGrade(percentage, schoolGradingScaleForResult);
       // A8: honor an explicit 'absent' status from the caller; otherwise derive
       // pass/fail from the marks.
@@ -2377,9 +2374,7 @@ router.put(
             error: `Invalid marks: ${marks} exceeds maximum ${examMaxMarks}`,
           });
         }
-        const rawPercentage =
-          examMaxMarks > 0 ? Math.round((marks / examMaxMarks) * 100 * 100) / 100 : 0;
-        const percentage = Math.min(100, Math.max(0, rawPercentage));
+        const percentage = computePercentage(marks, examMaxMarks);
         const grade = computeGrade(percentage, schoolGradingScaleForUpdate);
         const computedStatus =
           requestedStatus === 'absent' ? 'absent' : marks >= examPassingMarks ? 'passed' : 'failed';
@@ -2401,9 +2396,7 @@ router.put(
             error: `Invalid marks: ${marks} exceeds maximum ${examMaxMarks}`,
           });
         }
-        const rawPercentage =
-          examMaxMarks > 0 ? Math.round((marks / examMaxMarks) * 100 * 100) / 100 : 0;
-        const percentage = Math.min(100, Math.max(0, rawPercentage));
+        const percentage = computePercentage(marks, examMaxMarks);
         result.maxMarks = examMaxMarks;
         result.totalMaxMarks = examMaxMarks;
         result.percentage = percentage;

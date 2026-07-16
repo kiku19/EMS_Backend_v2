@@ -364,36 +364,59 @@ async function validateClassScheduleAssignments({ schoolId, classData, schedule,
     const slots = schedule[day] || [];
     for (let periodIndex = 0; periodIndex < slots.length; periodIndex++) {
       const slot = slots[periodIndex];
-      if (!slot.teacherId) continue;
-      const teacher = teacherById.get(String(slot.teacherId));
-      const assigned = (teacher.teacherAssignments || []).some(
-        (assignment) =>
-          assignment.subject === slot.subject &&
-          (assignment.classes || []).some((id) => String(id) === String(classData._id))
-      );
-      if (!assigned) {
-        const error = new Error(
-          `${teacher.name || 'Teacher'} is not assigned to teach ${slot.subject} in this class`
+      if (slot.teacherId) {
+        const teacher = teacherById.get(String(slot.teacherId));
+        const assigned = (teacher.teacherAssignments || []).some(
+          (assignment) =>
+            assignment.subject === slot.subject &&
+            (assignment.classes || []).some((id) => String(id) === String(classData._id))
         );
-        error.statusCode = 400;
-        throw error;
+        if (!assigned) {
+          const error = new Error(
+            `${teacher.name || 'Teacher'} is not assigned to teach ${slot.subject} in this class`
+          );
+          error.statusCode = 400;
+          throw error;
+        }
+        const conflict = await conflictDetectionService.checkTeacherConflict(
+          slot.teacherId,
+          day,
+          periodIndex,
+          classData._id,
+          true,
+          schoolId,
+          academicYear,
+          true // skipCache — write-path, must see freshest state (CT16)
+        );
+        if (conflict) {
+          const error = new Error(
+            `${teacher.name || 'Teacher'} is already assigned at ${day} period ${periodIndex + 1}`
+          );
+          error.statusCode = 409;
+          error.conflict = conflict;
+          throw error;
+        }
       }
-      const conflict = await conflictDetectionService.checkTeacherConflict(
-        slot.teacherId,
-        day,
-        periodIndex,
-        classData._id,
-        true,
-        schoolId,
-        academicYear
-      );
-      if (conflict) {
-        const error = new Error(
-          `${teacher.name || 'Teacher'} is already assigned at ${day} period ${periodIndex + 1}`
+      // Room double-booking: two classes can't occupy the same room at the
+      // same day+period. Runs even for teacherless slots (a room can be
+      // reserved without a teacher yet assigned).
+      if (slot.room) {
+        const roomConflict = await conflictDetectionService.checkRoomConflict(
+          slot.room,
+          day,
+          periodIndex,
+          classData._id,
+          schoolId,
+          academicYear
         );
-        error.statusCode = 409;
-        error.conflict = conflict;
-        throw error;
+        if (roomConflict) {
+          const error = new Error(
+            `Room "${slot.room}" is already booked by ${roomConflict.className} at ${day} period ${periodIndex + 1}`
+          );
+          error.statusCode = 409;
+          error.conflict = roomConflict;
+          throw error;
+        }
       }
     }
   }
@@ -610,6 +633,13 @@ router.post(
       const globalTeacherBusy = {};
       // Track what each teacher is teaching at each busy slot for conflict descriptions
       const globalTeacherBusyClass = {}; // teacherId → day → periodIdx → { className, subject }
+      // Track room busy slots across all classes to prevent physical double-booking
+      // (two cohorts in one classroom). The current generator derives each
+      // class's room from its name+section (unique per year), so conflicts are
+      // impossible today — but tracking here makes the constraint explicit and
+      // future-proofs the generator if rooms ever become shared/pooled.
+      const globalRoomBusy = {}; // room → day → Set<periodIdx>
+      const globalRoomBusyClass = {}; // room → day → periodIdx → { className, subject }
 
       for (const cls of classes) {
         try {
@@ -719,14 +749,45 @@ router.post(
             return shuffled;
           };
 
+          // "Prefer morning for core subjects": when enabled, bias the
+          // candidate order so core subjects (Maths/Math/Science/Physics/
+          // Chemistry/Biology) are tried before non-core ones during morning
+          // periods (the first half of the non-break periods). Implemented
+          // minimally as a stable re-ordering of the per-day pool per period —
+          // it only changes WHICH subject is picked first, never the per-day /
+          // per-week caps, so it can't starve other subjects. Mirrors the
+          // wizard's UI copy ("Schedule Maths / Science in earlier slots").
+          const preferMorning = periodRules?.preferMorningForCore === true;
+          const coreSubjectPattern =
+            /^(math(?:s|ematics)?|science|physics|chemistry|biology|computer\s*science|it|ict)$/i;
+          const isCoreSubject = (subject) => coreSubjectPattern.test(String(subject || '').trim());
+          const morningCutoff = preferMorning
+            ? nonBreakIndices[Math.floor(nonBreakIndices.length / 2)]
+            : -1;
+
           for (const day of days) {
             const pool = shuffleArray(subjectPool);
 
             for (const periodIdx of nonBreakIndices) {
               let selectedSubject = null;
 
-              for (let i = 0; i < pool.length; i++) {
-                const subject = pool[i];
+              // Morning bias: in early periods, examine core subjects before
+              // the rest of the (already-shuffled) pool. We iterate a view that
+              // lists remaining core candidates first, then the others, so the
+              // first eligible subject picked is a core one when available.
+              const morningFirst =
+                preferMorning && periodIdx < morningCutoff
+                  ? [...pool].sort((a, b) => {
+                      const ca = isCoreSubject(a) ? 0 : 1;
+                      const cb = isCoreSubject(b) ? 0 : 1;
+                      return ca - cb;
+                    })
+                  : pool;
+
+              for (const subject of morningFirst) {
+                // The pool is mutated by splice below to remove the picked
+                // subject — skip if it was already removed in this iteration.
+                if (!pool.includes(subject)) continue;
                 const usage = subjectUsage[subject];
 
                 // Check constraints
@@ -748,7 +809,11 @@ router.post(
                 }
 
                 selectedSubject = subject;
-                pool.splice(i, 1);
+                // Remove the picked subject from the day's pool (by value —
+                // the candidate view is a separate sorted copy) so it isn't
+                // re-picked later in the same day before its cap is reached.
+                const pickedIdx = pool.indexOf(subject);
+                if (pickedIdx !== -1) pool.splice(pickedIdx, 1);
                 break;
               }
 
@@ -799,10 +864,41 @@ router.post(
                   }
                 }
 
+                const assignedRoom = `Room ${cls.name.replace('Class ', '')}-${cls.section}`;
+
+                // Room double-booking guard (mirrors the teacher-busy check
+                // above). Defensive: the derived room is unique per class
+                // today, so this never fires for the current formula — but if
+                // rooms are ever pooled/shared, this surfaces the conflict
+                // instead of silently booking one classroom twice.
+                if (!globalRoomBusy[assignedRoom]) globalRoomBusy[assignedRoom] = {};
+                if (!globalRoomBusy[assignedRoom][day])
+                  globalRoomBusy[assignedRoom][day] = new Set();
+                if (globalRoomBusy[assignedRoom][day].has(periodIdx)) {
+                  const busyInfo = globalRoomBusyClass[assignedRoom]?.[day]?.[periodIdx];
+                  classConflicts.push({
+                    type: 'room_conflict',
+                    day,
+                    periodIndex: periodIdx,
+                    subject: selectedSubject,
+                    room: assignedRoom,
+                    description: `Room "${assignedRoom}" is already assigned to class ${busyInfo?.className || 'another class'} for "${busyInfo?.subject || 'a period'}" on ${day} period ${periodIdx + 1}`,
+                  });
+                } else {
+                  globalRoomBusy[assignedRoom][day].add(periodIdx);
+                  if (!globalRoomBusyClass[assignedRoom]) globalRoomBusyClass[assignedRoom] = {};
+                  if (!globalRoomBusyClass[assignedRoom][day])
+                    globalRoomBusyClass[assignedRoom][day] = {};
+                  globalRoomBusyClass[assignedRoom][day][periodIdx] = {
+                    className: `${cls.name}-${cls.section}`,
+                    subject: selectedSubject,
+                  };
+                }
+
                 schedule[day][periodIdx] = {
                   subject: selectedSubject,
                   teacherId: assignedTeacherId,
-                  room: `Room ${cls.name.replace('Class ', '')}-${cls.section}`,
+                  room: assignedRoom,
                 };
 
                 subjectUsage[selectedSubject].perDay[day]++;
@@ -841,32 +937,46 @@ router.post(
       }
 
       // --- Sync TeacherTimetable documents from generated class timetables ---
+      // INCREMENTAL rebuild: previously this block did
+      // `TeacherTimetable.deleteMany(...)` and then upserted fresh docs,
+      // which DESTROYED every manual teacher-side edit (notes, swapped
+      // classes, slots for classes skipped this run). Instead we load each
+      // teacher's existing TeacherTimetable, strip ONLY the slots that
+      // belong to classes generated this run, and merge the freshly-generated
+      // slots back in. Slots for non-generated classes (manual edits,
+      // classes not in this generation set) are preserved untouched.
       try {
         const days = SCHEDULE_DAYS;
 
-        // AUDIT-328: Clean up all existing TeacherTimetable docs before rebuilding
-        await TeacherTimetable.deleteMany(scopeBySchool(resolvedSchoolId, { academicYear }));
+        // The set of classes whose schedules were just (re)generated. Only
+        // these classes' mirror slots are rewritten — anything else stays.
+        const generatedClassIds = new Set(results.map((r) => String(r.classId)).filter(Boolean));
 
-        // Reload all generated timetables (exclude soft-deleted)
+        // Reload the freshly-generated class timetables (lean). Note this is
+        // scoped to ALL non-deleted timetables for the year, but we only pull
+        // slots from classes in generatedClassIds below, so a class whose
+        // generation was skipped (no subjects etc.) doesn't clobber its own
+        // mirror via a stale read.
         const allTimetables = await Timetable.find(
           scopeBySchool(req.user?.schoolId, { academicYear, isDeleted: { $ne: true } })
         ).lean();
 
-        // Build teacher → schedule map
-        const teacherScheduleMap = {}; // teacherId → { Monday: [...], ... }
+        // Build teacher → generated-slots map (only for generated classes).
+        const teacherGeneratedSlots = {}; // teacherId → { Monday: [...], ... }
         for (const tt of allTimetables) {
+          if (!generatedClassIds.has(String(tt.classId))) continue;
           for (const day of days) {
             const slots = tt.schedule?.[day] || [];
             slots.forEach((slot, idx) => {
               if (slot.teacherId) {
                 const tid = slot.teacherId.toString();
-                if (!teacherScheduleMap[tid]) {
-                  teacherScheduleMap[tid] = {};
+                if (!teacherGeneratedSlots[tid]) {
+                  teacherGeneratedSlots[tid] = {};
                   days.forEach((d) => {
-                    teacherScheduleMap[tid][d] = [];
+                    teacherGeneratedSlots[tid][d] = [];
                   });
                 }
-                teacherScheduleMap[tid][day].push({
+                teacherGeneratedSlots[tid][day].push({
                   periodIndex: idx,
                   classId: tt.classId,
                   subject: slot.subject || '',
@@ -878,10 +988,53 @@ router.post(
           }
         }
 
-        // Upsert TeacherTimetable for each teacher
-        const teacherTimetableOps = Object.entries(teacherScheduleMap).map(
-          ([teacherId, schedule]) => {
-            const totalPeriods = days.reduce((sum, d) => sum + schedule[d].length, 0);
+        // Load existing teacher timetables so we can merge instead of wipe.
+        const existingTeacherTimetables = await TeacherTimetable.find(
+          scopeBySchool(resolvedSchoolId, { academicYear })
+        ).lean();
+
+        // Seed the merged map with each teacher's PRESERVED slots (everything
+        // NOT belonging to a generated class), then overlay the generated slots.
+        const mergedByTeacher = {}; // teacherId → { schedule, totalPeriods, existed }
+        for (const tt of existingTeacherTimetables) {
+          const tid = String(tt.teacherId);
+          const preserved = {};
+          days.forEach((d) => {
+            preserved[d] = [];
+          });
+          for (const day of days) {
+            for (const slot of tt.schedule?.[day] || []) {
+              // Keep slots whose class wasn't (re)generated this run. These are
+              // manual edits / classes outside this generation — preserve them.
+              if (!generatedClassIds.has(String(slot.classId))) {
+                preserved[day].push(slot);
+              }
+            }
+          }
+          mergedByTeacher[tid] = { schedule: preserved, existed: true };
+        }
+
+        // Overlay the freshly generated slots on top of the preserved ones.
+        for (const [teacherId, dayMap] of Object.entries(teacherGeneratedSlots)) {
+          if (!mergedByTeacher[teacherId]) {
+            const schedule = {};
+            days.forEach((d) => {
+              schedule[d] = [];
+            });
+            mergedByTeacher[teacherId] = { schedule, existed: false };
+          }
+          for (const day of days) {
+            mergedByTeacher[teacherId].schedule[day].push(...(dayMap[day] || []));
+          }
+        }
+
+        // Sort each day by periodIndex and persist via upsert.
+        const teacherTimetableOps = Object.entries(mergedByTeacher).map(
+          ([teacherId, { schedule }]) => {
+            for (const day of days) {
+              schedule[day] = (schedule[day] || []).sort((a, b) => a.periodIndex - b.periodIndex);
+            }
+            const totalPeriods = days.reduce((sum, d) => sum + (schedule[d] || []).length, 0);
             return {
               updateOne: {
                 filter: { schoolId: resolvedSchoolId, teacherId, academicYear },
@@ -902,7 +1055,7 @@ router.post(
         if (teacherTimetableOps.length > 0) {
           await TeacherTimetable.bulkWrite(teacherTimetableOps, { ordered: true });
         }
-        const syncedTeachers = teacherTimetableOps.length;
+        const syncedTeachers = Object.keys(teacherGeneratedSlots).length;
 
         res.json({
           success: true,
@@ -1117,7 +1270,8 @@ router.put(
           classId, // exclude current class from conflict check
           true, // skip debounce for immediate server-side check
           req.user?.schoolId,
-          academicYear
+          academicYear,
+          true // skipCache — write-path, must see freshest state (CT16)
         );
         if (conflict) {
           return res.status(422).json({
@@ -1128,6 +1282,31 @@ router.put(
               conflictingClass: conflict.conflicts[0]?.className,
               day: conflict.day,
               periodIndex: conflict.periodIndex,
+            },
+          });
+        }
+      }
+
+      // Check for room double-booking: a room can't host two classes at the
+      // same day+period. Only meaningful when a room is actually supplied.
+      if (room) {
+        const roomConflict = await conflictDetectionService.checkRoomConflict(
+          room,
+          day,
+          periodIndex,
+          classId, // exclude current class
+          req.user?.schoolId,
+          academicYear
+        );
+        if (roomConflict) {
+          return res.status(422).json({
+            error: 'Room already booked at this time',
+            type: 'ConflictError',
+            details: {
+              room: roomConflict.room,
+              conflictingClass: roomConflict.className,
+              day: roomConflict.day,
+              periodIndex: roomConflict.periodIndex,
             },
           });
         }
@@ -1230,24 +1409,40 @@ router.post(
       // double-book a teacher across classes.
       const conflicts = [];
       for (const update of updates) {
-        const { day, periodIndex, teacherId } = update;
-        if (!teacherId) continue;
-        const conflict = await conflictDetectionService.checkTeacherConflict(
-          teacherId,
-          day,
-          periodIndex,
-          classId, // exclude this class from the conflict search
-          true, // skipDebounce — batch write needs the immediate answer
-          req.user?.schoolId,
-          academicYear
-        );
-        if (conflict) {
-          conflicts.push({ day, periodIndex, teacherId, conflict });
+        const { day, periodIndex, teacherId, room } = update;
+        if (teacherId) {
+          const conflict = await conflictDetectionService.checkTeacherConflict(
+            teacherId,
+            day,
+            periodIndex,
+            classId, // exclude this class from the conflict search
+            true, // skipDebounce — batch write needs the immediate answer
+            req.user?.schoolId,
+            academicYear,
+            true // skipCache — write-path, must see freshest state (CT16)
+          );
+          if (conflict) {
+            conflicts.push({ day, periodIndex, teacherId, conflict });
+          }
+        }
+        // Room double-booking pre-flight (mirrors the single-slot PUT check).
+        if (room) {
+          const roomConflict = await conflictDetectionService.checkRoomConflict(
+            room,
+            day,
+            periodIndex,
+            classId, // exclude this class
+            req.user?.schoolId,
+            academicYear
+          );
+          if (roomConflict) {
+            conflicts.push({ day, periodIndex, room, conflict: roomConflict });
+          }
         }
       }
       if (conflicts.length > 0) {
         return res.status(409).json({
-          error: 'Teacher double-booking detected',
+          error: 'Teacher or room double-booking detected',
           conflicts,
         });
       }
@@ -1321,6 +1516,12 @@ router.put(
 
       const mongoSession = await mongoose.startSession();
       let timetable;
+      // Count teacher-side slot assignments that get DROPPED because the
+      // period they lived in was deleted (not present in the new period list,
+      // so oldToNew has no mapping). Previously these removals were silent —
+      // the admin saw periods disappear but never learned that N teacher
+      // assignments vanished from the teacher-view mirrors at the same time.
+      let droppedTeacherAssignments = 0;
       try {
         await mongoSession.withTransaction(async () => {
           timetable = await Timetable.findOne(
@@ -1394,6 +1595,12 @@ router.put(
                 if (newIndex !== undefined) {
                   slot.periodIndex = newIndex;
                   next.push(slot);
+                } else {
+                  // The period this assignment lived in was removed from the
+                  // new period list, so the mirror slot has nowhere to move
+                  // to — it's dropped. Tally so the admin is told how many
+                  // teacher assignments were lost in this resize.
+                  droppedTeacherAssignments += 1;
                 }
                 modified = true;
               }
@@ -1429,6 +1636,12 @@ router.put(
         academicYear,
       });
 
+      // Surface the number of teacher-side assignments dropped because their
+      // period was deleted. Exposed via a header so the response body stays
+      // the timetable document (existing callers read the body as the
+      // timetable) while the frontend can still read the count to warn the
+      // admin ("N teacher assignments dropped").
+      res.set('X-Dropped-Teacher-Assignments', String(droppedTeacherAssignments));
       res.json(timetable);
     } catch (error) {
       console.error('Error updating periods:', error);

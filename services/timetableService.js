@@ -448,6 +448,16 @@ class TimetableService {
       classTimetable.schedule[day].push({});
     }
 
+    // If a DIFFERENT teacher already occupies this slot, evicting them here
+    // would silently overwrite their assignment AND leave a dangling entry in
+    // their TeacherTimetable mirror (the two views would disagree). Sync the
+    // displaced teacher out of their mirror before taking the slot. This is
+    // the symmetric counterpart of _syncFromClassToTeacher's oldTeacherId
+    // handling. The preferred behavior is to keep the new assignment and
+    // displace the prior teacher, rather than reject the edit.
+    const displacedTeacherId = classTimetable.schedule[day][periodIndex]?.teacherId;
+    const displaced = displacedTeacherId && displacedTeacherId.toString() !== String(teacherId);
+
     classTimetable.schedule[day][periodIndex] = {
       subject: subject || '',
       teacherId: teacherId,
@@ -463,6 +473,21 @@ class TimetableService {
       await classTimetable.save({ session });
     } else {
       await classTimetable.save();
+    }
+
+    // Remove the displaced teacher's mirror entry so the two timetable views
+    // stay consistent, and invalidate their cached timetable.
+    if (displaced) {
+      await this._removeFromTeacherTimetable({
+        teacherId: displacedTeacherId,
+        classId,
+        day,
+        periodIndex,
+        academicYear,
+        schoolId,
+        session,
+      });
+      cacheService.invalidateTeacherCache(displacedTeacherId);
     }
   }
 

@@ -4,6 +4,7 @@ import Payslip from '../models/Payslip.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import { Staff } from '../database.js';
 import { authenticate, extractTokenFromRequest } from '../middleware/auth.js';
+import { userHasPermission } from '../middleware/auth/permissions.js';
 import { getRequiredSecret } from '../config/environment.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import PDFDocument from 'pdfkit';
@@ -300,6 +301,31 @@ router.get('/staff/:employeeId/summary', async (req, res) => {
  */
 router.post('/:id/download-token', async (req, res) => {
   try {
+    const schoolId = req.user?.schoolId;
+    // Load the payroll record (school-scoped) and verify the caller is allowed
+    // to download it: they must own the record (be the employee) OR hold the
+    // payroll:view permission. Without this check any authenticated user could
+    // mint a download token for any payslip id in the system.
+    const record = await PayrollRecord.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+
+    if (!record) {
+      return res.status(404).json({
+        success: false,
+        message: req.t('common:routes.payrollRecordNotFound'),
+      });
+    }
+
+    const isOwner =
+      req.user?._id && record.employeeId && String(req.user._id) === String(record.employeeId);
+    const canViewPayroll = await userHasPermission(req, 'payroll', 'view');
+
+    if (!isOwner && !canViewPayroll) {
+      return res.status(403).json({
+        success: false,
+        message: req.t('common:routes.payrollRecordNotFound'),
+      });
+    }
+
     const jwtSecret = getRequiredSecret('JWT_SECRET');
     const downloadToken = jwt.sign(
       {

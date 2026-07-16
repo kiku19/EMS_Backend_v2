@@ -150,6 +150,7 @@ async function processDueReminders() {
       academicYear: fs.academicYear,
       overallStatus: { $in: ['pending', 'partial'] },
       totalBalance: { $gt: 0 },
+      isDeleted: { $ne: true },
       $or: [
         { lastDueReminderSentAt: { $exists: false } },
         { lastDueReminderSentAt: null },
@@ -234,6 +235,7 @@ async function processOverdueReminders() {
       academicYear: fs.academicYear,
       overallStatus: { $in: ['pending', 'partial'] },
       totalBalance: { $gt: 0 },
+      isDeleted: { $ne: true },
       $or: [
         { lastOverdueReminderSentAt: { $exists: false } },
         { lastOverdueReminderSentAt: null },
@@ -295,7 +297,7 @@ async function processOverdueReminders() {
 export async function processManualReminder(reminder) {
   const { schoolId, academicYear, audience = {} } = reminder;
   const config = await loadConfig(schoolId, academicYear);
-  const baseQuery = { schoolId, academicYear, totalBalance: { $gt: 0 } };
+  const baseQuery = { schoolId, academicYear, totalBalance: { $gt: 0 }, isDeleted: { $ne: true } };
   if (audience.type === 'overdue') baseQuery.overallStatus = { $in: ['pending', 'partial'] };
   if (audience.type === 'unpaid') baseQuery.overallStatus = 'pending';
   if (audience.type === 'class' && Array.isArray(audience.classIds) && audience.classIds.length) {

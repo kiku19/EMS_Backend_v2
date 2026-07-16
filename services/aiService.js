@@ -64,7 +64,10 @@ const TOOL_DEFINITIONS = [
         rollNo: { type: 'number', description: 'Roll number if already known' },
         gender: { type: 'string', enum: ['Male', 'Female', 'Other'] },
         dateOfBirth: { type: 'string', description: 'YYYY-MM-DD' },
-        parents: { type: 'array', description: 'Array of parent/guardian objects with name, phone, email, relationship' },
+        parents: {
+          type: 'array',
+          description: 'Array of parent/guardian objects with name, phone, email, relationship',
+        },
         academicYear: { type: 'string', description: 'Academic year in YYYY-YY format' },
       },
       required: ['name', 'classId', 'parents'],
@@ -244,6 +247,7 @@ async function initializeFeeStructure(student) {
   const existingFeeStructure = await StudentFeeStructure.findOne({
     studentId: student._id,
     academicYear,
+    isDeleted: { $ne: true },
   });
 
   if (existingFeeStructure) {

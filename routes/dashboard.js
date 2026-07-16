@@ -215,7 +215,13 @@ router.get('/feed', checkPermission('dashboard', 'view'), async (req, res) => {
 
     const [feeStructures, pendingSubstitutions, calendarEvents] = await Promise.allSettled([
       StudentFeeStructure.aggregate([
-        { $match: { schoolId: schoolObjIdForFeed, totalBalance: { $gt: 0 } } },
+        {
+          $match: {
+            schoolId: schoolObjIdForFeed,
+            totalBalance: { $gt: 0 },
+            isDeleted: { $ne: true },
+          },
+        },
         {
           $lookup: {
             from: 'students',
@@ -398,6 +404,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfDay },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -408,6 +415,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfMonth },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -451,6 +459,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfDay },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -461,6 +470,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: last7Days },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -471,6 +481,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfMonth },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -708,8 +719,11 @@ router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res
 
     // Fee-structure scope: school + (optional) academic year, soft-delete safe.
     // totalPaid/totalBalance are maintained on each StudentFeeStructure doc.
+    // isDeleted filters archived students' fee rows at the source — the $lookup
+    // below also drops them as defense-in-depth.
     const structureMatch = {
       schoolId: schoolObjId,
+      isDeleted: { $ne: true },
       ...(academicYear ? { academicYear } : {}),
     };
 
@@ -731,6 +745,7 @@ router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res
     const paymentMatch = {
       schoolId: schoolObjId,
       status: { $ne: 'cancelled' },
+      isDeleted: { $ne: true },
       ...(academicYear ? { academicYear } : {}),
     };
 
@@ -767,22 +782,57 @@ router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res
         },
       ]).catch(() => []),
       // Bounded recent-payments slice (newest first). The {schoolId, paymentDate:-1}
-      // index makes this a cheap index scan; we only ever return 6 rows.
-      FeePayment.find({ schoolId: schoolObjId, ...(academicYear ? { academicYear } : {}) })
+      // index makes this a cheap index scan; we only ever return 6 rows. We
+      // over-fetch (limit 18) then drop archived-student rows client-side to
+      // avoid a $lookup on this hot path while still returning ~6 live rows.
+      FeePayment.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        ...(academicYear ? { academicYear } : {}),
+      })
         .sort({ paymentDate: -1, createdAt: -1 })
-        .limit(6)
+        .limit(18)
         .select('amount paymentDate receiptNumber paymentMethod status studentId classId')
+        .populate({
+          path: 'studentId',
+          select: 'isDeleted status',
+          match: { isDeleted: { $ne: true } },
+        })
         .lean()
+        .then((rows) => (rows || []).filter((r) => r.studentId).slice(0, 6))
         .catch(() => []),
       // "Collected today" summed server-side across ALL of today's payments
       // (not just a 50-row page). paymentDate is a stored "YYYY-MM-DD" string.
+      // [S4/X16] Join the owning student and drop archived-student rows before
+      // summing, so a departed student's payments don't inflate today's KPI.
       FeePayment.aggregate([
         { $match: { ...paymentMatch, paymentDate: todayStr } },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: { path: '$student', preserveNullAndEmptyArrays: false } },
+        { $match: { 'student.isDeleted': { $ne: true } } },
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]).catch(() => []),
       // "Collected this month" — match the "YYYY-MM" prefix of paymentDate.
+      // [S4/X16] Same archived-student exclusion as todayCollected above.
       FeePayment.aggregate([
         { $match: { ...paymentMatch, paymentDate: { $regex: `^${monthPrefix}` } } },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: { path: '$student', preserveNullAndEmptyArrays: false } },
+        { $match: { 'student.isDeleted': { $ne: true } } },
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]).catch(() => []),
     ]);
@@ -819,12 +869,10 @@ router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res
   try {
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
-      return res
-        .status(400)
-        .json({
-          error: req.t('common:routes.invalidQueryParameters'),
-          details: parsed.error.errors,
-        });
+      return res.status(400).json({
+        error: req.t('common:routes.invalidQueryParameters'),
+        details: parsed.error.errors,
+      });
     }
     const schoolId = extractSchoolId(req.user?.schoolId);
     if (!schoolId) {
@@ -833,7 +881,11 @@ router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res
     // Aggregation $match does not auto-cast, so convert to ObjectId explicitly.
     const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
     const academicYear = parsed.data.academicYear || undefined;
-    const structureMatch = { schoolId: schoolObjId, ...(academicYear ? { academicYear } : {}) };
+    const structureMatch = {
+      schoolId: schoolObjId,
+      isDeleted: { $ne: true },
+      ...(academicYear ? { academicYear } : {}),
+    };
 
     const [totalsAgg, countAgg, recentPayments] = await Promise.all([
       StudentFeeStructure.aggregate([
@@ -850,11 +902,21 @@ router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res
       StudentFeeStructure.countDocuments({ ...structureMatch, totalBalance: { $gt: 0 } }).catch(
         () => 0
       ),
-      FeePayment.find({ schoolId: schoolObjId, ...(academicYear ? { academicYear } : {}) })
+      FeePayment.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        ...(academicYear ? { academicYear } : {}),
+      })
         .sort({ paymentDate: -1, createdAt: -1 })
-        .limit(6)
+        .limit(18)
         .select('amount paymentDate receiptNumber paymentMethod status studentId classId')
+        .populate({
+          path: 'studentId',
+          select: 'isDeleted status',
+          match: { isDeleted: { $ne: true } },
+        })
         .lean()
+        .then((rows) => (rows || []).filter((r) => r.studentId).slice(0, 6))
         .catch(() => []),
     ]);
     const totals = totalsAgg[0] || { totalCollected: 0, totalPending: 0, structureCount: 0 };

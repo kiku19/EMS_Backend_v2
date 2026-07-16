@@ -334,7 +334,7 @@ export const ProcurementRequest = ProcurementRequestModel;
 
 // ─── Helper functions ────────────────────────────────────────────────────────
 
-export async function getNextStaffCode(schoolId) {
+export async function getNextStaffCode(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate staff code');
   }
@@ -352,7 +352,7 @@ export async function getNextStaffCode(schoolId) {
         digits: 3,
       },
     },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
 
   const { prefix, separator, includeYear, digits, currentNumber } = config;
@@ -383,14 +383,14 @@ export async function getNextRollNumber(classId, schoolId) {
   return (lastStudent?.rollNo || 0) + 1;
 }
 
-export async function getNextReceiptNumber(schoolId) {
+export async function getNextReceiptNumber(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate receipt number');
   }
   const counter = await CounterModel.findByIdAndUpdate(
     `receiptNumber_${schoolId}`,
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
   const year = new Date().getFullYear();
   return `RCP-${year}-${String(counter.seq).padStart(6, '0')}`;
@@ -406,7 +406,7 @@ export async function getNextReceiptNumber(schoolId) {
  * Use this in retry paths so a lagging counter self-corrects instead of
  * looping forever or returning a hard error.
  */
-export async function getNextAvailableReceiptNumber(schoolId) {
+export async function getNextAvailableReceiptNumber(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate receipt number');
   }
@@ -417,7 +417,8 @@ export async function getNextAvailableReceiptNumber(schoolId) {
   // the true high-water mark (in case the counter is behind it).
   const [highest] = await FeePaymentModel.find(
     { schoolId, receiptNumber: { $regex: `^${prefix}` } },
-    { receiptNumber: 1 }
+    { receiptNumber: 1 },
+    ...(session ? [{ session }] : [])
   )
     .sort({ receiptNumber: -1 })
     .limit(1)
@@ -434,7 +435,7 @@ export async function getNextAvailableReceiptNumber(schoolId) {
   const counter = await CounterModel.findByIdAndUpdate(
     `receiptNumber_${schoolId}`,
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
   const nextSeq = Math.max(counter.seq, seqFromDb + 1);
   if (nextSeq !== counter.seq) {
@@ -443,20 +444,20 @@ export async function getNextAvailableReceiptNumber(schoolId) {
     await CounterModel.findByIdAndUpdate(
       `receiptNumber_${schoolId}`,
       { $set: { seq: nextSeq } },
-      { new: true }
+      { new: true, ...(session ? { session } : {}) }
     );
   }
   return `RCP-${year}-${String(nextSeq).padStart(6, '0')}`;
 }
 
-export async function getNextRefundNumber(schoolId) {
+export async function getNextRefundNumber(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate refund number');
   }
   const counter = await CounterModel.findByIdAndUpdate(
     `refundNumber_${schoolId}`,
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
   const year = new Date().getFullYear();
   return `RFD-${year}-${String(counter.seq).padStart(6, '0')}`;
@@ -472,7 +473,11 @@ export async function getNextRefundNumber(schoolId) {
  * Reserving happens when the number is requested; cancelled forms may leave a
  * harmless gap, which is preferable to ever reusing a legal document number.
  */
-export async function getNextTransferCertificateNumber(schoolId, year = new Date().getFullYear()) {
+export async function getNextTransferCertificateNumber(
+  schoolId,
+  year = new Date().getFullYear(),
+  session = null
+) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate transfer certificate number');
   }
@@ -483,30 +488,33 @@ export async function getNextTransferCertificateNumber(schoolId, year = new Date
   }
 
   const prefix = `TC-${normalizedYear}-`;
-  const [highest] = await StudentModel.aggregate([
-    {
-      $match: {
-        schoolId: new mongoose.Types.ObjectId(String(schoolId)),
-        'transferCertificate.tcNumber': { $regex: `^${prefix}\\d+$` },
+  const [highest] = await StudentModel.aggregate(
+    [
+      {
+        $match: {
+          schoolId: new mongoose.Types.ObjectId(String(schoolId)),
+          'transferCertificate.tcNumber': { $regex: `^${prefix}\\d+$` },
+        },
       },
-    },
-    {
-      $project: {
-        sequence: {
-          $convert: {
-            input: {
-              $arrayElemAt: [{ $split: ['$transferCertificate.tcNumber', '-'] }, -1],
+      {
+        $project: {
+          sequence: {
+            $convert: {
+              input: {
+                $arrayElemAt: [{ $split: ['$transferCertificate.tcNumber', '-'] }, -1],
+              },
+              to: 'int',
+              onError: 0,
+              onNull: 0,
             },
-            to: 'int',
-            onError: 0,
-            onNull: 0,
           },
         },
       },
-    },
-    { $sort: { sequence: -1 } },
-    { $limit: 1 },
-  ]);
+      { $sort: { sequence: -1 } },
+      { $limit: 1 },
+    ],
+    session ? { session } : undefined
+  );
 
   const highWaterMark = Math.max(0, highest?.sequence || 0);
 
@@ -514,18 +522,18 @@ export async function getNextTransferCertificateNumber(schoolId, year = new Date
   await CounterModel.findByIdAndUpdate(
     counterId,
     { $max: { seq: highWaterMark } },
-    { upsert: true, setDefaultsOnInsert: true }
+    { upsert: true, setDefaultsOnInsert: true, ...(session ? { session } : {}) }
   );
   const counter = await CounterModel.findByIdAndUpdate(
     counterId,
     { $inc: { seq: 1 } },
-    { new: true }
+    { new: true, ...(session ? { session } : {}) }
   );
 
   return `${prefix}${String(counter.seq).padStart(4, '0')}`;
 }
 
-export async function getNextAdmissionId(schoolId) {
+export async function getNextAdmissionId(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate admission ID');
   }
@@ -547,10 +555,14 @@ export async function getNextAdmissionId(schoolId) {
         lastResetDate: now,
       },
     },
-    { upsert: true }
+    { upsert: true, ...(session ? { session } : {}) }
   );
 
-  const current = await AdmissionIdConfigModel.findOne({ schoolId });
+  const current = await AdmissionIdConfigModel.findOne(
+    { schoolId },
+    undefined,
+    ...(session ? [{ session }] : [])
+  );
 
   const shouldReset =
     current.resetFrequency !== 'never' &&
@@ -566,7 +578,7 @@ export async function getNextAdmissionId(schoolId) {
     const resetResult = await AdmissionIdConfigModel.findOneAndUpdate(
       { schoolId, lastResetDate: current.lastResetDate },
       { $set: { currentNumber: current.startingNumber + 1, lastResetDate: now } },
-      { new: true }
+      { new: true, ...(session ? { session } : {}) }
     );
     if (resetResult) {
       config = resetResult;
@@ -574,14 +586,14 @@ export async function getNextAdmissionId(schoolId) {
       config = await AdmissionIdConfigModel.findOneAndUpdate(
         { schoolId },
         { $inc: { currentNumber: 1 } },
-        { new: true }
+        { new: true, ...(session ? { session } : {}) }
       );
     }
   } else {
     config = await AdmissionIdConfigModel.findOneAndUpdate(
       { schoolId },
       { $inc: { currentNumber: 1 } },
-      { new: true }
+      { new: true, ...(session ? { session } : {}) }
     );
   }
 

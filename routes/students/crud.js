@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import {
   Student,
   StudentFeeStructure,
@@ -25,6 +26,30 @@ import { authenticate } from '../../middleware/auth.js';
 import { objectIdParamHandler } from '../../middleware/validation.js';
 import { buildPaginationResponse } from '../../utils/pagination.js';
 import { validateZod, studentListQuerySchema } from '../../validators/index.js';
+
+/**
+ * Returns a shallow copy of `match` with `schoolId` cast to an ObjectId.
+ * [BUG-014/018] aggregate() does not apply Mongoose schema casting, so a
+ * $match built with the plain-string schoolId matches nothing. countDocuments
+ * and find() auto-cast and are unaffected — this is only needed for aggregates.
+ * Falls back to the original value if the id isn't a valid ObjectId string.
+ */
+function withCastedSchoolId(match) {
+  if (!match || typeof match !== 'object') return match;
+  // buildStudentListQuery returns either a flat conditions object or
+  // { $and: [ { schoolId }, ... ] } — handle BOTH shapes, since the schoolId
+  // may be nested in the $and array (the common multi-condition case).
+  if (Array.isArray(match.$and)) {
+    return { ...match, $and: match.$and.map((clause) => withCastedSchoolId(clause)) };
+  }
+  const raw = match.schoolId;
+  if (raw === undefined) return match;
+  const str = typeof raw === 'string' ? raw : raw?.toString?.();
+  if (str && /^[0-9a-fA-F]{24}$/.test(str)) {
+    return { ...match, schoolId: new mongoose.Types.ObjectId(str) };
+  }
+  return match;
+}
 
 const router = express.Router();
 router.use(authenticate);
@@ -85,7 +110,15 @@ router.get(
       const [total, statusCountsAgg] = await Promise.all([
         Student.countDocuments(query),
         Student.aggregate([
-          { $match: baseQuery },
+          {
+            // [BUG-014/018] aggregate() does NOT apply Mongoose schema casting,
+            // so a $match on the string schoolId (as built by
+            // buildStudentListQuery) matches zero documents and the header /
+            // filter badges report 0 while the table renders the real rows.
+            // Cast schoolId to ObjectId for the aggregate (the countDocuments
+            // path auto-casts and is unaffected). Same pattern as classes.js.
+            $match: withCastedSchoolId(baseQuery),
+          },
           { $group: { _id: '$status', count: { $sum: 1 } } },
         ]),
       ]);
@@ -160,6 +193,7 @@ router.get(
           ...(schoolId ? { schoolId } : {}),
           studentId: { $in: studentIds },
           academicYear: feeYear,
+          isDeleted: { $ne: true },
         }),
         Attendance.aggregate([
           {

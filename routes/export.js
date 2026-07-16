@@ -28,9 +28,9 @@ import { sendExport, sendStreamedExport } from '../services/exportService.js';
 import { featureGate } from '../middleware/featureGate.js';
 import {
   getFeeCollectionSummary,
-  getOutstandingDues,
-  getStudentAttendanceReport,
-  getRankList,
+  streamOutstandingDues,
+  streamStudentAttendanceReport,
+  streamRankList,
   getStaffAttendanceSummary,
   getClassResultsSummary,
   getStudentStrength,
@@ -273,27 +273,29 @@ router.get(
       const { format, academicYear, classId } = req.query;
       const schoolId = req.user.schoolId;
 
-      const data = await getOutstandingDues(schoolId, { academicYear, classId });
+      // [D8] Stream from a Mongoose cursor (streamOutstandingDues) so memory
+      // stays bounded regardless of school size. Replaces the previous array
+      // + 20k-row cap stopgap.
+      const cursor = streamOutstandingDues(schoolId, { academicYear, classId });
 
-      const rows = data.map((d) => ({
-        admissionId: d.studentId?.admissionId || '',
-        studentName: d.studentId?.name || '',
-        class: d.classId
-          ? `${d.classId.name}${d.classId.section ? ' - ' + d.classId.section : ''}`
-          : '',
-        totalFee: d.totalFee || 0,
-        paidAmount: d.totalPaid || 0,
-        balance: d.totalBalance || 0,
-        status: d.overallStatus || '',
-      }));
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `fee_defaulters_${today()}`,
         title: 'Fee Defaulters Report',
         sheetName: 'Defaulters',
         headers: FEE_DEFAULTERS_COLS,
-        rows,
+        cursor,
+        transform: (d) => ({
+          admissionId: d.studentId?.admissionId || '',
+          studentName: d.studentId?.name || '',
+          class: d.classId
+            ? `${d.classId.name}${d.classId.section ? ' - ' + d.classId.section : ''}`
+            : '',
+          totalFee: d.totalFee || 0,
+          paidAmount: d.totalPaid || 0,
+          balance: d.totalBalance || 0,
+          status: d.overallStatus || '',
+        }),
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -323,30 +325,32 @@ router.get(
       const { format, classId, startDate, endDate } = req.query;
       const schoolId = req.user.schoolId;
 
-      const data = await getStudentAttendanceReport(schoolId, {
+      // [D8] Stream from an aggregate cursor (streamStudentAttendanceReport)
+      // so memory stays bounded. Replaces the previous array + 20k-row cap
+      // stopgap. The cursor yields already-normalized attendance rows.
+      const cursor = streamStudentAttendanceReport(schoolId, {
         classId,
         startDate,
         endDate,
       });
 
-      const rows = data.map((d) => ({
-        studentName: d.studentName || '',
-        admissionId: d.admissionId || '',
-        class: d.className ? `${d.className}${d.classSection ? ' - ' + d.classSection : ''}` : '',
-        present: d.present || 0,
-        absent: d.absent || 0,
-        late: d.late || 0,
-        total: d.total || 0,
-        percentage: d.percentage != null ? `${d.percentage}%` : '0%',
-      }));
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `attendance_${today()}`,
         title: `Attendance Summary (${startDate} to ${endDate})`,
         sheetName: 'Attendance',
         headers: ATTENDANCE_COLS,
-        rows,
+        cursor,
+        transform: (d) => ({
+          studentName: d.studentName || '',
+          admissionId: d.admissionId || '',
+          class: d.className ? `${d.className}${d.classSection ? ' - ' + d.classSection : ''}` : '',
+          present: d.present || 0,
+          absent: d.absent || 0,
+          late: d.late || 0,
+          total: d.total || 0,
+          percentage: d.percentage != null ? `${d.percentage}%` : '0%',
+        }),
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -377,29 +381,35 @@ router.get(
       const { format, examId, classId, academicYear } = req.query;
       const schoolId = req.user.schoolId;
 
-      const data = await getRankList(schoolId, { examId, classId, academicYear });
+      // [D8] Stream from a Mongoose cursor (streamRankList) so memory stays
+      // bounded. Replaces the previous array + 20k-row cap stopgap. The
+      // cursor yields Result docs already sorted by percentage desc.
+      const cursor = streamRankList(schoolId, { examId, classId, academicYear });
+      let rankIdx = 0;
 
-      const rows = data.map((d, idx) => ({
-        rank: d.rank || idx + 1,
-        admissionId: d.studentId?.admissionId || '',
-        studentName: d.studentId?.name || '',
-        class: d.classId
-          ? `${d.classId.name}${d.classId.section ? ' - ' + d.classId.section : ''}`
-          : '',
-        marksObtained: d.totalMarksObtained || 0,
-        maxMarks: d.totalMaxMarks || 0,
-        percentage: d.percentage != null ? `${d.percentage}%` : '0%',
-        grade: d.grade || '',
-        status: d.status || '',
-      }));
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `exam_results_${today()}`,
         title: 'Exam Results',
         sheetName: 'Results',
         headers: EXAM_RESULTS_COLS,
-        rows,
+        cursor,
+        transform: (d) => {
+          rankIdx++;
+          return {
+            rank: d.rank || rankIdx,
+            admissionId: d.studentId?.admissionId || '',
+            studentName: d.studentId?.name || '',
+            class: d.classId
+              ? `${d.classId.name}${d.classId.section ? ' - ' + d.classId.section : ''}`
+              : '',
+            marksObtained: d.totalMarksObtained || 0,
+            maxMarks: d.totalMaxMarks || 0,
+            percentage: d.percentage != null ? `${d.percentage}%` : '0%',
+            grade: d.grade || '',
+            status: d.status || '',
+          };
+        },
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -439,35 +449,39 @@ router.get(
       ).lean();
       const staffIds = schoolStaff.map((s) => s._id);
 
-      const records = await PayrollRecord.find({
+      // [D8] Stream payroll rows from a cursor instead of loading the whole
+      // result set into memory. The PayrollRecord query is ours (unlike the
+      // reportService-backed exports), so it converts cleanly to a cursor +
+      // sendStreamedExport, matching /export/students and /export/staff.
+      const cursor = PayrollRecord.find({
         employeeId: { $in: staffIds },
         month: parseInt(month),
         year: parseInt(year),
       })
         .populate('employeeId', 'name code department')
-        .lean();
+        .lean()
+        .cursor();
 
-      const rows = records.map((r) => ({
-        employeeCode: r.employeeId?.code || '',
-        name: r.employeeId?.name || '',
-        department: r.employeeId?.department || '',
-        month: r.month,
-        year: r.year,
-        baseSalary: r.baseSalary || 0,
-        totalAllowances: r.totalAllowances || 0,
-        totalDeductions: r.totalDeductions || 0,
-        grossPay: r.grossPay || 0,
-        netPay: r.netPay || 0,
-        status: r.status || '',
-      }));
-
-      await sendExport(res, {
+      await sendStreamedExport(res, {
         format,
         filename: `payroll_${year}_${month}_${today()}`,
         title: `Payroll Summary — ${month}/${year}`,
         sheetName: 'Payroll',
         headers: PAYROLL_COLS,
-        rows,
+        cursor,
+        transform: (r) => ({
+          employeeCode: r.employeeId?.code || '',
+          name: r.employeeId?.name || '',
+          department: r.employeeId?.department || '',
+          month: r.month,
+          year: r.year,
+          baseSalary: r.baseSalary || 0,
+          totalAllowances: r.totalAllowances || 0,
+          totalDeductions: r.totalDeductions || 0,
+          grossPay: r.grossPay || 0,
+          netPay: r.netPay || 0,
+          status: r.status || '',
+        }),
       });
     } catch (err) {
       res.status(500).json({ error: err.message });

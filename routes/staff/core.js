@@ -9,6 +9,11 @@ import { validateZod, createStaffSchema, updateStaffSchema } from '../../validat
 import { syncUsageMetrics } from '../../services/billingService.js';
 import { planLimitGate } from '../../middleware/auth/planLimitGate.js';
 import { archiveStaff, StaffNotFoundError } from '../../services/staffArchiveService.js';
+// P7: deactivate recurring salary adjustments on soft-delete. Imported directly
+// from the model (not re-exported by database.js) — the model file itself is
+// owned by the Payroll agent, but importing it read-only is safe and keeps the
+// cascade inside the staff delete handler per the issue split.
+import SalaryAdjustment from '../../models/SalaryAdjustment.js';
 import { dispatchWebhookEvent } from '../../services/webhookService.js';
 import { sendWelcomeEmail } from '../../services/emailService.js';
 import { sendSMS } from '../../config/sms.js';
@@ -341,18 +346,26 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
       // Status is the tab being counted, so keep every other active filter
       // while excluding only status itself.
       const aggregateBase = aggregationQueryFromResult(resultQuery, 'status');
-      const [presentTodayIds, onLeaveIds, inactiveCount] = await Promise.all([
-        StaffAttendance.find(scopeBySchool(schoolId, { date: today, status: 'present' }))
-          .select('staffId')
-          .lean(),
-        StaffAttendance.find(scopeBySchool(schoolId, { date: today, status: 'leave' }))
-          .select('staffId')
-          .lean(),
-        Staff.countDocuments({
-          ...aggregateBase,
-          status: { $in: ['inactive', 'suspended', 'terminated'] },
-        }),
-      ]);
+      // `inactive` stays bundled (inactive+suspended+terminated): the
+      // dashboard derives the "Active" tab count as `total - inactive`, so
+      // unbundling it here would over-count active. The finer-grained
+      // `suspended` / `terminated` facets are exposed separately (ST8 polish)
+      // so their pills can show real numbers alongside the bundled total.
+      const [presentTodayIds, onLeaveIds, inactiveCount, suspendedCount, terminatedCount] =
+        await Promise.all([
+          StaffAttendance.find(scopeBySchool(schoolId, { date: today, status: 'present' }))
+            .select('staffId')
+            .lean(),
+          StaffAttendance.find(scopeBySchool(schoolId, { date: today, status: 'leave' }))
+            .select('staffId')
+            .lean(),
+          Staff.countDocuments({
+            ...aggregateBase,
+            status: { $in: ['inactive', 'suspended', 'terminated'] },
+          }),
+          Staff.countDocuments({ ...aggregateBase, status: 'suspended' }),
+          Staff.countDocuments({ ...aggregateBase, status: 'terminated' }),
+        ]);
       const presentTodaySet = new Set(presentTodayIds.map((record) => String(record.staffId)));
       const onLeaveSet = new Set(onLeaveIds.map((record) => String(record.staffId)));
       // Present/leave counts are bounded by the filtered roster (the tab
@@ -369,6 +382,8 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
         presentToday,
         onLeave,
         inactive: inactiveCount,
+        suspended: suspendedCount,
+        terminated: terminatedCount,
         total: allFilteredIds.length,
       };
 
@@ -575,14 +590,15 @@ router.post(
       }
 
       // Fix 1.2/1.3: Pass schoolId for per-school atomic code generation
-      const code = await getNextStaffCode(schoolId);
-      const baseUsername = email ? email.split('@')[0].toLowerCase() : code.toLowerCase();
-      const username = await ensureUniqueUsername(baseUsername, schoolId);
+      // ST15: the staff code is generated as late as possible — inside the
+      // creation transaction, immediately before the save. `getNextStaffCode`
+      // (in database.js) now accepts an optional mongoose session, so its
+      // `findOneAndUpdate($inc)` participates in this transaction and is rolled
+      // back if the save/assignment fails — no more counter gaps (ST15).
       const password = generatePassword(8);
 
       let staff = new Staff({
         schoolId,
-        code,
         name,
         role: role || staffType,
         department: department || 'General',
@@ -591,7 +607,6 @@ router.post(
         email: email?.toLowerCase(),
         joinDate,
         address,
-        username,
         password,
         reporterId: reporterId || null,
         dob,
@@ -633,9 +648,23 @@ router.post(
       });
 
       let assignedClass = null;
+      // Declared in the outer scope so the generated code/username remain
+      // available for the post-commit response / SMS after the transaction.
+      let generatedCode = '';
+      let username = '';
       const creationSession = await mongoose.startSession();
       try {
         await creationSession.withTransaction(async (transactionSession) => {
+          // Generate code + username here (late as possible) and assign onto
+          // the in-memory instance before the transactional save.
+          generatedCode = await getNextStaffCode(schoolId, transactionSession);
+          const baseUsername = email
+            ? email.split('@')[0].toLowerCase()
+            : generatedCode.toLowerCase();
+          username = await ensureUniqueUsername(baseUsername, schoolId);
+          staff.code = generatedCode;
+          staff.username = username;
+
           await staff.save({ session: transactionSession });
           if (resolvedAssignedClassId) {
             assignedClass = await applyClassTeacherAssignment({
@@ -854,6 +883,21 @@ router.put(
         updateData.reporterId = reporterId || null;
       }
 
+      // ST7: when a salaryBreakdown is supplied on edit, keep `salary` in sync
+      // with the sum of its components — unless the caller explicitly sent a
+      // `salary` value (which wins). Previously the payroll base was never
+      // recomputed, so editing breakdown components left `salary` stale.
+      if (Array.isArray(salaryBreakdown) && salaryBreakdown.length > 0) {
+        updateData.salaryBreakdown = salaryBreakdown;
+        if (salary === undefined) {
+          const total = salaryBreakdown.reduce(
+            (sum, item) => sum + (parseFloat(item?.amount) || 0),
+            0
+          );
+          updateData.salary = total;
+        }
+      }
+
       Object.keys(updateData).forEach((key) => {
         if (updateData[key] === undefined) {
           delete updateData[key];
@@ -998,6 +1042,17 @@ router.delete('/:id', checkPermission('staff', 'delete'), async (req, res) => {
     // Archival has committed at this point. A metrics outage must not report
     // failure and prompt a retry against an already-archived account.
     if (staff.schoolId) syncUsageMetrics(staff.schoolId).catch(() => {});
+
+    // P7: cascade-deactivate recurring salary adjustments so future payroll
+    // runs stop applying them for this (now archived) employee. Best-effort —
+    // historical PayrollRecords are preserved; only the recurring template is
+    // turned off. The Payroll agent owns the payroll-run fetch filter side.
+    SalaryAdjustment.updateMany(
+      { employeeId: staff._id, isRecurring: true },
+      { $set: { isActive: false } }
+    ).catch((err) =>
+      console.error('Failed to deactivate recurring salary adjustments on staff delete:', err)
+    );
 
     res.json({ success: true });
   } catch (error) {

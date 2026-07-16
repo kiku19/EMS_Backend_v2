@@ -70,6 +70,100 @@ function resolveStaffMonthlySalary(employee) {
   return Number.isFinite(configured) && configured >= 0 ? configured : 0;
 }
 
+// P4: Expand Staff.salaryBreakdown (and the linked SalaryTemplate shape) into
+// payroll components. Staff.salaryBreakdown / SalaryTemplate.breakdown is a flat
+// `[{ component: String, amount: Number }]` list with NO earning/deduction type
+// discriminator, so we classify by the component name: known statutory /
+// deduction keywords become deductions, everything else is treated as an
+// earning. Of the earnings, a component named "Basic" (the convention) becomes
+// the record's baseSalary; the remaining earnings become allowances. This lets
+// a salary structure defined as components flow through to the payslip instead
+// of being collapsed into a single flat baseSalary number.
+//
+// Returns { baseSalary, allowances, deductions } where allowances/deductions
+// are arrays of { type, amount, description }. Returns null when no usable
+// breakdown exists, so the caller falls back to the flat Staff.salary path.
+const BASIC_COMPONENT_ALIASES = new Set(['basic', 'basic salary', 'basic pay', 'basic wages']);
+const DEDUCTION_KEYWORDS = [
+  'pf',
+  'provident fund',
+  'epf',
+  'esi',
+  'esic',
+  'tds',
+  'tax',
+  'income tax',
+  'professional tax',
+  'pt ',
+  ' loan',
+  'advance',
+  'deduction',
+];
+function isDeductionComponent(name) {
+  const lower = String(name || '')
+    .trim()
+    .toLowerCase();
+  return DEDUCTION_KEYWORDS.some((kw) => lower === kw.trim() || lower.includes(kw));
+}
+function expandSalaryBreakdown(employee) {
+  const breakdown = employee?.salaryBreakdown;
+  if (!Array.isArray(breakdown) || breakdown.length === 0) return null;
+
+  let baseSalary = 0;
+  const allowances = [];
+  const deductions = [];
+  let hasBasic = false;
+
+  for (const item of breakdown) {
+    const name = String(item?.component || '').trim();
+    const amount = Number(item?.amount) || 0;
+    if (!name || amount === 0) continue;
+
+    if (isDeductionComponent(name)) {
+      deductions.push({
+        type: name,
+        amount: Math.abs(amount),
+        description: 'Salary structure component',
+      });
+      continue;
+    }
+
+    if (!hasBasic && BASIC_COMPONENT_ALIASES.has(name.toLowerCase())) {
+      baseSalary = amount;
+      hasBasic = true;
+      continue;
+    }
+
+    allowances.push({
+      type: name,
+      amount: Math.abs(amount),
+      description: 'Salary structure component',
+    });
+  }
+
+  // If the structure had no explicit "Basic", fall back to the sum of earnings
+  // being treated as baseSalary so the gross math still balances. Earnings that
+  // we cannot bucket as Basic collapse into a single baseSalary figure
+  // (allowances stays empty) to avoid double-counting against the gross.
+  if (!hasBasic) {
+    const earningsTotal = baseSalary + allowances.reduce((s, a) => s + a.amount, 0);
+    if (earningsTotal <= 0) return null;
+    return {
+      baseSalary: Math.round(earningsTotal * 100) / 100,
+      allowances: [],
+      deductions,
+      __source: 'breakdown-no-basic',
+    };
+  }
+
+  return {
+    baseSalary: Math.round(baseSalary * 100) / 100,
+    allowances,
+    deductions,
+    __source: 'breakdown',
+  };
+}
+
 const PAYROLL_LOCK_DURATION_MS = 30 * 60 * 1000;
 
 class PayrollRunLockedError extends Error {
@@ -362,6 +456,248 @@ function summarizeAttendance(records, workingDateKeys) {
   return summary;
 }
 
+// P8: Shared per-employee payroll computation. Both the /run loop and
+// recomputeLOPForStaff() call this so leave/attendance-based (LOP) math stays
+// identical between an initial run and a post-attendance-change recompute.
+//
+// Inputs are the already-loaded slices for ONE employee:
+//   - employee       : Staff doc (needs salary/salaryBreakdown/employmentType)
+//   - adjustments    : SalaryAdjustment[] (type 'allowance' | 'deduction')
+//   - leaves         : TeacherLeave[] (approved)
+//   - attendanceDocs : StaffAttendance[] for the period
+//   - payrollCalendar: from buildPayrollCalendar()
+//   - month, year    : the period
+// Returns { baseSalary, allowances, deductions, totalAllowances,
+//           totalDeductions, grossPay, netPay } or throws if netPay < 0.
+function computeEmployeeComponents({
+  employee,
+  adjustments = [],
+  leaves = [],
+  attendanceDocs = [],
+  payrollCalendar,
+  month,
+  year,
+}) {
+  const expanded = expandSalaryBreakdown(employee);
+  const configuredSalary = resolveStaffMonthlySalary(employee);
+  const baseSalary = expanded ? expanded.baseSalary : configuredSalary;
+
+  const allowances = expanded ? expanded.allowances.slice() : [];
+  for (const a of adjustments) {
+    if (a.type === 'allowance') {
+      allowances.push({ type: a.category, amount: a.amount, description: a.description });
+    }
+  }
+
+  const deductions = expanded ? expanded.deductions.slice() : [];
+  for (const a of adjustments) {
+    if (a.type === 'deduction') {
+      deductions.push({ type: a.category, amount: a.amount, description: a.description });
+    }
+  }
+
+  const dailyRate = Math.round((baseSalary / (payrollCalendar.workingDayCount || 1)) * 100) / 100;
+
+  // 1. Leave deductions (LOP) from approved unpaid leaves.
+  const hasManualLeaveDeduction = deductions.some(
+    (d) =>
+      String(d.type || '')
+        .trim()
+        .toLowerCase() === 'leave deduction'
+  );
+  if (!hasManualLeaveDeduction) {
+    const leaveDays = countUnpaidWorkingLeaveDays(leaves, month, year, payrollCalendar);
+    if (leaveDays > 0) {
+      const leaveAmount = Math.round(dailyRate * leaveDays * 100) / 100;
+      deductions.push({
+        type: 'Leave Deduction',
+        amount: leaveAmount,
+        description: `${leaveDays} unpaid working leave day(s) @ ${dailyRate.toFixed(2)}/day`,
+      });
+    }
+  }
+
+  // 2. Part-time attendance-based deductions + overtime.
+  if (normalizeEmploymentType(employee.employmentType) === 'part_time') {
+    const attendance = summarizeAttendance(attendanceDocs, payrollCalendar.workingDateKeys);
+    if (attendance.total > 0) {
+      const absentDays = attendance.absent;
+      if (absentDays > 0) {
+        const hasManualAbsentDeduction = deductions.some(
+          (d) =>
+            String(d.type || '')
+              .trim()
+              .toLowerCase() === 'absent deduction'
+        );
+        if (!hasManualAbsentDeduction) {
+          const absentAmount = Math.round(dailyRate * absentDays * 100) / 100;
+          deductions.push({
+            type: 'Absent Deduction',
+            amount: absentAmount,
+            description: `Part-time: ${absentDays} absent day(s) @ ${dailyRate.toFixed(2)}/day`,
+          });
+        }
+      }
+
+      const halfdayCount = attendance.halfday;
+      if (halfdayCount > 0) {
+        const halfdayAmount = Math.round(dailyRate * 0.5 * halfdayCount * 100) / 100;
+        deductions.push({
+          type: 'Half-day Deduction',
+          amount: halfdayAmount,
+          description: `Part-time: ${halfdayCount} half-day(s) @ ${(dailyRate * 0.5).toFixed(2)}/day`,
+        });
+      }
+
+      const overtimeRate = dailyRate * 1.5;
+      const expectedWorkingDays = payrollCalendar.workingDayCount || 0;
+      const actualWorkedDays = attendance.present + attendance.halfday * 0.5;
+      if (actualWorkedDays > expectedWorkingDays && expectedWorkingDays > 0) {
+        const overtimeDays = actualWorkedDays - expectedWorkingDays;
+        const overtimeAmount = Math.round(overtimeRate * overtimeDays * 100) / 100;
+        const hasManualOvertime = allowances.some((a) =>
+          String(a.type || '')
+            .toLowerCase()
+            .includes('overtime')
+        );
+        if (!hasManualOvertime) {
+          allowances.push({
+            type: 'Overtime',
+            amount: overtimeAmount,
+            description: `Part-time: ${overtimeDays} overtime day(s) @ ${overtimeRate.toFixed(2)}/day (1.5x)`,
+          });
+        }
+      }
+    }
+  }
+
+  const totalAllowances = allowances.reduce((sum, a) => sum + a.amount, 0);
+  const totalDeductions = deductions.reduce((sum, d) => sum + d.amount, 0);
+  const grossPay = baseSalary + totalAllowances;
+  const netPay = grossPay - totalDeductions;
+  if (netPay < 0) {
+    const err = new Error(`Deductions (${totalDeductions}) exceed gross pay (${grossPay})`);
+    err.code = 'NEGATIVE_NET_PAY';
+    throw err;
+  }
+
+  return {
+    baseSalary,
+    allowances,
+    deductions,
+    totalAllowances,
+    totalDeductions,
+    grossPay,
+    netPay,
+  };
+}
+
+// P8: Recompute LOP (and the rest of the auto-derived components) for a single
+// employee+period AFTER attendance or leaves have changed following a payroll
+// run. This is the payroll half of the cross-agent P8 follow-up: the
+// staffAttendance / teacherLeaves agents should invoke this (or the internal
+// /recompute-lop endpoint below) when they mutate data that affects an already
+// generated PayrollRecord. It refuses to touch locked/paid records.
+// Returns the updated record or null if no record / record locked.
+// `performedBy` (optional ObjectId) is stamped on the audit entry; when omitted
+// (e.g. an in-process call from the attendance/leave routes without a user
+// context) the recomputed employee's own id is recorded so the audit row still
+// satisfies the schema's required-field constraint and is traceable.
+async function recomputeLOPForStaff(employeeId, month, year, { schoolId, performedBy } = {}) {
+  if (!employeeId || !month || !year || !schoolId) {
+    throw new Error('recomputeLOPForStaff requires employeeId, month, year, schoolId');
+  }
+
+  const record = await PayrollRecord.findOne({ schoolId, employeeId, month, year });
+  if (!record) return null;
+  // Never silently rewrite a paid/locked record — that would alter bank-statement
+  // history. The caller must reverse the payment first, then recompute.
+  if (record.isLocked || record.status === 'paid') {
+    return { skipped: 'record_is_paid_or_locked', record };
+  }
+
+  const schoolSettings = await SchoolSettings.findOne({ schoolId }).lean();
+  const payrollCalendar = buildPayrollCalendar(schoolSettings, month, year);
+  if (payrollCalendar.workingDayCount === 0) {
+    return { skipped: 'no_working_days_configured', record };
+  }
+
+  const employee = await Staff.findOne(
+    { _id: employeeId, schoolId },
+    'name salary salaryBreakdown employmentType _id code'
+  ).lean();
+  if (!employee) return null;
+
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const monthEnd = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+  const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
+
+  const [adjustments, leaves, attendance] = await Promise.all([
+    SalaryAdjustment.find({
+      schoolId,
+      employeeId,
+      isActive: true,
+      $or: [
+        { isRecurring: { $ne: true }, effectiveMonth: month, effectiveYear: year },
+        {
+          isRecurring: true,
+          $or: [
+            { effectiveYear: { $lt: year } },
+            { effectiveYear: year, effectiveMonth: { $lte: month } },
+          ],
+        },
+      ],
+    }).lean(),
+    TeacherLeave.find({
+      schoolId,
+      teacherId: employeeId,
+      status: 'approved',
+      startDate: { $lte: monthEnd },
+      endDate: { $gte: monthStart },
+    }).lean(),
+    StaffAttendance.find({
+      schoolId,
+      staffId: employeeId,
+      date: { $regex: `^${monthPrefix}` },
+    }).lean(),
+  ]);
+
+  const computed = computeEmployeeComponents({
+    employee,
+    adjustments,
+    leaves,
+    attendanceDocs: attendance,
+    payrollCalendar,
+    month,
+    year,
+  });
+
+  record.baseSalary = computed.baseSalary;
+  record.allowances = computed.allowances;
+  record.deductions = computed.deductions;
+  record.totalAllowances = computed.totalAllowances;
+  record.totalDeductions = computed.totalDeductions;
+  record.grossPay = computed.grossPay;
+  record.netPay = computed.netPay;
+  record.employmentType = normalizeEmploymentType(employee.employmentType);
+  // Recompute keeps the record in 'generated' (still unpaid). status unchanged
+  // if it was already generated/on_hold.
+  await record.save();
+  await syncPayrollRunTotals(schoolId, month, year);
+
+  await logAudit({
+    schoolId,
+    entityType: 'PayrollRecord',
+    entityId: record._id,
+    action: 'record_lop_recomputed',
+    performedBy: performedBy || employeeId,
+    context: { month, year, employeeId, trigger: 'attendance_or_leave_change' },
+    status: 'success',
+  });
+
+  return record;
+}
+
 // Get payroll dashboard KPIs
 router.get('/dashboard/:month/:year', checkPermission('payroll', 'view'), async (req, res) => {
   try {
@@ -379,11 +715,16 @@ router.get('/dashboard/:month/:year', checkPermission('payroll', 'view'), async 
 
     // Calculate KPIs
     const totalPayout = records.reduce((sum, r) => sum + (r.status === 'paid' ? r.netPay : 0), 0);
+    // "Pending" must mirror syncPayrollRunTotals (generated + on_hold). The
+    // previous status === 'generated' filter counted on_hold records as unpaid
+    // (excluded from totalPayout) but NOT pending, so a held payout vanished
+    // from every KPI and the dashboard understated the outstanding amount.
+    const pendingStatuses = ['generated', 'on_hold'];
     const pendingAmount = records.reduce(
-      (sum, r) => sum + (r.status === 'generated' ? r.netPay : 0),
+      (sum, r) => sum + (pendingStatuses.includes(r.status) ? r.netPay : 0),
       0
     );
-    const pendingCount = records.filter((r) => r.status === 'generated').length;
+    const pendingCount = records.filter((r) => pendingStatuses.includes(r.status)).length;
     const paidCount = records.filter((r) => r.status === 'paid').length;
     const unpaidCount = records.filter((r) => r.status !== 'paid').length;
     const totalEmployees = records.length;
@@ -617,6 +958,19 @@ router.post(
   }
 );
 
+// ─── STATUTORY DEDUCTIONS — KNOWN LIMITATION (P12) ──────────────────────────
+// This payroll run does NOT compute statutory/tax deductions automatically.
+// TDS (income tax), PF (Provident Fund), ESI, and Professional Tax are NOT
+// derived here. They are only applied when an admin creates an explicit
+// SalaryAdjustment (type 'deduction') for the employee/period, which is then
+// picked up by the `deductions` mapping below. Implementing accurate statutory
+// math requires regime-aware rules, statutory declaration data (investments,
+// rent, previous-employer income), PF/ESI wage ceilings and per-state PT
+// slabs — out of scope for this fix. Treat all statutory deductions as MANUAL
+// via SalaryAdjustments until a dedicated tax engine is built.
+// Marked: DOCUMENTED (per P12 instructions — do not implement tax math here).
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Run payroll for a month - Admin only (CRITICAL)
 router.post(
   '/run',
@@ -713,9 +1067,13 @@ router.post(
         }
       }
 
-      // FIXED: Fetch staff data from database with salary field
+      // FIXED: Fetch staff data from database with salary field.
+      // Exclude soft-deleted staff (P7): the Staff agent's delete cascade sets
+      // SalaryAdjustment.isActive=false but leaves the staff doc present, so
+      // without `isDeleted: { $ne: true }` a deleted employee could be pulled
+      // back into a payroll run via an explicit employeeIds payload.
       const staffFromDB = await Staff.find(
-        { _id: { $in: validIds }, schoolId: req.user?.schoolId },
+        { _id: { $in: validIds }, schoolId: req.user?.schoolId, isDeleted: { $ne: true } },
         'name salary salaryBreakdown employmentType _id code'
       );
       const staffById = new Map(staffFromDB.map((employee) => [String(employee._id), employee]));
@@ -812,122 +1170,40 @@ router.post(
           // adjustments whose effective date is on or before this month
           const adjustments = adjustmentsByEmployee.get(String(empId)) || [];
 
-          const allowances = adjustments
-            .filter((a) => a.type === 'allowance')
-            .map((a) => ({
-              type: a.category,
-              amount: a.amount,
-              description: a.description,
-            }));
-
-          const deductions = adjustments
-            .filter((a) => a.type === 'deduction')
-            .map((a) => ({
-              type: a.category,
-              amount: a.amount,
-              description: a.description,
-            }));
-
-          // --- Auto-calculate leave & attendance-based adjustments ---
-          const baseSalary = configuredSalary;
-          const dailyRate = Math.round((baseSalary / payrollCalendar.workingDayCount) * 100) / 100;
-
-          // 1. Leave deductions from approved TeacherLeave records.
-          // Exact-match the auto type (case-insensitive) — the previous
-          // substring include('leave') suppressed the auto-deduction when an
-          // unrelated line item ('Sick Leave Claim', 'Leave Travel Bonus',
-          // etc.) happened to contain the word "leave".
-          const hasManualLeaveDeduction = deductions.some(
-            (d) =>
-              String(d.type || '')
-                .trim()
-                .toLowerCase() === 'leave deduction'
-          );
-          if (!hasManualLeaveDeduction) {
-            const leaveDays = countUnpaidWorkingLeaveDays(
-              leavesByEmployee.get(String(empId)) || [],
+          // Compute the full component breakdown (baseSalary + allowances +
+          // deductions + totals) via the shared helper so this run and
+          // recomputeLOPForStaff() stay identical. Includes P4 breakdown
+          // expansion and P3 overtime (against workingDayCount) + leave/absent/
+          // half-day (LOP) auto-derivation.
+          let computed;
+          try {
+            computed = computeEmployeeComponents({
+              employee,
+              adjustments,
+              leaves: leavesByEmployee.get(String(empId)) || [],
+              attendanceDocs: attendanceByEmployee.get(String(empId)) || [],
+              payrollCalendar,
               month,
               year,
-              payrollCalendar
-            );
-            if (leaveDays > 0) {
-              const leaveAmount = Math.round(dailyRate * leaveDays * 100) / 100;
-              deductions.push({
-                type: 'Leave Deduction',
-                amount: leaveAmount,
-                description: `${leaveDays} unpaid working leave day(s) @ ${dailyRate.toFixed(2)}/day`,
-              });
-            }
+            });
+          } catch (componentError) {
+            results.failed.push({
+              employeeId: empId,
+              name: employee.name,
+              reason: componentError.message,
+            });
+            continue;
           }
 
-          // 2. Part-time staff: deduct for absent days based on attendance
-          if (normalizeEmploymentType(employee.employmentType) === 'part_time') {
-            const attendance = summarizeAttendance(
-              attendanceByEmployee.get(String(empId)) || [],
-              payrollCalendar.workingDateKeys
-            );
-            if (attendance.total > 0) {
-              // Deduct for absent days (leave days already handled above)
-              const absentDays = attendance.absent;
-              if (absentDays > 0) {
-                // Exact-match "absent deduction" so unrelated line items
-                // mentioning "absent" don't silently suppress the
-                // attendance-based auto deduction.
-                const hasManualAbsentDeduction = deductions.some(
-                  (d) =>
-                    String(d.type || '')
-                      .trim()
-                      .toLowerCase() === 'absent deduction'
-                );
-                if (!hasManualAbsentDeduction) {
-                  const absentAmount = Math.round(dailyRate * absentDays * 100) / 100;
-                  deductions.push({
-                    type: 'Absent Deduction',
-                    amount: absentAmount,
-                    description: `Part-time: ${absentDays} absent day(s) @ ${dailyRate.toFixed(2)}/day`,
-                  });
-                }
-              }
-
-              // Half-day deductions
-              const halfdayCount = attendance.halfday;
-              if (halfdayCount > 0) {
-                const halfdayAmount = Math.round(dailyRate * 0.5 * halfdayCount * 100) / 100;
-                deductions.push({
-                  type: 'Half-day Deduction',
-                  amount: halfdayAmount,
-                  description: `Part-time: ${halfdayCount} half-day(s) @ ${(dailyRate * 0.5).toFixed(2)}/day`,
-                });
-              }
-
-              // Overtime: extra present days beyond expected working days (add as allowance)
-              // Standard working days = total attendance days marked (school decides which days to mark)
-              // If staff has more present days than expected, treat excess as overtime
-              const overtimeRate = dailyRate * 1.5; // 1.5x daily rate for overtime
-              const expectedWorkingDays = attendance.total - attendance.leave; // exclude approved leave days
-              const actualWorkedDays = attendance.present + attendance.halfday * 0.5;
-              if (actualWorkedDays > expectedWorkingDays && expectedWorkingDays > 0) {
-                const overtimeDays = actualWorkedDays - expectedWorkingDays;
-                const overtimeAmount = Math.round(overtimeRate * overtimeDays * 100) / 100;
-                const hasManualOvertime = allowances.some((a) =>
-                  a.type.toLowerCase().includes('overtime')
-                );
-                if (!hasManualOvertime) {
-                  allowances.push({
-                    type: 'Overtime',
-                    amount: overtimeAmount,
-                    description: `Part-time: ${overtimeDays} overtime day(s) @ ${overtimeRate.toFixed(2)}/day (1.5x)`,
-                  });
-                }
-              }
-            }
-          }
-
-          // Calculate totals explicitly
-          const totalAllowances = allowances.reduce((sum, a) => sum + a.amount, 0);
-          const totalDeductions = deductions.reduce((sum, d) => sum + d.amount, 0);
-          const grossPay = baseSalary + totalAllowances;
-          const netPay = grossPay - totalDeductions;
+          const {
+            baseSalary,
+            allowances,
+            deductions,
+            totalAllowances,
+            totalDeductions,
+            grossPay,
+            netPay,
+          } = computed;
           if (netPay < 0) {
             results.failed.push({
               employeeId: empId,
@@ -1257,13 +1533,38 @@ router.put(
       // safely corrected in-app.
       record.status = 'generated';
       record.paymentDate = null;
-      record.paymentMethod = undefined;
-      record.paymentReference = undefined;
       record.isLocked = false;
       record.lockedAt = null;
       record.paidBy = null;
 
+      // P1: Clear the payment-method fields unambiguously. In Mongoose 8.x the
+      // only reliable ways to $unset a schema path on an existing doc are:
+      //   (a) assign `undefined` to a path that is SELECTED + modified, which
+      //       $__delta() then converts to $unset; OR
+      //   (b) an explicit updateOne({ $unset: {...} }).
+      // `delete record.paymentMethod` is a no-op on a Mongoose document (the
+      // getter/setter on the prototype is not invoked, so _doc keeps the value),
+      // and assigning `null` persists an explicit null rather than removing the
+      // field. We additionally use updateOne($unset) so the DB row is cleared
+      // regardless of any default-reapplication subtlety (paymentMethod has a
+      // schema default of 'bank_transfer' — on the next read Mongoose would
+      // otherwise synthesise that default even though Mongo held nothing).
+      record.paymentMethod = undefined;
+      record.paymentReference = undefined;
+      // Mark these two explicitly so save()'s delta emits $unset for them even
+      // if some upstream projection skipped the change-tracking mark.
+      if (record.isModified('paymentMethod') === false) record.markModified('paymentMethod');
+      if (record.isModified('paymentReference') === false) record.markModified('paymentReference');
+
       await record.save();
+
+      // Belt-and-suspenders: a direct $unset guarantees the fields are gone in
+      // the persisted document, independent of Mongoose's undefined-handling
+      // quirks across versions/strict modes.
+      await PayrollRecord.updateOne(
+        { _id: record._id },
+        { $unset: { paymentMethod: '', paymentReference: '' } }
+      );
       await syncPayrollRunTotals(req.user.schoolId, record.month, record.year);
 
       // Log audit
@@ -1743,10 +2044,12 @@ router.get('/audit-logs', checkPermission('payroll', 'view'), async (req, res) =
     const action = sanitizeQueryStr(req.query.action);
 
     const query = { schoolId: req.user.schoolId };
-    if (month || year) {
-      query['context.month'] = month;
-      query['context.year'] = year;
-    }
+    // Guard each filter independently. parseInt(undefined) is NaN, so the
+    // previous `if (month || year)` block wrote NaN for whichever param was
+    // omitted (e.g. supplying only year set context.month = NaN), zeroing
+    // the result set.
+    if (month) query['context.month'] = month;
+    if (year) query['context.year'] = year;
     if (employeeId) query['context.employeeId'] = employeeId;
     if (action) query.action = action;
 
@@ -1922,5 +2225,60 @@ router.delete(
     }
   }
 );
+
+// P8: Recompute LOP (and all auto-derived components) for one employee/period
+// after attendance or leave data has changed. This is the payroll half of the
+// cross-agent P8 fix: the staffAttendance / teacherLeaves routes (owned by
+// other agents) should call this endpoint — or import recomputeLOPForStaff
+// directly below — whenever they mutate data affecting an already-generated
+// PayrollRecord. It skips paid/locked records; callers must reverse the payment
+// first to recompute those. Kept under payroll:edit so only authorized users
+// (and trusted internal callers passing through auth) can trigger it.
+router.post(
+  '/recompute-lop/:employeeId/:month/:year',
+  checkPermission('payroll', 'edit'),
+  async (req, res) => {
+    try {
+      const { employeeId, month: monthParam, year: yearParam } = req.params;
+      const month = parseInt(monthParam, 10);
+      const year = parseInt(yearParam, 10);
+      if (!month || !year) {
+        return res.status(400).json({ success: false, error: 'Valid month and year are required' });
+      }
+      if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+        return res.status(400).json({ success: false, error: 'Invalid employeeId' });
+      }
+
+      const result = await recomputeLOPForStaff(employeeId, month, year, {
+        schoolId: req.user.schoolId,
+        performedBy: req.user._id,
+      });
+
+      if (result === null) {
+        return res.status(404).json({
+          success: false,
+          error: 'No payroll record found for this employee/period',
+        });
+      }
+      if (result.skipped) {
+        return res.status(409).json({
+          success: false,
+          error: `Cannot recompute: ${result.skipped}`,
+          skipped: result.skipped,
+        });
+      }
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      console.error('Error recomputing LOP:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+);
+
+// Exported for in-process use by other modules (e.g. staffAttendance /
+// teacherLeaves routes) that need to recompute LOP after a data change without
+// going through HTTP. See P8 cross-agent follow-up.
+export { recomputeLOPForStaff, computeEmployeeComponents };
 
 export default router;

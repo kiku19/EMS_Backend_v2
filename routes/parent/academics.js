@@ -421,7 +421,12 @@ router.get('/students/:id/remarks', validateParentChildAccess, async (req, res) 
     }
 
     const Remark = (await import('../../models/Remark.js')).default;
-    const remarksQuery = { studentId: id, sentToParent: true, schoolId: req.schoolId };
+    const remarksQuery = {
+      studentId: id,
+      sentToParent: true,
+      schoolId: req.schoolId,
+      isDeleted: { $ne: true },
+    };
 
     const total = await Remark.countDocuments(remarksQuery);
     const remarks = await Remark.find(remarksQuery)

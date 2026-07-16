@@ -48,6 +48,13 @@ const feeRefundSchema = new mongoose.Schema(
     // Notes
     remarks: String,
     rejectionReason: String,
+
+    // Soft-delete — set when the owning Student is archived so this refund is
+    // hidden from every read path and restored on undo. Mirrors Student/
+    // Attendance/Result. Read sites MUST filter isDeleted: { $ne: true }.
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', default: null },
   },
   { timestamps: true }
 );

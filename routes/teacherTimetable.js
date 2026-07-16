@@ -500,7 +500,8 @@ router.post(
         oldClassId, // Exclude old class from conflict check
         false,
         schoolId,
-        academicYear
+        academicYear,
+        true // skipCache — write-path (class switch), must see freshest state (CT16)
       );
 
       if (conflict) {

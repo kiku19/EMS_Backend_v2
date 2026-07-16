@@ -10,7 +10,6 @@ EMS (Education Management System) — a multi-tenant SaaS platform for schools. 
 - **Dashboard**: `EMS/school-dashboard/` — React 19 + Vite 6 + Tailwind CSS 4 + HeroUI + TanStack Query
 - **Parent App**: `EMS/parent-app/` — React Native + Expo 52
 - **Staff App**: `EMS/staff-app/` — React Native + Expo 52
-- **Analytics**: `owlin-server/` — TypeScript Express + Turso/LibSQL
 
 ## Commands
 

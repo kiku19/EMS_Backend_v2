@@ -420,6 +420,7 @@ router.get(
               total: { $sum: 1 },
               present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
               late: { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
+              halfday: { $sum: { $cond: [{ $eq: ['$status', 'halfday'] }, 1, 0] } },
             },
           },
         ]),
@@ -442,19 +443,32 @@ router.get(
         ]),
       ]);
 
+      // Apply the SAME attendance formula the model static and /report use
+      // (present + late*lateWeight + halfday*0.5)/total. Previously this list
+      // view treated 'late' as 100% present and 'halfday' as 0%, so the class
+      // cards' attendance % disagreed with the per-student report for any
+      // school that configured a lateWeight below 100%. Load the weight once
+      // per request (cheap, single doc).
+      const attendanceSettings = await SchoolSettings.findOne(
+        scopeBySchool(req.user?.schoolId, {})
+      ).lean();
+      const lateW = (attendanceSettings?.attendanceRules?.lateWeight ?? 100) / 100;
+
       const studentCountMap = new Map(
         studentCountAgg.map((item) => [item._id.toString(), item.count])
       );
       const attendanceMap = new Map(
-        attendanceAgg.map((item) => [
-          item._id.toString(),
-          {
-            percentage:
-              item.total > 0 ? Math.round(((item.present + item.late) / item.total) * 100) : null,
-            marked: item.total,
-            present: item.present + item.late,
-          },
-        ])
+        attendanceAgg.map((item) => {
+          const effectivePresent = item.present + item.late * lateW + (item.halfday || 0) * 0.5;
+          return [
+            item._id.toString(),
+            {
+              percentage: item.total > 0 ? Math.round((effectivePresent / item.total) * 100) : null,
+              marked: item.total,
+              present: item.present + item.late,
+            },
+          ];
+        })
       );
       const academicMap = new Map(
         academicAgg.map((item) => [
@@ -467,6 +481,11 @@ router.get(
         id: cls._id.toString(),
         name: cls.name,
         section: cls.section,
+        // [BUG-030] Class display name for selectors/dropdowns. Without this,
+        // the Add-Staff "Assigned classes" dropdown fell back to the raw 24-char
+        // ObjectId (c.displayName || c.id) because the GET /classes response had
+        // no readable label. Matches the GET /classes/public handler's shape.
+        displayName: cls.section ? `${cls.name}-${cls.section}` : cls.name,
         subjects: cls.subjects,
         classTeacherId: cls.classTeacherId?._id?.toString(),
         classTeacherName: cls.classTeacherId?.name,
@@ -674,16 +693,18 @@ router.post(
         );
         for (const classDoc of createdClasses) {
           if (!classDoc.classTeacherId) continue;
-          await Staff.updateOne(
-            scopeBySchool(schoolId, { _id: classDoc.classTeacherId }),
-            {
-              $set: {
-                classTeacherOf: `${classDoc.name}-${classDoc.section}`,
-                isClassTeacher: true,
-              },
-            },
-            { session: transactionSession }
-          );
+          // Reuse the single-create helper so the Staff mirror is written the
+          // same way as POST /classes. oldTeacherId is null (fresh class), so
+          // only the new teacher's classTeacherOf/isClassTeacher are set — but
+          // routing through syncClassTeacherStaff keeps bulk and single paths
+          // identical and means any future field added to the mirror (e.g. a
+          // denormalized class name) lands in both places automatically.
+          await syncClassTeacherStaff({
+            oldTeacherId: null,
+            newTeacherId: classDoc.classTeacherId,
+            classDoc,
+            session: transactionSession,
+          });
         }
       });
 
@@ -725,6 +746,14 @@ router.post(
         return res.status(400).json({ error: 'School context is required' });
       }
       const session = await mongoose.startSession();
+      // Initialize assignedSubjects alongside subjects so new classes start
+      // with both fields populated together. Previously assignedSubjects was
+      // only written when explicitly supplied (length > 0), so a class created
+      // with just `subjects` had assignedSubjects = [] and the timetable
+      // wizard's "Assigned subjects" picker appeared empty until an admin
+      // manually mirrored it via PUT /:id/subjects.
+      const resolvedAssignedSubjects =
+        assignedSubjects && assignedSubjects.length > 0 ? assignedSubjects : subjects || [];
       const classDoc = new Class({
         name,
         section,
@@ -736,7 +765,7 @@ router.post(
         ...(room && { room }),
         ...(block && { block }),
         ...(classTag && { classTag }),
-        ...(assignedSubjects?.length && { assignedSubjects }),
+        assignedSubjects: resolvedAssignedSubjects,
       });
       try {
         await session.withTransaction(async (transactionSession) => {
@@ -886,7 +915,11 @@ router.put(
         const io = req.app.get('io');
         if (io) {
           emitEvent(io, EVENTS.CLASS_UPDATED, {
-            schoolId: req.user.schoolId?.toString(),
+            // Use the class doc's schoolId (always present) rather than
+            // req.user.schoolId?.toString() — super-admin / dev tokens can
+            // have no schoolId, which would emit a null schoolId and break
+            // the per-school socket room routing.
+            schoolId: previousClassForSocket.schoolId?.toString(),
             classId: previousClassForSocket._id.toString(),
             name: previousClassForSocket.name,
             section: previousClassForSocket.section,
@@ -922,7 +955,10 @@ router.put(
 
       const io = req.app.get('io');
       emitEvent(io, EVENTS.CLASS_UPDATED, {
-        schoolId: req.user.schoolId?.toString(),
+        // Use the class doc's schoolId (always present) instead of
+        // req.user.schoolId?.toString() — see the previousClassForSocket emit
+        // above for rationale.
+        schoolId: classDoc.schoolId?.toString(),
         classId: classDoc._id.toString(),
         name: classDoc.name,
         section: classDoc.section,
@@ -1307,7 +1343,11 @@ router.put(
 
       const io = req.app.get('io');
       emitEvent(io, EVENTS.CLASS_UPDATED, {
-        schoolId: req.user.schoolId?.toString(),
+        // Use the class doc's schoolId (always present) instead of
+        // req.user.schoolId?.toString() — super-admin / dev tokens can have
+        // no schoolId, which would emit a null schoolId and break per-school
+        // socket room routing.
+        schoolId: classDoc.schoolId?.toString(),
         classId: classDoc._id.toString(),
         name: classDoc.name,
         section: classDoc.section,
@@ -1350,6 +1390,39 @@ router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => 
       // fields on schemas that do not support them only creates invisible
       // orphans. Only a genuinely unused class may be archived.
       const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+      // TeacherTimetable has no soft-delete, so its schedule slots for this
+      // class used to make the dependency check below block FOREVER (the
+      // "teacher timetables" dependency could never be satisfied). Strip the
+      // class from every teacher's mirror first — mirrors the DELETE
+      // /timetable/:classId logic (routes/timetable.js). This is safe: the
+      // class's own Timetable (if any) still blocks deletion via the
+      // "timetables" dependency below; we're only dropping stale pointers.
+      const teacherTimetables = await TeacherTimetable.find(
+        scopeBySchool(schoolId, {
+          academicYear: classDoc.academicYear || CURRENT_ACADEMIC_YEAR,
+        })
+      ).session(transactionSession);
+      for (const teacherTimetable of teacherTimetables) {
+        let modified = false;
+        for (const day of days) {
+          const before = teacherTimetable.schedule?.[day]?.length || 0;
+          teacherTimetable.schedule[day] = (teacherTimetable.schedule?.[day] || []).filter(
+            (slot) => String(slot.classId) !== String(classId)
+          );
+          if (teacherTimetable.schedule[day].length !== before) modified = true;
+        }
+        if (modified) {
+          teacherTimetable.totalPeriodsPerWeek = days.reduce(
+            (sum, day) => sum + (teacherTimetable.schedule?.[day]?.length || 0),
+            0
+          );
+          teacherTimetable.version += 1;
+          teacherTimetable.lastSyncedAt = new Date();
+          teacherTimetable.markModified('schedule');
+          await teacherTimetable.save({ session: transactionSession });
+        }
+      }
       const dependencyQueries = [
         ['students', Student.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
         ['timetables', Timetable.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
@@ -1358,7 +1431,9 @@ router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => 
         ['attendance', Attendance.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
         [
           'fee structures',
-          StudentFeeStructure.findOne(scopeBySchool(schoolId, { classId })).select('_id'),
+          StudentFeeStructure.findOne(
+            scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } })
+          ).select('_id'),
         ],
         [
           'announcements',

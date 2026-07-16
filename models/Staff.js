@@ -39,7 +39,13 @@ const staffSchema = new mongoose.Schema(
     fatherName: String,
     bloodGroup: { type: String, enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] },
     maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'] },
-    employmentType: String,
+    // ST13: mirror the PayrollRecord.employmentType enum so a value saved on
+    // Staff can be copied verbatim into a PayrollRecord without validation
+    // rejection. Frontend `employmentTypes` already sends these exact values.
+    employmentType: {
+      type: String,
+      enum: ['full_time', 'part_time', 'contractor'],
+    },
     emergencyContact: String, // @deprecated - use emergencyContacts[] array instead
     emergencyPhone: String, // @deprecated - use emergencyContacts[] array instead
     emergencyContacts: [
@@ -201,6 +207,11 @@ staffSchema.pre('findOneAndUpdate', function (next) {
       update.$set.photo = update.$set.picture;
     } else if (update.$set.photo && !update.$set.picture) {
       update.$set.picture = update.$set.photo;
+    } else if (update.$set.picture === null) {
+      // ST10: useStaffPhoto.handleRemovePhoto sends { picture: null }. The
+      // branches above only run for truthy values, so `photo` was never
+      // cleared and the removed avatar kept re-appearing. Clear both.
+      update.$set.photo = null;
     }
   }
   next();

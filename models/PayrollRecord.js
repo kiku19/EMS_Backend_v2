@@ -92,6 +92,12 @@ const payrollRecordSchema = new mongoose.Schema(
       default: 'bank_transfer',
     },
     paymentReference: String,
+    // The shared batch reference a bulk-pay operation was issued with. Unlike
+    // paymentReference (made unique per record for bank reconciliation), this
+    // keeps the original user-supplied batch id so the whole batch can be
+    // audited together. P5: previously assigned in routes/payroll.js bulk-pay
+    // but silently dropped because strict:true had no matching path.
+    paymentBatchReference: String,
     isLocked: {
       type: Boolean,
       default: false,

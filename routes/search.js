@@ -268,6 +268,7 @@ async function regexSearchFees(q, schoolId, limit, skip, academicYear) {
   const match = {
     schoolId: new mongoose.Types.ObjectId(schoolId),
     $or: orClauses,
+    isDeleted: { $ne: true },
   };
   if (academicYear) match.academicYear = academicYear;
 

@@ -1,37 +1,36 @@
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 import Parent from '../models/Parent.js';
 import { Student } from '../database.js';
 import { piiMatch } from './encryption.js';
 
+// Unambiguous alphabet (no 0/O/1/I/l) for human-readable random passwords.
+const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+
 /**
- * Generate parent password from student's DOB and admission ID
- * DOB "2010-05-15" becomes "15052010", then appended with admissionId
- * e.g. "15052010ADM2024001"
+ * Generate a random, unpredictable parent password.
+ *
+ * NOTE: The (dateOfBirth, admissionId) parameters are accepted for backwards
+ * signature compatibility but are intentionally NOT used to derive the
+ * password — those values are public student PII and produced a deterministic,
+ * guessable password. The password is now generated from cryptographically
+ * secure randomness (crypto.randomInt).
+ *
+ * @param {string} [dateOfBirth] - ignored (kept for signature compatibility)
+ * @param {string} [admissionId] - ignored (kept for signature compatibility)
+ * @returns {string} a random 10-character alphanumeric password
  */
 export function generateParentPassword(dateOfBirth, admissionId) {
-  if (!dateOfBirth || !admissionId) return null;
+  // Parameters are intentionally unused; see JSDoc above.
+  void dateOfBirth;
+  void admissionId;
 
-  // Parse DOB - handle formats like "2010-05-15" or "15/05/2010"
-  let day, month, year;
-  if (dateOfBirth.includes('-')) {
-    const parts = dateOfBirth.split('-');
-    if (parts[0].length === 4) {
-      // YYYY-MM-DD
-      [year, month, day] = parts;
-    } else {
-      // DD-MM-YYYY
-      [day, month, year] = parts;
-    }
-  } else if (dateOfBirth.includes('/')) {
-    const parts = dateOfBirth.split('/');
-    [day, month, year] = parts;
-  } else {
-    return null;
+  const length = 10;
+  let password = '';
+  for (let i = 0; i < length; i += 1) {
+    password += PASSWORD_ALPHABET[crypto.randomInt(0, PASSWORD_ALPHABET.length)];
   }
-
-  // Format as DDMMYYYY + admissionId
-  const dobPart = `${day.padStart(2, '0')}${month.padStart(2, '0')}${year}`;
-  return `${dobPart}${admissionId}`;
+  return password;
 }
 
 function normalizePhone(phone) {
@@ -39,7 +38,10 @@ function normalizePhone(phone) {
 }
 
 function normalizeEmail(email) {
-  return typeof email === 'string' ? email.trim().toLowerCase() : null;
+  // Treat a form's blank optional email as absent. Keeping it as an empty
+  // string makes every no-email guardian compete for the same unique value in
+  // legacy databases, blocking otherwise valid student admissions.
+  return typeof email === 'string' ? email.trim().toLowerCase() || null : null;
 }
 
 function normalizeRelationship(rel) {

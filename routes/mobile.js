@@ -542,11 +542,22 @@ router.get('/teacher/:teacherId/class-overview', requireSelfOrAdmin, async (req,
               ),
       }));
 
-    // Get failed students (from recent results)
+    // Get failed students (from recent results).
+    // AC6: gate on the Exam's published status (Exam.status ===
+    // 'results_published') rather than Result.isPublished so the mobile app
+    // matches routes/parent/academics.js — Result.isPublished can drift out of
+    // sync with the canonical exam-level publish state.
+    const publishedExamIds = await Exam.find(
+      scopeBySchool(schoolId, {
+        status: 'results_published',
+        isDeleted: { $ne: true },
+      })
+    ).distinct('_id');
+
     const recentResults = await Result.find(
       scopeBySchool(schoolId, {
         studentId: { $in: students.map((s) => s._id) },
-        isPublished: true,
+        examId: { $in: publishedExamIds },
         isDeleted: { $ne: true },
       })
     )
@@ -573,6 +584,7 @@ router.get('/teacher/:teacherId/class-overview', requireSelfOrAdmin, async (req,
     const feeStructures = await StudentFeeStructure.find({
       studentId: { $in: students.map((s) => s._id) },
       overallStatus: { $in: ['pending', 'partial'] },
+      isDeleted: { $ne: true },
     }).populate('studentId', 'name rollNo');
 
     const feePendingStudents = feeStructures.map((fs) => ({

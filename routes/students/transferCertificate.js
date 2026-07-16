@@ -6,6 +6,7 @@ import { validateZod } from '../../middleware/validation.js';
 import { studentIdParamSchema, transferCertificateSchema } from '../../validators/index.js';
 import { scopeBySchool } from './helpers.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
+import { archiveStudent } from '../../services/studentArchiveService.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -77,7 +78,30 @@ router.post(
         remarks,
       };
 
+      // S12: Issuing a TC must move the student off active rolls — previously
+      // only the transferCertificate subdoc was written, so the student stayed
+      // 'active' and kept appearing in rosters, attendance, fee rolls, etc.
+      // 'transferred' is a valid value on Student.status enum
+      // (['active','inactive','graduated','transferred','alumni']).
+      student.status = 'transferred';
+
       await student.save();
+
+      // Run the same dependent-record cascade archiveStudent uses
+      // (Attendance/Result/Remark/GatePass/Conversation/Parent.children
+      // suppression + trash record) so the transferred student leaves every
+      // active surface. archiveStudent also soft-deletes the student and
+      // records a trash entry for reversibility.
+      await archiveStudent({
+        studentId: student._id,
+        schoolId,
+        deletedBy: req.user.userId || req.user.id || req.user._id,
+      });
+
+      // archiveStudent sets status='inactive'; restore the semantically
+      // correct 'transferred' status so reports/dashboards distinguish a
+      // transfer from a generic archive/deletion.
+      await Student.updateOne({ _id: student._id }, { $set: { status: 'transferred' } });
 
       res.status(201).json({
         success: true,

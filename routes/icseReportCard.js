@@ -80,7 +80,14 @@ const icseReportCardSchema = new mongoose.Schema(
 
 icseReportCardSchema.index(
   { schoolId: 1, studentId: 1, academicYear: 1, term: 1 },
-  { unique: true, sparse: true }
+  {
+    unique: true,
+    // `sparse: true` does not skip soft-deleted docs, so a re-created card for
+    // the same student/year/term would still collide with the tombstone. A
+    // partial filter on `isDeleted: false` keeps uniqueness enforced only
+    // among live documents — matching CBSEReportCard.js and Exam.js.
+    partialFilterExpression: { isDeleted: false },
+  }
 );
 
 // Use existing model if already registered (to avoid Mongoose OverwriteModelError)
@@ -301,6 +308,13 @@ router.put(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
       if (!card) return res.status(404).json({ error: 'ICSE report card not found' });
+
+      // AC4: reject edits to a published card, mirroring the CBSE guard in
+      // cbseReportCard.js. Once a card is published it must be immutable; edits
+      // would silently change what parents/students have already received.
+      if (card.isPublished) {
+        return res.status(400).json({ error: 'Cannot modify published report card' });
+      }
 
       const { subjects, ...rest } = req.body;
       if (subjects) {

@@ -1,9 +1,73 @@
 import express from 'express';
 import { z } from 'zod';
-import { Substitution, Staff, Class } from '../database.js';
+import { Substitution, Staff, Class, Timetable } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
+import { SCHEDULE_DAYS } from '../utils/weekdays.js';
+
+/**
+ * ST3: when a substitution is CONFIRMED, mirror it into the class Timetable so
+ * the live schedule, attendance roll-call and teacher-conflict checks all see
+ * the substitute teacher for that day/period. Mirrors the schedule-edit pattern
+ * used by PUT /timetable/:classId/slot (`schedule.<day>.<period>.teacherId`).
+ *
+ * Best-effort: logs and never throws — a substitution record is the source of
+ * truth, so a Timetable write failure must not turn a successful confirm into a
+ * 500 that invites a duplicate retry.
+ */
+async function applySubstitutionToTimetable({
+  schoolId,
+  classId,
+  date,
+  period,
+  substituteTeacherId,
+  modifiedBy,
+}) {
+  try {
+    if (!schoolId || !classId || !date || !period || !substituteTeacherId) return;
+
+    // Resolve weekday from the YYYY-MM-DD date in LOCAL time (a UTC parse shifts
+    // the weekday in negative-offset zones — same bug SUBS-FIX fixed elsewhere).
+    // JS getDay(): 0=Sunday..6=Saturday; SCHEDULE_DAYS is Mon-first, so map via
+    // (getDay() + 6) % 7 → Sunday=6, Monday=0, …, Saturday=5.
+    const [y, m, d] = String(date).split('-').map(Number);
+    const dayIndex = (new Date(y, (m || 1) - 1, d || 1).getDay() + 6) % 7;
+    const day = SCHEDULE_DAYS[dayIndex];
+    if (!day) return;
+
+    const periodIndex = parseInt(period, 10) - 1;
+    if (Number.isNaN(periodIndex) || periodIndex < 0) return;
+
+    const scopedSchoolId = extractSchoolId(schoolId);
+    const timetable = await Timetable.findOne({ schoolId: scopedSchoolId, classId });
+    if (!timetable) return;
+
+    const daySchedule = timetable.schedule?.[day];
+    if (!Array.isArray(daySchedule)) return;
+
+    // Grow the day's array if needed (mirrors the slot-edit route's behaviour).
+    while (daySchedule.length <= periodIndex) {
+      daySchedule.push({
+        subject: '',
+        teacherId: null,
+        room: '',
+        lastModified: new Date(),
+        modifiedBy: modifiedBy || null,
+      });
+    }
+
+    const slot = daySchedule[periodIndex];
+    if (!slot) return;
+    slot.teacherId = substituteTeacherId;
+    slot.lastModified = new Date();
+    slot.modifiedBy = modifiedBy || null;
+
+    await timetable.save();
+  } catch (err) {
+    console.error('Failed to mirror substitution into Timetable:', err);
+  }
+}
 
 // Zod schemas for substitution validation
 const createSubstitutionSchema = z.object({
@@ -138,39 +202,35 @@ router.get('/date/:date', checkPermission('classes', 'view'), async (req, res) =
  * GET /api/substitutions/teacher/:teacherId
  * Get all substitutions for a teacher (either as absent or substitute)
  */
-router.get(
-  '/teacher/:teacherId',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { teacherId } = req.params;
-      const { startDate, endDate } = req.query;
+router.get('/teacher/:teacherId', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { teacherId } = req.params;
+    const { startDate, endDate } = req.query;
 
-      // Build query - teacher is either absent or substitute
-      const query = {
-        $or: [{ absentTeacherId: teacherId }, { substituteTeacherId: teacherId }],
-      };
+    // Build query - teacher is either absent or substitute
+    const query = {
+      $or: [{ absentTeacherId: teacherId }, { substituteTeacherId: teacherId }],
+    };
 
-      // Add date range if provided
-      if (startDate || endDate) {
-        query.date = {};
-        if (startDate) query.date.$gte = startDate;
-        if (endDate) query.date.$lte = endDate;
-      }
-
-      const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, query))
-        .populate('classId', 'name section')
-        .populate('absentTeacherId', 'name role')
-        .populate('substituteTeacherId', 'name role')
-        .sort({ date: -1, period: 1 });
-
-      res.json(substitutions);
-    } catch (error) {
-      console.error('Error fetching teacher substitutions:', error);
-      res.status(500).json({ error: error.message });
+    // Add date range if provided
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = startDate;
+      if (endDate) query.date.$lte = endDate;
     }
+
+    const substitutions = await Substitution.find(scopeBySchool(req.user?.schoolId, query))
+      .populate('classId', 'name section')
+      .populate('absentTeacherId', 'name role')
+      .populate('substituteTeacherId', 'name role')
+      .sort({ date: -1, period: 1 });
+
+    res.json(substitutions);
+  } catch (error) {
+    console.error('Error fetching teacher substitutions:', error);
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 /**
  * GET /api/substitutions/:id
@@ -274,6 +334,19 @@ router.post('/', checkPermission('classes', 'edit'), async (req, res) => {
     });
 
     await substitution.save();
+
+    // ST3: mirror the confirmed substitution into the class Timetable so the
+    // substitute teacher shows up in the live schedule / conflict checks.
+    if (substitution.status === 'confirmed') {
+      await applySubstitutionToTimetable({
+        schoolId,
+        classId: data.classId,
+        date: data.date,
+        period: data.period,
+        substituteTeacherId: data.substituteTeacherId,
+        modifiedBy: req.user?.id,
+      });
+    }
 
     // Populate for response
     await substitution.populate('classId', 'name section');
@@ -380,8 +453,11 @@ router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => 
  * PATCH /api/substitutions/:id/respond
  * Teacher accepts or declines their substitution assignment
  * Body: { response: 'accepted' | 'declined', reason? }
+ *
+ * ST16: added checkPermission middleware to match the sibling PUT/POST/DELETE
+ * routes (all require 'classes','edit').
  */
-router.patch('/:id/respond', async (req, res) => {
+router.patch('/:id/respond', checkPermission('classes', 'edit'), async (req, res) => {
   try {
     const { response, reason } = req.body;
 
@@ -409,6 +485,19 @@ router.patch('/:id/respond', async (req, res) => {
     }
     if (reason) substitution.notes = reason;
     await substitution.save();
+
+    // ST3: when the substitute accepts (and the substitution remains
+    // confirmed), mirror the assignment into the class Timetable.
+    if (response === 'accepted' && substitution.status === 'confirmed') {
+      await applySubstitutionToTimetable({
+        schoolId,
+        classId: substitution.classId,
+        date: substitution.date,
+        period: substitution.period,
+        substituteTeacherId: substitution.substituteTeacherId,
+        modifiedBy: staffId,
+      });
+    }
 
     await substitution.populate('classId', 'name section');
     await substitution.populate('absentTeacherId', 'name role');

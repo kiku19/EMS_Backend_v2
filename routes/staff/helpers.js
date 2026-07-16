@@ -187,6 +187,9 @@ export async function validateReporter(reporterId, currentStaffId = null, school
   }
 
   const MAX_HIERARCHY_DEPTH = 10;
+  // ST11: scope every traversal step by schoolId. The previous `Staff.findById`
+  // could walk the reporter chain across schools (a cross-tenant reporterId
+  // would resolve and form a chain invisible to the scoped create).
   const checkCircular = async (currentId, targetId, visited = new Set(), depth = 0) => {
     if (depth > MAX_HIERARCHY_DEPTH) {
       throw new Error(
@@ -202,7 +205,7 @@ export async function validateReporter(reporterId, currentStaffId = null, school
     }
 
     visited.add(currentId);
-    const current = await Staff.findById(currentId);
+    const current = await Staff.findOne(scopeBySchool(schoolId, { _id: currentId }));
     if (!current?.reporterId) {
       return false;
     }

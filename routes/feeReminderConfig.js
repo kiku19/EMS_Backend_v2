@@ -144,6 +144,7 @@ router.post('/manual', checkPermission('fees', 'edit'), async (req, res) => {
       schoolId: req.user.schoolId,
       academicYear,
       totalBalance: { $gt: 0 },
+      isDeleted: { $ne: true },
     };
     if (audienceType === 'overdue') baseQuery.overallStatus = { $in: ['pending', 'partial'] };
     if (audienceType === 'unpaid') baseQuery.overallStatus = 'pending';

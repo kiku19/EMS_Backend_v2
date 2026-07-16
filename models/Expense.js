@@ -28,7 +28,16 @@ const expenseSchema = new mongoose.Schema(
     expenseDate: { type: Date, required: true },
     description: { type: String, trim: true },
     receiptUrl: { type: String },
+    // P11: free-text vendor name kept for backward compatibility (legacy rows
+    // and quick ad-hoc entries). New expenses should link to a Vendor record
+    // via vendorId. The list/summary routes still text-match on `vendor` so
+    // existing data keeps working; populate vendorId where present.
     vendor: { type: String, trim: true },
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
+    // P10: approver. Previously a free String; left as String here so the
+    // approve/reject endpoints' assignment of req.user._id (cast to string)
+    // round-trips without a data migration. A future migration can turn this
+    // into a Staff ref.
     approvedBy: { type: String },
     status: {
       type: String,

@@ -34,119 +34,149 @@ async function _updateClassAssignedSubjects(req, classIds, subject) {
   }
 }
 
-// Get available teachers for a specific class, subject, day, and period
-// IMPORTANT: This route must come BEFORE /:teacherId to avoid route conflicts
-router.get(
-  '/available-teachers',
-  checkPermission('staff', 'view'),
-  async (req, res) => {
-    try {
-      const { classId, subject, day, period, academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+/**
+ * Helper: recompute `Class.assignedSubjects` for the given classes from the
+ * CURRENT set of Staff.teacherAssignments. Used after a DELETE (assignment
+ * removed) or a PUT (classes reassigned) so that a subject is dropped from a
+ * class once no remaining teacher-assignment references that (class, subject)
+ * pair. ST2 — previously DELETE/PUT only ever $addToSet, so stale subjects
+ * accumulated on Class documents forever.
+ *
+ * For each class we collect every subject that some teacher is still assigned
+ * to teach in that class, then overwrite the class's assignedSubjects with
+ * that exact set.
+ */
+async function _recomputeClassAssignedSubjects(req, classIds) {
+  if (!classIds || classIds.length === 0) return;
+  try {
+    const classIdStrings = classIds.map((id) => String(id));
+    const staffDocs = await Staff.find(
+      buildSchoolScopedQuery(req.user?.schoolId, {
+        isDeleted: { $ne: true },
+        'teacherAssignments.classes': { $in: classIds },
+      })
+    )
+      .select('teacherAssignments')
+      .lean();
 
-      // Validate required parameters
-      if (!classId || !subject) {
-        return res.status(400).json({
-          error: 'classId and subject are required query parameters',
-        });
-      }
-
-      // Verify class exists within this school
-      const targetClass = await Class.findOne(schoolQuery(req, { _id: classId }));
-      if (!targetClass) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
-
-      // Find all teachers who have this subject-class assignment within this school
-      const qualifiedTeachers = await Staff.find(
-        schoolQuery(req, {
-          status: 'active',
-          teacherAssignments: {
-            $elemMatch: {
-              subject: subject,
-              classes: classId,
-            },
-          },
-        })
-      ).select('_id name code department teacherAssignments');
-
-      // If day and period are provided, filter out teachers with conflicts
-      let availableTeachers = qualifiedTeachers;
-
-      if (day && period !== undefined) {
-        const periodIndex = parseInt(period);
-
-        // Get all timetables for the academic year within this school
-        const allTimetables = await Timetable.find(schoolQuery(req, { academicYear })).populate(
-          'classId',
-          'name section'
-        );
-
-        // Build a map of teacher conflicts
-        const teacherConflicts = new Map();
-
-        for (const timetable of allTimetables) {
-          // Skip the current class
-          if (timetable.classId._id.toString() === classId) {
-            continue;
-          }
-
-          const daySchedule = timetable.schedule[day];
-          if (daySchedule && daySchedule[periodIndex]) {
-            const slot = daySchedule[periodIndex];
-            if (slot.teacherId) {
-              const teacherIdStr = slot.teacherId.toString();
-              if (!teacherConflicts.has(teacherIdStr)) {
-                teacherConflicts.set(teacherIdStr, []);
-              }
-              teacherConflicts.get(teacherIdStr).push({
-                classId: timetable.classId._id,
-                className: `${timetable.classId.name} ${timetable.classId.section}`,
-                subject: slot.subject,
-                day,
-                period: periodIndex,
-              });
-            }
+    const subjectsByClass = new Map();
+    for (const classIdStr of classIdStrings) subjectsByClass.set(classIdStr, new Set());
+    for (const staff of staffDocs) {
+      for (const assignment of staff.teacherAssignments || []) {
+        for (const cls of assignment.classes || []) {
+          const key = String(cls);
+          if (subjectsByClass.has(key) && assignment.subject) {
+            subjectsByClass.get(key).add(assignment.subject);
           }
         }
+      }
+    }
 
-        // Filter out teachers with conflicts
-        availableTeachers = qualifiedTeachers.filter((teacher) => {
-          return !teacherConflicts.has(teacher._id.toString());
-        });
+    await Promise.all(
+      [...subjectsByClass.entries()].map(([classIdStr, subjects]) =>
+        Class.updateOne(
+          buildSchoolScopedQuery(req.user?.schoolId, {
+            _id: classIdStr,
+            isDeleted: { $ne: true },
+          }),
+          { $set: { assignedSubjects: [...subjects] } }
+        )
+      )
+    );
+  } catch (err) {
+    // Log but don't fail the primary operation, which already succeeded.
+    console.error('Failed to recompute Class assignedSubjects:', err);
+  }
+}
 
-        // Add conflict information for debugging
-        const conflictedTeachers = qualifiedTeachers
-          .filter((teacher) => teacherConflicts.has(teacher._id.toString()))
-          .map((teacher) => ({
-            id: teacher._id,
-            name: teacher.name,
-            code: teacher.code,
-            conflicts: teacherConflicts.get(teacher._id.toString()),
-          }));
+// Get available teachers for a specific class, subject, day, and period
+// IMPORTANT: This route must come BEFORE /:teacherId to avoid route conflicts
+router.get('/available-teachers', checkPermission('staff', 'view'), async (req, res) => {
+  try {
+    const { classId, subject, day, period, academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-        return res.json({
-          available: availableTeachers.map((t) => ({
-            id: t._id,
-            name: t.name,
-            code: t.code,
-            department: t.department,
-            assignments: t.teacherAssignments.filter(
-              (a) => a.subject === subject && a.classes.some((c) => c.toString() === classId)
-            ),
-          })),
-          conflicted: conflictedTeachers,
-          filters: {
-            classId,
-            subject,
-            day,
-            period: periodIndex,
-            academicYear,
+    // Validate required parameters
+    if (!classId || !subject) {
+      return res.status(400).json({
+        error: 'classId and subject are required query parameters',
+      });
+    }
+
+    // Verify class exists within this school
+    const targetClass = await Class.findOne(schoolQuery(req, { _id: classId }));
+    if (!targetClass) {
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+    }
+
+    // Find all teachers who have this subject-class assignment within this school
+    const qualifiedTeachers = await Staff.find(
+      schoolQuery(req, {
+        status: 'active',
+        teacherAssignments: {
+          $elemMatch: {
+            subject: subject,
+            classes: classId,
           },
-        });
+        },
+      })
+    ).select('_id name code department teacherAssignments');
+
+    // If day and period are provided, filter out teachers with conflicts
+    let availableTeachers = qualifiedTeachers;
+
+    if (day && period !== undefined) {
+      const periodIndex = parseInt(period);
+
+      // Get all timetables for the academic year within this school
+      const allTimetables = await Timetable.find(schoolQuery(req, { academicYear })).populate(
+        'classId',
+        'name section'
+      );
+
+      // Build a map of teacher conflicts
+      const teacherConflicts = new Map();
+
+      for (const timetable of allTimetables) {
+        // Skip the current class
+        if (timetable.classId._id.toString() === classId) {
+          continue;
+        }
+
+        const daySchedule = timetable.schedule[day];
+        if (daySchedule && daySchedule[periodIndex]) {
+          const slot = daySchedule[periodIndex];
+          if (slot.teacherId) {
+            const teacherIdStr = slot.teacherId.toString();
+            if (!teacherConflicts.has(teacherIdStr)) {
+              teacherConflicts.set(teacherIdStr, []);
+            }
+            teacherConflicts.get(teacherIdStr).push({
+              classId: timetable.classId._id,
+              className: `${timetable.classId.name} ${timetable.classId.section}`,
+              subject: slot.subject,
+              day,
+              period: periodIndex,
+            });
+          }
+        }
       }
 
-      // Return all qualified teachers if no time slot specified
-      res.json({
+      // Filter out teachers with conflicts
+      availableTeachers = qualifiedTeachers.filter((teacher) => {
+        return !teacherConflicts.has(teacher._id.toString());
+      });
+
+      // Add conflict information for debugging
+      const conflictedTeachers = qualifiedTeachers
+        .filter((teacher) => teacherConflicts.has(teacher._id.toString()))
+        .map((teacher) => ({
+          id: teacher._id,
+          name: teacher.name,
+          code: teacher.code,
+          conflicts: teacherConflicts.get(teacher._id.toString()),
+        }));
+
+      return res.json({
         available: availableTeachers.map((t) => ({
           id: t._id,
           name: t.name,
@@ -156,17 +186,38 @@ router.get(
             (a) => a.subject === subject && a.classes.some((c) => c.toString() === classId)
           ),
         })),
+        conflicted: conflictedTeachers,
         filters: {
           classId,
           subject,
+          day,
+          period: periodIndex,
           academicYear,
         },
       });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
     }
+
+    // Return all qualified teachers if no time slot specified
+    res.json({
+      available: availableTeachers.map((t) => ({
+        id: t._id,
+        name: t.name,
+        code: t.code,
+        department: t.department,
+        assignments: t.teacherAssignments.filter(
+          (a) => a.subject === subject && a.classes.some((c) => c.toString() === classId)
+        ),
+      })),
+      filters: {
+        classId,
+        subject,
+        academicYear,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-);
+});
 
 // Get teacher assignments for a specific teacher
 router.get('/:teacherId', checkPermission('staff', 'view'), async (req, res) => {
@@ -296,6 +347,13 @@ router.put(
         return res.status(404).json({ error: 'Assignment not found' });
       }
 
+      // Capture the classes previously linked to this assignment so they can be
+      // reconciled too — a subject may need to be dropped from a class that the
+      // assignment was moved away from (ST2).
+      const previousClassIds = (assignment.classes || []).map((c) => String(c));
+      const newClassIds = (classIds || []).map((c) => String(c));
+      const previousSubject = assignment.subject;
+
       assignment.subject = subject;
       assignment.classes = classIds;
 
@@ -303,6 +361,17 @@ router.put(
 
       // Update Class documents: ensure the subject is in each class's assignedSubjects
       await _updateClassAssignedSubjects(req, classIds, subject);
+
+      // ST2: recompute assignedSubjects for any class that was part of the
+      // OLD assignment but is no longer in the new set (or whose subject
+      // changed), so dropped subjects don't linger on Class documents.
+      const removedClassIds = previousClassIds.filter((cid) => !newClassIds.includes(cid));
+      if (removedClassIds.length > 0 || (previousSubject && previousSubject !== subject)) {
+        const affectedOld = previousSubject !== subject ? previousClassIds : [];
+        await _recomputeClassAssignedSubjects(req, [
+          ...new Set([...removedClassIds, ...affectedOld]),
+        ]);
+      }
 
       const updatedStaff = await Staff.findOne(schoolQuery(req, { _id: teacherId })).populate(
         'teacherAssignments.classes',
@@ -341,8 +410,19 @@ router.delete('/:id', checkPermission('staff', 'edit'), async (req, res) => {
       return res.status(404).json({ error: 'Assignment not found' });
     }
 
+    // Capture the classes tied to this assignment before pulling it, so they
+    // can be reconciled below (ST2).
+    const affectedClassIds = (assignment.classes || []).map((c) => String(c));
+
     staff.teacherAssignments.pull(id);
     await staff.save();
+
+    // ST2: recompute assignedSubjects for the affected classes — the removed
+    // assignment may have been the only one teaching that subject in a class,
+    // in which case the subject must be dropped from Class.assignedSubjects.
+    if (affectedClassIds.length > 0) {
+      await _recomputeClassAssignedSubjects(req, affectedClassIds);
+    }
 
     res.json({
       success: true,

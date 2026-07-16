@@ -66,7 +66,7 @@ async function resolveParentRecipients(criteria, schoolId) {
     studentIds = students.map((s) => s._id);
   } else if (criteria.groupType === 'fee_defaulters') {
     const feeStatus = criteria.feeStatus || 'pending';
-    const feeQuery = { schoolId, overallStatus: feeStatus };
+    const feeQuery = { schoolId, overallStatus: feeStatus, isDeleted: { $ne: true } };
     if (criteria.academicYear) feeQuery.academicYear = criteria.academicYear;
     const feeStructures = await StudentFeeStructure.find(feeQuery).select('studentId').lean();
     studentIds = [...new Set(feeStructures.map((f) => f.studentId.toString()))].map(
@@ -116,9 +116,7 @@ async function resolveParentRecipients(criteria, schoolId) {
     studentQuery._id = { $in: studentIds };
   }
 
-  const students = await Student.find(studentQuery)
-    .select('_id name parents classId')
-    .lean();
+  const students = await Student.find(studentQuery).select('_id name parents classId').lean();
 
   const seen = new Set();
   const recipients = [];

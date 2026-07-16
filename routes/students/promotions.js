@@ -16,6 +16,7 @@ import {
   scopeBySchool,
   initializeFeeStructure,
   resyncFeeStructureForClassChange,
+  assertStudentCanPromote,
 } from './helpers.js';
 
 const router = express.Router();
@@ -178,7 +179,11 @@ router.post(
               summary.graduated++;
             } else {
               const oldFeeStructure = await StudentFeeStructure.findOne(
-                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
+                scopeBySchool(schoolId, {
+                  studentId: student._id,
+                  academicYear: oldAcademicYear,
+                  isDeleted: { $ne: true },
+                })
               );
               const unpaidBalance = oldFeeStructure?.totalBalance || 0;
 
@@ -268,7 +273,7 @@ router.post(
   validateZod(bulkStudentPromoteSchema),
   async (req, res) => {
     const schoolId = req.user?.schoolId;
-    const { promotions } = req.body;
+    const { promotions, skipFeeCheck = false, skipAttendanceCheck = false } = req.body;
     const targetClassIds = [
       ...new Set(promotions.filter((p) => !p.graduate).map((p) => String(p.targetClassId))),
     ];
@@ -291,15 +296,75 @@ router.post(
         });
       }
 
+      // C26: Run the same three guards single-promote runs (pending fees,
+      // attendance threshold, target-class capacity) per student BEFORE the
+      // transaction. Failures are recorded, not silently skipped — the rest of
+      // the batch still promotes.
+      const studentIds = promotions.map((p) => p.studentId);
+      const guardStudents = await Student.find(
+        scopeBySchool(schoolId, {
+          _id: { $in: studentIds },
+          isDeleted: { $ne: true },
+        })
+      ).populate('classId', 'name section academicYear');
+
+      const guardStudentMap = new Map(
+        guardStudents.map((student) => [String(student._id), student])
+      );
+      if (guardStudentMap.size !== new Set(studentIds.map(String)).size) {
+        const missingStudentIds = studentIds.map(String).filter((id) => !guardStudentMap.has(id));
+        return res.status(400).json({
+          error: 'One or more students were not found in your school',
+          studentIds: missingStudentIds,
+        });
+      }
+
+      const failedDetails = [];
+      // Running tally of seats reserved per target class within this batch.
+      // checkClassCapacity reads committed data, so it cannot see in-batch
+      // promotions — we pass this in via extraOccupied to prevent over-filling.
+      const targetOccupancy = new Map();
+      for (const id of targetClassIds) targetOccupancy.set(id, 0);
+
+      const allowedPromotions = [];
+      for (const promo of promotions) {
+        const student = guardStudentMap.get(String(promo.studentId));
+        if (promo.graduate) {
+          allowedPromotions.push(promo);
+          continue;
+        }
+        const targetClass = targetClassMap.get(String(promo.targetClassId));
+        try {
+          await assertStudentCanPromote(student, targetClass, {
+            schoolId,
+            skipFeeCheck,
+            skipAttendanceCheck,
+            extraOccupied: targetOccupancy.get(String(promo.targetClassId)) || 0,
+          });
+          // Reserve a seat in this target class for the rest of the batch.
+          targetOccupancy.set(
+            String(promo.targetClassId),
+            (targetOccupancy.get(String(promo.targetClassId)) || 0) + 1
+          );
+          allowedPromotions.push(promo);
+        } catch (guardError) {
+          failedDetails.push({
+            studentId: promo.studentId,
+            reason: guardError.code || guardError.message,
+            message: guardError.message,
+          });
+        }
+      }
+
       const mongoSession = await mongoose.startSession();
       let promoted = 0;
       let graduated = 0;
       try {
         await mongoSession.withTransaction(async (session) => {
-          const studentIds = promotions.map((p) => p.studentId);
+          const allowedIds = allowedPromotions.map((p) => p.studentId);
           const students = await Student.find(
             scopeBySchool(schoolId, {
-              _id: { $in: studentIds },
+              _id: { $in: allowedIds },
               isDeleted: { $ne: true },
             })
           ).session(session);
@@ -314,11 +379,9 @@ router.post(
             currentTargetClasses.map((cls) => [String(cls._id), cls])
           );
 
-          if (studentMap.size !== new Set(studentIds.map(String)).size) {
-            const missingStudentIds = studentIds.map(String).filter((id) => !studentMap.has(id));
-            const error = new Error('One or more students were not found in your school');
-            error.status = 400;
-            error.studentIds = missingStudentIds;
+          if (studentMap.size !== new Set(allowedIds.map(String)).size) {
+            const error = new Error('One or more students changed during promotion');
+            error.status = 409;
             throw error;
           }
           if (currentTargetClassMap.size !== targetClassIds.length) {
@@ -327,7 +390,7 @@ router.post(
             throw error;
           }
 
-          for (const promo of promotions) {
+          for (const promo of allowedPromotions) {
             const student = studentMap.get(String(promo.studentId));
             if (promo.graduate) {
               student.status = 'graduated';
@@ -350,7 +413,14 @@ router.post(
         await mongoSession.endSession();
       }
 
-      res.json({ success: true, promoted, graduated, failed: 0, errors: [] });
+      res.json({
+        success: true,
+        promoted,
+        graduated,
+        failed: failedDetails.length,
+        failedDetails,
+        errors: [],
+      });
     } catch (error) {
       console.error('Error in bulk promote:', error);
       res.status(error.status || 500).json({
@@ -492,7 +562,11 @@ router.post(
 
       // Prior-year financial history remains immutable after promotion.
       const oldFeeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: id, academicYear: oldAcademicYear })
+        scopeBySchool(schoolId, {
+          studentId: id,
+          academicYear: oldAcademicYear,
+          isDeleted: { $ne: true },
+        })
       );
       const unpaidBalance = oldFeeStructure?.totalBalance || 0;
       const warning =

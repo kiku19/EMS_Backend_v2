@@ -19,6 +19,26 @@ export function annualizedAmount(feeHead) {
   return amount;
 }
 
+/**
+ * Derive the top-level `dueDate` for a StudentFeeStructure from a class
+ * FeeStructure's collection schedule (the earliest installment due date).
+ *
+ * Both the bulk-apply path and the GET auto-init path must compute this the
+ * same way — otherwise auto-initialised structures never get a dueDate, so
+ * `computeFeeBalance` can never mark them overdue and late-fee/reminder
+ * pipelines silently skip them.
+ *
+ * @param {Object} classStructure - FeeStructure document (may have .collectionSchedule.installments)
+ * @returns {Date|undefined}
+ */
+export function computeStructureDueDate(classStructure) {
+  const earliest = (classStructure?.collectionSchedule?.installments || [])
+    .map((installment) => installment?.dueDate)
+    .filter(Boolean)
+    .sort()[0];
+  return earliest ? new Date(earliest) : undefined;
+}
+
 export function buildStudentInstallments(classStructure, existingInstallments = []) {
   return (classStructure.collectionSchedule?.installments || []).map((installment, index) => {
     const prior = existingInstallments.find(
@@ -84,12 +104,10 @@ export async function applyClassFeeStructureToStudents(
     schoolId,
     classId: classStructure.classId,
     status: 'active',
+    isDeleted: { $ne: true },
   }).session(session || null);
 
-  const structureDueDate = (classStructure.collectionSchedule?.installments || [])
-    .map((installment) => installment?.dueDate)
-    .filter(Boolean)
-    .sort()[0];
+  const structureDueDate = computeStructureDueDate(classStructure);
 
   let appliedCount = 0;
   const appliedStudentIds = [];
@@ -101,6 +119,7 @@ export async function applyClassFeeStructureToStudents(
         schoolId,
         studentId: student._id,
         academicYear,
+        isDeleted: { $ne: true },
       }).session(session || null);
 
       const feeHeadsFromStructure = classStructure.feeHeads.map((fh) => ({

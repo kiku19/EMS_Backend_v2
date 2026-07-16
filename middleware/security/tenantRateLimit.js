@@ -43,8 +43,14 @@ export const PLAN_RATE_LIMITS = {
   scale: 2000,
 };
 
-/** Requests per 15-minute window for auth endpoints (keyed by IP) */
-const AUTH_LIMIT = 10;
+/**
+ * Requests per 15-minute window for auth endpoints. Keyed by account + IP
+ * (see createAuthRateLimiter) so a single bad password can't be hammered, while
+ * a shared school network (one egress IP, many accounts) isn't locked out.
+ * [BUG-002/032] Raised from 10: 10/IP was too tight for a NAT'd school and
+ * locked legitimate admins out after normal retries.
+ */
+const AUTH_LIMIT = 20;
 
 /** How many violations within the alert window trigger a log warning */
 const ALERT_THRESHOLD = 5;
@@ -54,6 +60,14 @@ const ALERT_WINDOW_SECS = 15 * 60;
 
 /** How long (seconds) to cache a school's plan key in Redis */
 const PLAN_CACHE_TTL_SECS = 5 * 60;
+
+/**
+ * Temporary QA escape hatch for login/auth throttling. This is deliberately
+ * separate from the tenant and global API limiters, which remain active.
+ */
+export function isAuthRateLimitingDisabled() {
+  return process.env.DISABLE_AUTH_RATE_LIMITING === 'true';
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -138,7 +152,7 @@ async function trackViolation(schoolId) {
  * Build a rate-limit-redis store using the shared Redis client.
  * Returns undefined (memory store) when Redis is not available.
  */
-function buildRedisStore() {
+export function buildRedisStore() {
   if (!isRedisReady()) return undefined;
   const redis = getRedisClient();
   if (!redis) return undefined;
@@ -264,11 +278,20 @@ export function createAuthRateLimiter({ skip } = {}) {
   return rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: AUTH_LIMIT,
-    keyGenerator: (req) => `auth:${req.ip}`,
+    // [BUG-002/032] Key on account + IP. IP-only meant a whole school behind one
+    // egress IP shared a single 10/min budget and got locked out. Including the
+    // submitted email/phone gives every account its own budget; the IP half still
+    // blunts distributed brute force. Falls back to a constant when no body field
+    // is present (e.g. a pre-flight or a request that hasn't been parsed yet) so
+    // those collapse into one IP-scoped bucket rather than an unbounded wildcard.
+    keyGenerator: (req) => {
+      const account = req.body?.email || req.body?.phone || 'nocred';
+      return `auth:${account}:${req.ip}`;
+    },
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     store: buildRedisStore(),
-    ...(skip ? { skip } : {}),
+    skip: (req) => isAuthRateLimitingDisabled() || Boolean(skip?.(req)),
     handler: (req, res, _next, options) => {
       res
         .status(429)

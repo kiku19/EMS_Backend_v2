@@ -37,6 +37,7 @@ function toPermissionsArray(template) {
     edit: Boolean(actions.edit),
     delete: Boolean(actions.delete),
     publish: Boolean(actions.publish),
+    approve: Boolean(actions.approve),
   }));
 }
 

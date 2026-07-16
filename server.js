@@ -19,6 +19,7 @@ import feesRoutes from './routes/fees.js';
 import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
 import expensesRoutes from './routes/expenses.js';
+import vendorsRoutes from './routes/vendors.js';
 import announcementRoutes from './routes/announcements.js';
 import communicationLogsRoutes from './routes/communicationLogs.js';
 import emailCampaignsRoutes from './routes/emailCampaigns.js';
@@ -118,6 +119,7 @@ import {
   createTenantRateLimiter,
   createAuthRateLimiter,
   createGlobalRateLimiter,
+  isAuthRateLimitingDisabled,
 } from './middleware/tenantRateLimit.js';
 import auditLogsRoutes from './routes/auditLogs.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -315,7 +317,15 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Branch-School-Id', 'X-Auth-Mode'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Branch-School-Id',
+      'X-Auth-Mode',
+      'Cache-Control',
+      'Pragma',
+      'X-Requested-With',
+    ],
   })
 );
 
@@ -523,7 +533,7 @@ v1Router.use(
       // Outside production, skip auth limiting entirely so local dev and the
       // test runner aren't locked out while iterating. Production MUST set
       // NODE_ENV=production (matches the codebase's non-prod gating elsewhere).
-      if (process.env.NODE_ENV !== 'production') return true;
+      if (isAuthRateLimitingDisabled() || process.env.NODE_ENV !== 'production') return true;
       // In production, exempt the benign session check: GET /auth/session is
       // polled on every dashboard load to read the current session. It carries
       // no credentials, so it must not share the credential-stuffing budget
@@ -603,6 +613,7 @@ v1Router.use('/homework', homeworkRoutes);
 v1Router.use('/staff-attendance', staffAttendanceRoutes);
 v1Router.use('/payroll', payrollRoutes);
 v1Router.use('/expenses', expensesRoutes);
+v1Router.use('/vendors', vendorsRoutes);
 v1Router.use('/payslips', payslipsRoutes);
 v1Router.use('/teacher-assignments', teacherAssignmentsRoutes);
 v1Router.use('/teacher-timetable', teacherTimetableRoutes);

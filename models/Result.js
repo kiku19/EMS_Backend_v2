@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { computeGrade } from '../utils/grading.js';
+import { computeGrade, computePercentage } from '../utils/grading.js';
 
 const resultSchema = new mongoose.Schema(
   {
@@ -64,7 +64,7 @@ resultSchema.pre('save', function (next) {
   // Single-subject mode: use marksObtained / maxMarks
   if (this.isModified('marksObtained') || this.isModified('maxMarks') || this.isNew) {
     if (this.maxMarks > 0) {
-      this.percentage = Math.round(((this.marksObtained || 0) / this.maxMarks) * 10000) / 100;
+      this.percentage = computePercentage(this.marksObtained || 0, this.maxMarks);
     }
   }
 
@@ -73,7 +73,7 @@ resultSchema.pre('save', function (next) {
     this.totalMarksObtained = this.marks.reduce((sum, m) => sum + (m.marksObtained || 0), 0);
     this.totalMaxMarks = this.marks.reduce((sum, m) => sum + (m.maxMarks || 0), 0);
     if (this.totalMaxMarks > 0) {
-      this.percentage = Math.round((this.totalMarksObtained / this.totalMaxMarks) * 10000) / 100;
+      this.percentage = computePercentage(this.totalMarksObtained, this.totalMaxMarks);
     }
   }
 

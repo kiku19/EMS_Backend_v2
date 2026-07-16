@@ -72,6 +72,15 @@ const feePaymentSchema = new mongoose.Schema(
 
     // Notes
     remarks: String,
+
+    // Soft-delete — set when the owning Student is archived so this payment is
+    // hidden from every read path and restored on undo. Distinct from the
+    // void/cancel flow above (cancelledAt/cancelledBy + status:'cancelled'),
+    // which is an operator action on a single payment. Read sites MUST filter
+    // isDeleted: { $ne: true }.
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', default: null },
   },
   { timestamps: true }
 );

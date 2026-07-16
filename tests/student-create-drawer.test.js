@@ -568,6 +568,55 @@ describe('Student Create Drawer — Parent Account Sync', () => {
     );
   });
 
+  it('accepts multiple guardians with blank optional email addresses', async () => {
+    const admin = await createStaffUser();
+    const classRecord = await createClassRecord();
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(admin, 'admin');
+
+    const first = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(
+        validStudentPayload(classRecord._id, {
+          admissionId: 'ADM-BLANK-EMAIL-001',
+          parents: [
+            {
+              name: 'Blank Email Parent One',
+              relationship: 'father',
+              phone: '9888800011',
+              email: '',
+            },
+          ],
+        })
+      )
+      .expect(201);
+
+    const second = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(
+        validStudentPayload(classRecord._id, {
+          admissionId: 'ADM-BLANK-EMAIL-002',
+          rollNo: 2,
+          parents: [
+            {
+              name: 'Blank Email Parent Two',
+              relationship: 'mother',
+              phone: '9888800012',
+              email: '',
+            },
+          ],
+        })
+      )
+      .expect(201);
+
+    expect(first.body.id).toBeTruthy();
+    expect(second.body.id).toBeTruthy();
+    expect(await Parent.find(piiMatch('phone', '9888800011')).lean()).toHaveLength(1);
+    expect(await Parent.find(piiMatch('phone', '9888800012')).lean()).toHaveLength(1);
+  });
+
   it('links to existing parent account if phone already exists', async () => {
     const admin = await createStaffUser();
     const classRecord = await createClassRecord();

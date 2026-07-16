@@ -21,7 +21,7 @@ const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.school
  * Get all visitors with optional filters
  * Query params: status (active/all/today), purpose, startDate, endDate, search
  */
-router.get('/', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const { status, purpose, startDate, endDate, search } = req.query;
 
@@ -99,7 +99,7 @@ router.get('/', checkPermission('front-office', 'view'), async (req, res) => {
  * GET /api/visitors/active
  * Get all active (checked-in) visitors
  */
-router.get('/active', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/active', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const visitors = await Visitor.getActiveVisitors(req.user.schoolId);
     res.json({
@@ -121,7 +121,7 @@ router.get('/active', checkPermission('front-office', 'view'), async (req, res) 
  * GET /api/visitors/today
  * Get today's visitors
  */
-router.get('/today', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/today', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const visitors = await Visitor.getTodaysVisitors(req.user.schoolId);
     res.json({
@@ -143,7 +143,7 @@ router.get('/today', checkPermission('front-office', 'view'), async (req, res) =
  * GET /api/visitors/search?q=
  * Search visitors by name, phone, email, or whom to meet
  */
-router.get('/search', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/search', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const { q } = req.query;
 
@@ -174,68 +174,64 @@ router.get('/search', checkPermission('front-office', 'view'), async (req, res) 
  * GET /api/visitors/parents/search?q=
  * Search parents from student database
  */
-router.get(
-  '/parents/search',
-  checkPermission('front-office', 'view'),
-  async (req, res) => {
-    try {
-      const { q } = req.query;
+router.get('/parents/search', checkPermission('front-desk', 'view'), async (req, res) => {
+  try {
+    const { q } = req.query;
 
-      if (!q || q.trim().length < 2) {
-        return res.status(400).json({
-          success: false,
-          error: req.t('common:routes.searchQueryMustBeAtLeast2Characters'),
-        });
-      }
-
-      const searchRegex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-
-      // Search in parents array of students (scoped to school)
-      const students = await Student.find({
-        schoolId: req.user.schoolId,
-        isDeleted: { $ne: true },
-        'parents.name': searchRegex,
-      })
-        .select('name admissionId parents classId')
-        .populate('classId', 'name section')
-        .limit(20);
-
-      // Format results
-      const parents = students.map((student) => {
-        const firstParent = student.parents?.[0];
-        return {
-          studentId: student._id,
-          studentName: student.name,
-          admissionId: student.admissionId,
-          parentName: firstParent?.name,
-          parentPhone: firstParent?.phone,
-          parentEmail: firstParent?.email,
-          class: student.classId?.name,
-          section: student.classId?.section,
-        };
-      });
-
-      res.json({
-        success: true,
-        data: parents,
-        count: parents.length,
-      });
-    } catch (error) {
-      console.error('Search parents error:', error);
-      res.status(500).json({
+    if (!q || q.trim().length < 2) {
+      return res.status(400).json({
         success: false,
-        error: error.message,
-        message: req.t('common:routes.failedToSearchParents'),
+        error: req.t('common:routes.searchQueryMustBeAtLeast2Characters'),
       });
     }
+
+    const searchRegex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+    // Search in parents array of students (scoped to school)
+    const students = await Student.find({
+      schoolId: req.user.schoolId,
+      isDeleted: { $ne: true },
+      'parents.name': searchRegex,
+    })
+      .select('name admissionId parents classId')
+      .populate('classId', 'name section')
+      .limit(20);
+
+    // Format results
+    const parents = students.map((student) => {
+      const firstParent = student.parents?.[0];
+      return {
+        studentId: student._id,
+        studentName: student.name,
+        admissionId: student.admissionId,
+        parentName: firstParent?.name,
+        parentPhone: firstParent?.phone,
+        parentEmail: firstParent?.email,
+        class: student.classId?.name,
+        section: student.classId?.section,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: parents,
+      count: parents.length,
+    });
+  } catch (error) {
+    console.error('Search parents error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: req.t('common:routes.failedToSearchParents'),
+    });
   }
-);
+});
 
 /**
  * GET /api/visitors/:id
  * Get single visitor by ID
  */
-router.get('/:id', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }))
       .populate('checkedInBy', 'name code phone')
@@ -272,7 +268,7 @@ router.get('/:id', checkPermission('front-office', 'view'), async (req, res) => 
  */
 router.post(
   '/',
-  checkPermission('front-office', 'create'),
+  checkPermission('front-desk', 'create'),
   validateZod(createVisitorSchema),
   async (req, res) => {
     try {
@@ -380,7 +376,7 @@ router.post(
  */
 router.put(
   '/:id',
-  checkPermission('front-office', 'edit'),
+  checkPermission('front-desk', 'edit'),
   validateZod(updateVisitorSchema),
   async (req, res) => {
     try {
@@ -444,7 +440,7 @@ router.put(
  */
 router.post(
   '/:id/check-out',
-  checkPermission('front-office', 'edit'),
+  checkPermission('front-desk', 'edit'),
   validateZod(checkOutVisitorSchema),
   async (req, res) => {
     try {
@@ -496,7 +492,7 @@ router.post(
  * DELETE /api/visitors/:id
  * Delete visitor
  */
-router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('front-desk', 'delete'), async (req, res) => {
   try {
     const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id }));
 
@@ -527,46 +523,42 @@ router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res
  * GET /api/visitors/:id/badge
  * Generate visitor badge (PDF)
  */
-router.get(
-  '/:id/badge',
-  checkPermission('front-office', 'view'),
-  async (req, res) => {
-    try {
-      const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id })).populate(
-        'studentId',
-        'name admissionId'
-      );
+router.get('/:id/badge', checkPermission('front-desk', 'view'), async (req, res) => {
+  try {
+    const visitor = await Visitor.findOne(schoolQuery(req, { _id: req.params.id })).populate(
+      'studentId',
+      'name admissionId'
+    );
 
-      if (!visitor) {
-        return res.status(404).json({
-          success: false,
-          error: req.t('common:routes.visitorNotFound'),
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          visitor: visitor,
-          badgeData: {
-            name: visitor.name,
-            purpose: visitor.purpose.replace(/_/g, ' '),
-            checkInTime: visitor.checkInTime,
-            whomToMeet: visitor.whomToMeet,
-            studentName: visitor.studentName,
-          },
-        },
-        message: req.t('common:routes.badgeDataRetrievedPdfGenerationToBeImplemented'),
-      });
-    } catch (error) {
-      console.error('Generate badge error:', error);
-      res.status(500).json({
+    if (!visitor) {
+      return res.status(404).json({
         success: false,
-        error: error.message,
-        message: req.t('common:routes.failedToGenerateBadge'),
+        error: req.t('common:routes.visitorNotFound'),
       });
     }
+
+    res.json({
+      success: true,
+      data: {
+        visitor: visitor,
+        badgeData: {
+          name: visitor.name,
+          purpose: visitor.purpose.replace(/_/g, ' '),
+          checkInTime: visitor.checkInTime,
+          whomToMeet: visitor.whomToMeet,
+          studentName: visitor.studentName,
+        },
+      },
+      message: req.t('common:routes.badgeDataRetrievedPdfGenerationToBeImplemented'),
+    });
+  } catch (error) {
+    console.error('Generate badge error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: req.t('common:routes.failedToGenerateBadge'),
+    });
   }
-);
+});
 
 export default router;

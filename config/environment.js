@@ -62,6 +62,8 @@ const envSchema = z
     // ── Server — required ───────────────────────────────────────────────────────
     PORT: z.string().regex(/^\d+$/, 'PORT must be a numeric string (e.g. "3001")'),
     NODE_ENV: z.enum(['development', 'staging', 'production', 'test']).default('development'),
+    // Temporary local QA switch; keep false/unset in real deployments.
+    DISABLE_AUTH_RATE_LIMITING: z.enum(['true', 'false']).optional(),
 
     // ── Database — at least one is required (checked in validateEnvironment) ────
     MONGO_URI: z.string().optional(),

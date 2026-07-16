@@ -1,12 +1,15 @@
 import mongoose from 'mongoose';
 import { z } from 'zod';
-import { Class, StudentFeeStructure } from '../../database.js';
+import { Class, StudentFeeStructure, Attendance } from '../../database.js';
 import { extractSchoolId, ensureDefaultSchool } from '../../utils/schoolContext.js';
 import { resolveAcademicYear } from '../../utils/academicYear.js';
+import { checkClassCapacity } from '../../utils/classCapacity.js';
+import { CURRENT_ACADEMIC_YEAR } from '../../utils/constants.js';
 import {
   buildStudentFeeHeads,
   buildStudentInstallments,
 } from '../../utils/applyClassFeeStructure.js';
+import { computeFeeBalance } from '../../utils/feeCalculator.js';
 
 /**
  * Produce the candidate tokens for matching a Class against
@@ -78,6 +81,100 @@ export async function resolveRequestSchoolId(req) {
   if (req.user?.schoolId) return extractSchoolId(req.user.schoolId);
   const school = await ensureDefaultSchool();
   return extractSchoolId(school._id);
+}
+
+/**
+ * C26 — Shared promotion guard. Mirrors the three checks the single-promote
+ * handler (routes/students/promotions.js /:id/promote) runs before mutating a
+ * student's class/year, so bulk-promote cannot bypass them:
+ *   1. pending-fee check   (Student.feeStatus === 'pending')
+ *   2. attendance threshold (>=60% present/late in the source class's AY)
+ *   3. target-class capacity (checkClassCapacity, strengthLimit)
+ *
+ * Each guard can be individually skipped via the options object, matching the
+ * single-promote skip flags. Throws an Error with a descriptive `.code` and
+ * message on the first failing guard; resolves with the resolved target class
+ * otherwise.
+ *
+ * @param {object} student      - Populated Student doc (needs classId populated
+ *                                for academicYear; plain doc/lean is fine).
+ * @param {object} targetClass  - Resolved target Class doc.
+ * @param {object} options
+ * @param {string} options.schoolId
+ * @param {string} [options.academicYear]
+ * @param {boolean} [options.skipFeeCheck=false]
+ * @param {boolean} [options.skipAttendanceCheck=false]
+ * @param {number} [options.extraOccupied=0] - Already-reserved seats in the
+ *        target class within the same batch (bulk-promote passes a running
+ *        tally so a multi-student batch does not over-fill one class, since
+ *        checkClassCapacity reads committed data and cannot see in-batch writes).
+ * @returns {Promise<object>} the targetClass, on success.
+ */
+export async function assertStudentCanPromote(student, targetClass, options = {}) {
+  const {
+    schoolId,
+    academicYear,
+    skipFeeCheck = false,
+    skipAttendanceCheck = false,
+    extraOccupied = 0,
+  } = options;
+
+  if (!student) {
+    const err = new Error('Student not found');
+    err.code = 'STUDENT_NOT_FOUND';
+    throw err;
+  }
+  if (!targetClass) {
+    const err = new Error('Target class not found');
+    err.code = 'TARGET_CLASS_NOT_FOUND';
+    throw err;
+  }
+
+  // 1. Fee check — pending fees block promotion (same predicate as single-promote).
+  if (!skipFeeCheck && student.feeStatus === 'pending') {
+    const err = new Error('Student has pending fees');
+    err.code = 'FEE_PENDING';
+    throw err;
+  }
+
+  // 2. Attendance check — scope to the source class's academic year, mirror
+  //    the single-promote 60% threshold (present+late / total).
+  if (!skipAttendanceCheck) {
+    const fromClass =
+      student.classId && student.classId.toObject ? student.classId.toObject() : student.classId;
+    const attYearStr = fromClass?.academicYear || student.academicYear || CURRENT_ACADEMIC_YEAR;
+    const [attYearStart] = attYearStr.split('-');
+    const attYearNum = parseInt(attYearStart, 10);
+    const attQuery = scopeBySchool(schoolId, { studentId: student._id });
+    if (!isNaN(attYearNum)) {
+      attQuery.date = { $gte: `${attYearNum}-04-01`, $lte: `${attYearNum + 1}-03-31` };
+    }
+    const attendance = await Attendance.find(attQuery).lean();
+    const present = attendance.filter((a) => a.status === 'present' || a.status === 'late').length;
+    const attendancePercent = attendance.length > 0 ? (present / attendance.length) * 100 : 0;
+    if (attendancePercent < 60) {
+      const err = new Error(`Attendance too low (${attendancePercent.toFixed(1)}%)`);
+      err.code = 'LOW_ATTENDANCE';
+      err.attendancePercent = Math.round(attendancePercent * 10) / 10;
+      throw err;
+    }
+  }
+
+  // 3. Target-class capacity — same helper single-promote uses, plus any
+  //    in-batch reservations so a bulk batch never over-fills one class.
+  const capacityResult = await checkClassCapacity(targetClass._id, schoolId);
+  const projectedCount = (capacityResult?.currentCount || 0) + (extraOccupied || 0);
+  if (capacityResult && projectedCount >= capacityResult.capacity) {
+    const err = new Error(
+      `Target class is at full capacity (${projectedCount}/${capacityResult.capacity})`
+    );
+    err.code = 'CLASS_FULL';
+    err.currentCount = projectedCount;
+    err.capacity = capacityResult.capacity;
+    throw err;
+  }
+
+  return targetClass;
 }
 
 export function processParents(parents = []) {
@@ -357,6 +454,7 @@ export async function buildStudentListQuery(
       ...(schoolId ? { schoolId } : {}),
       academicYear: academicYears.length > 0 ? { $in: academicYears } : resolvedAcademicYear,
       overallStatus: { $in: feeStatuses },
+      isDeleted: { $ne: true },
     }).distinct('studentId');
 
     // Match ONLY against StudentFeeStructure.overallStatus (the authoritative
@@ -378,6 +476,7 @@ export async function initializeFeeStructure(student, options = {}) {
     studentId: student._id,
     academicYear,
     schoolId: student.schoolId,
+    isDeleted: { $ne: true },
   }).session(session);
 
   if (existingFeeStructure) {
@@ -436,12 +535,6 @@ export async function initializeFeeStructure(student, options = {}) {
   return feeStructure;
 }
 
-function overallStatusFor(totalFee, totalPaid) {
-  if (totalPaid >= totalFee && totalFee > 0) return 'paid';
-  if (totalPaid > 0) return 'partial';
-  return 'pending';
-}
-
 function feeHeadStatusFor(amount, paidAmount) {
   if (paidAmount >= amount && amount > 0) return 'paid';
   if (paidAmount > 0) return 'partial';
@@ -469,6 +562,7 @@ export async function resyncFeeStructureForClassChange(student, options = {}) {
     studentId: student._id,
     academicYear,
     schoolId: student.schoolId,
+    isDeleted: { $ne: true },
   }).session(session);
 
   if (!existing) {
@@ -534,8 +628,13 @@ export async function resyncFeeStructureForClassChange(student, options = {}) {
   existing.feeHeads = mergedHeads;
   existing.totalFee = mergedHeads.reduce((s, h) => s + (h.amount || 0), 0);
   existing.totalPaid = mergedHeads.reduce((s, h) => s + (h.paidAmount || 0), 0);
-  existing.totalBalance = Math.max(0, existing.totalFee - existing.totalPaid);
-  existing.overallStatus = overallStatusFor(existing.totalFee, existing.totalPaid);
+  // Use the canonical balance calculator so discountApplied (and any
+  // lateFeeApplied) is factored in. The local overallStatusFor helper ignored
+  // discounts, so a discounted student who changed class was over-billed by
+  // their concession amount.
+  const { totalBalance, overallStatus } = computeFeeBalance(existing);
+  existing.totalBalance = totalBalance;
+  existing.overallStatus = overallStatus;
   await existing.save({ session });
   return existing;
 }

@@ -133,6 +133,7 @@ import {
   getNextAvailableReceiptNumber,
 } from '../database.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
+import FeeRule from '../models/FeeRule.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { validateObjectIdParam } from '../middleware/validation.js';
@@ -144,6 +145,7 @@ import {
   computeFeeHeadStatus,
   syncStudentFeeDetails,
 } from '../utils/feeCalculator.js';
+import { applyLateFeeToFeeStructure } from '../utils/lateFeeCalculator.js';
 import {
   validateZod,
   createFeePaymentSchema,
@@ -194,6 +196,31 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// [F5] Sum of every fee head's `overpaidAmount` for a student's fee structures.
+// A head records overpaidAmount when an admin lowers its amount below what the
+// student already paid (see routes/feeHeads.js applyFeeHeadToStudents). That
+// surplus is real money the school owes back, so the refund cap must include it
+// — without this, the school could see the surplus on the head but be blocked
+// from refunding it because the refund cap only counted (paid − refunded).
+// Optionally pass a mongoose session so the read participates in the refund
+// transaction and can't observe a half-applied state.
+async function getTotalOverpaid(studentId, schoolId, academicYear, session) {
+  const match = {
+    studentId: new mongoose.Types.ObjectId(studentId),
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+  };
+  if (academicYear) match.academicYear = academicYear;
+  const pipeline = [
+    { $match: match },
+    { $unwind: '$feeHeads' },
+    { $group: { _id: null, total: { $sum: { $ifNull: ['$feeHeads.overpaidAmount', 0] } } } },
+  ];
+  const agg = StudentFeeStructure.aggregate(pipeline);
+  if (session) agg.session(session);
+  const [result] = await agg.exec();
+  return Number(result?.total || 0);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -230,9 +257,62 @@ function toObjectIdOrLeave(value) {
   }
 }
 
+// F4: enforce the school's active FeeRule (allowPartialPayment /
+// minimumPartialPaymentPercent). Returns the rule so callers can also consult
+// refundPolicy. When no rule exists (or the field is unset), behavior is
+// unchanged — only an explicit restriction rejects. Throws an Error with a
+// `.code` so the payment handlers' existing 400 mapping surfaces it cleanly.
+async function loadActiveFeeRule(schoolId, academicYear) {
+  if (!schoolId || !academicYear) return null;
+  try {
+    return await FeeRule.findOne({ schoolId, academicYear }).lean();
+  } catch {
+    // A rule-lookup failure must never block a payment.
+    return null;
+  }
+}
+
+function assertPaymentAllowedByRule(feeRule, amount, totalBalance) {
+  if (!feeRule) return;
+  // Full settlement is always allowed, even when partial payments are off.
+  const isFullSettlement = Number(amount) >= Number(totalBalance || 0) - 0.01;
+  if (isFullSettlement) return;
+
+  if (feeRule.allowPartialPayment === false) {
+    const err = new Error(
+      `Partial payments are not allowed. The full outstanding balance (₹${totalBalance || 0}) must be paid.`
+    );
+    err.code = 'PARTIAL_PAYMENT_NOT_ALLOWED';
+    throw err;
+  }
+  const minPercent = Number(feeRule.minimumPartialPaymentPercent || 0);
+  if (minPercent > 0 && Number(totalBalance || 0) > 0) {
+    const minimumAmount = (Number(totalBalance) * minPercent) / 100;
+    if (Number(amount) < minimumAmount - 0.01) {
+      const err = new Error(
+        `Payment amount (₹${amount}) is below the minimum partial payment of ${minPercent}% of the balance (₹${minimumAmount.toFixed(2)}).`
+      );
+      err.code = 'BELOW_MINIMUM_PARTIAL_PAYMENT';
+      err.minAmount = Math.round(minimumAmount * 100) / 100;
+      throw err;
+    }
+  }
+}
+
+// F4: when refundPolicy.enabled, only heads listed in refundableHeads may be
+// reversed. Returns the filtered array; pass-through when the policy is off or
+// no rule is configured so existing behavior is unchanged.
+function filterRefundableHeads(structureHeads, feeRule) {
+  if (!feeRule || !feeRule.refundPolicy?.enabled) return structureHeads;
+  const allowed = feeRule.refundPolicy.refundableHeads || [];
+  if (allowed.length === 0) return structureHeads;
+  const allowedStr = new Set(allowed.map((id) => String(id)));
+  return structureHeads.filter((head) => head.feeHeadId && allowedStr.has(String(head.feeHeadId)));
+}
+
 async function buildRefundsFilter(req, { includeSearch = true } = {}) {
   const { studentId, status, academicYear, search } = req.query;
-  const filter = scopeBySchool(req.user?.schoolId, {});
+  const filter = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
   // Always cast schoolId (added by scopeBySchool) to ObjectId so the filter is
   // safe for aggregate().
   if (filter.schoolId) filter.schoolId = toObjectIdOrLeave(filter.schoolId);
@@ -272,7 +352,7 @@ router.get(
       } = req.query;
       const skip = (page - 1) * limit;
 
-      const filter = scopeBySchool(req.user?.schoolId, {});
+      const filter = scopeBySchool(req.user?.schoolId, { isDeleted: { $ne: true } });
       if (studentId) filter.studentId = studentId;
       if (classId) filter.classId = classId;
       if (academicYear) filter.academicYear = academicYear;
@@ -365,6 +445,7 @@ router.get('/payments/summary', checkPermission('fees', 'view'), async (req, res
             academicYear: resolvedYear,
             paymentDate: date,
             status: { $ne: 'cancelled' },
+            isDeleted: { $ne: true },
           },
         },
         { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -375,6 +456,26 @@ router.get('/payments/summary', checkPermission('fees', 'view'), async (req, res
             schoolId: schoolObjectId,
             academicYear: resolvedYear,
             totalBalance: { $gt: 0 },
+            isDeleted: { $ne: true },
+          },
+        },
+        // Join the owning student and drop orphaned fee structures before
+        // summing the outstanding balance / counting overdue students.
+        // Without this, archived students keep "live" fee rows that surface as
+        // phantom "X with balance" on the Fees KPI. Mirrors /fees/class-summary.
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: '$student' },
+        {
+          $match: {
+            'student.isDeleted': { $ne: true },
+            'student.status': 'active',
           },
         },
         { $group: { _id: null, total: { $sum: '$totalBalance' }, students: { $sum: 1 } } },
@@ -537,7 +638,9 @@ router.post(
           gatewayVerified = true;
         }
       }
-      const receiptNumber = await getNextAvailableReceiptNumber(schoolId);
+      // (F11) receiptNumber is generated INSIDE the transaction below so the
+      // Counter $inc rolls back if the transaction aborts (balance exceeded,
+      // idempotency collision, etc.), avoiding gaps in the receipt sequence.
       const recordedPaymentDate = paymentDate || new Date().toISOString().split('T')[0];
       let payment;
       let updatedFeeStructure;
@@ -548,6 +651,7 @@ router.post(
           scopeBySchool(schoolId, {
             studentId: student._id,
             academicYear: resolvedAcademicYear,
+            isDeleted: { $ne: true },
           })
         ).session(mongoSession);
 
@@ -597,6 +701,12 @@ router.post(
           balanceError.maxAmount = feeStructure.totalBalance || 0;
           throw balanceError;
         }
+
+        // F4: enforce the active FeeRule's partial-payment policy against the
+        // freshly-read balance snapshot (inside the transaction). No rule or an
+        // unset policy → behavior unchanged.
+        const activeFeeRule = await loadActiveFeeRule(schoolId, resolvedAcademicYear);
+        assertPaymentAllowedByRule(activeFeeRule, amount, feeStructure.totalBalance);
 
         let selectedInstallment = null;
         if (installmentIndex !== undefined) {
@@ -684,11 +794,17 @@ router.post(
 
         feeStructure.totalPaid = Number(feeStructure.totalPaid || 0) + amount;
         feeStructure.lastPaymentDate = new Date(recordedPaymentDate);
+        // Recompute late-fee liability before deriving the balance so a payment
+        // against an overdue account still reflects the configured late fee
+        // (previously the late-fee rule was never applied to any balance).
+        await applyLateFeeToFeeStructure(feeStructure, { asOf: recordedPaymentDate });
         const totals = computeFeeBalance(feeStructure);
         feeStructure.totalBalance = totals.totalBalance;
         feeStructure.overallStatus = totals.overallStatus;
         updatedFeeStructure = await feeStructure.save({ session: mongoSession });
 
+        // (F11) generate inside the transaction so the counter $inc rolls back on abort
+        const receiptNumber = await getNextAvailableReceiptNumber(schoolId, mongoSession);
         [payment] = await FeePayment.create(
           [
             {
@@ -742,7 +858,12 @@ router.post(
         try {
           const { sendNotification } = await import('./notifications.js');
           const { Parent } = await import('../database.js');
-          const parents = await Parent.find({ 'children.studentId': studentId }).select('_id');
+          // School-scope the parent lookup so a studentId that happens to be
+          // reused/visible across tenants can never notify parents in another
+          // school. Previously the query was unscoped (X18).
+          const parents = await Parent.find(
+            scopeBySchool(schoolId, { 'children.studentId': studentId })
+          ).select('_id');
           for (const parent of parents) {
             await sendNotification(
               parent._id,
@@ -806,12 +927,15 @@ router.post(
           'FEE_HEAD_BALANCE_EXCEEDED',
           'INSTALLMENT_NOT_FOUND',
           'INSTALLMENT_BALANCE_EXCEEDED',
+          'PARTIAL_PAYMENT_NOT_ALLOWED',
+          'BELOW_MINIMUM_PARTIAL_PAYMENT',
         ].includes(error.code)
       ) {
         return res.status(400).json({
           error: error.message,
           code: error.code,
           ...(error.maxAmount !== undefined ? { maxAmount: error.maxAmount } : {}),
+          ...(error.minAmount !== undefined ? { minAmount: error.minAmount } : {}),
         });
       }
       if (error.code === 'FEE_STRUCTURE_NOT_CONFIGURED') {
@@ -860,6 +984,7 @@ router.get('/payments/total-paid', checkPermission('fees', 'view'), async (req, 
           studentId: new mongoose.Types.ObjectId(parsed.data.studentId),
           academicYear: resolvedAcademicYear,
           status: 'completed',
+          isDeleted: { $ne: true },
         },
       },
       {
@@ -889,7 +1014,7 @@ router.get(
   async (req, res) => {
     try {
       const payment = await FeePayment.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       ).populate('studentId', 'name admissionId class');
 
       if (!payment) {
@@ -916,9 +1041,9 @@ router.delete(
     try {
       const schoolId = await resolveRequestSchoolId(req);
       await session.withTransaction(async () => {
-        payment = await FeePayment.findOne(scopeBySchool(schoolId, { _id: req.params.id })).session(
-          session
-        );
+        payment = await FeePayment.findOne(
+          scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+        ).session(session);
         if (!payment) {
           const notFound = new Error('Payment not found');
           notFound.code = 'PAYMENT_NOT_FOUND';
@@ -934,6 +1059,7 @@ router.delete(
           scopeBySchool(schoolId, {
             originalPaymentId: payment._id,
             status: { $in: ['pending', 'approved', 'processed'] },
+            isDeleted: { $ne: true },
           })
         ).session(session);
         if (blockingRefund) {
@@ -952,6 +1078,7 @@ router.delete(
             scopeBySchool(schoolId, {
               studentId: payment.studentId,
               academicYear: payment.academicYear,
+              isDeleted: { $ne: true },
             })
           ).session(session);
           if (!feeStructure) {
@@ -962,6 +1089,7 @@ router.delete(
             throw structureError;
           }
 
+          let reversedHeadCount = 0;
           for (const paymentHead of payment.feeHeads || []) {
             const matchingHead = feeStructure.feeHeads.find(
               (head) =>
@@ -977,7 +1105,24 @@ router.delete(
               const headResult = computeFeeHeadStatus(matchingHead);
               matchingHead.balanceAmount = headResult.balanceAmount;
               matchingHead.status = headResult.status;
+              reversedHeadCount += 1;
             }
+          }
+          // Consistency guard: if the payment carried a per-head breakdown but
+          // NONE of those heads could be located on the current fee structure
+          // (typical after a class change rebuilt/renamed the heads), the
+          // top-level `totalPaid -= amount` below would still run and the two
+          // ledgers would permanently diverge — per-head reports no longer
+          // tieing to the totals. Fail loudly instead of corrupting the books.
+          // Payments with no head breakdown (legacy) fall through to the
+          // total-only reversal path below, which is correct for them.
+          const paymentHeadCount = (payment.feeHeads || []).length;
+          if (paymentHeadCount > 0 && reversedHeadCount === 0) {
+            const headMismatchError = new Error(
+              'Payment cannot be cancelled: none of its fee-head entries match the current fee structure (the student may have changed class). Reverse via a refund or realign heads first.'
+            );
+            headMismatchError.code = 'FEE_HEAD_REVERSAL_NO_MATCH';
+            throw headMismatchError;
           }
           if (payment.installmentIndex !== undefined && payment.installmentIndex !== null) {
             const installment = feeStructure.installments?.[payment.installmentIndex];
@@ -1009,6 +1154,9 @@ router.delete(
             Number(feeStructure.totalPaid || 0) - cancelledAmount,
             0
           );
+          // A cancellation changes what's outstanding, so recompute late-fee
+          // liability before deriving the new balance.
+          await applyLateFeeToFeeStructure(feeStructure);
           const totals = computeFeeBalance(feeStructure);
           feeStructure.totalBalance = totals.totalBalance;
           feeStructure.overallStatus = totals.overallStatus;
@@ -1070,6 +1218,13 @@ router.delete(
       if (['FEE_STRUCTURE_NOT_FOUND', 'INSTALLMENT_NOT_FOUND'].includes(error.code)) {
         return res.status(409).json({ error: error.message, code: error.code });
       }
+      // F6: the per-head reversal guard fires when a payment carries a head
+      // breakdown but none of those heads match the current fee structure
+      // (e.g. after a class change). Surface it as a clear 409 instead of the
+      // generic 500 the catch-all below would return.
+      if (error.code === 'FEE_HEAD_REVERSAL_NO_MATCH') {
+        return res.status(409).json({ error: error.message, code: error.code });
+      }
       logger.error({ err: error }, 'Error cancelling payment');
       res.status(500).json({ error: 'Failed to cancel payment' });
     } finally {
@@ -1088,7 +1243,7 @@ router.put(
   async (req, res) => {
     try {
       const payment = await FeePayment.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
 
       if (!payment) {
@@ -1212,7 +1367,7 @@ router.put(
       }
 
       const populated = await FeePayment.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: payment._id })
+        scopeBySchool(req.user?.schoolId, { _id: payment._id, isDeleted: { $ne: true } })
       ).populate('studentId', 'name admissionId class');
 
       res.json(populated);
@@ -1337,7 +1492,7 @@ router.get(
   async (req, res) => {
     try {
       const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       )
         .populate('studentId', 'name admissionId')
         .populate('classId', 'name section');
@@ -1406,6 +1561,7 @@ router.post(
             classId,
             academicYear: resolvedAcademicYear,
             status: 'completed',
+            isDeleted: { $ne: true },
           })
         );
         if (!originalPayment) {
@@ -1419,6 +1575,7 @@ router.post(
               schoolId: new mongoose.Types.ObjectId(schoolId),
               originalPaymentId: originalPayment._id,
               status: { $ne: 'rejected' },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1444,6 +1601,7 @@ router.post(
               studentId: new mongoose.Types.ObjectId(studentId),
               academicYear: resolvedAcademicYear,
               status: 'completed',
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1455,6 +1613,7 @@ router.post(
               studentId: new mongoose.Types.ObjectId(studentId),
               academicYear: resolvedAcademicYear,
               status: { $nin: ['rejected'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1462,11 +1621,14 @@ router.post(
       ]);
       const totalPaid = totalPaidResult[0]?.total || 0;
       const totalRefunded = totalRefundedResult[0]?.total || 0;
-      const refundableBalance = totalPaid - totalRefunded;
+      // [F5] Include surplus from fee heads lowered below what was paid —
+      // that money is refundable too but isn't captured by (paid − refunded).
+      const overpaidSurplus = await getTotalOverpaid(studentId, schoolId, resolvedAcademicYear);
+      const refundableBalance = totalPaid - totalRefunded + overpaidSurplus;
 
       if (amount > refundableBalance) {
         return res.status(400).json({
-          error: `Refund amount (₹${amount}) exceeds refundable balance (₹${refundableBalance}). Total paid: ₹${totalPaid}, already refunded: ₹${totalRefunded}.`,
+          error: `Refund amount (₹${amount}) exceeds refundable balance (₹${refundableBalance}). Total paid: ₹${totalPaid}, already refunded: ₹${totalRefunded}, overpaid surplus: ₹${overpaidSurplus}.`,
         });
       }
 
@@ -1494,7 +1656,9 @@ router.post(
       });
 
       await refund.save();
-      const populated = await FeeRefund.findOne(scopeBySchool(schoolId, { _id: refund._id }))
+      const populated = await FeeRefund.findOne(
+        scopeBySchool(schoolId, { _id: refund._id, isDeleted: { $ne: true } })
+      )
         .populate('studentId', 'name admissionId')
         .populate('classId', 'name section');
 
@@ -1549,9 +1713,9 @@ router.put(
     let refund;
     try {
       await session.withTransaction(async () => {
-        refund = await FeeRefund.findOne(scopeBySchool(schoolId, { _id: req.params.id })).session(
-          session
-        );
+        refund = await FeeRefund.findOne(
+          scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+        ).session(session);
         if (!refund) {
           const error = new Error('Refund not found');
           error.code = 'REFUND_NOT_FOUND';
@@ -1588,6 +1752,7 @@ router.put(
                 studentId: refund.studentId,
                 academicYear: refund.academicYear,
                 status: 'completed',
+                isDeleted: { $ne: true },
               },
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1600,6 +1765,7 @@ router.put(
                 academicYear: refund.academicYear,
                 _id: { $ne: refund._id },
                 status: { $in: ['approved', 'processed'] },
+                isDeleted: { $ne: true },
               },
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1607,7 +1773,15 @@ router.put(
         ]);
         const currentTotalPaid = totalPaidAgg[0]?.total || 0;
         const reservedRefunds = reservedRefundAgg[0]?.total || 0;
-        const availableToRefund = Math.max(currentTotalPaid - reservedRefunds, 0);
+        // [F5] Include surplus from fee heads lowered below what was paid.
+        // Read inside the transaction so the cap can't observe a concurrent edit.
+        const overpaidSurplus = await getTotalOverpaid(
+          refund.studentId,
+          schoolId,
+          refund.academicYear,
+          session
+        );
+        const availableToRefund = Math.max(currentTotalPaid - reservedRefunds + overpaidSurplus, 0);
         if (refund.amount > availableToRefund) {
           const error = new Error(
             `Refund amount (${refund.amount}) exceeds the remaining refundable balance (${availableToRefund}).`
@@ -1623,6 +1797,7 @@ router.put(
               studentId: refund.studentId,
               academicYear: refund.academicYear,
               status: 'completed',
+              isDeleted: { $ne: true },
             })
           ).session(session);
           if (!originalPayment) {
@@ -1637,6 +1812,7 @@ router.put(
                 originalPaymentId: originalPayment._id,
                 _id: { $ne: refund._id },
                 status: { $in: ['approved', 'processed'] },
+                isDeleted: { $ne: true },
               },
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1718,9 +1894,9 @@ router.put(
     let refund;
     try {
       await session.withTransaction(async () => {
-        refund = await FeeRefund.findOne(scopeBySchool(schoolId, { _id: req.params.id })).session(
-          session
-        );
+        refund = await FeeRefund.findOne(
+          scopeBySchool(schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
+        ).session(session);
         if (!refund) {
           const notFound = new Error('Refund not found');
           notFound.code = 'REFUND_NOT_FOUND';
@@ -1766,6 +1942,7 @@ router.put(
           scopeBySchool(schoolId, {
             studentId: refund.studentId,
             academicYear: refund.academicYear,
+            isDeleted: { $ne: true },
           })
         ).session(session);
         if (!feeStructure) {
@@ -1781,6 +1958,7 @@ router.put(
               studentId: refund.studentId,
               academicYear: refund.academicYear,
               status: 'processed',
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1792,15 +1970,26 @@ router.put(
               studentId: refund.studentId,
               academicYear: refund.academicYear,
               status: 'completed',
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
         ]).session(session);
         const refundableBalance =
           Number(completedPayments[0]?.total || 0) - Number(processedRefunds[0]?.total || 0);
-        if (refund.amount > refundableBalance || refund.amount > feeStructure.totalPaid) {
+        // [F5] Include surplus from fee heads lowered below what was paid.
+        // feeStructure is already loaded above, so we can compute the per-head
+        // surplus in place without another DB hit.
+        const overpaidSurplus = (feeStructure.feeHeads || []).reduce(
+          (sum, h) => sum + Number(h?.overpaidAmount || 0),
+          0
+        );
+        if (
+          refund.amount > refundableBalance + overpaidSurplus ||
+          refund.amount > feeStructure.totalPaid + overpaidSurplus
+        ) {
           const capError = new Error(
-            `Refund amount (${refund.amount}) exceeds the remaining refundable balance (${Math.max(refundableBalance, 0)}).`
+            `Refund amount (${refund.amount}) exceeds the remaining refundable balance (${Math.max(refundableBalance + overpaidSurplus, 0)}).`
           );
           capError.code = 'REFUND_EXCEEDS_PAID';
           throw capError;
@@ -1816,6 +2005,7 @@ router.put(
               classId: refund.classId,
               academicYear: refund.academicYear,
               status: 'completed',
+              isDeleted: { $ne: true },
             })
           ).session(session);
           if (!originalPayment) {
@@ -1830,6 +2020,7 @@ router.put(
                 originalPaymentId: originalPayment._id,
                 _id: { $ne: refund._id },
                 status: 'processed',
+                isDeleted: { $ne: true },
               },
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -1861,6 +2052,20 @@ router.put(
           remaining -= reversible;
         };
 
+        // F4: when the school's refund policy is enabled, only heads listed in
+        // refundPolicy.refundableHeads may be reversed. Non-refundable heads
+        // (e.g. already-consumed admission fee) are skipped so the school never
+        // refunds something it shouldn't. No rule / policy disabled → unchanged.
+        const refundFeeRule = await loadActiveFeeRule(schoolId, refund.academicYear);
+        const isHeadRefundable = (head) => {
+          if (!refundFeeRule || !refundFeeRule.refundPolicy?.enabled) return true;
+          const allowed = refundFeeRule.refundPolicy.refundableHeads || [];
+          if (allowed.length === 0) return true;
+          return Boolean(
+            head?.feeHeadId && allowed.some((id) => String(id) === String(head.feeHeadId))
+          );
+        };
+
         if (originalPayment?.feeHeads?.length) {
           for (const paymentHead of originalPayment.feeHeads) {
             if (remaining <= 0) break;
@@ -1869,10 +2074,12 @@ router.put(
                 String(head.feeHeadId) === String(paymentHead.feeHeadId) ||
                 (!paymentHead.feeHeadId && head.name === paymentHead.name)
             );
-            if (structureHead) reverseHead(structureHead, paymentHead.amount);
+            if (!structureHead) continue;
+            if (!isHeadRefundable(structureHead)) continue;
+            reverseHead(structureHead, paymentHead.amount);
           }
         } else {
-          for (const structureHead of feeStructure.feeHeads) {
+          for (const structureHead of filterRefundableHeads(feeStructure.feeHeads, refundFeeRule)) {
             if (remaining <= 0) break;
             reverseHead(structureHead, remaining);
           }
@@ -1916,6 +2123,8 @@ router.put(
         }
 
         feeStructure.totalPaid = Number(feeStructure.totalPaid || 0) - Number(refund.amount);
+        // A refund changes what's outstanding, so recompute late-fee liability.
+        await applyLateFeeToFeeStructure(feeStructure);
         const totals = computeFeeBalance(feeStructure);
         feeStructure.totalBalance = totals.totalBalance;
         feeStructure.overallStatus = totals.overallStatus;
@@ -1999,7 +2208,7 @@ router.put(
   async (req, res) => {
     try {
       const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
       if (!refund) return res.status(404).json({ error: 'Refund not found' });
       if (refund.status === 'processed')
@@ -2052,7 +2261,7 @@ router.put(
   async (req, res) => {
     try {
       const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
       if (!refund) return res.status(404).json({ error: 'Refund not found' });
       if (refund.status !== 'pending') {
@@ -2070,6 +2279,7 @@ router.put(
                 studentId: refund.studentId,
                 academicYear: refund.academicYear,
                 status: 'completed',
+                isDeleted: { $ne: true },
               },
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -2082,6 +2292,7 @@ router.put(
                 academicYear: refund.academicYear,
                 _id: { $ne: refund._id },
                 status: { $ne: 'rejected' },
+                isDeleted: { $ne: true },
               },
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -2105,6 +2316,7 @@ router.put(
                 studentId: refund.studentId,
                 academicYear: refund.academicYear,
                 status: 'completed',
+                isDeleted: { $ne: true },
               })
             ).lean(),
             FeeRefund.aggregate([
@@ -2114,6 +2326,7 @@ router.put(
                   originalPaymentId: refund.originalPaymentId,
                   _id: { $ne: refund._id },
                   status: { $ne: 'rejected' },
+                  isDeleted: { $ne: true },
                 },
               },
               { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -2166,7 +2379,7 @@ router.put(
       }
 
       const populated = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: refund._id })
+        scopeBySchool(req.user?.schoolId, { _id: refund._id, isDeleted: { $ne: true } })
       )
         .populate('studentId', 'name admissionId')
         .populate('classId', 'name section');
@@ -2187,7 +2400,7 @@ router.delete(
   async (req, res) => {
     try {
       const refund = await FeeRefund.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
       );
       if (!refund) return res.status(404).json({ error: 'Refund not found' });
       if (refund.status !== 'pending') {
@@ -2283,6 +2496,7 @@ router.get('/class-summary', checkPermission('fees', 'view'), async (req, res) =
           schoolId: schoolObjectId,
           academicYear,
           ...(classFilter ? { classId: classFilter } : {}),
+          isDeleted: { $ne: true },
         },
       },
       {
@@ -2391,6 +2605,7 @@ router.get(
       const payment = await FeePayment.findOne({
         _id: req.params.id,
         schoolId: req.user.schoolId,
+        isDeleted: { $ne: true },
       }).lean();
       if (!payment) {
         return res.status(404).json({ error: 'Payment not found' });
@@ -2424,6 +2639,7 @@ router.get(
       const payment = await FeePayment.findOne({
         _id: req.params.id,
         schoolId: req.user.schoolId,
+        isDeleted: { $ne: true },
       }).lean();
       if (!payment) {
         return res.status(404).json({ error: 'Payment not found' });
@@ -2455,6 +2671,7 @@ router.post(
       const payment = await FeePayment.findOne({
         _id: req.params.id,
         schoolId: req.user.schoolId,
+        isDeleted: { $ne: true },
       }).lean();
       if (!payment) {
         return res.status(404).json({ error: 'Payment not found' });

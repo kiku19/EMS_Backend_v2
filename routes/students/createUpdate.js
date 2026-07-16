@@ -328,6 +328,14 @@ router.put(
         }
       }
 
+      // S7: A DOB change can move a student across the COPPA (under-13)
+      // threshold. The create handler computes coppaApplicable at admission,
+      // but PUT never recomputed it, so a corrected DOB left a stale flag.
+      // Recompute whenever the client sends a new dateOfBirth.
+      if (req.body.dateOfBirth) {
+        updateData.coppaApplicable = isCoppaApplicable(req.body.dateOfBirth);
+      }
+
       cleanObject(updateData);
 
       const originalStudent = await Student.findOne(
@@ -495,6 +503,7 @@ router.put(
             studentId: currentStudent._id,
             academicYear: oldAcademicYear,
             schoolId: extractSchoolId(req.user?.schoolId),
+            isDeleted: { $ne: true },
           }).session(session);
 
           Object.assign(currentStudent, updateData);
