@@ -8,7 +8,7 @@ import {
   createStudentRecord,
   createClassRecord,
 } from './helpers/factories.js';
-import { StudentFeeStructure, Substitution } from '../database.js';
+import { Staff, StudentFeeStructure, Substitution } from '../database.js';
 import { createTestApp } from './helpers/testApp.js';
 
 let seq = 0;
@@ -646,6 +646,105 @@ describe('dashboard routes', () => {
       const res = await request(app).get('/api/dashboard/birthdays').set(headers).expect(200);
 
       expect(res.body.count).toBe(0);
+    });
+  });
+
+  describe('GET /api/dashboard/birthdays-today', () => {
+    function birthdayDate(yearOffset = -10) {
+      const date = new Date();
+      date.setFullYear(date.getFullYear() + yearOffset);
+      return date.toISOString().slice(0, 10);
+    }
+
+    it('requires authentication', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/birthdays-today').expect(401);
+    });
+
+    it('returns separate student and staff birthday rows', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const klass = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 5',
+        section: 'C',
+      });
+      const student = await createStudentRecord({
+        schoolId: school._id,
+        classId: klass._id,
+        name: 'Birthday Student',
+        dateOfBirth: birthdayDate(),
+      });
+      const staffMember = await Staff.create({
+        schoolId: school._id,
+        code: `BD-${nextSeq()}`,
+        name: 'Birthday Teacher',
+        role: ['Teacher'],
+        email: `bday-${Date.now()}@example.com`,
+        phone: `9${Date.now()}`.slice(-10),
+        password: 'Password123',
+        dob: birthdayDate(-35),
+        status: 'active',
+      });
+
+      const response = await request(app)
+        .get('/api/dashboard/birthdays-today')
+        .set(headers)
+        .expect(200);
+
+      expect(response.body.students).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            studentId: String(student._id),
+            name: 'Birthday Student',
+            className: 'Class 5 C',
+          }),
+        ])
+      );
+      expect(response.body.staff).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            staffId: String(staffMember._id),
+            name: 'Birthday Teacher',
+          }),
+        ])
+      );
+      expect(response.body.count).toBe(
+        response.body.students.length + response.body.staff.length
+      );
+    });
+
+    it('scopes results to the caller school and respects limit', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const klass = await createClassRecord({ schoolId: school._id, name: 'Limit' });
+      await Promise.all(
+        Array.from({ length: 4 }, (_, index) =>
+          createStudentRecord({
+            schoolId: school._id,
+            classId: klass._id,
+            name: `Birthday ${index}`,
+            dateOfBirth: birthdayDate(),
+          })
+        )
+      );
+      const otherSchool = await createSchoolRecord({
+        name: `Other Birthday School ${nextSeq()}`,
+        code: `OBS-${nextSeq()}`,
+      });
+      const otherClass = await createClassRecord({ schoolId: otherSchool._id, name: 'Other' });
+      await createStudentRecord({
+        schoolId: otherSchool._id,
+        classId: otherClass._id,
+        name: 'Foreign Birthday',
+        dateOfBirth: birthdayDate(),
+      });
+
+      const response = await request(app)
+        .get('/api/dashboard/birthdays-today?limit=2')
+        .set(headers)
+        .expect(200);
+
+      expect(response.body.students).toHaveLength(2);
+      expect(response.body.students.map((row) => row.name)).not.toContain('Foreign Birthday');
     });
   });
 });

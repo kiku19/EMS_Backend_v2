@@ -6,11 +6,7 @@
 import request from 'supertest';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { generateToken } from '../middleware/auth.js';
-import {
-  resetDefaultSchool,
-  createSchoolRecord,
-  createStaffUser,
-} from './helpers/factories.js';
+import { resetDefaultSchool, createSchoolRecord, createStaffUser } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 import { School } from '../database.js';
 import SchoolSubscription from '../models/SchoolSubscription.js';
@@ -64,18 +60,14 @@ describe('Phase 6 — school lifecycle + status guard', () => {
   it('rejects non-super-admin staff with 403', async () => {
     // Need a valid session so authenticate passes; requireSuperAdmin then rejects.
     await makeSession(school._id, admin._id, `test-session-${admin._id}`);
-    const res = await request(app)
-      .post(`${LC}/${school._id}/suspend`)
-      .set(staffHeaders(admin));
+    const res = await request(app).post(`${LC}/${school._id}/suspend`).set(staffHeaders(admin));
     expect(res.status).toBe(403);
   });
 
   it('suspends a school, revokes its sessions, and blocks its API access', async () => {
     await makeSession(school._id, admin._id, 'sess-1');
 
-    const res = await request(app)
-      .post(`${LC}/${school._id}/suspend`)
-      .set(SUPER_ADMIN_HEADERS);
+    const res = await request(app).post(`${LC}/${school._id}/suspend`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('suspended');
     expect(res.body.sessionsRevoked).toBe(1);
@@ -96,9 +88,7 @@ describe('Phase 6 — school lifecycle + status guard', () => {
   it('reactivates a suspended school and restores access', async () => {
     await School.findByIdAndUpdate(school._id, { status: 'suspended' });
 
-    const res = await request(app)
-      .post(`${LC}/${school._id}/reactivate`)
-      .set(SUPER_ADMIN_HEADERS);
+    const res = await request(app).post(`${LC}/${school._id}/reactivate`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('active');
 
@@ -107,9 +97,7 @@ describe('Phase 6 — school lifecycle + status guard', () => {
   });
 
   it('locks a school (admin/security lock)', async () => {
-    const res = await request(app)
-      .post(`${LC}/${school._id}/lock`)
-      .set(SUPER_ADMIN_HEADERS);
+    const res = await request(app).post(`${LC}/${school._id}/lock`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('locked');
   });
@@ -149,9 +137,7 @@ describe('Phase 6 — school lifecycle + status guard', () => {
 
   it('returns 404 for an unknown school on suspend', async () => {
     const fake = 'aaaaaaaaaaaaaaaaaaaaaaaa';
-    const res = await request(app)
-      .post(`${LC}/${fake}/suspend`)
-      .set(SUPER_ADMIN_HEADERS);
+    const res = await request(app).post(`${LC}/${fake}/suspend`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(404);
   });
 });

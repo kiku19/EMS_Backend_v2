@@ -1102,6 +1102,10 @@ export const zodSchemas = {
   forgotPassword: forgotPasswordSchema,
   resetPassword: resetPasswordSchema,
 
+  // Self-serve signup email verification (PR2 / SCH-218)
+  verifyEmail: verifyEmailSchema,
+  resendVerification: resendVerificationSchema,
+
   // 2FA
   twoFactorVerifyLogin: twoFactorVerifyLoginSchema,
   twoFactorConfirmSetup: twoFactorConfirmSetupSchema,
@@ -1113,10 +1117,6 @@ export const zodSchemas = {
 
   // Self-serve school signup (no invite required). Mounted behind ENABLE_SELF_SIGNUP.
   selfSignup: selfSignupSchema,
-
-  // PR2 — email verification + resend. Both public, gated by ENABLE_SELF_SIGNUP.
-  verifyEmail: verifyEmailSchema,
-  resendVerification: resendVerificationSchema,
 
   // POST /api/timetable — Create timetable
   createTimetable: z.object({

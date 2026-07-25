@@ -21,8 +21,16 @@ const activityQuerySchema = z.object({
     .optional(),
   action: z.string().max(64).optional(),
   entity: z.string().max(64).optional(),
-  since: z.string().datetime({ offset: true }).optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
-  until: z.string().datetime({ offset: true }).optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  since: z
+    .string()
+    .datetime({ offset: true })
+    .optional()
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  until: z
+    .string()
+    .datetime({ offset: true })
+    .optional()
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
   q: z.string().max(200).optional(),
 });
 

@@ -2,7 +2,12 @@ import mongoose from 'mongoose';
 import SchoolSubscription from '../models/SchoolSubscription.js';
 import SchoolInvoice from '../models/SchoolInvoice.js';
 import School from '../models/School.js';
-import { BILLING_PLANS, getEffectivePlan, summarizeSubscription, markInvoicePaid } from './billingService.js';
+import {
+  BILLING_PLANS,
+  getEffectivePlan,
+  summarizeSubscription,
+  markInvoicePaid,
+} from './billingService.js';
 
 // Super-admin billing — cross-school views + overrides.
 //
@@ -30,35 +35,33 @@ export async function getBillingOverview() {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const [activeSubs, byPlan, byStatus, collectedThisMonth, outstanding, totalSchools, totalInvoices] =
-    await Promise.all([
-      // active subscriptions drive MRR (trials are $0)
-      SchoolSubscription.find({ status: 'active' })
-        .select('planKey billingCycle')
-        .lean(),
-      SchoolSubscription.aggregate([
-        { $group: { _id: '$planKey', count: { $sum: 1 } } },
-      ]),
-      SchoolSubscription.aggregate([
-        { $group: { _id: '$status', count: { $sum: 1 } } },
-      ]),
-      SchoolInvoice.aggregate([
-        { $match: { status: 'paid', paidAt: { $gte: monthStart } } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
-      ]),
-      SchoolInvoice.aggregate([
-        { $match: { status: { $in: ['issued', 'failed'] } } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
-      ]),
-      SchoolSubscription.countDocuments({}),
-      SchoolInvoice.countDocuments({}),
-    ]);
+  const [
+    activeSubs,
+    byPlan,
+    byStatus,
+    collectedThisMonth,
+    outstanding,
+    totalSchools,
+    totalInvoices,
+  ] = await Promise.all([
+    // active subscriptions drive MRR (trials are $0)
+    SchoolSubscription.find({ status: 'active' }).select('planKey billingCycle').lean(),
+    SchoolSubscription.aggregate([{ $group: { _id: '$planKey', count: { $sum: 1 } } }]),
+    SchoolSubscription.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    SchoolInvoice.aggregate([
+      { $match: { status: 'paid', paidAt: { $gte: monthStart } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    SchoolInvoice.aggregate([
+      { $match: { status: { $in: ['issued', 'failed'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    SchoolSubscription.countDocuments({}),
+    SchoolInvoice.countDocuments({}),
+  ]);
 
   const mrr = Math.round(
-    activeSubs.reduce(
-      (sum, sub) => sum + monthlyEquivalent(sub.planKey, sub.billingCycle),
-      0
-    )
+    activeSubs.reduce((sum, sub) => sum + monthlyEquivalent(sub.planKey, sub.billingCycle), 0)
   );
 
   return {

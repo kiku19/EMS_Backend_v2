@@ -71,19 +71,15 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/v1/super-admin/billing/subscriptions — every subscription across schools
-router.get(
-  '/subscriptions',
-  validateZod(subscriptionsQuerySchema, 'query'),
-  async (req, res) => {
-    try {
-      const result = await listSubscriptions(req.query);
-      res.json(result);
-    } catch (err) {
-      req.log?.error?.({ err }, 'Failed to list subscriptions');
-      res.status(500).json({ error: 'Failed to list subscriptions' });
-    }
+router.get('/subscriptions', validateZod(subscriptionsQuerySchema, 'query'), async (req, res) => {
+  try {
+    const result = await listSubscriptions(req.query);
+    res.json(result);
+  } catch (err) {
+    req.log?.error?.({ err }, 'Failed to list subscriptions');
+    res.status(500).json({ error: 'Failed to list subscriptions' });
   }
-);
+});
 
 // GET /api/v1/super-admin/billing/invoices — every invoice across schools
 router.get('/invoices', validateZod(invoicesQuerySchema, 'query'), async (req, res) => {

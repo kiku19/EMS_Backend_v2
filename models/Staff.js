@@ -163,6 +163,7 @@ const staffSchema = new mongoose.Schema(
         linkedAt: { type: Date, default: Date.now },
       },
     ],
+
   },
   { timestamps: true, strict: true }
 );
