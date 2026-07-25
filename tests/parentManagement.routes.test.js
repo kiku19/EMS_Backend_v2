@@ -221,7 +221,13 @@ describe('parentManagement routes', () => {
         .expect(200);
 
       expect(res.body.success).toBe(true);
-      expect(res.body.data.generatedPassword).toBeDefined();
+      // X6: the reset password is now a random, single-use credential delivered
+      // out-of-band (SMS). The plaintext must NEVER be returned in the response
+      // body — only whether it was delivered and that a forced change is pending.
+      expect(res.body.data.generatedPassword).toBeUndefined();
+      expect(res.body.data.mustChangePassword).toBe(true);
+      expect(res.body.data).toHaveProperty('delivered');
+      expect(res.body.data).toHaveProperty('deliveryChannel');
     });
   });
 });

@@ -71,6 +71,22 @@ export function getDefaultSchoolSettings(schoolId = null) {
     holidays: [],
     leaveTypes: [],
     subjects: [],
+    departments: [
+      'Academic',
+      'Science',
+      'Mathematics',
+      'Languages',
+      'Social Studies',
+      'Arts',
+      'Sports',
+      'Administration',
+      'Accounts',
+      'IT',
+      'Library',
+      'Transport',
+      'Maintenance',
+      'Others',
+    ],
   };
 }
 

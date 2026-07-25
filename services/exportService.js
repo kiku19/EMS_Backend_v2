@@ -168,11 +168,23 @@ export async function sendExport(res, { format, filename, title, sheetName, head
 
 // ─── STREAMED EXPORT (cursor-based, bounded memory) ─────────────────────────
 
-const STREAM_BATCH_SIZE = 500;
+// Cap on the number of rows written to a single xlsx export. The OOXML
+// format exceljs produces cannot be streamed row-by-row — the workbook is
+// serialized whole at the end of `workbook.xlsx.write(res)`, so without a cap
+// a 100k-row export would hold every row in memory. CSV and PDF stream truly
+// incrementally (one row → one res.write()), so they need no cap. When an xlsx
+// export hits this cap, the response carries `X-Export-Truncated: true` so the
+// client can prompt the user to narrow filters or switch to CSV.
+const XLSX_ROW_CAP = 20000;
 
 /**
  * Stream-based export that processes a MongoDB cursor in batches instead of
  * loading the entire result set into memory.
+ *
+ * CSV and PDF stream one row at a time (genuinely bounded memory). xlsx cannot
+ * be row-streamed by exceljs, so it is capped at XLSX_ROW_CAP rows and flagged
+ * via the `X-Export-Truncated` header when exceeded — large xlsx exports should
+ * be narrowed or switched to CSV.
  *
  * @param {import('express').Response} res
  * @param {object} opts
@@ -218,8 +230,13 @@ async function streamCSV(res, filename, headers, cursor, transform) {
 }
 
 /**
- * Stream Excel rows from a cursor, adding rows in batches.
- * Uses exceljs commit-per-batch to keep memory bounded.
+ * Stream Excel rows from a cursor. exceljs cannot row-stream the OOXML output
+ * (the workbook is serialized whole in `workbook.xlsx.write`), so to keep
+ * memory bounded we cap the sheet at XLSX_ROW_CAP rows. When the cursor holds
+ * more rows than the cap, we drain the remainder (so the cursor is fully
+ * consumed and no server resources leak) and set `X-Export-Truncated: true` so
+ * the client can prompt the user to narrow filters or export as CSV, which
+ * streams with no cap. (D8)
  */
 async function streamExcel(res, filename, sheetName, headers, cursor, transform) {
   const workbook = new ExcelJS.Workbook();
@@ -245,20 +262,27 @@ async function streamExcel(res, filename, sheetName, headers, cursor, transform)
   };
 
   let idx = 0;
+  let truncated = false;
   let doc;
   while ((doc = await cursor.next())) {
-    const row = transform(doc);
-    const rowData = {};
-    headers.forEach((h) => {
-      rowData[h.key] = row[h.key] ?? '';
-    });
-    const excelRow = sheet.addRow(rowData);
-    if (idx % 2 === 1) {
-      excelRow.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFF8F9FA' },
-      };
+    if (idx < XLSX_ROW_CAP) {
+      const row = transform(doc);
+      const rowData = {};
+      headers.forEach((h) => {
+        rowData[h.key] = row[h.key] ?? '';
+      });
+      const excelRow = sheet.addRow(rowData);
+      if (idx % 2 === 1) {
+        excelRow.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF8F9FA' },
+        };
+      }
+    } else {
+      // Past the cap — stop writing rows but keep draining the cursor so it is
+      // fully consumed (no dangling server-side cursor / memory leak).
+      truncated = true;
     }
     idx++;
   }
@@ -268,6 +292,10 @@ async function streamExcel(res, filename, sheetName, headers, cursor, transform)
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   );
   res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+  if (truncated) {
+    res.setHeader('X-Export-Truncated', 'true');
+    res.setHeader('X-Export-Row-Cap', String(XLSX_ROW_CAP));
+  }
   await workbook.xlsx.write(res);
   res.end();
 }

@@ -208,8 +208,29 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
 
     // Validate submissionData keys against form field definitions
     const formFields = populatedAssignment.formId.fields || [];
-    if (formFields.length > 0) {
-      const allowedKeys = new Set(formFields.map((f) => f.name || f.id || f.key).filter(Boolean));
+    // Require every declared field to carry a stable `name` (the key the
+    // client must submit under). A field with no name has no addressable slot,
+    // so its data is unbindable — previously the fallback `f.name || f.id ||
+    // f.key` silently produced an empty allowedKeys set for such fields, which
+    // made the whole unknown-key check a no-op. Reject the form definition up
+    // front instead of accepting an ambiguous submission.
+    const namelessField = formFields.find((f) => !f.name);
+    if (formFields.length > 0 && namelessField) {
+      return res.status(400).json({
+        error: 'Form configuration error: every field must define a name.',
+        code: 'FIELD_MISSING_NAME',
+      });
+    }
+
+    // Build an allowlist keyed STRICTLY on field.name (the canonical address),
+    // plus each field's declared type so we can coerce/validate below.
+    const fieldByName = new Map();
+    for (const f of formFields) {
+      if (f.name) fieldByName.set(f.name, f);
+    }
+
+    if (fieldByName.size > 0) {
+      const allowedKeys = new Set(fieldByName.keys());
       const unknownKeys = Object.keys(submissionData).filter((k) => !allowedKeys.has(k));
       if (unknownKeys.length > 0) {
         return res.status(400).json({
@@ -219,16 +240,56 @@ router.post('/form-submission/:token', formSubmissionLimiter, async (req, res) =
       }
     }
 
-    // Sanitize string values — strip angle brackets and JS event handlers
+    // Sanitize string values. The previous filter stripped angle brackets,
+    // `javascript:` and `onX=` handlers but left backticks and `${` intact,
+    // so a payload could escape into downstream template rendering
+    // (e.g. `{{ value }}` interpolation or a ``${...}`` template literal in a
+    // generated PDF/email) and execute. Strip those too.
+    const sanitizeString = (str) =>
+      str
+        .replace(/[<>]/g, '')
+        .replace(/javascript:/gi, '')
+        .replace(/on\w+=/gi, '')
+        .replace(/`/g, '')
+        .replace(/\$\{/g, '');
+
     const sanitizedData = {};
     for (const [key, value] of Object.entries(submissionData)) {
+      const fieldDef = fieldByName.get(key);
+
       if (typeof value === 'string') {
+        sanitizedData[key] = sanitizeString(value);
+      } else if (Array.isArray(value)) {
+        // Arrays (checkbox groups, multi-file) — sanitize any string element
+        // and drop anything that isn't a string, number, or boolean.
         sanitizedData[key] = value
-          .replace(/[<>]/g, '')
-          .replace(/javascript:/gi, '')
-          .replace(/on\w+=/gi, '');
+          .map((item) => (typeof item === 'string' ? sanitizeString(item) : item))
+          .filter((item) => ['string', 'number', 'boolean'].includes(typeof item));
+      } else if (value !== null && typeof value === 'object') {
+        // Nested objects are not part of the flat submission contract —
+        // flatten/reject rather than store an unvalidated blob.
+        return res.status(400).json({
+          error: `Field "${key}" must be a scalar value, not an object.`,
+          code: 'INVALID_FIELD_SHAPE',
+        });
       } else {
         sanitizedData[key] = value;
+      }
+
+      // Server-side type check per field where the form declares a type. Stops
+      // a numeric/text field from carrying an object or wildly wrong scalar.
+      if (fieldDef && fieldDef.type) {
+        const expectedType = String(fieldDef.type).toLowerCase();
+        const got = sanitizedData[key];
+        if (
+          (expectedType === 'number' && typeof got !== 'number') ||
+          (expectedType === 'boolean' && typeof got !== 'boolean')
+        ) {
+          return res.status(400).json({
+            error: `Field "${key}" must be of type ${expectedType}.`,
+            code: 'INVALID_FIELD_TYPE',
+          });
+        }
       }
     }
 

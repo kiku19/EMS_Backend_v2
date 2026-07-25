@@ -15,6 +15,9 @@ const salaryTemplateSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-salaryTemplateSchema.index({ schoolId: 1, name: 1, isDeleted: 1 }, { unique: true });
+salaryTemplateSchema.index(
+  { schoolId: 1, name: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 
 export default mongoose.model('SalaryTemplate', salaryTemplateSchema);

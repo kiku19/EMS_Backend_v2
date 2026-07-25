@@ -39,16 +39,23 @@ router.post(
         date: new Date().toLocaleDateString(),
       };
 
-      if (front && back) {
+      // Independent branches so a single-sided Aadhaar (front OR back only)
+      // is no longer dropped by the `else if` (which required BOTH sides).
+      // A bare `url` (e.g. a single-image PDF) only applies when no side
+      // payload was supplied, to avoid clobbering structured side data.
+      if (front) {
         newDocument.front = {
           url: front.url,
           uploadDate: front.uploadDate || new Date().toISOString(),
         };
+      }
+      if (back) {
         newDocument.back = {
           url: back.url,
           uploadDate: back.uploadDate || new Date().toISOString(),
         };
-      } else if (url) {
+      }
+      if (url && !front && !back) {
         newDocument.url = url;
         newDocument.uploadDate = uploadDate || new Date().toISOString();
       }
@@ -102,33 +109,41 @@ router.delete(
   }
 );
 
-const updatePhotoSchema = z.object({ photo: z.string().url('Photo must be a valid URL').nullable() }).strip();
+const updatePhotoSchema = z
+  .object({ photo: z.string().url('Photo must be a valid URL').nullable() })
+  .strip();
 
-router.put('/:id/photo', authenticate, checkPermission('students', 'edit'), validateZod(updatePhotoSchema), async (req, res) => {
-  try {
-    const scopedStudent = await Student.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-    );
-    if (!scopedStudent) {
-      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
+router.put(
+  '/:id/photo',
+  authenticate,
+  checkPermission('students', 'edit'),
+  validateZod(updatePhotoSchema),
+  async (req, res) => {
+    try {
+      const scopedStudent = await Student.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+      );
+      if (!scopedStudent) {
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
+      }
+
+      const student = await Student.findOneAndUpdate(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
+        { photo: req.body.photo },
+        { new: true, runValidators: true }
+      );
+
+      if (!student) {
+        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
+      }
+
+      res.json({ success: true, photo: student.photo });
+    } catch (error) {
+      console.error('Error updating photo:', error);
+      res.status(500).json({ error: error.message });
     }
-
-    const student = await Student.findOneAndUpdate(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
-      { photo: req.body.photo },
-      { new: true, runValidators: true }
-    );
-
-    if (!student) {
-      return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
-    }
-
-    res.json({ success: true, photo: student.photo });
-  } catch (error) {
-    console.error('Error updating photo:', error);
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 router.post(
   '/:id/fix-documents',

@@ -57,6 +57,14 @@ const SKIP_COMMANDS = new Set([
 //               operation: string, dbName: string, fingerprint: string }
 const slowQueryBuffer = [];
 
+// Correlates `commandStarted` (carries the command shape) with the matching
+// `commandSucceeded` (carries the duration), keyed by requestId. The command
+// payload is ONLY present on the started event — the succeeded event does not
+// include it — so we must remember it here to know which collection was hit.
+const pendingCommands = new Map();
+// Safety cap so a burst of never-completing commands can't grow unbounded.
+const MAX_PENDING_COMMANDS = 2000;
+
 // Top-N slowest for today (reset each day by flushDailyStats())
 let dailyTopQueries = [];
 
@@ -98,9 +106,11 @@ function fingerprint(obj, depth = 0) {
 // ── APM event parser ──────────────────────────────────────────────────────────
 
 /**
- * Convert a raw MongoDB `commandSucceeded` APM event into a structured record.
+ * Extract collection + filter from a MongoDB `commandStarted` APM event.
+ * The command payload (and thus the target collection) is only available on
+ * the started event — never on `commandSucceeded` — so parsing happens here.
  */
-function parseCommandEvent(event) {
+function parseStartedEvent(event) {
   const cmd = event.command || {};
   const commandName = event.commandName;
 
@@ -141,8 +151,6 @@ function parseCommandEvent(event) {
   }
 
   return {
-    ts: new Date(),
-    durationMs: event.duration,
     collection: String(collection),
     operation: commandName,
     dbName: event.databaseName,
@@ -194,19 +202,36 @@ export function initializeSlowQueryMonitor() {
       return;
     }
 
-    client.on('commandSucceeded', (event) => {
+    // The command shape (target collection, filter) is only present on the
+    // started event; the duration only on the succeeded event. Remember the
+    // former keyed by requestId so we can join them when the command completes.
+    client.on('commandStarted', (event) => {
       if (SKIP_COMMANDS.has(event.commandName)) return;
+      if (pendingCommands.size >= MAX_PENDING_COMMANDS) return;
+      pendingCommands.set(event.requestId, parseStartedEvent(event));
+    });
+
+    client.on('commandSucceeded', (event) => {
+      const parsed = pendingCommands.get(event.requestId);
+      if (!parsed) return;
+      pendingCommands.delete(event.requestId);
 
       // MongoDB driver v6 uses `event.duration` (milliseconds)
       const durationMs = event.duration ?? 0;
       if (durationMs < SLOW_QUERY_THRESHOLD_MS) return;
 
-      const record = parseCommandEvent(event);
+      const record = { ...parsed, ts: new Date(), durationMs };
       recordSlowQuery(record);
       logger.warn(
         { collection: record.collection, operation: record.operation, durationMs },
         'Slow query detected'
       );
+    });
+
+    // A failed command still resolves its requestId — drop it so the pending
+    // map doesn't leak.
+    client.on('commandFailed', (event) => {
+      pendingCommands.delete(event.requestId);
     });
 
     initialized = true;

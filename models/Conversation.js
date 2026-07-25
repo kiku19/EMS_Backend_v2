@@ -32,6 +32,16 @@ const conversationSchema = new mongoose.Schema(
       index: true,
     },
     participants: [participantSchema],
+    // Stable dedup key for direct (2-participant) conversations within a
+    // school: `${schoolId}:${min(userId)}:${max(userId)}`. Backs the unique
+    // partial index below so concurrent findOrCreate calls that both miss the
+    // existing row produce exactly one document instead of duplicates.
+    // NOTE: no field-level `index: true` here — the authoritative index is the
+    // compound partial unique index declared via schema.index() below. Declaring
+    // both produces a redundant non-unique index (Mongoose "duplicate index" warning).
+    participantKey: {
+      type: String,
+    },
     type: {
       type: String,
       enum: ['direct', 'group'],
@@ -114,6 +124,19 @@ const conversationSchema = new mongoose.Schema(
 conversationSchema.index({ schoolId: 1, 'participants.userId': 1 });
 conversationSchema.index({ schoolId: 1, 'lastMessage.timestamp': -1 });
 conversationSchema.index({ schoolId: 1, type: 1 });
+// Backing unique index for the findOrCreate dedup race. Only applies to
+// direct, two-participant conversations (the only ones participantKey is set
+// on), so group conversations are unaffected.
+conversationSchema.index(
+  { participantKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      type: 'direct',
+      participantKey: { $type: 'string', $nin: [null, ''] },
+    },
+  }
+);
 
 // Method to find or create conversation between two users.
 // Handles the race where two concurrent callers both miss the existing
@@ -127,11 +150,16 @@ conversationSchema.statics.findOrCreate = async function (
   user2Model,
   schoolId
 ) {
+  // Order-independent key so (A,B) and (B,A) resolve to the same conversation.
+  // schoolId is included because the same user pair in two different tenants
+  // must keep separate conversations.
+  const sortedIds = [String(user1Id), String(user2Id)].sort();
+  const participantKey = `${String(schoolId)}:${sortedIds[0]}:${sortedIds[1]}`;
+
   const findFilter = {
     schoolId,
     type: 'direct',
-    'participants.userId': { $all: [user1Id, user2Id] },
-    participants: { $size: 2 },
+    participantKey,
   };
 
   let conversation = await this.findOne(findFilter);
@@ -141,6 +169,7 @@ conversationSchema.statics.findOrCreate = async function (
     conversation = await this.create({
       schoolId,
       type: 'direct',
+      participantKey,
       participants: [
         { userId: user1Id, userModel: user1Model },
         { userId: user2Id, userModel: user2Model },

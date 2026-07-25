@@ -61,6 +61,15 @@ const teacherTimetableSchema = new mongoose.Schema(
           lastModified: { type: Date, default: Date.now },
         },
       ],
+      Sunday: [
+        {
+          periodIndex: Number,
+          classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+          subject: String,
+          room: String,
+          lastModified: { type: Date, default: Date.now },
+        },
+      ],
     },
     totalPeriodsPerWeek: { type: Number, default: 0 },
     version: { type: Number, default: 1 },
@@ -70,5 +79,6 @@ const teacherTimetableSchema = new mongoose.Schema(
 );
 
 teacherTimetableSchema.index({ schoolId: 1, teacherId: 1, academicYear: 1 }, { unique: true });
+teacherTimetableSchema.index({ schoolId: 1, academicYear: 1 });
 
 export default mongoose.model('TeacherTimetable', teacherTimetableSchema);

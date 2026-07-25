@@ -71,7 +71,7 @@ const notificationPreferenceSchema = new mongoose.Schema(
     },
     digestFrequency: {
       type: String,
-      enum: ['instant', 'hourly', 'daily', 'weekly'],
+      enum: ['instant', 'hourly', 'daily', 'weekly', 'never'],
       default: 'instant',
     },
 
@@ -92,7 +92,10 @@ const notificationPreferenceSchema = new mongoose.Schema(
 );
 
 // Indexes
-notificationPreferenceSchema.index({ userId: 1, userModel: 1 }, { unique: true });
+// Unique index must include schoolId: a user legitimately belonging to
+// multiple tenants keeps a separate preferences doc per school. Without
+// schoolId in the key the second tenant's doc collides on the first insert.
+notificationPreferenceSchema.index({ userId: 1, userModel: 1, schoolId: 1 }, { unique: true });
 notificationPreferenceSchema.index({ role: 1 });
 
 // Method to get channel preferences for a notification type

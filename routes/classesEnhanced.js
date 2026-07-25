@@ -25,6 +25,7 @@ import {
   academicYear as academicYearZod,
 } from '../validators/zodHelpers.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
+import { resolveAcademicYear } from '../utils/academicYear.js';
 
 // ─── ADD SUBJECT / CHAPTER PROGRESS TO CLASS ────────────────────
 const addClassSubjectSchema = z
@@ -72,6 +73,43 @@ const updateClassSubjectSchema = z
   })
   .strip();
 
+const chapterEntrySchema = z.object({
+  _id: optionalObjectId,
+  chapterName: z.string().min(1).max(200).trim(),
+  chapterNumber: z.number().int().min(1),
+  status: z.enum(['not_started', 'in_progress', 'completed']).default('not_started'),
+  progressPercentage: z.number().min(0).max(100).default(0),
+  startDate: z.string().datetime().optional().nullable(),
+  completedDate: z.string().datetime().optional().nullable(),
+  topics: z.array(z.string().max(200).trim()).optional().default([]),
+});
+
+const updateChapterProgressSchema = z.union([
+  z.object({ chapters: z.array(chapterEntrySchema) }).strip(),
+  z
+    .object({
+      chapterEntryId: objectId,
+      status: z.enum(['not_started', 'in_progress', 'completed']).optional(),
+      progressPercentage: z.number().min(0).max(100).optional(),
+      startDate: z.string().datetime().optional().nullable(),
+      completedDate: z.string().datetime().optional().nullable(),
+      topics: z.array(z.string().max(200).trim()).optional(),
+    })
+    .strip()
+    .refine(
+      (data) =>
+        ['status', 'progressPercentage', 'startDate', 'completedDate', 'topics'].some(
+          (field) => data[field] !== undefined
+        ),
+      'At least one chapter field must be provided'
+    ),
+]);
+
+const chapterProgressParamsSchema = z.object({ chapterId: objectId }).strip();
+const chapterEntryParamsSchema = z
+  .object({ chapterId: objectId, chapterEntryId: objectId })
+  .strip();
+
 const createAnnouncementSchema = z
   .object({
     title: z.string().min(1, 'Title is required').max(200).trim(),
@@ -105,126 +143,121 @@ function scopeBySchool(schoolId, query = {}) {
 // otherwise Express will match "missing-subjects" as an :id param.
 
 // Get classes with missing subjects
-router.get(
-  '/missing-subjects',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = req.user?.schoolId;
-      // Get all classes for this school
-      const classes = await Class.find(scopeBySchool(schoolId, { isDeleted: { $ne: true } })).sort({
-        name: 1,
-        section: 1,
-      });
+router.get('/missing-subjects', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+    // Get all classes for this school filtered by academic year to avoid duplicates
+    const classes = await Class.find(
+      scopeBySchool(schoolId, { isDeleted: { $ne: true }, academicYear })
+    ).sort({
+      name: 1,
+      section: 1,
+    });
 
-      const missingSubjects = [];
+    const missingSubjects = [];
 
-      for (const cls of classes) {
-        // Check if class has no subjects or empty subjects array
-        if (!cls.subjects || cls.subjects.length === 0) {
-          missingSubjects.push({
-            classId: cls._id,
-            className: `${cls.name}-${cls.section}`,
-            subjectsCount: 0,
-            hasSubjects: false,
-          });
-        }
+    for (const cls of classes) {
+      // Check if class has no subjects or empty subjects array
+      if (!cls.subjects || cls.subjects.length === 0) {
+        missingSubjects.push({
+          classId: cls._id,
+          className: `${cls.name}-${cls.section}`,
+          subjectsCount: 0,
+          hasSubjects: false,
+        });
       }
-
-      res.json({
-        totalClasses: classes.length,
-        classesWithMissingSubjects: missingSubjects.length,
-        missingSubjects,
-      });
-    } catch (error) {
-      console.error('Error fetching missing subjects:', error);
-      res.status(500).json({ error: 'Failed to fetch missing subjects' });
     }
+
+    res.json({
+      totalClasses: classes.length,
+      classesWithMissingSubjects: missingSubjects.length,
+      missingSubjects,
+    });
+  } catch (error) {
+    console.error('Error fetching missing subjects:', error);
+    res.status(500).json({ error: 'Failed to fetch missing subjects' });
   }
-);
+});
 
 // ============ ACADEMIC PERFORMANCE ENDPOINTS ============
 
 // Get academic performance for a class
-router.get(
-  '/:id/academic-performance',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+router.get('/:id/academic-performance', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
 
-      const schoolId = req.user?.schoolId;
+    const schoolId = req.user?.schoolId;
 
-      // Use aggregation pipeline to compute per-student academic performance in MongoDB
-      const studentPerformance = await Student.aggregate([
-        {
-          $match: {
-            schoolId,
-            classId: new mongoose.Types.ObjectId(id),
-            academicYear,
-            status: 'active',
-            isDeleted: { $ne: true },
-          },
+    // Use aggregation pipeline to compute per-student academic performance in MongoDB
+    const studentPerformance = await Student.aggregate([
+      {
+        $match: {
+          schoolId,
+          classId: new mongoose.Types.ObjectId(id),
+          academicYear,
+          status: 'active',
+          isDeleted: { $ne: true },
         },
-        {
-          $lookup: {
-            from: 'results',
-            let: { sid: '$_id' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: { $eq: ['$studentId', '$$sid'] },
-                  schoolId,
-                  academicYear,
-                },
+      },
+      {
+        $lookup: {
+          from: 'results',
+          let: { sid: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$studentId', '$$sid'] },
+                schoolId,
+                academicYear,
               },
-              {
-                $group: {
-                  _id: null,
-                  avgPercentage: { $avg: { $ifNull: ['$percentage', 0] } },
-                  count: { $sum: 1 },
-                },
+            },
+            {
+              $group: {
+                _id: null,
+                avgPercentage: { $avg: { $ifNull: ['$percentage', 0] } },
+                count: { $sum: 1 },
               },
-            ],
-            as: 'resultStats',
-          },
+            },
+          ],
+          as: 'resultStats',
         },
-        { $unwind: { path: '$resultStats', preserveNullAndEmptyArrays: true } },
-        { $match: { 'resultStats.count': { $gt: 0 } } },
-        {
-          $project: {
-            studentId: '$_id',
-            studentName: '$name',
-            rollNo: '$rollNo',
-            averagePercentage: { $round: [{ $ifNull: ['$resultStats.avgPercentage', 0] }, 1] },
-          },
+      },
+      { $unwind: { path: '$resultStats', preserveNullAndEmptyArrays: true } },
+      { $match: { 'resultStats.count': { $gt: 0 } } },
+      {
+        $project: {
+          studentId: '$_id',
+          studentName: '$name',
+          rollNo: '$rollNo',
+          averagePercentage: { $round: [{ $ifNull: ['$resultStats.avgPercentage', 0] }, 1] },
         },
-        { $sort: { averagePercentage: -1 } },
-      ]);
+      },
+      { $sort: { averagePercentage: -1 } },
+    ]);
 
-      const resultCount = studentPerformance.length;
-      const classAverage =
-        resultCount > 0
-          ? Math.round(
-              (studentPerformance.reduce((sum, s) => sum + s.averagePercentage, 0) / resultCount) * 10
-            ) / 10
-          : 0;
+    const resultCount = studentPerformance.length;
+    const classAverage =
+      resultCount > 0
+        ? Math.round(
+            (studentPerformance.reduce((sum, s) => sum + s.averagePercentage, 0) / resultCount) * 10
+          ) / 10
+        : 0;
 
-      res.json({
-        classId: id,
-        academicYear,
-        classAverage,
-        topPerformers: studentPerformance.slice(0, 5),
-        needImprovement: studentPerformance.slice(-5).reverse(),
-        totalStudentsEvaluated: resultCount,
-      });
-    } catch (error) {
-      console.error('Error fetching academic performance:', error);
-      res.status(500).json({ error: 'Failed to fetch academic performance' });
-    }
+    res.json({
+      classId: id,
+      academicYear,
+      classAverage,
+      topPerformers: studentPerformance.slice(0, 5),
+      needImprovement: studentPerformance.slice(-5).reverse(),
+      totalStudentsEvaluated: resultCount,
+    });
+  } catch (error) {
+    console.error('Error fetching academic performance:', error);
+    res.status(500).json({ error: 'Failed to fetch academic performance' });
   }
-);
+});
 
 // Recalculate academic performance
 router.post(
@@ -280,35 +313,31 @@ router.post(
 // ============ ACTIVITY LOG ENDPOINTS ============
 
 // Get activity log for a class
-router.get(
-  '/:id/activity-log',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { limit = 50, activityType, startDate, endDate } = req.query;
+router.get('/:id/activity-log', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 50, activityType, startDate, endDate } = req.query;
 
-      const schoolId = req.user?.schoolId;
-      const query = scopeBySchool(schoolId, { classId: id });
-      if (activityType) query.activityType = activityType;
-      if (startDate || endDate) {
-        query.createdAt = {};
-        if (startDate) query.createdAt.$gte = new Date(startDate);
-        if (endDate) query.createdAt.$lte = new Date(endDate);
-      }
-
-      const activities = await ActivityLog.find(query)
-        .populate('performedBy', 'name code')
-        .sort({ createdAt: -1 })
-        .limit(parseInt(limit));
-
-      res.json(activities);
-    } catch (error) {
-      console.error('Error fetching activity log:', error);
-      res.status(500).json({ error: 'Failed to fetch activity log' });
+    const schoolId = req.user?.schoolId;
+    const query = scopeBySchool(schoolId, { classId: id });
+    if (activityType) query.activityType = activityType;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
     }
+
+    const activities = await ActivityLog.find(query)
+      .populate('performedBy', 'name code')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+
+    res.json(activities);
+  } catch (error) {
+    console.error('Error fetching activity log:', error);
+    res.status(500).json({ error: 'Failed to fetch activity log' });
   }
-);
+});
 
 // Create activity log entry
 router.post(
@@ -478,260 +507,294 @@ router.post('/:id/rating/recalculate', checkPermission('classes', 'edit'), async
 // ============ ATTENDANCE ANALYTICS ENDPOINTS ============
 
 // Get attendance analytics for a class
-router.get(
-  '/:id/attendance-analytics',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const schoolId = req.user?.schoolId;
-      const { period = 'month' } = req.query; // week, month, term
+router.get('/:id/attendance-analytics', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.user?.schoolId;
+    const { period = 'month' } = req.query; // week, month, term
 
-      // Calculate date range based on period
-      const now = new Date();
-      const startDate = new Date();
-      if (period === 'week') {
-        startDate.setDate(now.getDate() - 7);
-      } else if (period === 'month') {
-        startDate.setMonth(now.getMonth() - 1);
-      } else if (period === 'term') {
-        startDate.setMonth(now.getMonth() - 3);
-      }
-
-      // Use aggregation pipeline to compute per-student attendance stats in MongoDB
-      const studentAttendance = await Student.aggregate([
-        { $match: { schoolId, classId: new mongoose.Types.ObjectId(id), status: 'active', isDeleted: { $ne: true } } },
-        {
-          $lookup: {
-            from: 'attendances',
-            let: { sid: '$_id' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: { $eq: ['$studentId', '$$sid'] },
-                  schoolId,
-                  date: { $gte: startDate.toISOString().split('T')[0] },
-                },
-              },
-              {
-                $group: {
-                  _id: null,
-                  total: { $sum: 1 },
-                  presentFull: { $sum: { $cond: [{ $in: ['$status', ['present', 'late']] }, 1, 0] } },
-                  halfday: { $sum: { $cond: [{ $eq: ['$status', 'halfday'] }, 1, 0] } },
-                },
-              },
-            ],
-            as: 'attStats',
-          },
-        },
-        { $unwind: { path: '$attStats', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            studentId: '$_id',
-            studentName: '$name',
-            rollNo: '$rollNo',
-            total: { $ifNull: ['$attStats.total', 0] },
-            present: { $add: [{ $ifNull: ['$attStats.presentFull', 0] }, { $multiply: [{ $ifNull: ['$attStats.halfday', 0] }, 0.5] }] },
-          },
-        },
-        {
-          $addFields: {
-            absent: { $subtract: ['$total', '$present'] },
-            percentage: {
-              $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 0] }, 0],
-            },
-          },
-        },
-        { $sort: { percentage: -1 } },
-      ]);
-
-      const classAverage =
-        studentAttendance.length > 0
-          ? Math.round(studentAttendance.reduce((sum, s) => sum + s.percentage, 0) / studentAttendance.length)
-          : 0;
-
-      res.json({
-        mostAttentive: studentAttendance.slice(0, 5),
-        lessAttentive: studentAttendance.slice(-5).reverse(),
-        classAverage,
-      });
-    } catch (error) {
-      console.error('Error fetching attendance analytics:', error);
-      res.status(500).json({ error: 'Failed to fetch attendance analytics' });
+    // Calculate date range based on period
+    const now = new Date();
+    const startDate = new Date();
+    if (period === 'week') {
+      startDate.setDate(now.getDate() - 7);
+    } else if (period === 'month') {
+      startDate.setMonth(now.getMonth() - 1);
+    } else if (period === 'term') {
+      startDate.setMonth(now.getMonth() - 3);
     }
+
+    // Use aggregation pipeline to compute per-student attendance stats in MongoDB
+    const studentAttendance = await Student.aggregate([
+      {
+        $match: {
+          schoolId,
+          classId: new mongoose.Types.ObjectId(id),
+          status: 'active',
+          isDeleted: { $ne: true },
+        },
+      },
+      {
+        $lookup: {
+          from: 'attendances',
+          let: { sid: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$studentId', '$$sid'] },
+                schoolId,
+                date: { $gte: startDate.toISOString().split('T')[0] },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 },
+                presentFull: { $sum: { $cond: [{ $in: ['$status', ['present', 'late']] }, 1, 0] } },
+                halfday: { $sum: { $cond: [{ $eq: ['$status', 'halfday'] }, 1, 0] } },
+              },
+            },
+          ],
+          as: 'attStats',
+        },
+      },
+      { $unwind: { path: '$attStats', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          studentId: '$_id',
+          studentName: '$name',
+          rollNo: '$rollNo',
+          total: { $ifNull: ['$attStats.total', 0] },
+          present: {
+            $add: [
+              { $ifNull: ['$attStats.presentFull', 0] },
+              { $multiply: [{ $ifNull: ['$attStats.halfday', 0] }, 0.5] },
+            ],
+          },
+        },
+      },
+      {
+        $addFields: {
+          absent: { $subtract: ['$total', '$present'] },
+          percentage: {
+            $cond: [
+              { $gt: ['$total', 0] },
+              { $round: [{ $multiply: [{ $divide: ['$present', '$total'] }, 100] }, 0] },
+              0,
+            ],
+          },
+        },
+      },
+      { $sort: { percentage: -1 } },
+    ]);
+
+    const classAverage =
+      studentAttendance.length > 0
+        ? Math.round(
+            studentAttendance.reduce((sum, s) => sum + s.percentage, 0) / studentAttendance.length
+          )
+        : 0;
+
+    res.json({
+      mostAttentive: studentAttendance.slice(0, 5),
+      lessAttentive: studentAttendance.slice(-5).reverse(),
+      classAverage,
+    });
+  } catch (error) {
+    console.error('Error fetching attendance analytics:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance analytics' });
   }
-);
+});
 
 // Get chronic absentees
-router.get(
-  '/:id/chronic-absentees',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const schoolId = req.user?.schoolId;
-      const { threshold = 60 } = req.query;
+router.get('/:id/chronic-absentees', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.user?.schoolId;
+    const { threshold = 60 } = req.query;
 
-      const students = await Student.find(
-        scopeBySchool(schoolId, { classId: id, status: 'active', isDeleted: { $ne: true } })
+    const students = await Student.find(
+      scopeBySchool(schoolId, { classId: id, status: 'active', isDeleted: { $ne: true } })
+    );
+    const studentIds = students.map((s) => s._id);
+
+    // Get last 30 days attendance
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const attendance = await Attendance.find(
+      scopeBySchool(schoolId, {
+        studentId: { $in: studentIds },
+        date: { $gte: thirtyDaysAgo.toISOString().split('T')[0] },
+      })
+    );
+
+    const chronicAbsentees = [];
+
+    for (const student of students) {
+      const studentAtt = attendance.filter(
+        (a) => a.studentId.toString() === student._id.toString()
       );
-      const studentIds = students.map((s) => s._id);
+      const present =
+        studentAtt.filter((a) => a.status === 'present' || a.status === 'late').length +
+        studentAtt.filter((a) => a.status === 'halfday').length * 0.5;
+      const total = studentAtt.length;
+      const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
 
-      // Get last 30 days attendance
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-      const attendance = await Attendance.find(
-        scopeBySchool(schoolId, {
-          studentId: { $in: studentIds },
-          date: { $gte: thirtyDaysAgo.toISOString().split('T')[0] },
-        })
-      );
-
-      const chronicAbsentees = [];
-
-      for (const student of students) {
-        const studentAtt = attendance.filter(
-          (a) => a.studentId.toString() === student._id.toString()
-        );
-        const present = studentAtt.filter(
-          (a) => a.status === 'present' || a.status === 'late'
-        ).length + studentAtt.filter((a) => a.status === 'halfday').length * 0.5;
-        const total = studentAtt.length;
-        const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
-
-        if (percentage < threshold && total >= 10) {
-          // Mask parent PII — only show last 4 digits of phone and domain-masked email
-          const firstParent = student.parents?.[0];
-          const maskedPhone = firstParent?.phone ? '****' + firstParent.phone.slice(-4) : null;
-          const maskedEmail = firstParent?.email
-            ? firstParent.email.replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
-            : null;
-          chronicAbsentees.push({
-            studentId: student._id,
-            studentName: student.name,
-            rollNo: student.rollNo,
-            percentage,
-            parentPhone: maskedPhone,
-            parentEmail: maskedEmail,
-            hasParentContact: Boolean(firstParent?.phone || firstParent?.email),
-          });
-        }
+      if (percentage < threshold && total >= 10) {
+        // Mask parent PII — only show last 4 digits of phone and domain-masked email
+        const firstParent = student.parents?.[0];
+        const maskedPhone = firstParent?.phone ? '****' + firstParent.phone.slice(-4) : null;
+        const maskedEmail = firstParent?.email
+          ? firstParent.email.replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
+          : null;
+        chronicAbsentees.push({
+          studentId: student._id,
+          studentName: student.name,
+          rollNo: student.rollNo,
+          percentage,
+          parentPhone: maskedPhone,
+          parentEmail: maskedEmail,
+          hasParentContact: Boolean(firstParent?.phone || firstParent?.email),
+        });
       }
-
-      res.json(chronicAbsentees);
-    } catch (error) {
-      console.error('Error fetching chronic absentees:', error);
-      res.status(500).json({ error: 'Failed to fetch chronic absentees' });
     }
+
+    res.json(chronicAbsentees);
+  } catch (error) {
+    console.error('Error fetching chronic absentees:', error);
+    res.status(500).json({ error: 'Failed to fetch chronic absentees' });
   }
-);
+});
 
 // ============ TODAY'S STATUS ENDPOINT ============
 
 // Get today's status for a class
-router.get(
-  '/:id/today-status',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const schoolId = req.user?.schoolId;
-      const today = new Date().toISOString().split('T')[0];
+router.get('/:id/today-status', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.user?.schoolId;
+    const today = new Date().toISOString().split('T')[0];
 
-      // Get today's attendance
-      const students = await Student.find(
-        scopeBySchool(schoolId, { classId: id, status: 'active', isDeleted: { $ne: true } })
-      );
-      const studentIds = students.map((s) => s._id);
+    // Get today's attendance
+    const students = await Student.find(
+      scopeBySchool(schoolId, { classId: id, status: 'active', isDeleted: { $ne: true } })
+    );
+    const studentIds = students.map((s) => s._id);
 
-      const todayAttendance = await Attendance.find(
-        scopeBySchool(schoolId, {
-          studentId: { $in: studentIds },
-          date: today,
-        })
-      );
+    const todayAttendance = await Attendance.find(
+      scopeBySchool(schoolId, {
+        studentId: { $in: studentIds },
+        date: today,
+      })
+    );
 
-      const present = todayAttendance.filter(
-        (a) => a.status === 'present' || a.status === 'late'
-      ).length + todayAttendance.filter((a) => a.status === 'halfday').length * 0.5;
-      const absent = todayAttendance.filter((a) => a.status === 'absent').length;
+    const present =
+      todayAttendance.filter((a) => a.status === 'present' || a.status === 'late').length +
+      todayAttendance.filter((a) => a.status === 'halfday').length * 0.5;
+    const absent = todayAttendance.filter((a) => a.status === 'absent').length;
 
-      // Get timetable
-      const timetable = await Timetable.findOne(
-        scopeBySchool(schoolId, { classId: id, academicYear: CURRENT_ACADEMIC_YEAR })
-      );
-      const timezone = req.query.timezone || 'Asia/Kolkata';
-      const todayDay = new Date().toLocaleDateString('en-US', {
-        weekday: 'long',
+    // Get timetable
+    const timetable = await Timetable.findOne(
+      scopeBySchool(schoolId, { classId: id, academicYear: CURRENT_ACADEMIC_YEAR })
+    );
+    const timezone = req.query.timezone || 'Asia/Kolkata';
+    const todayDay = new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      timeZone: timezone,
+    });
+
+    let currentClass = null;
+    let upcomingClass = null;
+
+    if (timetable && timetable.schedule && timetable.schedule[todayDay]) {
+      const now = new Date();
+      const timeParts = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
         timeZone: timezone,
-      });
+      }).formatToParts(now);
+      const currentTime =
+        parseInt(timeParts.find((p) => p.type === 'hour').value) * 60 +
+        parseInt(timeParts.find((p) => p.type === 'minute').value);
 
-      let currentClass = null;
-      let upcomingClass = null;
+      const schedule = timetable.schedule[todayDay];
+      const periods = timetable.periods || [];
 
-      if (timetable && timetable.schedule && timetable.schedule[todayDay]) {
-        const now = new Date();
-        const timeParts = new Intl.DateTimeFormat('en-US', {
-          hour: 'numeric',
-          minute: 'numeric',
-          hour12: false,
-          timeZone: timezone,
-        }).formatToParts(now);
-        const currentTime =
-          parseInt(timeParts.find((p) => p.type === 'hour').value) * 60 +
-          parseInt(timeParts.find((p) => p.type === 'minute').value);
+      for (let i = 0; i < schedule.length; i++) {
+        if (schedule[i] && periods[i] && !periods[i].isBreak) {
+          const [startH, startM] = periods[i].startTime.split(':').map(Number);
+          const periodStartMinutes = startH * 60 + (startM || 0);
 
-        const schedule = timetable.schedule[todayDay];
-        const periods = timetable.periods || [];
+          let periodEndMinutes = null;
+          if (periods[i].endTime) {
+            const [endH, endM] = periods[i].endTime.split(':').map(Number);
+            periodEndMinutes = endH * 60 + (endM || 0);
+          }
 
-        for (let i = 0; i < schedule.length; i++) {
-          if (schedule[i] && periods[i] && !periods[i].isBreak) {
-            const [startH, startM] = periods[i].startTime.split(':').map(Number);
-            const periodStartMinutes = startH * 60 + (startM || 0);
-
-            let periodEndMinutes = null;
-            if (periods[i].endTime) {
-              const [endH, endM] = periods[i].endTime.split(':').map(Number);
-              periodEndMinutes = endH * 60 + (endM || 0);
-            }
-
-            if (currentTime >= periodStartMinutes && (periodEndMinutes === null || currentTime < periodEndMinutes)) {
-              currentClass = {
-                period: periods[i].name,
-                subject: schedule[i].subject,
-                teacherId: schedule[i].teacherId,
-              };
-            } else if (currentTime < periodStartMinutes && !upcomingClass) {
-              upcomingClass = {
-                period: periods[i].name,
-                subject: schedule[i].subject,
-                teacherId: schedule[i].teacherId,
-                time: periods[i].startTime,
-              };
-            }
+          if (
+            currentTime >= periodStartMinutes &&
+            (periodEndMinutes === null || currentTime < periodEndMinutes)
+          ) {
+            currentClass = {
+              period: periods[i].name,
+              subject: schedule[i].subject,
+              teacherId: schedule[i].teacherId,
+            };
+          } else if (currentTime < periodStartMinutes && !upcomingClass) {
+            upcomingClass = {
+              period: periods[i].name,
+              subject: schedule[i].subject,
+              teacherId: schedule[i].teacherId,
+              time: periods[i].startTime,
+            };
           }
         }
       }
 
-      res.json({
-        date: today,
-        attendance: {
-          total: students.length,
-          present,
-          absent,
-          percentage: students.length > 0 ? Math.round((present / students.length) * 100) : 0,
-        },
-        currentClass,
-        upcomingClass,
-      });
-    } catch (error) {
-      console.error('Error fetching today status:', error);
-      res.status(500).json({ error: 'Failed to fetch today status' });
+      // Resolve teacher names/photos for the current + upcoming class tiles.
+      // The frontend reads `teacher`/`teacherPhoto`, but the schedule only
+      // carries `teacherId` — without this lookup the tiles show a blank name.
+      const teacherIds = [currentClass, upcomingClass]
+        .map((c) => c?.teacherId)
+        .filter((id) => id && mongoose.isValidObjectId(id));
+      const teacherMap = new Map();
+      if (teacherIds.length > 0) {
+        const teachers = await Staff.find(scopeBySchool(schoolId, { _id: { $in: teacherIds } }))
+          .select('name picture')
+          .lean();
+        for (const st of teachers) {
+          teacherMap.set(String(st._id), { name: st.name, picture: st.picture });
+        }
+      }
+      for (const cls of [currentClass, upcomingClass]) {
+        if (cls && cls.teacherId) {
+          const t = teacherMap.get(String(cls.teacherId));
+          if (t) {
+            cls.teacher = t.name;
+            cls.teacherPhoto = t.picture || null;
+          }
+        }
+      }
     }
+
+    res.json({
+      date: today,
+      attendance: {
+        total: students.length,
+        present,
+        absent,
+        percentage: students.length > 0 ? Math.round((present / students.length) * 100) : 0,
+      },
+      currentClass,
+      upcomingClass,
+    });
+  } catch (error) {
+    console.error('Error fetching today status:', error);
+    res.status(500).json({ error: 'Failed to fetch today status' });
   }
-);
+});
 
 // ============ PROMOTION ENDPOINT ============
 
@@ -826,8 +889,7 @@ router.post(
         // Check attendance using pre-fetched data (should be above 60%)
         if (!skipAttendanceCheck) {
           const att = attendanceMap.get(student._id.toString());
-          const attendancePercent =
-            att && att.total > 0 ? (att.present / att.total) * 100 : 0;
+          const attendancePercent = att && att.total > 0 ? (att.present / att.total) * 100 : 0;
 
           if (attendancePercent < 60) {
             promotionResults.notPromoted.push({
@@ -1098,11 +1160,13 @@ router.delete(
       }
 
       const deletedSubjectName = existing.subjectName;
-      await ChapterProgress.updateOne({ _id: subjectProgressId }, { $set: { isDeleted: true, deletedAt: new Date() } });
+      await ChapterProgress.deleteOne(
+        scopeBySchool(schoolId, { _id: subjectProgressId, classId: id })
+      );
 
       // Check if any other active ChapterProgress references this subject for the same class
       const otherRefs = await ChapterProgress.countDocuments(
-        scopeBySchool(schoolId, { classId: id, subjectName: deletedSubjectName, isDeleted: { $ne: true } })
+        scopeBySchool(schoolId, { classId: id, subjectName: deletedSubjectName })
       );
       // If no other references remain, remove from class subjects list
       if (otherRefs === 0) {
@@ -1132,11 +1196,13 @@ router.delete(
 router.put(
   '/chapters/:chapterId',
   checkPermission('classes', 'edit'),
+  validateZod(chapterProgressParamsSchema, 'params'),
+  validateZod(updateChapterProgressSchema),
   async (req, res) => {
     try {
       const { chapterId } = req.params;
       const schoolId = req.user?.schoolId;
-      const { chapters, status, completedDate, notes } = req.body;
+      const { chapters, chapterEntryId } = req.body;
 
       // Verify chapter belongs to this school
       const existing = await ChapterProgress.findOne(scopeBySchool(schoolId, { _id: chapterId }));
@@ -1144,26 +1210,51 @@ router.put(
         return res.status(404).json({ error: 'Chapter progress not found' });
       }
 
-      // Support both bulk update (chapters array) and individual chapter update
-      if (chapters && Array.isArray(chapters)) {
+      if (Array.isArray(chapters)) {
         existing.chapters = chapters;
-        existing.calculateOverallProgress();
-        await existing.save();
-
-        res.json(existing);
-      } else if (status || completedDate || notes) {
-        if (status) existing.status = status;
-        if (completedDate) existing.completedDate = completedDate;
-        if (notes) existing.notes = notes;
-        await existing.save();
-
-        res.json(existing);
       } else {
-        return res.status(400).json({ error: 'No valid update data provided' });
+        const chapter = existing.chapters.id(chapterEntryId);
+        if (!chapter) return res.status(404).json({ error: 'Chapter entry not found' });
+        for (const field of [
+          'status',
+          'progressPercentage',
+          'startDate',
+          'completedDate',
+          'topics',
+        ]) {
+          if (req.body[field] !== undefined) chapter[field] = req.body[field];
+        }
       }
+      existing.calculateOverallProgress();
+      await existing.save();
+      res.json(existing);
     } catch (error) {
       console.error('Error updating chapter progress:', error);
       res.status(500).json({ error: 'Failed to update chapter progress' });
+    }
+  }
+);
+
+router.delete(
+  '/chapters/:chapterId/:chapterEntryId',
+  checkPermission('classes', 'edit'),
+  validateZod(chapterEntryParamsSchema, 'params'),
+  async (req, res) => {
+    try {
+      const { chapterId, chapterEntryId } = req.params;
+      const existing = await ChapterProgress.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: chapterId })
+      );
+      if (!existing) return res.status(404).json({ error: 'Chapter progress not found' });
+      const chapter = existing.chapters.id(chapterEntryId);
+      if (!chapter) return res.status(404).json({ error: 'Chapter entry not found' });
+      chapter.deleteOne();
+      existing.calculateOverallProgress();
+      await existing.save();
+      res.json({ success: true, chapterProgress: existing });
+    } catch (error) {
+      console.error('Error deleting chapter entry:', error);
+      res.status(500).json({ error: 'Failed to delete chapter entry' });
     }
   }
 );
@@ -1287,106 +1378,129 @@ router.post(
 );
 
 // Get announcements for class
-router.get(
-  '/:id/announcements',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const schoolId = req.user?.schoolId;
-      const { limit: rawLimit = 20 } = req.query;
-      const limit = Math.min(parseInt(rawLimit) || 20, 100);
+router.get('/:id/announcements', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.user?.schoolId;
+    const { limit: rawLimit = 20 } = req.query;
+    const limit = Math.min(parseInt(rawLimit) || 20, 100);
 
-      // Verify class belongs to this school
-      const classDoc = await Class.findOne(
-        scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
-      );
-      if (!classDoc) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
-
-      const announcements = await ClassAnnouncement.find(scopeBySchool(schoolId, { classId: id, isDeleted: { $ne: true } }))
-        .populate('sentBy', 'name code')
-        .sort({ createdAt: -1 })
-        .limit(limit);
-
-      res.json(announcements);
-    } catch (error) {
-      console.error('Error fetching announcements:', error);
-      res.status(500).json({ error: 'Failed to fetch announcements' });
+    // Verify class belongs to this school
+    const classDoc = await Class.findOne(
+      scopeBySchool(schoolId, { _id: id, isDeleted: { $ne: true } })
+    );
+    if (!classDoc) {
+      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
     }
+
+    const announcements = await ClassAnnouncement.find(
+      scopeBySchool(schoolId, { classId: id, isDeleted: { $ne: true } })
+    )
+      .populate('sentBy', 'name code')
+      .sort({ createdAt: -1 })
+      .limit(limit);
+
+    res.json(announcements);
+  } catch (error) {
+    console.error('Error fetching announcements:', error);
+    res.status(500).json({ error: 'Failed to fetch announcements' });
   }
-);
+});
 
 // ============ FEES OVERVIEW ENDPOINT ============
 
-// Get fees overview for class
-router.get(
-  '/:id/fees-overview',
-  checkPermission('classes', 'view'),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const schoolId = req.user?.schoolId;
-      const { academicYear = CURRENT_ACADEMIC_YEAR } = req.query;
+// Get fees overview for class — powers the 3 KPI cards (Collected / Pending /
+// Overdue) on the Class Dashboard → Fees tab.
+//
+// NOTE on response shape: the frontend (FeesTab.jsx) reads `collected`,
+// `pending`, and `overdue` directly off this object, so those keys must be
+// present. The legacy handler returned `totalPaidAmount` / `totalPendingAmount`
+// and no overdue field at all — which is why the cards always showed ₹0 even
+// when fee data existed.
+router.get('/:id/fees-overview', checkPermission('classes', 'view'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schoolId = req.user?.schoolId;
+    // Resolve the academic year against the school's configured year (falls
+    // back to SchoolSettings.currentSession / academicYear). The previous
+    // code used `req.query.academicYear ?? CURRENT_ACADEMIC_YEAR`, which only
+    // consults env/date — if the school's data lived in a different year the
+    // query matched nothing and every amount came back 0.
+    const academicYear = await resolveAcademicYear(req.query?.academicYear, schoolId);
 
-      const students = await Student.find(
-        scopeBySchool(schoolId, { classId: id, status: 'active', isDeleted: { $ne: true } })
-      );
+    const students = await Student.find(
+      scopeBySchool(schoolId, { classId: id, status: 'active', isDeleted: { $ne: true } })
+    );
 
-      // Use StudentFeeStructure for year-scoped fee data instead of student.feeStatus
-      const studentIds = students.map((s) => s._id);
-      const feeStructures = await StudentFeeStructure.find(
-        scopeBySchool(schoolId, {
-          studentId: { $in: studentIds },
-          academicYear,
-          isDeleted: { $ne: true },
-        })
-      );
+    // Use StudentFeeStructure for year-scoped fee data.
+    const studentIds = students.map((s) => s._id);
+    const feeStructures = await StudentFeeStructure.find(
+      scopeBySchool(schoolId, {
+        studentId: { $in: studentIds },
+        academicYear,
+        isDeleted: { $ne: true },
+      })
+    );
 
-      const feeStructureMap = {};
-      feeStructures.forEach((fs) => {
-        feeStructureMap[fs.studentId.toString()] = fs;
-      });
+    const feeStructureMap = {};
+    feeStructures.forEach((fs) => {
+      feeStructureMap[fs.studentId.toString()] = fs;
+    });
 
-      const feeStats = {
-        totalStudents: students.length,
-        paid: 0,
-        unpaid: 0,
-        partial: 0,
-        totalPendingAmount: 0,
-        totalPaidAmount: 0,
-      };
+    let collected = 0; // total amount paid
+    let pending = 0; // total balance outstanding
+    let overdue = 0; // balance owed by students whose overallStatus is 'overdue'
+    let paidCount = 0;
+    let partialCount = 0;
+    let unpaidCount = 0;
 
-      students.forEach((student) => {
-        const fs = feeStructureMap[student._id.toString()];
-        if (fs) {
-          const paidAmount = fs.paidAmount || 0;
-          const totalFee = fs.totalFee || 0;
-          const balanceAmount = fs.balanceAmount ?? (totalFee - paidAmount);
+    students.forEach((student) => {
+      const fs = feeStructureMap[student._id.toString()];
+      if (!fs) {
+        unpaidCount++;
+        return;
+      }
+      // Read the ROOT-level fields on StudentFeeStructure. The previous code
+      // read `fs.paidAmount` / `fs.balanceAmount`, which only exist NESTED
+      // inside each `feeHeads[]` entry — never at the document root — so they
+      // were always undefined and every amount stayed 0.
+      const paidAmount = fs.totalPaid || 0;
+      const totalFee = fs.totalFee || 0;
+      const balanceAmount = fs.totalBalance ?? Math.max(totalFee - paidAmount, 0);
+      const isOverdue = fs.overallStatus === 'overdue';
 
-          if (paidAmount >= totalFee && totalFee > 0) {
-            feeStats.paid++;
-            feeStats.totalPaidAmount += paidAmount;
-          } else if (paidAmount === 0) {
-            feeStats.unpaid++;
-            feeStats.totalPendingAmount += balanceAmount;
-          } else {
-            feeStats.partial++;
-            feeStats.totalPendingAmount += balanceAmount;
-            feeStats.totalPaidAmount += paidAmount;
-          }
-        } else {
-          feeStats.unpaid++;
-        }
-      });
+      collected += paidAmount;
+      pending += balanceAmount;
+      if (isOverdue) overdue += balanceAmount;
 
-      res.json(feeStats);
-    } catch (error) {
-      console.error('Error fetching fees overview:', error);
-      res.status(500).json({ error: 'Failed to fetch fees overview' });
-    }
+      if (paidAmount >= totalFee && totalFee > 0) {
+        paidCount++;
+      } else if (paidAmount === 0) {
+        unpaidCount++;
+      } else {
+        partialCount++;
+      }
+    });
+
+    res.json({
+      // Frontend-facing keys — must match what FeesTab.jsx reads.
+      collected,
+      pending,
+      overdue,
+      totalStudents: students.length,
+      // Keep the legacy breakdown fields for any other consumer, but key them
+      // by the same names used elsewhere in the fees codebase for consistency.
+      totalCollected: collected,
+      totalPending: pending,
+      totalOverdue: overdue,
+      paid: paidCount,
+      partial: partialCount,
+      unpaid: unpaidCount,
+    });
+  } catch (error) {
+    console.error('Error fetching fees overview:', error);
+    res.status(500).json({ error: 'Failed to fetch fees overview' });
   }
-);
+});
 
 export default router;

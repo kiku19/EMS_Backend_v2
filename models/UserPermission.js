@@ -1,40 +1,19 @@
 import mongoose from 'mongoose';
+import { PERMISSION_MODULES } from '../constants/permissionModules.js';
 
 const modulePermissionSchema = new mongoose.Schema(
   {
     module: {
       type: String,
       required: true,
-      enum: [
-        'dashboard',
-        'staff',
-        'students',
-        'classes',
-        'academics',
-        'attendance',
-        'timetable',
-        'fees',
-        'payroll',
-        'messaging',
-        'communication',
-        'reports',
-        'settings',
-        'front-desk',
-        'front-office',
-        'intake-forms',
-        'homework',
-        'hostel',
-        'inventory',
-        'library',
-        'ptm',
-        'transport',
-      ],
+      enum: PERMISSION_MODULES,
     },
     view: { type: Boolean, default: false },
     create: { type: Boolean, default: false },
     edit: { type: Boolean, default: false },
     delete: { type: Boolean, default: false },
     publish: { type: Boolean, default: false },
+    approve: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -91,7 +70,7 @@ export const PERMISSION_TEMPLATES = {
     communication: { view: true, create: true, edit: true, delete: true },
     reports: { view: true, create: true, edit: true, delete: true },
     settings: { view: true, create: true, edit: true, delete: true },
-    'front-desk': { view: true, create: true, edit: true, delete: true },
+    'front-desk': { view: true, create: true, edit: true, delete: true, approve: true },
     'intake-forms': { view: true, create: true, edit: true, delete: true },
   },
   principal: {
@@ -108,7 +87,7 @@ export const PERMISSION_TEMPLATES = {
     communication: { view: true, create: true, edit: true, delete: true },
     reports: { view: true, create: true, edit: true, delete: true },
     settings: { view: true, create: true, edit: true, delete: false },
-    'front-desk': { view: true, create: true, edit: true, delete: true },
+    'front-desk': { view: true, create: true, edit: true, delete: true, approve: true },
     'intake-forms': { view: true, create: true, edit: true, delete: true },
   },
   'vice-principal': {
@@ -210,7 +189,7 @@ export const PERMISSION_TEMPLATES = {
     communication: { view: true, create: true, edit: false, delete: false },
     reports: { view: false, create: false, edit: false, delete: false },
     settings: { view: false, create: false, edit: false, delete: false },
-    'front-desk': { view: true, create: true, edit: true, delete: false },
+    'front-desk': { view: true, create: true, edit: true, delete: false, approve: true },
     'intake-forms': { view: true, create: true, edit: true, delete: false },
   },
 };

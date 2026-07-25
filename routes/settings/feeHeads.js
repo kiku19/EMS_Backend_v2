@@ -4,6 +4,8 @@ import { checkPermission } from '../../middleware/auth/permissions.js';
 import { zodSchemas, validateZod } from '../../middleware/validation/validation.js';
 import FeeHead from '../../models/FeeHead.js';
 import StudentFeeStructure from '../../models/StudentFeeStructure.js';
+import { computeFeeBalance } from '../../utils/feeCalculator.js';
+import { applyLateFeeToFeeStructure } from '../../utils/lateFeeCalculator.js';
 import { createLogger } from '../../utils/logger.js';
 
 const router = express.Router();
@@ -40,6 +42,12 @@ router.post(
         applicableClasses,
         frequency,
         autoApply,
+        // F7: headType / customType / applicableStreams were validated by Zod
+        // and exist on the FeeHead model, but the handler's fixed field-pick
+        // silently discarded them.
+        headType,
+        customType,
+        applicableStreams,
       } = req.body;
 
       // Create fee head
@@ -53,6 +61,9 @@ router.post(
         frequency: frequency || 'yearly',
         schoolId: req.user?.schoolId,
         autoApply: autoApply !== undefined ? autoApply : true,
+        headType,
+        customType,
+        applicableStreams,
       });
 
       await feeHead.save();
@@ -83,6 +94,10 @@ router.put(
         frequency,
         autoApply,
         isActive,
+        // F7: include the classified head fields on update too.
+        headType,
+        customType,
+        applicableStreams,
       } = req.body;
 
       const feeHead = await FeeHead.findOneAndUpdate(
@@ -97,6 +112,9 @@ router.put(
           frequency,
           autoApply,
           isActive,
+          headType,
+          customType,
+          applicableStreams,
         },
         { new: true }
       );
@@ -131,7 +149,11 @@ router.delete(
 
       // Save affected structure IDs BEFORE the $pull operation
       const affectedStructures = await StudentFeeStructure.find(
-        { 'feeHeads.feeHeadId': req.params.id, schoolId: req.user.schoolId },
+        {
+          'feeHeads.feeHeadId': req.params.id,
+          schoolId: req.user.schoolId,
+          isDeleted: { $ne: true },
+        },
         { _id: 1 }
       ).lean();
       const affectedIds = affectedStructures.map((s) => s._id);
@@ -142,23 +164,19 @@ router.delete(
         { $pull: { feeHeads: { feeHeadId: req.params.id } } }
       );
 
-      // Recalculate totals for affected student fee structures
+      // Recalculate totals for affected student fee structures. Use the
+      // canonical computeFeeBalance so discountApplied AND lateFeeApplied are
+      // factored in — the previous hand-rolled math dropped both.
       for (const structureId of affectedIds) {
         const structure = await StudentFeeStructure.findById(structureId);
         if (!structure) continue;
 
         structure.totalFee = structure.feeHeads.reduce((sum, fh) => sum + (fh.amount || 0), 0);
         structure.totalPaid = structure.feeHeads.reduce((sum, fh) => sum + (fh.paidAmount || 0), 0);
-        structure.totalBalance =
-          structure.totalFee - structure.totalPaid - (structure.discountApplied || 0);
-
-        if (structure.totalBalance <= 0) {
-          structure.overallStatus = 'paid';
-        } else if (structure.totalPaid > 0) {
-          structure.overallStatus = 'partial';
-        } else {
-          structure.overallStatus = 'pending';
-        }
+        await applyLateFeeToFeeStructure(structure);
+        const { totalBalance, overallStatus } = computeFeeBalance(structure);
+        structure.totalBalance = totalBalance;
+        structure.overallStatus = overallStatus;
 
         await structure.save();
       }

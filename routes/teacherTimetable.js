@@ -160,7 +160,7 @@ router.get('/:teacherId', canViewTeacherTimetable, async (req, res) => {
     }
 
     // Get teacher timetable
-    const timetable = await timetableService.getTeacherTimetable(teacherId, academicYear);
+    const timetable = await timetableService.getTeacherTimetable(teacherId, academicYear, schoolId);
 
     // If no timetable exists, create an empty one
     if (!timetable) {
@@ -174,6 +174,7 @@ router.get('/:teacherId', canViewTeacherTimetable, async (req, res) => {
           Thursday: [],
           Friday: [],
           Saturday: [],
+          Sunday: [],
         },
         schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
       });
@@ -252,6 +253,7 @@ router.post('/:teacherId', canEditTeacherTimetable, async (req, res) => {
         Thursday: [],
         Friday: [],
         Saturday: [],
+        Sunday: [],
       },
       schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
     });
@@ -362,7 +364,7 @@ router.put(
         slotData,
         academicYear,
         modifiedBy: req.user?.id || null,
-        schoolId: req.user?.schoolId,
+        schoolId,
       });
 
       res.json({
@@ -498,7 +500,8 @@ router.post(
         oldClassId, // Exclude old class from conflict check
         false,
         schoolId,
-        academicYear
+        academicYear,
+        true // skipCache — write-path (class switch), must see freshest state (CT16)
       );
 
       if (conflict) {
@@ -521,6 +524,7 @@ router.post(
         room,
         academicYear,
         modifiedBy: req.user?.id || null,
+        schoolId,
       });
 
       res.json({

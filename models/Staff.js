@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import piiPlugin from '../utils/piiPlugin.js';
+import { STAFF_ROLES } from '../constants/staffRoles.js';
 
 const staffSchema = new mongoose.Schema(
   {
@@ -11,23 +12,7 @@ const staffSchema = new mongoose.Schema(
       type: [
         {
           type: String,
-          enum: [
-            'Admin',
-            'Administrator',
-            'Super Admin',
-            'Teacher',
-            'Accountant',
-            'Librarian',
-            'Principal',
-            'Vice Principal',
-            'Lab Assistant',
-            'Receptionist',
-            'Counselor',
-            'Driver',
-            'Security',
-            'Administrative',
-            'Teaching',
-          ],
+          enum: STAFF_ROLES,
         },
       ],
       required: true,
@@ -56,7 +41,13 @@ const staffSchema = new mongoose.Schema(
     fatherName: String,
     bloodGroup: { type: String, enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] },
     maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'] },
-    employmentType: String,
+    // ST13: mirror the PayrollRecord.employmentType enum so a value saved on
+    // Staff can be copied verbatim into a PayrollRecord without validation
+    // rejection. Frontend `employmentTypes` already sends these exact values.
+    employmentType: {
+      type: String,
+      enum: ['full_time', 'part_time', 'contractor'],
+    },
     emergencyContact: String, // @deprecated - use emergencyContacts[] array instead
     emergencyPhone: String, // @deprecated - use emergencyContacts[] array instead
     emergencyContacts: [
@@ -218,6 +209,11 @@ staffSchema.pre('findOneAndUpdate', function (next) {
       update.$set.photo = update.$set.picture;
     } else if (update.$set.photo && !update.$set.picture) {
       update.$set.picture = update.$set.photo;
+    } else if (update.$set.picture === null) {
+      // ST10: useStaffPhoto.handleRemovePhoto sends { picture: null }. The
+      // branches above only run for truthy values, so `photo` was never
+      // cleared and the removed avatar kept re-appearing. Clear both.
+      update.$set.photo = null;
     }
   }
   next();
@@ -259,10 +255,10 @@ staffSchema.index(
   }
 );
 staffSchema.index(
-  { schoolId: 1, phone: 1 },
+  { schoolId: 1, phoneHash: 1 },
   {
     unique: true,
-    partialFilterExpression: { phone: { $type: 'string' }, isDeleted: false },
+    partialFilterExpression: { phoneHash: { $type: 'string' }, isDeleted: false },
   }
 );
 staffSchema.index({ schoolId: 1, status: 1, isDeleted: 1 });

@@ -10,16 +10,22 @@ import {
   bloodGroupEnum,
   genderEnum,
 } from './zodHelpers.js';
+import {
+  LEGACY_STAFF_ROLE_ALIASES,
+  STAFF_ROLES,
+  normalizeStaffRoles,
+} from '../constants/staffRoles.js';
 
 // Role normalization: accept string or array, always output array
 const roleField = z
   .union([
-    z.string().max(50, 'Role must not exceed 50 characters'),
+    z.enum([...STAFF_ROLES, ...Object.keys(LEGACY_STAFF_ROLE_ALIASES)]),
     z
-      .array(z.string().max(50, 'Each role must not exceed 50 characters'))
+      .array(z.enum([...STAFF_ROLES, ...Object.keys(LEGACY_STAFF_ROLE_ALIASES)]))
       .min(1, 'At least one role is required'),
   ])
-  .transform((val) => (Array.isArray(val) ? val : [val]));
+  .transform(normalizeStaffRoles)
+  .refine((roles) => roles.length > 0, 'At least one role is required');
 
 // StaffType normalization: accept string or array, always output array (or null)
 const staffTypeField = z
@@ -52,7 +58,10 @@ const qualificationSchema = z.object({
 // Salary breakdown component
 const salaryComponentSchema = z.object({
   component: z.string().min(1, 'Salary component name is required'),
-  amount: z.number().min(0, 'Salary component amount cannot be negative').max(10000000, 'Salary component amount cannot exceed 10,000,000'),
+  amount: z
+    .number()
+    .min(0, 'Salary component amount cannot be negative')
+    .max(10000000, 'Salary component amount cannot exceed 10,000,000'),
 });
 
 // Emergency contact subdocument
@@ -62,8 +71,18 @@ const emergencyContactSchema = z.object({
   phone: optionalPhone,
 });
 
+function validateClassTeacherSelection(value, ctx) {
+  if (value.isClassTeacher === true && !value.assignedClassId && !value.classTeacherOf) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['assignedClassId'],
+      message: 'Select a class when assigning a staff member as class teacher',
+    });
+  }
+}
+
 // ─── CREATE STAFF ───────────────────────────────────────────────
-export const createStaffSchema = z
+const staffFieldsSchema = z
   .object({
     // Required fields
     name: z
@@ -107,20 +126,23 @@ export const createStaffSchema = z
     emergencyPhone: optionalPhone,
 
     // Emergency contacts (new array format)
-    emergencyContacts: z.array(emergencyContactSchema).nullish().refine(
-      (contacts) => {
-        if (!contacts || contacts.length <= 1) return true;
-        const seen = new Set();
-        for (const c of contacts) {
-          if (!c.name && !c.phone) continue;
-          const key = `${(c.name || '').toLowerCase().trim()}-${(c.phone || '').trim()}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-        }
-        return true;
-      },
-      { message: 'Duplicate emergency contacts (same name and phone) are not allowed' }
-    ),
+    emergencyContacts: z
+      .array(emergencyContactSchema)
+      .nullish()
+      .refine(
+        (contacts) => {
+          if (!contacts || contacts.length <= 1) return true;
+          const seen = new Set();
+          for (const c of contacts) {
+            if (!c.name && !c.phone) continue;
+            const key = `${(c.name || '').toLowerCase().trim()}-${(c.phone || '').trim()}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+          }
+          return true;
+        },
+        { message: 'Duplicate emergency contacts (same name and phone) are not allowed' }
+      ),
 
     // WhatsApp
     whatsappNumber: optionalPhone,
@@ -170,8 +192,10 @@ export const createStaffSchema = z
   })
   .strip(); // Strip unknown fields
 
+export const createStaffSchema = staffFieldsSchema.superRefine(validateClassTeacherSelection);
+
 // ─── UPDATE STAFF (all fields optional + extra fields) ──────────
-export const updateStaffSchema = createStaffSchema
+export const updateStaffSchema = staffFieldsSchema
   .partial()
   .extend({
     // Update-only fields
@@ -187,7 +211,8 @@ export const updateStaffSchema = createStaffSchema
       .or(z.literal('')),
     status: z.enum(['active', 'inactive', 'on-leave', 'suspended', 'terminated']).optional(),
   })
-  .strip();
+  .strip()
+  .superRefine(validateClassTeacherSelection);
 
 // ─── TEACHER ASSIGNMENT: CREATE / UPDATE ────────────────────────
 export const teacherAssignmentSchema = z

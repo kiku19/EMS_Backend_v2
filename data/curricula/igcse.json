@@ -1,0 +1,19 @@
+{
+  "id": "igcse",
+  "name": "IGCSE / Cambridge International",
+  "description": "Cambridge Primary (grades 1-5), Lower Secondary (6-8), IGCSE (9-10), AS & A Level (11-12). Subjects follow Cambridge's curriculum frameworks. Grade 11-12 shows a representative A-Level subject selection.",
+  "grades": {
+    "1": ["English", "Mathematics", "Science", "Global Perspectives", "Art and Design", "Music", "Physical Education", "ICT"],
+    "2": ["English", "Mathematics", "Science", "Global Perspectives", "Art and Design", "Music", "Physical Education", "ICT"],
+    "3": ["English", "Mathematics", "Science", "Global Perspectives", "Art and Design", "Music", "Physical Education", "ICT"],
+    "4": ["English", "Mathematics", "Science", "Global Perspectives", "Art and Design", "Music", "Physical Education", "ICT", "Second Language"],
+    "5": ["English", "Mathematics", "Science", "Global Perspectives", "Art and Design", "Music", "Physical Education", "ICT", "Second Language"],
+    "6": ["English", "Mathematics", "Biology", "Chemistry", "Physics", "History", "Geography", "ICT", "Art and Design", "Physical Education", "Second Language"],
+    "7": ["English", "Mathematics", "Biology", "Chemistry", "Physics", "History", "Geography", "ICT", "Art and Design", "Physical Education", "Second Language"],
+    "8": ["English", "Mathematics", "Biology", "Chemistry", "Physics", "History", "Geography", "ICT", "Art and Design", "Physical Education", "Second Language"],
+    "9": ["English Language", "English Literature", "Mathematics", "Biology", "Chemistry", "Physics", "Economics", "History", "Geography", "Computer Science", "Art and Design", "Physical Education"],
+    "10": ["English Language", "English Literature", "Mathematics", "Biology", "Chemistry", "Physics", "Economics", "History", "Geography", "Computer Science", "Art and Design", "Physical Education"],
+    "11": ["English Language", "Mathematics", "Physics", "Chemistry", "Biology", "Economics", "Computer Science", "Business Studies"],
+    "12": ["English Language", "Mathematics", "Physics", "Chemistry", "Biology", "Economics", "Computer Science", "Business Studies"]
+  }
+}

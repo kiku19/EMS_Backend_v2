@@ -80,6 +80,14 @@ export const updateSchoolSettingsSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}$/)
     .optional(),
+  // Changing the active academic year pivots every fee structure, attendance
+  // roll, and report card onto a new baseline. Doing it accidentally from this
+  // generic settings endpoint (rather than the dedicated PUT /academic-year
+  // route which runs a transition preview) is destructive, so require an
+  // explicit confirm:true flag — mirroring academicYearSchema in
+  // routes/settings/school.js. The handler enforces it whenever academicYear
+  // or currentSession is present in the body.
+  confirm: z.literal(true).optional(),
   academicYearStart: z.string().optional(),
   academicYearEnd: z.string().optional(),
   schoolStartTime: z.string().optional(),

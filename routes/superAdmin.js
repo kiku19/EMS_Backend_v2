@@ -20,6 +20,7 @@ import {
 import { normalizeSchoolCode, serializeSchool } from '../utils/schoolContext.js';
 import { getAllSchoolsUsage, BILLING_PLANS } from '../services/billingService.js';
 import { getSchoolFeatures } from '../services/featureFlagsService.js';
+import { invalidateModuleCache } from '../services/moduleAccessService.js';
 import FeatureFlag from '../models/FeatureFlag.js';
 import {
   TOGGLEABLE_MODULES,
@@ -325,6 +326,9 @@ router.patch(
       // Normalize so core keys can never be stored and unknown keys are dropped.
       school.enabledModules = normalizeToggleableSelection(req.body.enabledModules);
       await school.save();
+
+      // Apply module changes immediately instead of serving cached access for up to 30 seconds.
+      invalidateModuleCache(school._id);
 
       const { enabled } = resolveEnabledModules(school.enabledModules);
       res.json({

@@ -78,6 +78,7 @@ const payrollRecordSchema = new mongoose.Schema(
     netPay: {
       type: Number,
       required: true,
+      min: 0,
     },
     status: {
       type: String,
@@ -91,6 +92,12 @@ const payrollRecordSchema = new mongoose.Schema(
       default: 'bank_transfer',
     },
     paymentReference: String,
+    // The shared batch reference a bulk-pay operation was issued with. Unlike
+    // paymentReference (made unique per record for bank reconciliation), this
+    // keeps the original user-supplied batch id so the whole batch can be
+    // audited together. P5: previously assigned in routes/payroll.js bulk-pay
+    // but silently dropped because strict:true had no matching path.
+    paymentBatchReference: String,
     isLocked: {
       type: Boolean,
       default: false,
@@ -117,6 +124,7 @@ const payrollRecordSchema = new mongoose.Schema(
         reason: String,
         previousStatus: String,
         previousPaymentDate: Date,
+        previousPaymentReference: String,
       },
     ],
   },
@@ -139,16 +147,13 @@ function asNumber(n) {
   return v;
 }
 payrollRecordSchema.pre('save', function (next) {
-  this.totalAllowances = (this.allowances || []).reduce(
-    (sum, a) => sum + asNumber(a?.amount),
-    0
-  );
-  this.totalDeductions = (this.deductions || []).reduce(
-    (sum, d) => sum + asNumber(d?.amount),
-    0
-  );
+  this.totalAllowances = (this.allowances || []).reduce((sum, a) => sum + asNumber(a?.amount), 0);
+  this.totalDeductions = (this.deductions || []).reduce((sum, d) => sum + asNumber(d?.amount), 0);
   this.grossPay = asNumber(this.baseSalary) + this.totalAllowances;
   this.netPay = this.grossPay - this.totalDeductions;
+  if (this.netPay < 0) {
+    this.invalidate('netPay', 'Net pay cannot be negative; deductions exceed gross pay.');
+  }
   next();
 });
 

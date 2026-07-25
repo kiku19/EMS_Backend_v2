@@ -116,3 +116,48 @@ export function calculateConcessionDiscount(concession, feeAmount) {
 
   return 0;
 }
+
+/**
+ * Stamp `lateFeeApplied` onto a StudentFeeStructure document based on the
+ * school's configured LateFeeRule and how far the structure is past due.
+ *
+ * This is the single integration point that connects the late-fee config to
+ * fee balances — call it before invoking computeFeeBalance() so the late fee
+ * is included in totalBalance/overallStatus. If no rule is configured or the
+ * structure is not past due, `lateFeeApplied` is reset to 0.
+ *
+ * Late fees are only meaningful when the student still owes money: a fully-paid
+ * structure accrues no late fee, and a structure whose `dueDate` is unset can
+ * never be overdue.
+ *
+ * @param {Object} sfs - StudentFeeStructure document (mutable)
+ * @param {Object} [options]
+ * @param {Date}   [options.asOf] - Reference "now" (defaults to real now; tests pass a fixed date)
+ * @returns {Promise<number>} the lateFeeApplied value that was set
+ */
+export async function applyLateFeeToFeeStructure(sfs, { asOf } = {}) {
+  if (!sfs || !sfs.schoolId || !sfs.academicYear || !sfs.dueDate) {
+    if (sfs) sfs.lateFeeApplied = 0;
+    return 0;
+  }
+
+  // No outstanding principal → no late fee. This keeps a fully-paid account
+  // from accumulating late-fee liability even if the due date is long past.
+  const totalFee = sfs.totalFee || 0;
+  const totalPaid = sfs.totalPaid || 0;
+  const discountApplied = sfs.discountApplied || 0;
+  if (totalPaid + discountApplied >= totalFee) {
+    sfs.lateFeeApplied = 0;
+    return 0;
+  }
+
+  const { lateFee } = await calculateLateFee({
+    schoolId: sfs.schoolId,
+    academicYear: sfs.academicYear,
+    dueDate: sfs.dueDate,
+    paymentDate: asOf || new Date(),
+  });
+
+  sfs.lateFeeApplied = lateFee || 0;
+  return sfs.lateFeeApplied;
+}

@@ -8,8 +8,15 @@ const studentSchema = new mongoose.Schema(
     name: { type: String, required: true },
     admissionId: { type: String },
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
+    admissionDate: { type: Date },
     rollNo: Number,
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+    // Front-desk conversion back-references (routes/frontDesk.js writes these
+    // when converting an admission inquiry into a Student). Previously dropped
+    // by Mongoose strict mode, so the inquiry link was permanently lost.
+    section: String,
+    hscGroup: String,
+    admissionInquiryId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionInquiry' },
 
     // Personal Information
     gender: String,
@@ -44,6 +51,7 @@ const studentSchema = new mongoose.Schema(
 
     // Contact Information
     phone: String,
+    alternatePhone: String, // captured by ContactSection; was stripped by Mongoose strict
     email: {
       type: String,
       validate: {
@@ -112,21 +120,8 @@ const studentSchema = new mongoose.Schema(
         classId: {
           type: mongoose.Schema.Types.ObjectId,
           ref: 'Class',
-          validate: {
-            validator: async function (v) {
-              const sibling = this;
-              const siblingIdx = sibling.siblings.findIndex(
-                (s) => s.classId && s.classId.toString() === v?.toString()
-              );
-              if (siblingIdx === -1) return true;
-
-              const thisSibling = sibling.siblings[siblingIdx];
-              if (thisSibling.inSameSchool && !v) {
-                return false;
-              }
-              return true;
-            },
-            message: 'Class is required when sibling is in the same school',
+          required: function () {
+            return this.inSameSchool === true;
           },
         },
       },
@@ -140,6 +135,11 @@ const studentSchema = new mongoose.Schema(
 
     // Health & Safety (legacy flat fields)
     medicalConditions: String,
+    // Legacy flat allergies list (free-text strings). Captured by
+    // CreateStudentComposer's top-level `allergies` input; the structured
+    // home is healthInfo.allergies (allergySchema objects). Kept as a top-
+    // level [String] so the legacy capture isn't silently dropped.
+    allergies: { type: [String] },
     emergencyContactName: String,
     emergencyContactPhone: String,
 
@@ -148,7 +148,9 @@ const studentSchema = new mongoose.Schema(
       allergies: [
         {
           name: { type: String, required: true },
-          type: String, // food, medication, environmental, insect, latex, other
+          // `type` is a reserved Mongoose schema key; use the explicit nested
+          // declaration so allergies remain subdocuments instead of [String].
+          type: { type: String }, // food, medication, environmental, insect, latex, other
           severity: String, // mild, moderate, severe, life-threatening
           reaction: String,
           notes: String,
@@ -222,13 +224,24 @@ const studentSchema = new mongoose.Schema(
       {
         id: { type: String, required: true },
         name: String,
-        type: String,
+        // NOTE: `type` is a reserved Mongoose keyword. Inside a subdocument,
+        // a bare `type: String` declaration makes Mongoose interpret `type`
+        // as THIS subdoc's type discriminator rather than as a path named
+        // "type" — which silently broke the whole array (it compiled as
+        // [String] instead of [subdoc], so every document field was lost).
+        // The explicit `{ type: { type: String } }` form disambiguates.
+        type: { type: String },
         category: String, // birthCertificate, tc, aadhaar, etc.
         front: { url: String, uploadDate: Date },
         back: { url: String, uploadDate: Date },
         // Legacy support for old single-file documents
         url: String,
         uploadDate: Date,
+        // File metadata captured by useStudentSubmit / useStudentDocuments.
+        // Zod (singleDocSchema/addDocumentSchema) already declared these, but
+        // they were dropped by Mongoose strict mode.
+        size: { type: mongoose.Schema.Types.Mixed },
+        date: String,
       },
     ],
 
@@ -317,6 +330,17 @@ studentSchema.index({ schoolId: 1, isDeleted: 1, createdAt: -1 });
 studentSchema.index({ schoolId: 1, isDeleted: 1, name: 1 });
 studentSchema.index({ schoolId: 1, classId: 1, isDeleted: 1 });
 studentSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1 });
+// Transfer-certificate numbers are legal identifiers and must never be reused,
+// even if a student is later archived. Tenant-first uniqueness lets different
+// schools retain their own numbering series while making concurrent issuance
+// collision-safe at the database boundary.
+studentSchema.index(
+  { schoolId: 1, 'transferCertificate.tcNumber': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { 'transferCertificate.tcNumber': { $type: 'string' } },
+  }
+);
 // PERF-571: Compact index for school-scoped count queries (countDocuments,
 // dashboard totals, etc.). Smaller than the 3-field compounds above so it
 // stays hotter in cache and gives covered counts for the common

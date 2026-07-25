@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import { Student, Class, StudentFeeStructure, Attendance, ActivityLog } from '../../database.js';
 import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/permissions.js';
@@ -11,10 +12,34 @@ import {
 import { CURRENT_ACADEMIC_YEAR } from '../../utils/constants.js';
 import { extractSchoolId } from '../../utils/schoolContext.js';
 import { checkClassCapacity } from '../../utils/classCapacity.js';
-import { scopeBySchool, initializeFeeStructure } from './helpers.js';
+import {
+  scopeBySchool,
+  initializeFeeStructure,
+  resyncFeeStructureForClassChange,
+  assertStudentCanPromote,
+} from './helpers.js';
 
 const router = express.Router();
 router.use(authenticate);
+
+async function syncPromotedStudentFees(student, previousAcademicYear, session) {
+  const feeStructure =
+    previousAcademicYear === student.academicYear
+      ? await resyncFeeStructureForClassChange(student, { session })
+      : await initializeFeeStructure(student, { session });
+
+  if (!feeStructure) return;
+
+  student.feeStatus = feeStructure.overallStatus || 'pending';
+  student.feeDetails = {
+    totalFee: feeStructure.totalFee || 0,
+    paidAmount: feeStructure.totalPaid || 0,
+    balanceAmount: feeStructure.totalBalance || 0,
+    discountApplied: feeStructure.discountApplied || 0,
+    lastPaymentDate: feeStructure.lastPaymentDate || null,
+  };
+  await student.save({ session });
+}
 
 // ─── YEAR-END BULK PROMOTION ──────────────────────────────────────
 // Static path must be registered before /:id/promote
@@ -61,6 +86,13 @@ router.post(
           );
           if (!toClass) {
             details.push({ fromClassId, error: req.t('common:routes.targetClassNotFound') });
+            continue;
+          }
+          if (toClass.academicYear && toClass.academicYear !== academicYear) {
+            details.push({
+              fromClassId,
+              error: `Target class belongs to ${toClass.academicYear}, not ${academicYear}`,
+            });
             continue;
           }
         }
@@ -121,46 +153,84 @@ router.post(
               }
             }
 
-            const oldAcademicYear = fromClass.academicYear || CURRENT_ACADEMIC_YEAR;
+            const oldAcademicYear =
+              student.academicYear || fromClass.academicYear || CURRENT_ACADEMIC_YEAR;
 
             if (graduate) {
-              student.status = 'graduated';
-              student.academicYear = academicYear;
-              await student.save();
+              const session = await mongoose.startSession();
+              try {
+                await session.withTransaction(async (transactionSession) => {
+                  const currentStudent = await Student.findOne(
+                    scopeBySchool(schoolId, {
+                      _id: student._id,
+                      status: 'active',
+                      isDeleted: { $ne: true },
+                    })
+                  ).session(transactionSession);
+                  if (!currentStudent) throw new Error('Student is no longer active');
+                  currentStudent.status = 'graduated';
+                  currentStudent.academicYear = academicYear;
+                  await currentStudent.save({ session: transactionSession });
+                });
+              } finally {
+                await session.endSession();
+              }
               classResult.graduated.push({ studentId: student._id, studentName: student.name });
               summary.graduated++;
             } else {
               const oldFeeStructure = await StudentFeeStructure.findOne(
-                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
+                scopeBySchool(schoolId, {
+                  studentId: student._id,
+                  academicYear: oldAcademicYear,
+                  isDeleted: { $ne: true },
+                })
               );
               const unpaidBalance = oldFeeStructure?.totalBalance || 0;
 
-              student.classId = toClassId;
-              student.academicYear = academicYear;
-              student.rollNo = null;
-              student.feeStatus = 'pending';
-              student.feeDetails = {
-                totalFee: 0,
-                paidAmount: 0,
-                balanceAmount: 0,
-                discountApplied: 0,
-                lastPaymentDate: null,
-              };
-              await student.save();
-              await StudentFeeStructure.deleteMany(
-                scopeBySchool(schoolId, { studentId: student._id, academicYear: oldAcademicYear })
-              );
+              const session = await mongoose.startSession();
               try {
-                await initializeFeeStructure(student);
-              } catch (feeError) {
-                console.error(
-                  'Error initializing fee structure after year-end promotion:',
-                  feeError
-                );
+                await session.withTransaction(async (transactionSession) => {
+                  const currentStudent = await Student.findOne(
+                    scopeBySchool(schoolId, {
+                      _id: student._id,
+                      status: 'active',
+                      isDeleted: { $ne: true },
+                    })
+                  ).session(transactionSession);
+                  const currentTargetClass = await Class.findOne(
+                    scopeBySchool(schoolId, {
+                      _id: toClassId,
+                      isDeleted: { $ne: true },
+                    })
+                  ).session(transactionSession);
+                  if (!currentStudent || !currentTargetClass) {
+                    throw new Error('Student or target class changed during promotion');
+                  }
+                  if (
+                    currentTargetClass.academicYear &&
+                    currentTargetClass.academicYear !== academicYear
+                  ) {
+                    throw new Error(
+                      `Target class belongs to ${currentTargetClass.academicYear}, not ${academicYear}`
+                    );
+                  }
+
+                  currentStudent.classId = currentTargetClass._id;
+                  currentStudent.academicYear = academicYear;
+                  currentStudent.rollNo = null;
+                  await currentStudent.save({ session: transactionSession });
+                  await syncPromotedStudentFees(
+                    currentStudent,
+                    oldAcademicYear,
+                    transactionSession
+                  );
+                });
+              } finally {
+                await session.endSession();
               }
               const promotedEntry = { studentId: student._id, studentName: student.name };
               if (unpaidBalance > 0) {
-                promotedEntry.warning = `Unpaid balance of ₹${unpaidBalance} was cleared due to class promotion.`;
+                promotedEntry.warning = `Unpaid balance of ₹${unpaidBalance} remains recorded against ${oldAcademicYear}.`;
               }
               classResult.promoted.push(promotedEntry);
               summary.promoted++;
@@ -202,71 +272,161 @@ router.post(
   checkPermission('students', 'edit'),
   validateZod(bulkStudentPromoteSchema),
   async (req, res) => {
+    const schoolId = req.user?.schoolId;
+    const { promotions, skipFeeCheck = false, skipAttendanceCheck = false } = req.body;
+    const targetClassIds = [
+      ...new Set(promotions.filter((p) => !p.graduate).map((p) => String(p.targetClassId))),
+    ];
+
     try {
-      const schoolId = req.user?.schoolId;
-      const { promotions } = req.body;
+      // Reject the entire operation before any write if a target belongs to
+      // another tenant (or was deleted). Partial promotion is not safe.
+      const targetClasses = await Class.find(
+        scopeBySchool(schoolId, {
+          _id: { $in: targetClassIds },
+          isDeleted: { $ne: true },
+        })
+      );
+      const targetClassMap = new Map(targetClasses.map((cls) => [String(cls._id), cls]));
+      const missingTargetIds = targetClassIds.filter((id) => !targetClassMap.has(id));
+      if (missingTargetIds.length > 0) {
+        return res.status(400).json({
+          error: 'One or more target classes were not found in your school',
+          targetClassIds: missingTargetIds,
+        });
+      }
 
-      // Fetch all students in a single query
+      // C26: Run the same three guards single-promote runs (pending fees,
+      // attendance threshold, target-class capacity) per student BEFORE the
+      // transaction. Failures are recorded, not silently skipped — the rest of
+      // the batch still promotes.
       const studentIds = promotions.map((p) => p.studentId);
-      const students = await Student.find(
-        scopeBySchool(schoolId, { _id: { $in: studentIds }, isDeleted: { $ne: true } })
-      ).lean();
-      const studentMap = new Map(students.map((s) => [String(s._id), s]));
+      const guardStudents = await Student.find(
+        scopeBySchool(schoolId, {
+          _id: { $in: studentIds },
+          isDeleted: { $ne: true },
+        })
+      ).populate('classId', 'name section academicYear');
 
-      const bulkOps = [];
-      let promoted = 0;
-      let graduated = 0;
-      let failed = 0;
-      const errors = [];
+      const guardStudentMap = new Map(
+        guardStudents.map((student) => [String(student._id), student])
+      );
+      if (guardStudentMap.size !== new Set(studentIds.map(String)).size) {
+        const missingStudentIds = studentIds.map(String).filter((id) => !guardStudentMap.has(id));
+        return res.status(400).json({
+          error: 'One or more students were not found in your school',
+          studentIds: missingStudentIds,
+        });
+      }
 
+      const failedDetails = [];
+      // Running tally of seats reserved per target class within this batch.
+      // checkClassCapacity reads committed data, so it cannot see in-batch
+      // promotions — we pass this in via extraOccupied to prevent over-filling.
+      const targetOccupancy = new Map();
+      for (const id of targetClassIds) targetOccupancy.set(id, 0);
+
+      const allowedPromotions = [];
       for (const promo of promotions) {
-        const student = studentMap.get(String(promo.studentId));
-        if (!student) {
-          failed++;
-          errors.push({ studentId: promo.studentId, error: 'Student not found' });
+        const student = guardStudentMap.get(String(promo.studentId));
+        if (promo.graduate) {
+          allowedPromotions.push(promo);
           continue;
         }
-
-        if (promo.graduate) {
-          bulkOps.push({
-            updateOne: {
-              filter: { _id: student._id },
-              update: { $set: { status: 'graduated' } },
-            },
+        const targetClass = targetClassMap.get(String(promo.targetClassId));
+        try {
+          await assertStudentCanPromote(student, targetClass, {
+            schoolId,
+            skipFeeCheck,
+            skipAttendanceCheck,
+            extraOccupied: targetOccupancy.get(String(promo.targetClassId)) || 0,
           });
-          graduated++;
-        } else {
-          bulkOps.push({
-            updateOne: {
-              filter: { _id: student._id },
-              update: {
-                $set: {
-                  classId: promo.targetClassId,
-                  feeStatus: 'pending',
-                  rollNo: null,
-                  feeDetails: {
-                    totalFee: 0,
-                    paidAmount: 0,
-                    balanceAmount: 0,
-                    discountApplied: 0,
-                    lastPaymentDate: null,
-                  },
-                },
-              },
-            },
+          // Reserve a seat in this target class for the rest of the batch.
+          targetOccupancy.set(
+            String(promo.targetClassId),
+            (targetOccupancy.get(String(promo.targetClassId)) || 0) + 1
+          );
+          allowedPromotions.push(promo);
+        } catch (guardError) {
+          failedDetails.push({
+            studentId: promo.studentId,
+            reason: guardError.code || guardError.message,
+            message: guardError.message,
           });
-          promoted++;
         }
       }
 
-      if (bulkOps.length > 0) {
-        await Student.bulkWrite(bulkOps, { ordered: false });
+      const mongoSession = await mongoose.startSession();
+      let promoted = 0;
+      let graduated = 0;
+      try {
+        await mongoSession.withTransaction(async (session) => {
+          const allowedIds = allowedPromotions.map((p) => p.studentId);
+          const students = await Student.find(
+            scopeBySchool(schoolId, {
+              _id: { $in: allowedIds },
+              isDeleted: { $ne: true },
+            })
+          ).session(session);
+          const currentTargetClasses = await Class.find(
+            scopeBySchool(schoolId, {
+              _id: { $in: targetClassIds },
+              isDeleted: { $ne: true },
+            })
+          ).session(session);
+          const studentMap = new Map(students.map((student) => [String(student._id), student]));
+          const currentTargetClassMap = new Map(
+            currentTargetClasses.map((cls) => [String(cls._id), cls])
+          );
+
+          if (studentMap.size !== new Set(allowedIds.map(String)).size) {
+            const error = new Error('One or more students changed during promotion');
+            error.status = 409;
+            throw error;
+          }
+          if (currentTargetClassMap.size !== targetClassIds.length) {
+            const error = new Error('One or more target classes changed during promotion');
+            error.status = 409;
+            throw error;
+          }
+
+          for (const promo of allowedPromotions) {
+            const student = studentMap.get(String(promo.studentId));
+            if (promo.graduate) {
+              student.status = 'graduated';
+              await student.save({ session });
+              graduated += 1;
+              continue;
+            }
+
+            const targetClass = currentTargetClassMap.get(String(promo.targetClassId));
+            const previousAcademicYear = student.academicYear;
+            student.classId = targetClass._id;
+            student.academicYear = targetClass.academicYear || student.academicYear;
+            student.rollNo = null;
+            await student.save({ session });
+            await syncPromotedStudentFees(student, previousAcademicYear, session);
+            promoted += 1;
+          }
+        });
+      } finally {
+        await mongoSession.endSession();
       }
 
-      res.json({ success: true, promoted, graduated, failed, errors });
+      res.json({
+        success: true,
+        promoted,
+        graduated,
+        failed: failedDetails.length,
+        failedDetails,
+        errors: [],
+      });
     } catch (error) {
       console.error('Error in bulk promote:', error);
-      res.status(500).json({ error: 'Bulk promote failed' });
+      res.status(error.status || 500).json({
+        error: error.status ? error.message : 'Bulk promote failed',
+        ...(error.studentIds ? { studentIds: error.studentIds } : {}),
+      });
     }
   }
 );
@@ -301,20 +461,48 @@ router.post(
       const fromClass = student.classId;
 
       if (graduate) {
-        student.status = 'graduated';
-        student.academicYear = academicYear;
-        await student.save();
-        await ActivityLog.create({
-          schoolId: extractSchoolId(schoolId),
-          activityType: 'student_graduated',
-          description: `Student ${student.name} marked as graduated`,
-          performedBy: req.user?.id,
-          details: { studentId: student._id, fromClass: fromClass?._id, academicYear },
-        });
+        const mongoSession = await mongoose.startSession();
+        try {
+          await mongoSession.withTransaction(async (session) => {
+            const currentStudent = await Student.findOne(
+              scopeBySchool(schoolId, {
+                _id: id,
+                status: 'active',
+                isDeleted: { $ne: true },
+              })
+            ).session(session);
+            if (!currentStudent) {
+              const error = new Error('Student is no longer available for graduation');
+              error.status = 409;
+              throw error;
+            }
+            currentStudent.status = 'graduated';
+            currentStudent.academicYear = academicYear;
+            await currentStudent.save({ session });
+            await ActivityLog.create(
+              [
+                {
+                  schoolId: extractSchoolId(schoolId),
+                  activityType: 'student_graduated',
+                  description: `Student ${currentStudent.name} marked as graduated`,
+                  performedBy: req.user?.id,
+                  details: {
+                    studentId: currentStudent._id,
+                    fromClass: fromClass?._id,
+                    academicYear,
+                  },
+                },
+              ],
+              { session }
+            );
+          });
+        } finally {
+          await mongoSession.endSession();
+        }
         return res.json({
           success: true,
           message: `${student.name} marked as graduated`,
-          student: { _id: student._id, name: student.name, status: student.status },
+          student: { _id: student._id, name: student.name, status: 'graduated' },
         });
       }
 
@@ -326,6 +514,12 @@ router.post(
         return res
           .status(400)
           .json({ error: req.t('common:routes.targetClassNotFoundInYourSchool') });
+
+      if (targetClass.academicYear && targetClass.academicYear !== academicYear) {
+        return res.status(400).json({
+          error: `Target class belongs to academic year ${targetClass.academicYear}; promotion requested ${academicYear}`,
+        });
+      }
 
       // Check target class capacity
       const capacityResult = await checkClassCapacity(targetClassId, schoolId);
@@ -363,54 +557,73 @@ router.post(
         }
       }
 
-      const oldAcademicYear = fromClass?.academicYear || CURRENT_ACADEMIC_YEAR;
+      const oldAcademicYear =
+        student.academicYear || fromClass?.academicYear || CURRENT_ACADEMIC_YEAR;
 
-      // Check for unpaid fees before deleting the old structure
+      // Prior-year financial history remains immutable after promotion.
       const oldFeeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(schoolId, { studentId: id, academicYear: oldAcademicYear })
+        scopeBySchool(schoolId, {
+          studentId: id,
+          academicYear: oldAcademicYear,
+          isDeleted: { $ne: true },
+        })
       );
       const unpaidBalance = oldFeeStructure?.totalBalance || 0;
       const warning =
         unpaidBalance > 0
-          ? `Unpaid balance of ₹${unpaidBalance} was cleared due to class promotion.`
+          ? `Unpaid balance of ₹${unpaidBalance} remains recorded against ${oldAcademicYear}.`
           : undefined;
 
-      // Promote student
-      student.classId = targetClassId;
-      student.academicYear = academicYear;
-      student.rollNo = null;
-      student.feeStatus = 'pending';
-      student.feeDetails = {
-        totalFee: 0,
-        paidAmount: 0,
-        balanceAmount: 0,
-        discountApplied: 0,
-        lastPaymentDate: null,
-      };
-      await student.save();
-
-      // Remove old StudentFeeStructure and initialize new one for promoted class/year
-      await StudentFeeStructure.deleteMany(
-        scopeBySchool(schoolId, { studentId: id, academicYear: oldAcademicYear })
-      );
+      const mongoSession = await mongoose.startSession();
       try {
-        await initializeFeeStructure(student);
-      } catch (feeError) {
-        console.error('Error initializing fee structure after promotion:', feeError);
-      }
+        await mongoSession.withTransaction(async (session) => {
+          const currentStudent = await Student.findOne(
+            scopeBySchool(schoolId, {
+              _id: id,
+              status: 'active',
+              isDeleted: { $ne: true },
+            })
+          ).session(session);
+          const currentTargetClass = await Class.findOne(
+            scopeBySchool(schoolId, {
+              _id: targetClassId,
+              academicYear,
+              isDeleted: { $ne: true },
+            })
+          ).session(session);
+          if (!currentStudent || !currentTargetClass) {
+            const error = new Error('Student or target class changed during promotion');
+            error.status = 409;
+            throw error;
+          }
 
-      await ActivityLog.create({
-        schoolId: extractSchoolId(schoolId),
-        activityType: 'student_promoted',
-        description: `Student ${student.name} promoted from ${fromClass?.name || '?'}-${fromClass?.section || '?'} to ${targetClass.name}-${targetClass.section}`,
-        performedBy: req.user?.id,
-        details: {
-          studentId: student._id,
-          fromClass: fromClass?._id,
-          toClass: targetClassId,
-          academicYear,
-        },
-      });
+          currentStudent.classId = currentTargetClass._id;
+          currentStudent.academicYear = academicYear;
+          currentStudent.rollNo = null;
+          await currentStudent.save({ session });
+          await syncPromotedStudentFees(currentStudent, oldAcademicYear, session);
+
+          await ActivityLog.create(
+            [
+              {
+                schoolId: extractSchoolId(schoolId),
+                activityType: 'student_promoted',
+                description: `Student ${currentStudent.name} promoted from ${fromClass?.name || '?'}-${fromClass?.section || '?'} to ${currentTargetClass.name}-${currentTargetClass.section}`,
+                performedBy: req.user?.id,
+                details: {
+                  studentId: currentStudent._id,
+                  fromClass: fromClass?._id,
+                  toClass: currentTargetClass._id,
+                  academicYear,
+                },
+              },
+            ],
+            { session }
+          );
+        });
+      } finally {
+        await mongoSession.endSession();
+      }
 
       res.json({
         success: true,
@@ -420,7 +633,12 @@ router.post(
       });
     } catch (error) {
       console.error('Error promoting student:', error);
-      res.status(500).json({ error: req.t('common:routes.failedToPromoteStudent') });
+      res.status(error.status || 500).json({
+        error:
+          error.status && error.message
+            ? error.message
+            : req.t('common:routes.failedToPromoteStudent'),
+      });
     }
   }
 );

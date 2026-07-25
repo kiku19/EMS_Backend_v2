@@ -60,6 +60,24 @@ describe('fee-settings routes', () => {
       expect(res.body.discountValue).toBe(10);
     });
 
+    it('rejects out-of-range percentages and client-supplied tenant fields', async () => {
+      await request(app)
+        .post(CONCESSIONS)
+        .set(headers)
+        .send({
+          name: 'Invalid Discount',
+          discountType: 'percentage',
+          discountValue: 101,
+          academicYear: '2025-26',
+          schoolId: new mongoose.Types.ObjectId().toString(),
+        })
+        .expect(400);
+    });
+
+    it('returns a validation error for malformed route ids', async () => {
+      await request(app).get(`${CONCESSIONS}/not-an-id`).set(headers).expect(400);
+    });
+
     it('GET /concessions returns all concessions', async () => {
       await FeeConsession.create({
         name: 'Merit Discount',
@@ -383,6 +401,14 @@ describe('fee-settings routes', () => {
       expect(res.body.academicYear).toBe('2025-26');
     });
 
+    it('rejects unknown payment configuration fields', async () => {
+      await request(app)
+        .post(PAYMENT)
+        .set(headers)
+        .send({ academicYear: '2025-26', online: { enabled: true, secretKey: 'unsafe' } })
+        .expect(400);
+    });
+
     it('POST /payment-methods updates existing config for same academicYear', async () => {
       await PaymentMethodConfig.create({
         academicYear: '2025-26',
@@ -474,6 +500,23 @@ describe('fee-settings routes', () => {
       const res = await request(app).post(PERIOD).set(headers).send(payload).expect(201);
 
       expect(res.body.collectionInterval).toBe('quarterly');
+    });
+
+    it('rejects installment plans whose due-date count does not match', async () => {
+      await request(app)
+        .post(PERIOD)
+        .set(headers)
+        .send({
+          academicYear: '2025-26',
+          installmentPlans: [
+            {
+              name: 'Two payments',
+              numberOfInstallments: 2,
+              dueDates: ['2025-06-01'],
+            },
+          ],
+        })
+        .expect(400);
     });
 
     it('POST /collection-period updates existing config for same academicYear', async () => {

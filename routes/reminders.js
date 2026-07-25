@@ -151,9 +151,38 @@ router.put('/:id', async (req, res) => {
     if (message) reminder.message = message;
     if (recipients) reminder.recipients = recipients;
     if (channels) reminder.channels = channels;
+
+    // When startDate changes we must reschedule the Agenda job and reset
+    // nextExecutionAt to the new time — otherwise the old job keeps firing at
+    // the original time and nextExecutionAt lies. Mirror the toggle endpoint
+    // (cancel-then-reschedule) pattern.
+    const startDateChanged =
+      startDate !== undefined &&
+      new Date(startDate).getTime() !== new Date(reminder.startDate).getTime();
+
     if (startDate) reminder.startDate = new Date(startDate);
     if (endDate !== undefined) reminder.endDate = endDate ? new Date(endDate) : null;
     if (frequency) reminder.frequency = frequency;
+
+    if (startDateChanged) {
+      await cancelJobs({ 'data.reminderId': reminder._id });
+      if (reminder.isActive) {
+        try {
+          await scheduleJob('check reminder triggers', reminder.startDate, {
+            reminderId: reminder._id,
+          });
+          reminder.nextExecutionAt = reminder.startDate;
+        } catch (scheduleError) {
+          logger.error(
+            { err: scheduleError, reminderId: reminder._id },
+            'Failed to reschedule reminder job after startDate change'
+          );
+          // Keep the reminder but null out nextExecutionAt so callers can see
+          // it is not scheduled, rather than pointing at a job that no longer exists.
+          reminder.nextExecutionAt = null;
+        }
+      }
+    }
 
     await reminder.save();
 
@@ -375,13 +404,11 @@ router.put('/templates/:id/default', async (req, res) => {
     res.json(template);
   } catch (error) {
     console.error('Error setting default template:', error);
-    res
-      .status(500)
-      .json({
-        error: req.t('common:routes.failedToUpdateTemplate', {
-          defaultValue: 'Failed to update template',
-        }),
-      });
+    res.status(500).json({
+      error: req.t('common:routes.failedToUpdateTemplate', {
+        defaultValue: 'Failed to update template',
+      }),
+    });
   }
 });
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { academicYear, optionalString } from './zodHelpers.js';
+import { academicYear, optionalObjectId, optionalString } from './zodHelpers.js';
 
 // ─── CCE CONFIG ───────────────────────────────────────────────────────────────
 // Per-school CCE configuration: grading scale, assessment types, co-scholastic areas
@@ -72,3 +72,12 @@ export const updateCCEConfigSchema = z
       path: ['assessmentTypes'],
     }
   );
+
+// ─── CCE REPORT CARD QUERY ────────────────────────────────────────────────────
+// GET /cce/report-card/:studentId?academicYear=2025-26
+// `academicYear` is optional — when omitted the school's configured year is used
+// (resolved inside the route via resolveAcademicYear).
+export const cceReportCardQuerySchema = z.object({
+  academicYear: academicYear.nullish().or(z.literal('')),
+  subjectId: optionalObjectId,
+});

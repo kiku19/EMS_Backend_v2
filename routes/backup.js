@@ -1,12 +1,16 @@
 import express from 'express';
 import { z } from 'zod';
+import mongoose from 'mongoose';
 import { Student, Class, Staff, SchoolSettings } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
+import { requireAdmin } from '../middleware/auth/permissions.js';
 import FeeHead from '../models/FeeHead.js';
 import BackupRecord from '../models/BackupRecord.js';
 
 const router = express.Router();
 router.use(authenticate);
+// Backup create/restore/delete are destructive, admin-only operations.
+router.use(requireAdmin);
 
 const createBackupSchema = z.object({
   label: z.string().max(100).trim().optional().default(''),
@@ -137,41 +141,64 @@ router.post('/:id/restore', async (req, res) => {
     const { collections } = backup.data;
     const restored = {};
 
-    if (collections.students?.length) {
-      await Student.deleteMany({ schoolId });
-      await Student.insertMany(
-        collections.students.map((s) => ({ ...s, schoolId })),
-        { ordered: false }
-      ).catch(() => {});
-      restored.students = collections.students.length;
-    }
+    // Atomic restore: every deleteMany + insertMany must commit together or
+    // none of them. Previously deleteMany committed first and insertMany ran
+    // separately — if insertMany threw (validation, duplicate key, ordered
+    // partial failure) the collection was already wiped with no rollback,
+    // permanently destroying school data and returning a generic 500. Wrapping
+    // the whole restore in a transaction guarantees a failed restore leaves
+    // the live data untouched.
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        if (collections.students?.length) {
+          await Student.deleteMany({ schoolId }, { session });
+          await Student.insertMany(
+            collections.students.map((s) => ({ ...s, schoolId })),
+            { ordered: false, session }
+          );
+          restored.students = collections.students.length;
+        }
 
-    if (collections.classes?.length) {
-      await Class.deleteMany({ schoolId });
-      await Class.insertMany(
-        collections.classes.map((c) => ({ ...c, schoolId })),
-        { ordered: false }
-      ).catch(() => {});
-      restored.classes = collections.classes.length;
-    }
+        if (collections.classes?.length) {
+          await Class.deleteMany({ schoolId }, { session });
+          await Class.insertMany(
+            collections.classes.map((c) => ({ ...c, schoolId })),
+            { ordered: false, session }
+          );
+          restored.classes = collections.classes.length;
+        }
 
-    if (collections.feeHeads?.length) {
-      await FeeHead.deleteMany({ schoolId });
-      await FeeHead.insertMany(
-        collections.feeHeads.map((f) => ({ ...f, schoolId })),
-        { ordered: false }
-      ).catch(() => {});
-      restored.feeHeads = collections.feeHeads.length;
-    }
+        if (collections.staff?.length) {
+          await Staff.deleteMany({ schoolId }, { session });
+          await Staff.insertMany(
+            collections.staff.map((sDoc) => ({ ...sDoc, schoolId })),
+            { ordered: false, session }
+          );
+          restored.staff = collections.staff.length;
+        }
 
-    if (collections.settings?.[0]) {
-      const { _id, ...settingsData } = collections.settings[0];
-      await SchoolSettings.findOneAndUpdate(
-        { schoolId },
-        { ...settingsData, schoolId },
-        { upsert: true, new: true }
-      );
-      restored.settings = 1;
+        if (collections.feeHeads?.length) {
+          await FeeHead.deleteMany({ schoolId }, { session });
+          await FeeHead.insertMany(
+            collections.feeHeads.map((f) => ({ ...f, schoolId })),
+            { ordered: false, session }
+          );
+          restored.feeHeads = collections.feeHeads.length;
+        }
+
+        if (collections.settings?.[0]) {
+          const { _id, ...settingsData } = collections.settings[0];
+          await SchoolSettings.findOneAndUpdate(
+            { schoolId },
+            { ...settingsData, schoolId },
+            { upsert: true, new: true, session }
+          );
+          restored.settings = 1;
+        }
+      });
+    } finally {
+      await session.endSession();
     }
 
     res.json({ success: true, restored });

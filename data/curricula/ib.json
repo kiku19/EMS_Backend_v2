@@ -1,0 +1,19 @@
+{
+  "id": "ib",
+  "name": "IB (International Baccalaureate)",
+  "description": "IB continuum: Primary Years Programme (PYP) grades 1-5, Middle Years Programme (MYP) grades 6-10, Diploma Programme (DP) grades 11-12. Subject groupings follow IB's transdisciplinary and disciplinary structure. Grade 11-12 shows a representative DP subject selection.",
+  "grades": {
+    "1": ["Language and Literature", "Mathematics", "Units of Inquiry", "Science and Technology", "Social Studies", "The Arts", "Personal, Social and Physical Education", "Additional Language"],
+    "2": ["Language and Literature", "Mathematics", "Units of Inquiry", "Science and Technology", "Social Studies", "The Arts", "Personal, Social and Physical Education", "Additional Language"],
+    "3": ["Language and Literature", "Mathematics", "Units of Inquiry", "Science and Technology", "Social Studies", "The Arts", "Personal, Social and Physical Education", "Additional Language"],
+    "4": ["Language and Literature", "Mathematics", "Science", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "5": ["Language and Literature", "Mathematics", "Science", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "6": ["Language and Literature", "Mathematics", "Science", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "7": ["Language and Literature", "Mathematics", "Science", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "8": ["Language and Literature", "Mathematics", "Science", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "9": ["Language and Literature", "Mathematics", "Integrated Sciences", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "10": ["Language and Literature", "Mathematics", "Integrated Sciences", "Individuals and Societies", "Language Acquisition", "The Arts", "Physical and Health Education", "Design"],
+    "11": ["Studies in Language and Literature", "Language Acquisition", "Individuals and Societies", "Sciences", "Mathematics", "The Arts", "Theory of Knowledge", "Creativity, Activity, Service"],
+    "12": ["Studies in Language and Literature", "Language Acquisition", "Individuals and Societies", "Sciences", "Mathematics", "The Arts", "Theory of Knowledge", "Creativity, Activity, Service"]
+  }
+}
