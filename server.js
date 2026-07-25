@@ -14,10 +14,12 @@ import messageRoutes from './routes/messages.js';
 import feeHeadsRoutes from './routes/feeHeads.js';
 import studentFeesRoutes from './routes/studentFees.js';
 import feeSettingsRoutes from './routes/feeSettings.js';
+import feeReminderConfigRoutes from './routes/feeReminderConfig.js';
 import feesRoutes from './routes/fees.js';
 import staffAttendanceRoutes from './routes/staffAttendance.js';
 import payrollRoutes from './routes/payroll.js';
 import expensesRoutes from './routes/expenses.js';
+import vendorsRoutes from './routes/vendors.js';
 import announcementRoutes from './routes/announcements.js';
 import communicationLogsRoutes from './routes/communicationLogs.js';
 import emailCampaignsRoutes from './routes/emailCampaigns.js';
@@ -40,6 +42,7 @@ import dataCleanupRoutes from './routes/dataCleanup.js';
 import seedDummyDataRoutes from './routes/seedDummyData.js';
 import demoRoutes from './routes/demo.js';
 import settingsRoutes from './routes/settings.js';
+import curriculaRoutes from './routes/curricula.js';
 import trashRoutes from './routes/trash.js';
 import backupRoutes from './routes/backup.js';
 import parentAuthRoutes from './routes/parentAuth.js';
@@ -74,6 +77,7 @@ import cbseReportCardRoutes from './routes/cbseReportCard.js';
 import icseReportCardRoutes from './routes/icseReportCard.js';
 import cceRoutes from './routes/cce.js';
 import examScheduleRoutes from './routes/examSchedule.js';
+import examHallsRoutes from './routes/examHalls.js';
 import classesRoutes from './routes/classes.js';
 import studentsRoutes from './routes/students.js';
 import promotionRoutes from './routes/promotion.js';
@@ -81,7 +85,12 @@ import billingRoutes from './routes/billing.js';
 import referralRoutes from './routes/referral.js';
 import couponRoutes from './routes/coupons.js';
 import featureFlagsRoutes from './routes/featureFlags.js';
+import onboardingRoutes from './routes/onboarding.js';
 import superAdminRoutes from './routes/superAdmin.js';
+import superAdminActivityRoutes from './routes/superAdminActivity.js';
+import superAdminTrashRoutes from './routes/superAdminTrash.js';
+import superAdminBillingRoutes from './routes/superAdminBilling.js';
+import superAdminLifecycleRoutes from './routes/superAdminLifecycle.js';
 import schoolGroupsRoutes from './routes/schoolGroups.js';
 import reportsRoutes from './routes/reports.js';
 import exportRoutes from './routes/export.js';
@@ -96,6 +105,8 @@ import { initializeChatHandlers } from './socket/chatHandler.js';
 import { validateEnvironment, config } from './config/environment.js';
 import { authenticate } from './middleware/auth.js';
 import { authenticateParent } from './middleware/parentAuth.js';
+import { moduleAccessGuard } from './middleware/auth/moduleAccess.js';
+import schoolStatusGuard from './middleware/auth/schoolStatusGuard.js';
 import { apiUsageTracker } from './middleware/apiUsageTracker.js';
 import { initializeSocket } from './utils/socketEmitter.js';
 import { createLogger } from './utils/logger.js';
@@ -109,6 +120,7 @@ import {
   createTenantRateLimiter,
   createAuthRateLimiter,
   createGlobalRateLimiter,
+  isAuthRateLimitingDisabled,
 } from './middleware/tenantRateLimit.js';
 import auditLogsRoutes from './routes/auditLogs.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -266,7 +278,9 @@ if (config.cloudinary.configured) {
     api_secret: config.cloudinary.apiSecret,
   });
 } else {
-  logger.warn('Cloudinary not configured. File uploads will use base64 fallback.');
+  logger.warn(
+    'Cloudinary not configured. Document and chat-attachment uploads will return 503; only staff profile photos fall back to base64 storage. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET.'
+  );
 }
 
 logger.debug({ corsOrigins: config.corsOrigins }, 'CORS origins configured');
@@ -304,7 +318,15 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Branch-School-Id', 'X-Auth-Mode'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Branch-School-Id',
+      'X-Auth-Mode',
+      'Cache-Control',
+      'Pragma',
+      'X-Requested-With',
+    ],
   })
 );
 
@@ -512,7 +534,7 @@ v1Router.use(
       // Outside production, skip auth limiting entirely so local dev and the
       // test runner aren't locked out while iterating. Production MUST set
       // NODE_ENV=production (matches the codebase's non-prod gating elsewhere).
-      if (process.env.NODE_ENV !== 'production') return true;
+      if (isAuthRateLimitingDisabled() || process.env.NODE_ENV !== 'production') return true;
       // In production, exempt the benign session check: GET /auth/session is
       // polled on every dashboard load to read the current session. It carries
       // no credentials, so it must not share the credential-stuffing budget
@@ -541,9 +563,24 @@ v1Router.use('/billing', billingRoutes);
 // defense-in-depth — the double-check is harmless and intentional.
 v1Router.use(authenticate);
 
+// ─── Module Enablement Gateway ──────────────────────────────────────────────
+// Blocks API access to modules a school has switched OFF in Settings → Modules.
+// Core + system endpoints (students, staff, classes, permissions, settings, …)
+// are never gated; super-admins bypass. See middleware/auth/moduleAccess.js.
+v1Router.use(moduleAccessGuard);
+
+// ─── School Status Guard (Phase 6) ──────────────────────────────────────────
+// Blocks API access for suspended/locked/churned schools (billing stays open so
+// they can pay to reactivate). Super-admin bypasses via null schoolId.
+v1Router.use(schoolStatusGuard);
+
 // ─── Platform Administration ─────────────────────────────────────────────────
 v1Router.use('/permissions', permissionRoutes);
 v1Router.use('/super-admin', superAdminRoutes);
+v1Router.use('/super-admin/activity', superAdminActivityRoutes);
+v1Router.use('/super-admin/trash', superAdminTrashRoutes);
+v1Router.use('/super-admin/billing', superAdminBillingRoutes);
+v1Router.use('/super-admin/lifecycle', superAdminLifecycleRoutes);
 v1Router.use('/school-groups', schoolGroupsRoutes);
 v1Router.use('/referral', referralRoutes);
 v1Router.use('/coupons', couponRoutes);
@@ -567,12 +604,17 @@ v1Router.use('/', cceRoutes);
 v1Router.use('/hall-tickets', hallTicketsRoutes);
 v1Router.use('/', academicsRoutes);
 v1Router.use('/', examScheduleRoutes);
+// Routes inside examHalls.js are defined with the full `/exam-halls` prefix
+// (like examScheduleRoutes/academicsRoutes above), so mount at root — mounting
+// at '/exam-halls' would double the prefix to /exam-halls/exam-halls (404).
+v1Router.use('/', examHallsRoutes);
 v1Router.use('/homework', homeworkRoutes);
 
 // ─── Staff & HR ──────────────────────────────────────────────────────────────
 v1Router.use('/staff-attendance', staffAttendanceRoutes);
 v1Router.use('/payroll', payrollRoutes);
 v1Router.use('/expenses', expensesRoutes);
+v1Router.use('/vendors', vendorsRoutes);
 v1Router.use('/payslips', payslipsRoutes);
 v1Router.use('/teacher-assignments', teacherAssignmentsRoutes);
 v1Router.use('/teacher-timetable', teacherTimetableRoutes);
@@ -587,6 +629,7 @@ v1Router.use('/substitution-alerts', substitutionAlertsRoutes);
 v1Router.use('/fee-heads', feeHeadsRoutes);
 v1Router.use('/student-fees', studentFeesRoutes);
 v1Router.use('/fee-settings', feeSettingsRoutes);
+v1Router.use('/fee-reminder-config', feeReminderConfigRoutes);
 v1Router.use('/fees', feesRoutes);
 v1Router.use('/fee-templates', feeTemplatesRoutes);
 v1Router.use('/fee-structure', feeStructureRoutes);
@@ -616,6 +659,7 @@ v1Router.use('/front-desk', frontDeskRoutes);
 
 // ─── Settings & Configuration ────────────────────────────────────────────────
 v1Router.use('/settings', settingsRoutes);
+v1Router.use('/curricula', curriculaRoutes);
 v1Router.use('/', systemConfigRoutes);
 v1Router.use('/', intakeFormsRoutes);
 v1Router.use('/', calendarEventsRoutes);
@@ -623,6 +667,16 @@ v1Router.use('/ptm', ptmRoutes);
 
 // ─── Operations & Administration ─────────────────────────────────────────────
 v1Router.use('/audit-logs', auditLogsRoutes);
+
+// ─── Self-Serve Onboarding (PR4) ──────────────────────────────────────────────
+// Mounts only when ENABLE_SELF_SIGNUP=true. The flag is read live on every
+// request so flipping it in Render takes effect on the next boot, with no
+// restart required by an admin pushing a redeploy. PR1 (signup endpoint)
+// and PR4 (this wizard) both gate on the same flag; PR6 will flip it
+// production-wide after hardening + soak.
+if (process.env.ENABLE_SELF_SIGNUP === 'true') {
+  v1Router.use('/onboarding', onboardingRoutes);
+}
 v1Router.use('/dashboard', dashboardRoutes);
 v1Router.use('/trash', trashRoutes);
 v1Router.use('/backup', backupRoutes);

@@ -19,9 +19,11 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toStri
 process.env.JWT_REFRESH_SECRET =
   process.env.JWT_REFRESH_SECRET || crypto.randomBytes(32).toString('hex');
 process.env.CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
-process.env.SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'superid@test.com';
-process.env.SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD || 'super12345';
-process.env.SUPER_ADMIN_NAME = process.env.SUPER_ADMIN_NAME || 'Master User';
+// Tests must not inherit a developer machine's real super-admin credentials.
+// The route tests use this isolated fixture account explicitly.
+process.env.SUPER_ADMIN_EMAIL = 'superid@test.com';
+process.env.SUPER_ADMIN_PASSWORD = 'super12345';
+process.env.SUPER_ADMIN_NAME = 'Master User';
 
 // Replica-set mode is required because several routes use Mongoose
 // transactions (session.withTransaction). MongoMemoryServer in standalone

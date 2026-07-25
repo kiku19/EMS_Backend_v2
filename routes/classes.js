@@ -230,11 +230,14 @@ import { checkPermission } from '../middleware/permissions.js';
 import { validateZod } from '../middleware/validation.js';
 import {
   createClassSchema,
+  createClassesSchema,
   updateClassSchema,
   updateClassTeacherSchema,
   updateClassSubjectsSchema,
   updateClassTagSchema,
   weekAttendanceQuerySchema,
+  classRosterQuerySchema,
+  classListQuerySchema,
 } from '../validators/index.js';
 import resolveClassId from '../utils/resolveClassId.js';
 import { extractSchoolId, ensureDefaultSchool } from '../utils/schoolContext.js';
@@ -265,24 +268,37 @@ async function resolveRequestSchoolId(req) {
  * Sync Staff document when class teacher assignment changes.
  * Clears the old teacher's fields and sets the new teacher's fields.
  */
-async function syncClassTeacherStaff({ oldTeacherId, newTeacherId, classDoc }) {
+async function syncClassTeacherStaff({ oldTeacherId, newTeacherId, classDoc, session = null }) {
   const schoolId = classDoc.schoolId;
   if (oldTeacherId && String(oldTeacherId) !== String(newTeacherId)) {
-    await Staff.findOneAndUpdate(scopeBySchool(schoolId, { _id: oldTeacherId }), {
-      classTeacherOf: null,
-      isClassTeacher: false,
-    });
+    await Staff.findOneAndUpdate(
+      scopeBySchool(schoolId, { _id: oldTeacherId }),
+      {
+        classTeacherOf: null,
+        isClassTeacher: false,
+      },
+      { session }
+    );
   }
 
   if (newTeacherId) {
-    await Staff.findOneAndUpdate(scopeBySchool(schoolId, { _id: newTeacherId }), {
-      classTeacherOf: `${classDoc.name}-${classDoc.section}`,
-      isClassTeacher: true,
-    });
+    await Staff.findOneAndUpdate(
+      scopeBySchool(schoolId, { _id: newTeacherId }),
+      {
+        classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+        isClassTeacher: true,
+      },
+      { session }
+    );
   }
 }
 
-async function ensureTeacherAvailable(classTeacherId, currentClassId = null, schoolId = null) {
+async function ensureTeacherAvailable(
+  classTeacherId,
+  currentClassId = null,
+  schoolId = null,
+  session = null
+) {
   if (classTeacherId === null || classTeacherId === undefined || classTeacherId === '') {
     return null;
   }
@@ -290,7 +306,7 @@ async function ensureTeacherAvailable(classTeacherId, currentClassId = null, sch
   const teacherQuery = schoolId
     ? scopeBySchool(schoolId, { _id: classTeacherId })
     : { _id: classTeacherId };
-  const teacher = await Staff.findOne(teacherQuery);
+  const teacher = await Staff.findOne(teacherQuery).session(session);
   if (!teacher) {
     return { error: { status: 404, body: { error: 'Teacher not found' } } };
   }
@@ -302,7 +318,7 @@ async function ensureTeacherAvailable(classTeacherId, currentClassId = null, sch
     query._id = { $ne: currentClassId };
   }
 
-  const existingClass = await Class.findOne(query);
+  const existingClass = await Class.findOne(query).session(session);
   if (existingClass) {
     return {
       error: {
@@ -348,115 +364,152 @@ router.get('/public', async (req, res) => {
   }
 });
 
-router.get('/', checkPermission('classes', 'view'), async (req, res) => {
-  try {
-    const { academicYear = CURRENT_ACADEMIC_YEAR, teacherId } = req.query;
-    const baseQuery = {};
-    if (teacherId) {
-      if (!mongoose.isValidObjectId(teacherId)) {
-        return res.status(400).json({ error: 'Invalid teacherId format' });
+router.get(
+  '/',
+  checkPermission('classes', 'view'),
+  validateZod(classListQuerySchema, 'query'),
+  async (req, res) => {
+    try {
+      const { academicYear = CURRENT_ACADEMIC_YEAR, teacherId } = req.query;
+      const baseQuery = {};
+      if (teacherId) {
+        if (!mongoose.isValidObjectId(teacherId)) {
+          return res.status(400).json({ error: 'Invalid teacherId format' });
+        }
+        baseQuery.classTeacherId = teacherId;
       }
-      baseQuery.classTeacherId = teacherId;
+      baseQuery.isDeleted = { $ne: true };
+      baseQuery.academicYear = academicYear;
+      const query = scopeBySchool(req.user?.schoolId, baseQuery);
+      const classes = await Class.find(query)
+        .populate('classTeacherId', 'name')
+        .sort({ name: 1, section: 1 });
+
+      // AUDIT-65: Bulk-fetch student counts instead of N+1 individual queries
+      const classIds = classes.map((cls) => cls._id);
+      const schoolIdRaw = extractSchoolId(req.user?.schoolId);
+      const schoolOid = schoolIdRaw ? new mongoose.Types.ObjectId(schoolIdRaw) : null;
+      const schoolMatch = schoolOid ? { schoolId: schoolOid } : {};
+      const today = localTodayString();
+
+      // AUDIT-339: Bulk-fetch student counts, attendance, and academic performance in parallel
+      const [studentCountAgg, attendanceAgg, academicAgg] = await Promise.all([
+        Student.aggregate([
+          {
+            $match: {
+              classId: { $in: classIds },
+              status: 'active',
+              isDeleted: { $ne: true },
+              ...schoolMatch,
+            },
+          },
+          { $group: { _id: '$classId', count: { $sum: 1 } } },
+        ]),
+        Attendance.aggregate([
+          {
+            $match: {
+              classId: { $in: classIds },
+              date: today,
+              isDeleted: { $ne: true },
+              ...schoolMatch,
+            },
+          },
+          {
+            $group: {
+              _id: '$classId',
+              total: { $sum: 1 },
+              present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
+              late: { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
+              halfday: { $sum: { $cond: [{ $eq: ['$status', 'halfday'] }, 1, 0] } },
+            },
+          },
+        ]),
+        Result.aggregate([
+          {
+            $match: {
+              classId: { $in: classIds },
+              academicYear,
+              isDeleted: { $ne: true },
+              isPublished: true,
+              ...schoolMatch,
+            },
+          },
+          {
+            $group: {
+              _id: '$classId',
+              avgPercentage: { $avg: '$percentage' },
+            },
+          },
+        ]),
+      ]);
+
+      // Apply the SAME attendance formula the model static and /report use
+      // (present + late*lateWeight + halfday*0.5)/total. Previously this list
+      // view treated 'late' as 100% present and 'halfday' as 0%, so the class
+      // cards' attendance % disagreed with the per-student report for any
+      // school that configured a lateWeight below 100%. Load the weight once
+      // per request (cheap, single doc).
+      const attendanceSettings = await SchoolSettings.findOne(
+        scopeBySchool(req.user?.schoolId, {})
+      ).lean();
+      const lateW = (attendanceSettings?.attendanceRules?.lateWeight ?? 100) / 100;
+
+      const studentCountMap = new Map(
+        studentCountAgg.map((item) => [item._id.toString(), item.count])
+      );
+      const attendanceMap = new Map(
+        attendanceAgg.map((item) => {
+          const effectivePresent = item.present + item.late * lateW + (item.halfday || 0) * 0.5;
+          return [
+            item._id.toString(),
+            {
+              percentage: item.total > 0 ? Math.round((effectivePresent / item.total) * 100) : null,
+              marked: item.total,
+              present: item.present + item.late,
+            },
+          ];
+        })
+      );
+      const academicMap = new Map(
+        academicAgg.map((item) => [
+          item._id.toString(),
+          item.avgPercentage != null ? Math.round(item.avgPercentage) : 0,
+        ])
+      );
+
+      const formatted = classes.map((cls) => ({
+        id: cls._id.toString(),
+        name: cls.name,
+        section: cls.section,
+        // [BUG-030] Class display name for selectors/dropdowns. Without this,
+        // the Add-Staff "Assigned classes" dropdown fell back to the raw 24-char
+        // ObjectId (c.displayName || c.id) because the GET /classes response had
+        // no readable label. Matches the GET /classes/public handler's shape.
+        displayName: cls.section ? `${cls.name}-${cls.section}` : cls.name,
+        subjects: cls.subjects,
+        classTeacherId: cls.classTeacherId?._id?.toString(),
+        classTeacherName: cls.classTeacherId?.name,
+        studentCount: studentCountMap.get(cls._id.toString()) || 0,
+        averageAttendance: attendanceMap.get(cls._id.toString())?.percentage ?? null,
+        attendanceMarkedToday: Boolean(attendanceMap.get(cls._id.toString())?.marked),
+        attendanceMarkedCount: attendanceMap.get(cls._id.toString())?.marked || 0,
+        attendancePresentCount: attendanceMap.get(cls._id.toString())?.present || 0,
+        attendanceDate: today,
+        averageAcademicPerformance: academicMap.get(cls._id.toString()) ?? 0,
+        academicYear: cls.academicYear,
+        strengthLimit: cls.strengthLimit,
+        room: cls.room,
+        block: cls.block,
+        classTag: cls.classTag,
+        assignedSubjects: cls.assignedSubjects,
+      }));
+
+      res.json(formatted);
+    } catch (error) {
+      res.status(error.status || 500).json({ error: error.message });
     }
-    baseQuery.isDeleted = { $ne: true };
-    baseQuery.academicYear = academicYear;
-    const query = scopeBySchool(req.user?.schoolId, baseQuery);
-    const classes = await Class.find(query)
-      .populate('classTeacherId', 'name')
-      .sort({ name: 1, section: 1 });
-
-    // AUDIT-65: Bulk-fetch student counts instead of N+1 individual queries
-    const classIds = classes.map((cls) => cls._id);
-    const schoolIdRaw = extractSchoolId(req.user?.schoolId);
-    const schoolOid = schoolIdRaw ? new mongoose.Types.ObjectId(schoolIdRaw) : null;
-    const schoolMatch = schoolOid ? { schoolId: schoolOid } : {};
-
-    // AUDIT-339: Bulk-fetch student counts, attendance, and academic performance in parallel
-    const [studentCountAgg, attendanceAgg, academicAgg] = await Promise.all([
-      Student.aggregate([
-        {
-          $match: {
-            classId: { $in: classIds },
-            status: 'active',
-            isDeleted: { $ne: true },
-            ...schoolMatch,
-          },
-        },
-        { $group: { _id: '$classId', count: { $sum: 1 } } },
-      ]),
-      Attendance.aggregate([
-        {
-          $match: {
-            classId: { $in: classIds },
-            ...schoolMatch,
-          },
-        },
-        {
-          $group: {
-            _id: '$classId',
-            total: { $sum: 1 },
-            present: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
-            late: { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
-          },
-        },
-      ]),
-      Result.aggregate([
-        {
-          $match: {
-            classId: { $in: classIds },
-            isDeleted: { $ne: true },
-            isPublished: true,
-            ...schoolMatch,
-          },
-        },
-        {
-          $group: {
-            _id: '$classId',
-            avgPercentage: { $avg: '$percentage' },
-          },
-        },
-      ]),
-    ]);
-
-    const studentCountMap = new Map(
-      studentCountAgg.map((item) => [item._id.toString(), item.count])
-    );
-    const attendanceMap = new Map(
-      attendanceAgg.map((item) => [
-        item._id.toString(),
-        item.total > 0 ? Math.round(((item.present + item.late) / item.total) * 100) : null,
-      ])
-    );
-    const academicMap = new Map(
-      academicAgg.map((item) => [
-        item._id.toString(),
-        item.avgPercentage != null ? Math.round(item.avgPercentage) : 0,
-      ])
-    );
-
-    const formatted = classes.map((cls) => ({
-      id: cls._id.toString(),
-      name: cls.name,
-      section: cls.section,
-      subjects: cls.subjects,
-      classTeacherId: cls.classTeacherId?._id?.toString(),
-      classTeacherName: cls.classTeacherId?.name,
-      studentCount: studentCountMap.get(cls._id.toString()) || 0,
-      averageAttendance: attendanceMap.get(cls._id.toString()) ?? null,
-      averageAcademicPerformance: academicMap.get(cls._id.toString()) ?? 0,
-      academicYear: cls.academicYear,
-      strengthLimit: cls.strengthLimit,
-      room: cls.room,
-      block: cls.block,
-      classTag: cls.classTag,
-      assignedSubjects: cls.assignedSubjects,
-    }));
-
-    res.json(formatted);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // ─── PER-DAY WEEK ATTENDANCE COVERAGE (SCH-191) ──────────────────────────
 // Single-call endpoint that returns per-day covered/total class counts for the
@@ -581,6 +634,96 @@ router.get(
 );
 
 router.post(
+  '/bulk',
+  checkPermission('classes', 'create'),
+  validateZod(createClassesSchema),
+  async (req, res) => {
+    const schoolId = await resolveRequestSchoolId(req);
+    const session = await mongoose.startSession();
+    try {
+      let createdClasses = [];
+      await session.withTransaction(async (transactionSession) => {
+        for (const classData of req.body.classes) {
+          const duplicate = await Class.findOne(
+            scopeBySchool(schoolId, {
+              name: classData.name,
+              section: classData.section,
+              academicYear: classData.academicYear,
+              isDeleted: { $ne: true },
+            })
+          ).session(transactionSession);
+          if (duplicate) {
+            const error = new Error(
+              `${classData.name}-${classData.section} already exists for ${classData.academicYear}`
+            );
+            error.status = 409;
+            throw error;
+          }
+          if (classData.classTeacherId) {
+            const teacher = await Staff.findOne(
+              scopeBySchool(schoolId, {
+                _id: classData.classTeacherId,
+                isDeleted: { $ne: true },
+              })
+            ).session(transactionSession);
+            if (!teacher) {
+              const error = new Error('One or more class teachers were not found in your school');
+              error.status = 400;
+              throw error;
+            }
+            const assignedClass = await Class.findOne(
+              scopeBySchool(schoolId, {
+                classTeacherId: classData.classTeacherId,
+                isDeleted: { $ne: true },
+              })
+            ).session(transactionSession);
+            if (assignedClass) {
+              const error = new Error(
+                `${teacher.name} is already assigned to ${assignedClass.name}-${assignedClass.section}`
+              );
+              error.status = 409;
+              throw error;
+            }
+          }
+        }
+
+        createdClasses = await Class.create(
+          req.body.classes.map((classData) => ({ ...classData, schoolId })),
+          { session: transactionSession }
+        );
+        for (const classDoc of createdClasses) {
+          if (!classDoc.classTeacherId) continue;
+          // Reuse the single-create helper so the Staff mirror is written the
+          // same way as POST /classes. oldTeacherId is null (fresh class), so
+          // only the new teacher's classTeacherOf/isClassTeacher are set — but
+          // routing through syncClassTeacherStaff keeps bulk and single paths
+          // identical and means any future field added to the mirror (e.g. a
+          // denormalized class name) lands in both places automatically.
+          await syncClassTeacherStaff({
+            oldTeacherId: null,
+            newTeacherId: classDoc.classTeacherId,
+            classDoc,
+            session: transactionSession,
+          });
+        }
+      });
+
+      res.status(201).json({
+        success: true,
+        classes: createdClasses.map((classDoc) => ({
+          id: classDoc._id,
+          ...classDoc.toObject(),
+        })),
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({ error: error.message });
+    } finally {
+      await session.endSession();
+    }
+  }
+);
+
+router.post(
   '/',
   checkPermission('classes', 'create'),
   validateZod(createClassSchema),
@@ -602,10 +745,15 @@ router.post(
       if (!schoolId) {
         return res.status(400).json({ error: 'School context is required' });
       }
-      const validation = await ensureTeacherAvailable(classTeacherId, null, req.user?.schoolId);
-      if (validation?.error) {
-        return res.status(validation.error.status).json(validation.error.body);
-      }
+      const session = await mongoose.startSession();
+      // Initialize assignedSubjects alongside subjects so new classes start
+      // with both fields populated together. Previously assignedSubjects was
+      // only written when explicitly supplied (length > 0), so a class created
+      // with just `subjects` had assignedSubjects = [] and the timetable
+      // wizard's "Assigned subjects" picker appeared empty until an admin
+      // manually mirrored it via PUT /:id/subjects.
+      const resolvedAssignedSubjects =
+        assignedSubjects && assignedSubjects.length > 0 ? assignedSubjects : subjects || [];
       const classDoc = new Class({
         name,
         section,
@@ -617,13 +765,50 @@ router.post(
         ...(room && { room }),
         ...(block && { block }),
         ...(classTag && { classTag }),
-        ...(assignedSubjects?.length && { assignedSubjects }),
+        assignedSubjects: resolvedAssignedSubjects,
       });
-      await classDoc.save();
+      try {
+        await session.withTransaction(async (transactionSession) => {
+          if (classTeacherId) {
+            const teacher = await Staff.findOne(
+              scopeBySchool(schoolId, {
+                _id: classTeacherId,
+                isDeleted: { $ne: true },
+              })
+            ).session(transactionSession);
+            const assignedClass = await Class.findOne(
+              scopeBySchool(schoolId, {
+                classTeacherId,
+                isDeleted: { $ne: true },
+              })
+            ).session(transactionSession);
+            if (!teacher || assignedClass) {
+              const error = new Error(
+                !teacher
+                  ? 'Class teacher not found in your school'
+                  : `${teacher.name} is already assigned to another class`
+              );
+              error.status = assignedClass ? 409 : 400;
+              throw error;
+            }
+          }
 
-      // Sync Staff record if a class teacher was assigned at creation
-      if (classTeacherId) {
-        await syncClassTeacherStaff({ oldTeacherId: null, newTeacherId: classTeacherId, classDoc });
+          await classDoc.save({ session: transactionSession });
+          if (classTeacherId) {
+            await Staff.updateOne(
+              scopeBySchool(schoolId, { _id: classTeacherId }),
+              {
+                $set: {
+                  classTeacherOf: `${classDoc.name}-${classDoc.section}`,
+                  isClassTeacher: true,
+                },
+              },
+              { session: transactionSession }
+            );
+          }
+        });
+      } finally {
+        await session.endSession();
       }
 
       res.status(201).json({ id: classDoc._id, ...classDoc.toObject() });
@@ -634,7 +819,7 @@ router.post(
         });
       }
 
-      res.status(500).json({ error: error.message });
+      res.status(error.status || 500).json({ error: error.message });
     }
   }
 );
@@ -644,65 +829,106 @@ router.put(
   checkPermission('classes', 'edit'),
   validateZod(updateClassTeacherSchema),
   async (req, res) => {
+    const session = await mongoose.startSession();
     try {
       const { classTeacherId, force } = req.body;
-      const classDoc = await Class.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-      );
-      if (!classDoc) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
+      let classDoc;
+      let validation;
+      let oldTeacherId;
+      let previousClassForSocket = null;
 
-      let validation = await ensureTeacherAvailable(
-        classTeacherId,
-        req.params.id,
-        req.user?.schoolId
-      );
-      if (validation?.error) {
-        // If force=true, unassign the teacher from their current class first
-        if (force && validation.error.body?.existingClass?.id) {
-          const prevClassId = validation.error.body.existingClass.id;
-          const prevClass = await Class.findById(prevClassId);
-          if (prevClass) {
-            const prevOldTeacherId = prevClass.classTeacherId;
-            prevClass.classTeacherId = null;
-            await prevClass.save();
-            await syncClassTeacherStaff({
-              oldTeacherId: prevOldTeacherId,
-              newTeacherId: null,
-              classDoc: prevClass,
-            });
+      await session.withTransaction(async () => {
+        classDoc = await Class.findOne(
+          scopeBySchool(req.user?.schoolId, {
+            _id: req.params.id,
+            isDeleted: { $ne: true },
+          })
+        ).session(session);
+        if (!classDoc) {
+          const error = new Error(req.t('common:errors.classNotFound'));
+          error.status = 404;
+          throw error;
+        }
 
-            // Emit update for the previous class so frontend clears it
-            const io = req.app.get('io');
-            if (io) {
-              emitEvent(io, EVENTS.CLASS_UPDATED, {
-                schoolId: req.user.schoolId?.toString(),
-                classId: prevClass._id.toString(),
-                name: prevClass.name,
-                section: prevClass.section,
-                classTeacherId: null,
-                teacher: null,
-                teacherPhoto: null,
+        validation = await ensureTeacherAvailable(
+          classTeacherId,
+          req.params.id,
+          req.user?.schoolId,
+          session
+        );
+        if (validation?.error) {
+          // If force=true, unassign the teacher from their current class first.
+          // All class + staff mirror writes share this transaction, so a failure
+          // cannot leave the teacher detached from both classes.
+          if (force && validation.error.body?.existingClass?.id) {
+            const prevClassId = validation.error.body.existingClass.id;
+            const prevClass = await Class.findOne(
+              scopeBySchool(req.user?.schoolId, {
+                _id: prevClassId,
+                isDeleted: { $ne: true },
+              })
+            ).session(session);
+            if (prevClass) {
+              const prevOldTeacherId = prevClass.classTeacherId;
+              prevClass.classTeacherId = null;
+              await prevClass.save({ session });
+              await syncClassTeacherStaff({
+                oldTeacherId: prevOldTeacherId,
+                newTeacherId: null,
+                classDoc: prevClass,
+                session,
               });
+              previousClassForSocket = prevClass;
             }
+
+            // Re-validate in the same transaction — teacher is now available.
+            validation = await ensureTeacherAvailable(
+              classTeacherId,
+              req.params.id,
+              req.user?.schoolId,
+              session
+            );
           }
-          // Re-validate — teacher is now available
-          validation = await ensureTeacherAvailable(
-            classTeacherId,
-            req.params.id,
-            req.user?.schoolId
-          );
-        } else {
-          return res.status(validation.error.status).json(validation.error.body);
+
+          if (validation?.error) {
+            const error = new Error(validation.error.body?.error || 'Teacher is unavailable');
+            error.status = validation.error.status;
+            error.body = validation.error.body;
+            throw error;
+          }
+        }
+
+        oldTeacherId = classDoc.classTeacherId;
+        classDoc.classTeacherId = classTeacherId || null;
+        await classDoc.save({ session });
+
+        await syncClassTeacherStaff({
+          oldTeacherId,
+          newTeacherId: classTeacherId,
+          classDoc,
+          session,
+        });
+      });
+
+      // Emit only after commit; clients never observe a state that later rolls back.
+      if (previousClassForSocket) {
+        const io = req.app.get('io');
+        if (io) {
+          emitEvent(io, EVENTS.CLASS_UPDATED, {
+            // Use the class doc's schoolId (always present) rather than
+            // req.user.schoolId?.toString() — super-admin / dev tokens can
+            // have no schoolId, which would emit a null schoolId and break
+            // the per-school socket room routing.
+            schoolId: previousClassForSocket.schoolId?.toString(),
+            classId: previousClassForSocket._id.toString(),
+            name: previousClassForSocket.name,
+            section: previousClassForSocket.section,
+            classTeacherId: null,
+            teacher: null,
+            teacherPhoto: null,
+          });
         }
       }
-
-      const oldTeacherId = classDoc.classTeacherId;
-      classDoc.classTeacherId = classTeacherId || null;
-      await classDoc.save();
-
-      await syncClassTeacherStaff({ oldTeacherId, newTeacherId: classTeacherId, classDoc });
 
       // Notify old and new teachers about the assignment change
       const className = `${classDoc.name}-${classDoc.section}`;
@@ -729,7 +955,10 @@ router.put(
 
       const io = req.app.get('io');
       emitEvent(io, EVENTS.CLASS_UPDATED, {
-        schoolId: req.user.schoolId?.toString(),
+        // Use the class doc's schoolId (always present) instead of
+        // req.user.schoolId?.toString() — see the previousClassForSocket emit
+        // above for rationale.
+        schoolId: classDoc.schoolId?.toString(),
         classId: classDoc._id.toString(),
         name: classDoc.name,
         section: classDoc.section,
@@ -753,7 +982,9 @@ router.put(
           null,
       });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.status(error.status || 500).json(error.body || { error: error.message });
+    } finally {
+      await session.endSession();
     }
   }
 );
@@ -896,40 +1127,47 @@ router.put(
 );
 
 // AUDIT-36: Added permission check
-router.get('/:id/students', checkPermission('classes', 'view'), async (req, res) => {
-  try {
-    const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
-    if (!resolved) {
-      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+router.get(
+  '/:id/students',
+  checkPermission('classes', 'view'),
+  validateZod(classRosterQuerySchema, 'query'),
+  async (req, res) => {
+    try {
+      const resolved = await resolveClassId(req.params.id, req.user?.schoolId);
+      if (!resolved) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      }
+
+      const scopedClass = await Class.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: resolved.classId, isDeleted: { $ne: true } })
+      );
+      if (!scopedClass) {
+        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
+      }
+
+      const { skip, limit } = req.query;
+
+      const studentsQuery = scopeBySchool(req.user?.schoolId, {
+        classId: resolved.classId,
+        status: 'active',
+        isDeleted: { $ne: true },
+      });
+      const total = await Student.countDocuments(studentsQuery);
+      const students = await Student.find(studentsQuery)
+        .sort({ rollNo: 1 })
+        .skip(skip)
+        .limit(limit);
+
+      res.json({
+        students: students.map((student) => ({ id: student._id, ...student.toObject() })),
+        hasMore: skip + students.length < total,
+        total,
+      });
+    } catch (error) {
+      res.status(error.status || 500).json({ error: error.message });
     }
-
-    const scopedClass = await Class.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: resolved.classId, isDeleted: { $ne: true } })
-    );
-    if (!scopedClass) {
-      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-    }
-
-    const skip = parseInt(req.query.skip) || 0;
-    const limit = parseInt(req.query.limit) || 50;
-
-    const studentsQuery = scopeBySchool(req.user?.schoolId, {
-      classId: resolved.classId,
-      status: 'active',
-      isDeleted: { $ne: true },
-    });
-    const total = await Student.countDocuments(studentsQuery);
-    const students = await Student.find(studentsQuery).sort({ rollNo: 1 }).skip(skip).limit(limit);
-
-    res.json({
-      students: students.map((student) => ({ id: student._id, ...student.toObject() })),
-      hasMore: skip + students.length < total,
-      total,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 router.get('/:id/next-roll-number', checkPermission('classes', 'view'), async (req, res) => {
   try {
@@ -1019,23 +1257,7 @@ router.put(
         block,
         strengthLimit,
       } = req.body;
-      const validation = await ensureTeacherAvailable(
-        classTeacherId,
-        req.params.id,
-        req.user?.schoolId
-      );
-      if (validation?.error) {
-        return res.status(validation.error.status).json(validation.error.body);
-      }
-
-      const scopedCheck = await Class.findOne(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-      );
-      if (!scopedCheck) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
-
-      const oldTeacherId = scopedCheck.classTeacherId;
+      let validation = null;
 
       const updateData = {};
       if (name !== undefined) updateData.name = name;
@@ -1054,24 +1276,78 @@ router.put(
           updateData['strengthLimit.default'] = strengthLimit.default;
       }
 
-      const classDoc = await Class.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-        updateData,
-        { new: true }
-      );
+      let classDoc;
+      const mongoSession = await mongoose.startSession();
+      try {
+        await mongoSession.withTransaction(async () => {
+          const scopedCheck = await Class.findOne(
+            scopeBySchool(req.user?.schoolId, {
+              _id: req.params.id,
+              isDeleted: { $ne: true },
+            })
+          ).session(mongoSession);
+          if (!scopedCheck) {
+            const error = new Error(req.t('common:errors.classNotFound'));
+            error.status = 404;
+            throw error;
+          }
 
-      if (!classDoc) {
-        return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-      }
+          // Validate inside the transaction so a retry after a concurrent
+          // Staff-mirror write conflict observes the class that won. The old
+          // pre-transaction check could be stale on retry and assign one
+          // teacher to two classes.
+          if (classTeacherId !== undefined) {
+            validation = await ensureTeacherAvailable(
+              classTeacherId,
+              req.params.id,
+              req.user?.schoolId,
+              mongoSession
+            );
+            if (validation?.error) {
+              const error = new Error(
+                validation.error.body?.error || 'Class teacher is unavailable'
+              );
+              error.status = validation.error.status;
+              throw error;
+            }
+          }
 
-      // Sync Staff records when classTeacherId changes via general update
-      if (String(oldTeacherId || '') !== String(classTeacherId || '')) {
-        await syncClassTeacherStaff({ oldTeacherId, newTeacherId: classTeacherId, classDoc });
+          const oldTeacherId = scopedCheck.classTeacherId;
+          classDoc = await Class.findOneAndUpdate(
+            scopeBySchool(req.user?.schoolId, {
+              _id: req.params.id,
+              isDeleted: { $ne: true },
+            }),
+            updateData,
+            { new: true, runValidators: true, session: mongoSession }
+          );
+
+          // Omitted means "leave the assignment untouched". Previously an
+          // ordinary room/name edit compared the stored teacher to undefined
+          // and cleared only the Staff mirror, splitting the relation.
+          if (
+            classTeacherId !== undefined &&
+            String(oldTeacherId || '') !== String(classTeacherId || '')
+          ) {
+            await syncClassTeacherStaff({
+              oldTeacherId,
+              newTeacherId: classTeacherId,
+              classDoc,
+              session: mongoSession,
+            });
+          }
+        });
+      } finally {
+        await mongoSession.endSession();
       }
 
       const io = req.app.get('io');
       emitEvent(io, EVENTS.CLASS_UPDATED, {
-        schoolId: req.user.schoolId?.toString(),
+        // Use the class doc's schoolId (always present) instead of
+        // req.user.schoolId?.toString() — super-admin / dev tokens can have
+        // no schoolId, which would emit a null schoolId and break per-school
+        // socket room routing.
+        schoolId: classDoc.schoolId?.toString(),
         classId: classDoc._id.toString(),
         name: classDoc.name,
         section: classDoc.section,
@@ -1086,110 +1362,146 @@ router.put(
         classTeacherName: validation?.teacher?.name || null,
       });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.status(error.status || 500).json({ error: error.message });
     }
   }
 );
 
 router.delete('/:id', checkPermission('classes', 'delete'), async (req, res) => {
+  const schoolId = req.user?.schoolId;
+  const classId = req.params.id;
+  const session = await mongoose.startSession();
+
   try {
-    const scopedCheck = await Class.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-    );
-    if (!scopedCheck) {
-      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-    }
+    let classDoc;
+    let trashItem;
+    await session.withTransaction(async (transactionSession) => {
+      classDoc = await Class.findOne(
+        scopeBySchool(schoolId, { _id: classId, isDeleted: { $ne: true } })
+      ).session(transactionSession);
+      if (!classDoc) {
+        const error = new Error(req.t('common:errors.classNotFound'));
+        error.status = 404;
+        throw error;
+      }
 
-    // Snapshot before mutation for trash logging
-    const classSnapshot = scopedCheck.toObject();
+      // A class is a durable reference used by academic and financial history.
+      // Deleting those children would destroy records; setting fake isDeleted
+      // fields on schemas that do not support them only creates invisible
+      // orphans. Only a genuinely unused class may be archived.
+      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-    const studentCount = await countActiveStudents(req.params.id, req.user?.schoolId);
-    if (studentCount > 0) {
-      return res.status(400).json({ error: 'Cannot delete class with active students' });
-    }
+      // TeacherTimetable has no soft-delete, so its schedule slots for this
+      // class used to make the dependency check below block FOREVER (the
+      // "teacher timetables" dependency could never be satisfied). Strip the
+      // class from every teacher's mirror first — mirrors the DELETE
+      // /timetable/:classId logic (routes/timetable.js). This is safe: the
+      // class's own Timetable (if any) still blocks deletion via the
+      // "timetables" dependency below; we're only dropping stale pointers.
+      const teacherTimetables = await TeacherTimetable.find(
+        scopeBySchool(schoolId, {
+          academicYear: classDoc.academicYear || CURRENT_ACADEMIC_YEAR,
+        })
+      ).session(transactionSession);
+      for (const teacherTimetable of teacherTimetables) {
+        let modified = false;
+        for (const day of days) {
+          const before = teacherTimetable.schedule?.[day]?.length || 0;
+          teacherTimetable.schedule[day] = (teacherTimetable.schedule?.[day] || []).filter(
+            (slot) => String(slot.classId) !== String(classId)
+          );
+          if (teacherTimetable.schedule[day].length !== before) modified = true;
+        }
+        if (modified) {
+          teacherTimetable.totalPeriodsPerWeek = days.reduce(
+            (sum, day) => sum + (teacherTimetable.schedule?.[day]?.length || 0),
+            0
+          );
+          teacherTimetable.version += 1;
+          teacherTimetable.lastSyncedAt = new Date();
+          teacherTimetable.markModified('schedule');
+          await teacherTimetable.save({ session: transactionSession });
+        }
+      }
+      const dependencyQueries = [
+        ['students', Student.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        ['timetables', Timetable.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        ['exams', Exam.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        ['results', Result.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        ['attendance', Attendance.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        [
+          'fee structures',
+          StudentFeeStructure.findOne(
+            scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } })
+          ).select('_id'),
+        ],
+        [
+          'announcements',
+          ClassAnnouncement.findOne(scopeBySchool(schoolId, { classId })).select('_id'),
+        ],
+        [
+          'chapter progress',
+          ChapterProgress.findOne(scopeBySchool(schoolId, { classId })).select('_id'),
+        ],
+        ['class ratings', ClassRating.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        ['homework', Homework.findOne(scopeBySchool(schoolId, { classId })).select('_id')],
+        [
+          'teacher timetables',
+          TeacherTimetable.findOne(
+            scopeBySchool(schoolId, {
+              $or: days.map((day) => ({ [`schedule.${day}.classId`]: classId })),
+            })
+          ).select('_id'),
+        ],
+      ];
+      const dependencyMatches = [];
+      for (const [, query] of dependencyQueries) {
+        dependencyMatches.push(await query.session(transactionSession).lean());
+      }
+      const dependencies = dependencyQueries
+        .filter((_, index) => Boolean(dependencyMatches[index]))
+        .map(([name]) => name);
+      if (dependencies.length > 0) {
+        const error = new Error(
+          `Cannot delete class because it has dependent ${dependencies.join(', ')}`
+        );
+        error.status = 409;
+        error.dependencies = dependencies;
+        throw error;
+      }
 
-    // Clear the teacher's staff record before deleting the class
-    if (scopedCheck.classTeacherId) {
-      await syncClassTeacherStaff({
-        oldTeacherId: scopedCheck.classTeacherId,
-        newTeacherId: null,
-        classDoc: scopedCheck,
+      const snapshot = classDoc.toObject();
+      const now = new Date();
+      if (classDoc.classTeacherId) {
+        await Staff.findOneAndUpdate(
+          scopeBySchool(schoolId, { _id: classDoc.classTeacherId }),
+          { $set: { classTeacherOf: null, isClassTeacher: false } },
+          { session: transactionSession }
+        );
+      }
+      classDoc.isDeleted = true;
+      classDoc.deletedAt = now;
+      await classDoc.save({ session: transactionSession });
+
+      trashItem = await logToTrash({
+        itemType: 'Class',
+        itemId: classDoc._id,
+        itemName: snapshot.name || 'Class',
+        originalData: snapshot,
+        deletedBy: req.user?.id || req.user?._id,
+        schoolId,
+        session: transactionSession,
       });
-    }
+    });
 
-    const schoolId = req.user?.schoolId;
-    const classId = req.params.id;
-
-    // Soft-delete cascading related documents (standardized to soft-delete)
-    const now = new Date();
-    const softDelete = { $set: { isDeleted: true, deletedAt: now } };
-    await Promise.all([
-      Timetable.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-      Exam.updateMany(scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }), softDelete),
-      Result.updateMany(scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }), softDelete),
-      Attendance.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-      StudentFeeStructure.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-      ClassAnnouncement.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-      ChapterProgress.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-      ClassRating.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-      Homework.updateMany(
-        scopeBySchool(schoolId, { classId, isDeleted: { $ne: true } }),
-        softDelete
-      ),
-    ]);
-
-    // Remove this class's periods from all teacher timetables
-    const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    await Promise.all(
-      DAYS.map((day) =>
-        TeacherTimetable.updateMany(
-          scopeBySchool(schoolId, { [`schedule.${day}.classId`]: classId }),
-          { $pull: { [`schedule.${day}`]: { classId } } }
-        )
-      )
-    );
-
-    // Soft delete the class itself
-    const classDoc = await Class.findOneAndUpdate(
-      scopeBySchool(schoolId, { _id: classId }),
-      { isDeleted: true, deletedAt: now },
-      { new: true }
-    );
-    if (!classDoc) {
-      return res.status(404).json({ error: req.t('common:errors.classNotFound') });
-    }
-
-    // Log to trash for restore capability
-    logToTrash({
-      itemType: 'Class',
-      itemId: classDoc._id,
-      itemName: classSnapshot.name || 'Class',
-      originalData: classSnapshot,
-      deletedBy: req.user?.id || req.user?._id,
-      schoolId,
-    }).catch(() => {});
-
-    res.json({ success: true });
+    res.json({ success: true, trashItemId: trashItem?._id });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({
+      error: error.message,
+      ...(error.dependencies ? { dependencies: error.dependencies } : {}),
+    });
+  } finally {
+    await session.endSession();
   }
 });
 

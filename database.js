@@ -11,18 +11,48 @@ const MONGODB_URI =
   process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/school_db';
 const logger = createLogger('Database');
 
+/**
+ * Whether Mongoose should auto-ensure (build) indexes when it connects.
+ *
+ * Default: ON everywhere — indexes are re-ensured on every boot (current
+ * behavior, and what several migrations rely on: "New indexes will be created
+ * automatically on next server start").
+ *
+ * In production only, this can be turned OFF by setting
+ * `DB_DISABLE_AUTOINDEX=true`. Doing so avoids re-ensuring indexes for ~129
+ * models on every cold start — each a ~250ms round-trip to the remote Atlas
+ * cluster — which dominates production startup.
+ *
+ * ⚠️ Turn it off ONLY after index management has been wired into the deploy
+ * flow: run `npm run migrate:indexes` (which now syncs ALL models) on deploy,
+ * otherwise production can end up missing indexes. See SCH-202. Left ON by
+ * default so this change is a no-op until an operator deliberately opts in.
+ */
+export function resolveAutoIndex(env = process.env) {
+  if (env.NODE_ENV === 'production' && env.DB_DISABLE_AUTOINDEX === 'true') {
+    return false;
+  }
+  return true;
+}
+
 // DR-02: Replica set failover connection options.
 // These settings ensure MongoDB Atlas (or self-hosted RS) failover is handled
 // automatically. In Atlas the typical election completes in 10-30 s, giving:
 //   RTO ≤ 30 s  (automatic — driver retries after primary re-election)
-//   RPO  = 0    (w:"majority" + j:true means committed writes survive failover)
+//   RPO  = 0    (w:"majority" + journal:true means committed writes survive failover)
 const FAILOVER_CONNECTION_OPTIONS = {
   // Replica set resilience
   retryWrites: true, // Automatically retry writes on transient network errors
   retryReads: true, // Automatically retry reads on transient network errors
   w: 'majority', // Wait for majority of RS members to acknowledge write (RPO = 0)
-  j: true, // Journal writes before acknowledging (survive crashes)
-  readPreference: 'primaryPreferred', // Fall back to secondary reads if primary unreachable
+  journal: true, // Journal writes before acknowledging (survive crashes)
+  // readPreference MUST be 'primary'. Transactions (student create, billing,
+  // provisioning, …) reject any other read preference with
+  // "Read preference in a transaction must be primary". The previous
+  // 'primaryPreferred' only differed during a primary election window (~10-30s),
+  // when transactions are impossible anyway — and retryReads already handles
+  // transient read failures during failover.
+  readPreference: 'primary',
 
   // Failure detection — detect primary outage within ~10 s
   heartbeatFrequencyMS: 10000, // Check RS member health every 10 s
@@ -40,10 +70,16 @@ const FAILOVER_CONNECTION_OPTIONS = {
   // Faster cold starts in production: skip eagerly issuing a `create` collection
   // command for every model on boot. With ~129 models against a remote Atlas
   // cluster, that burst of DDL round-trips (~250ms each) dominates startup and
-  // floods the slow-query log. Collections are still created on first write,
-  // and autoIndex stays enabled so indexes are still ensured on boot. Kept on
-  // in dev/test so the local suite (mongodb-memory-server) behaves unchanged.
+  // floods the slow-query log. Collections are still created on first write.
+  // Kept on in dev/test so the local suite (mongodb-memory-server) behaves
+  // unchanged.
   autoCreate: process.env.NODE_ENV !== 'production',
+
+  // Ensure (build) indexes on connect. ON by default; can be disabled in
+  // production via DB_DISABLE_AUTOINDEX=true to skip re-ensuring indexes for
+  // ~129 models on every cold start — safe ONLY after wiring
+  // `npm run migrate:indexes` into the deploy flow. See resolveAutoIndex above.
+  autoIndex: resolveAutoIndex(),
 };
 
 export async function connectDB() {
@@ -147,6 +183,7 @@ import StudentModel from './models/Student.js';
 import AttendanceModel from './models/Attendance.js';
 import ExamScheduleModel from './models/ExamSchedule.js';
 import ExamModel from './models/Exam.js';
+import ExamHallModel from './models/ExamHall.js';
 import ResultModel from './models/Result.js';
 import TimetableModel from './models/Timetable.js';
 import TeacherTimetableModel from './models/TeacherTimetable.js';
@@ -227,6 +264,7 @@ export const Student = StudentModel;
 export const Attendance = AttendanceModel;
 export const ExamSchedule = ExamScheduleModel;
 export const Exam = ExamModel;
+export const ExamHall = ExamHallModel;
 export const Result = ResultModel;
 export const Timetable = TimetableModel;
 export const TeacherTimetable = TeacherTimetableModel;
@@ -296,7 +334,7 @@ export const ProcurementRequest = ProcurementRequestModel;
 
 // ─── Helper functions ────────────────────────────────────────────────────────
 
-export async function getNextStaffCode(schoolId) {
+export async function getNextStaffCode(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate staff code');
   }
@@ -314,7 +352,7 @@ export async function getNextStaffCode(schoolId) {
         digits: 3,
       },
     },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
 
   const { prefix, separator, includeYear, digits, currentNumber } = config;
@@ -345,33 +383,157 @@ export async function getNextRollNumber(classId, schoolId) {
   return (lastStudent?.rollNo || 0) + 1;
 }
 
-export async function getNextReceiptNumber(schoolId) {
+export async function getNextReceiptNumber(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate receipt number');
   }
   const counter = await CounterModel.findByIdAndUpdate(
     `receiptNumber_${schoolId}`,
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
   const year = new Date().getFullYear();
   return `RCP-${year}-${String(counter.seq).padStart(6, '0')}`;
 }
 
-export async function getNextRefundNumber(schoolId) {
+/**
+ * Self-healing receipt-number generator. Same as getNextReceiptNumber, but if
+ * the candidate `RCP-{year}-{seq}` already exists (because receipts were
+ * created out-of-band — manual DB inserts, a restore, test seeding, or the
+ * counter was reset), it advances the counter to the highest existing seq for
+ * the current year and continues from there.
+ *
+ * Use this in retry paths so a lagging counter self-corrects instead of
+ * looping forever or returning a hard error.
+ */
+export async function getNextAvailableReceiptNumber(schoolId, session = null) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate receipt number');
+  }
+  const year = new Date().getFullYear();
+  const prefix = `RCP-${year}-`;
+
+  // Find the highest existing receipt number for this school + year to learn
+  // the true high-water mark (in case the counter is behind it).
+  const [highest] = await FeePaymentModel.find(
+    { schoolId, receiptNumber: { $regex: `^${prefix}` } },
+    { receiptNumber: 1 },
+    ...(session ? [{ session }] : [])
+  )
+    .sort({ receiptNumber: -1 })
+    .limit(1)
+    .lean();
+
+  let seqFromDb = 0;
+  if (highest?.receiptNumber) {
+    const tail = String(highest.receiptNumber).slice(prefix.length);
+    const parsed = Number.parseInt(tail, 10);
+    if (Number.isFinite(parsed)) seqFromDb = parsed;
+  }
+
+  // Bump the counter atomically; then ensure it's at least seqFromDb + 1.
+  const counter = await CounterModel.findByIdAndUpdate(
+    `receiptNumber_${schoolId}`,
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, ...(session ? { session } : {}) }
+  );
+  const nextSeq = Math.max(counter.seq, seqFromDb + 1);
+  if (nextSeq !== counter.seq) {
+    // Counter lagged behind real receipts — fast-forward it so subsequent
+    // calls don't re-collide.
+    await CounterModel.findByIdAndUpdate(
+      `receiptNumber_${schoolId}`,
+      { $set: { seq: nextSeq } },
+      { new: true, ...(session ? { session } : {}) }
+    );
+  }
+  return `RCP-${year}-${String(nextSeq).padStart(6, '0')}`;
+}
+
+export async function getNextRefundNumber(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate refund number');
   }
   const counter = await CounterModel.findByIdAndUpdate(
     `refundNumber_${schoolId}`,
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { new: true, upsert: true, ...(session ? { session } : {}) }
   );
   const year = new Date().getFullYear();
   return `RFD-${year}-${String(counter.seq).padStart(6, '0')}`;
 }
 
-export async function getNextAdmissionId(schoolId) {
+/**
+ * Reserve the next transfer-certificate number for one school and calendar
+ * year. The counter increment is atomic, so concurrent operators cannot be
+ * handed the same number. Before incrementing, `$max` self-heals a missing or
+ * stale counter from the highest already-issued certificate without creating
+ * a duplicate after restores or legacy imports.
+ *
+ * Reserving happens when the number is requested; cancelled forms may leave a
+ * harmless gap, which is preferable to ever reusing a legal document number.
+ */
+export async function getNextTransferCertificateNumber(
+  schoolId,
+  year = new Date().getFullYear(),
+  session = null
+) {
+  if (!schoolId) {
+    throw new Error('schoolId is required to generate transfer certificate number');
+  }
+
+  const normalizedYear = Number(year);
+  if (!Number.isInteger(normalizedYear) || normalizedYear < 2000 || normalizedYear > 9999) {
+    throw new Error('A valid four-digit year is required to generate transfer certificate number');
+  }
+
+  const prefix = `TC-${normalizedYear}-`;
+  const [highest] = await StudentModel.aggregate(
+    [
+      {
+        $match: {
+          schoolId: new mongoose.Types.ObjectId(String(schoolId)),
+          'transferCertificate.tcNumber': { $regex: `^${prefix}\\d+$` },
+        },
+      },
+      {
+        $project: {
+          sequence: {
+            $convert: {
+              input: {
+                $arrayElemAt: [{ $split: ['$transferCertificate.tcNumber', '-'] }, -1],
+              },
+              to: 'int',
+              onError: 0,
+              onNull: 0,
+            },
+          },
+        },
+      },
+      { $sort: { sequence: -1 } },
+      { $limit: 1 },
+    ],
+    session ? { session } : undefined
+  );
+
+  const highWaterMark = Math.max(0, highest?.sequence || 0);
+
+  const counterId = `transferCertificateNumber_${schoolId}_${normalizedYear}`;
+  await CounterModel.findByIdAndUpdate(
+    counterId,
+    { $max: { seq: highWaterMark } },
+    { upsert: true, setDefaultsOnInsert: true, ...(session ? { session } : {}) }
+  );
+  const counter = await CounterModel.findByIdAndUpdate(
+    counterId,
+    { $inc: { seq: 1 } },
+    { new: true, ...(session ? { session } : {}) }
+  );
+
+  return `${prefix}${String(counter.seq).padStart(4, '0')}`;
+}
+
+export async function getNextAdmissionId(schoolId, session = null) {
   if (!schoolId) {
     throw new Error('schoolId is required to generate admission ID');
   }
@@ -393,10 +555,14 @@ export async function getNextAdmissionId(schoolId) {
         lastResetDate: now,
       },
     },
-    { upsert: true }
+    { upsert: true, ...(session ? { session } : {}) }
   );
 
-  const current = await AdmissionIdConfigModel.findOne({ schoolId });
+  const current = await AdmissionIdConfigModel.findOne(
+    { schoolId },
+    undefined,
+    ...(session ? [{ session }] : [])
+  );
 
   const shouldReset =
     current.resetFrequency !== 'never' &&
@@ -412,7 +578,7 @@ export async function getNextAdmissionId(schoolId) {
     const resetResult = await AdmissionIdConfigModel.findOneAndUpdate(
       { schoolId, lastResetDate: current.lastResetDate },
       { $set: { currentNumber: current.startingNumber + 1, lastResetDate: now } },
-      { new: true }
+      { new: true, ...(session ? { session } : {}) }
     );
     if (resetResult) {
       config = resetResult;
@@ -420,14 +586,14 @@ export async function getNextAdmissionId(schoolId) {
       config = await AdmissionIdConfigModel.findOneAndUpdate(
         { schoolId },
         { $inc: { currentNumber: 1 } },
-        { new: true }
+        { new: true, ...(session ? { session } : {}) }
       );
     }
   } else {
     config = await AdmissionIdConfigModel.findOneAndUpdate(
       { schoolId },
       { $inc: { currentNumber: 1 } },
-      { new: true }
+      { new: true, ...(session ? { session } : {}) }
     );
   }
 

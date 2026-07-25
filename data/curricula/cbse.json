@@ -1,0 +1,19 @@
+{
+  "id": "cbse",
+  "name": "CBSE (Central Board of Secondary Education)",
+  "description": "NCERT-based curriculum following the CBSE syllabus. Grades 1-5 follow EVS; 6-10 split Science and Social Science; 11-12 are elective streams (Science stream shown as representative).",
+  "grades": {
+    "1": ["English", "Hindi", "Mathematics", "EVS", "Art", "Music", "Physical Education"],
+    "2": ["English", "Hindi", "Mathematics", "EVS", "Art", "Music", "Physical Education"],
+    "3": ["English", "Hindi", "Mathematics", "EVS", "Art", "Music", "Physical Education"],
+    "4": ["English", "Hindi", "Mathematics", "EVS", "Art", "Music", "Physical Education", "Computer Science"],
+    "5": ["English", "Hindi", "Mathematics", "EVS", "Art", "Music", "Physical Education", "Computer Science"],
+    "6": ["English", "Hindi", "Mathematics", "Science", "Social Science", "Sanskrit", "Art", "Physical Education", "Computer Science"],
+    "7": ["English", "Hindi", "Mathematics", "Science", "Social Science", "Sanskrit", "Art", "Physical Education", "Computer Science"],
+    "8": ["English", "Hindi", "Mathematics", "Science", "Social Science", "Sanskrit", "Art", "Physical Education", "Computer Science"],
+    "9": ["English", "Hindi", "Mathematics", "Science", "Social Science", "Sanskrit", "Information Technology", "Art", "Physical Education"],
+    "10": ["English", "Hindi", "Mathematics", "Science", "Social Science", "Sanskrit", "Information Technology", "Art", "Physical Education"],
+    "11": ["English Core", "Physics", "Chemistry", "Mathematics", "Biology", "Computer Science", "Physical Education"],
+    "12": ["English Core", "Physics", "Chemistry", "Mathematics", "Biology", "Computer Science", "Physical Education"]
+  }
+}

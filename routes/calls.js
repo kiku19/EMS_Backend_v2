@@ -1,7 +1,10 @@
 import express from 'express';
 import CallHistory from '../models/CallHistory.js';
+import Parent from '../models/Parent.js';
 import { authenticate } from '../middleware/auth.js';
+import { checkPermission } from '../middleware/auth/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
+import { Staff } from '../database.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -15,7 +18,7 @@ function scopeBySchool(schoolId, query = {}) {
 }
 
 // POST /api/calls/initiate - Initiate call
-router.post('/initiate', async (req, res) => {
+router.post('/initiate', checkPermission('front-desk', 'create'), async (req, res) => {
   try {
     const { to, callType } = req.body; // to: { userId, userModel }
     const user = req.user;
@@ -24,6 +27,28 @@ router.post('/initiate', async (req, res) => {
       return res
         .status(400)
         .json({ error: req.t('common:routes.recipientAndCallTypeAreRequired') });
+    }
+
+    // Cross-tenant guard: verify the recipient belongs to the caller's school
+    // before creating the call or emitting a socket event. Without this any
+    // authenticated caller could ring an arbitrary user id in another tenant.
+    const callerSchoolId = extractSchoolId(user?.schoolId);
+    const allowedRecipientModels = new Set(['Staff', 'Parent']);
+    if (!to.userModel || !allowedRecipientModels.has(to.userModel)) {
+      return res.status(400).json({ error: 'Invalid recipient model' });
+    }
+
+    const recipientQuery = { _id: to.userId, schoolId: callerSchoolId };
+    const recipient =
+      to.userModel === 'Staff'
+        ? await Staff.findOne(recipientQuery).lean()
+        : await Parent.findOne(recipientQuery).lean();
+
+    if (!recipient) {
+      return res.status(403).json({
+        error: req.t('common:errors.forbidden'),
+        code: 'RECIPIENT_NOT_IN_SCHOOL',
+      });
     }
 
     // Create call record
@@ -183,7 +208,7 @@ router.post('/:id/end', async (req, res) => {
 });
 
 // GET /api/calls/history - Get call history
-router.get('/history/me', async (req, res) => {
+router.get('/history/me', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const user = req.user;
     const { limit = 50 } = req.query;
@@ -204,7 +229,7 @@ router.get('/history/me', async (req, res) => {
 });
 
 // GET /api/calls/missed - Get missed calls
-router.get('/missed/me', async (req, res) => {
+router.get('/missed/me', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const user = req.user;
 

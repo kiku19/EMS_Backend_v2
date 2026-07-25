@@ -531,6 +531,10 @@ router.post('/login', parentLoginLimiter, async (req, res) => {
     const { accessToken, refreshToken } = buildParentTokens(parent);
     const parentPayload = await buildParentPayload(parent);
 
+    // Surface the force-change flag (set by the admin reset-password flow) so
+    // the client can route the user to a change-password screen. Previously the
+    // flag was written but never read, so a deterministic/temporary password
+    // remained valid indefinitely.
     res.json({
       success: true,
       message: 'Login successful',
@@ -538,6 +542,7 @@ router.post('/login', parentLoginLimiter, async (req, res) => {
         parent: parentPayload,
         accessToken,
         refreshToken,
+        mustChangePassword: Boolean(parent.mustChangePassword),
       },
     });
   } catch (error) {
@@ -984,6 +989,10 @@ router.post(
 
       parent.password = newPassword;
       parent.tokenVersion = (parent.tokenVersion || 1) + 1;
+      // Clear the force-change flag now that the parent has set a fresh
+      // password. Without this the reset-flow flag (C14) was set on reset but
+      // never cleared, so the temporary password stayed valid forever.
+      parent.mustChangePassword = false;
       await parent.save({ validateModifiedOnly: true });
 
       res.json({

@@ -7,6 +7,7 @@ import {
   Attendance,
   Result,
   getNextAdmissionId,
+  getNextRollNumber,
 } from '../../database.js';
 import { createOrUpdateParentAccount } from '../../utils/parentAccountHelper.js';
 import { authenticate } from '../../middleware/auth.js';
@@ -19,12 +20,15 @@ import { extractSchoolId } from '../../utils/schoolContext.js';
 import { checkClassCapacity } from '../../utils/classCapacity.js';
 import { dispatchWebhookEvent } from '../../services/webhookService.js';
 import { EVENTS, emitEvent } from '../../utils/socketEvents.js';
-import { resolveAcademicYear, parseAcademicYear } from '../../utils/academicYear.js';
+import { parseAcademicYear } from '../../utils/academicYear.js';
 import {
   scopeBySchool,
   formatStudentClass,
   cleanObject,
   processParents,
+  mergeParentsForUpdate,
+  mergeSubdocArray,
+  mergeNestedObject,
   initializeFeeStructure,
   resyncFeeStructureForClassChange,
 } from './helpers.js';
@@ -90,32 +94,23 @@ router.post(
           throw err;
         }
 
-        if (req.body.rollNo != null) {
-          const existingRollNo = await Student.findOne(
-            scopeBySchool(req.user?.schoolId, {
-              rollNo: req.body.rollNo,
-              classId: req.body.classId,
-              academicYear: req.body.academicYear,
-              isDeleted: { $ne: true },
-            })
-          ).session(session);
-
-          if (existingRollNo) {
-            const err = new Error(
-              req.t('common:routes.rollNumberAlreadyExistsInThisClassForTheAcademicYear')
-            );
-            err.status = 409;
-            err.field = 'rollNo';
-            err.value = req.body.rollNo;
-            throw err;
-          }
-        }
+        // Auto-assign roll number server-side inside the transaction. The client
+        // no longer picks the roll number — `getNextRollNumber` derives the next
+        // free slot for the class, and the transaction serialises concurrent
+        // admits so two requests can't grab the same number. Any client-supplied
+        // `rollNo` is intentionally ignored on create (admins can still adjust it
+        // later via PUT). Mirrors how admission IDs are generated.
+        const assignedRollNo = await getNextRollNumber(req.body.classId, req.user?.schoolId);
 
         const studentData = {
           name: req.body.name,
           admissionId: req.body.admissionId,
           academicYear: req.body.academicYear,
-          rollNo: req.body.rollNo,
+          // S1: admissionDate was captured client-side and validated by Zod +
+          // declared in the Mongoose model, but never copied into studentData,
+          // so it was silently lost on create (and broke TC generator prefill).
+          admissionDate: req.body.admissionDate,
+          rollNo: assignedRollNo,
           classId: req.body.classId,
           schoolId: req.user?.schoolId ? extractSchoolId(req.user.schoolId) : undefined,
           gender: req.body.gender,
@@ -127,6 +122,8 @@ router.post(
           motherTongue: req.body.motherTongue,
           aadhaarNumber: req.body.aadhaarNumber,
           phone: req.body.phone,
+          // S3: alternatePhone captured by ContactSection, now persisted.
+          alternatePhone: req.body.alternatePhone,
           email: req.body.email,
           address: req.body.address,
           city: req.body.city,
@@ -139,6 +136,9 @@ router.post(
           mediumOfInstruction: req.body.mediumOfInstruction,
           house: req.body.house,
           medicalConditions: req.body.medicalConditions,
+          // S2: legacy flat allergies list (top-level). The structured home
+          // is healthInfo.allergies.
+          allergies: req.body.allergies,
           emergencyContactName: req.body.emergencyContactName,
           emergencyContactPhone: req.body.emergencyContactPhone,
           healthInfo: req.body.healthInfo,
@@ -176,7 +176,10 @@ router.post(
           .populate('classId', 'name section')
           .session(session);
 
-        await createOrUpdateParentAccount(populatedStudent, { session });
+        await createOrUpdateParentAccount(populatedStudent, {
+          session,
+          throwOnError: true,
+        });
       });
 
       // Non-transactional side effects: webhooks, sockets
@@ -217,6 +220,14 @@ router.post(
       console.error('Error creating student:', error);
 
       if (error.code === 11000) {
+        if (error.keyPattern?.email || error.keyPattern?.phone) {
+          const field = error.keyPattern.email ? 'email' : 'phone';
+          return res.status(409).json({
+            error: `A parent account with this ${field} already exists in your school`,
+            field: `parents.${field}`,
+            code: 11000,
+          });
+        }
         const duplicateField = Object.keys(error.keyPattern)[0];
         const fieldLabels = {
           admissionId: 'Admission ID',
@@ -258,6 +269,9 @@ router.put(
         name: req.body.name,
         admissionId: req.body.admissionId,
         academicYear: req.body.academicYear,
+        // S1: admissionDate was never copied into updateData, so PUT silently
+        // dropped it (also broke TC generator prefill + About-tab display).
+        admissionDate: req.body.admissionDate,
         rollNo: req.body.rollNo,
         classId: req.body.classId,
         gender: req.body.gender,
@@ -269,18 +283,24 @@ router.put(
         motherTongue: req.body.motherTongue,
         aadhaarNumber: req.body.aadhaarNumber,
         phone: req.body.phone,
+        // S3: alternatePhone captured by ContactSection, now persisted on update.
+        alternatePhone: req.body.alternatePhone,
         email: req.body.email,
         address: req.body.address,
         city: req.body.city,
         state: req.body.state,
         zipCode: req.body.zipCode,
-        parents: req.body.parents ? processParents(req.body.parents) : undefined,
+        // S6: parents merge is resolved AFTER originalStudent is fetched
+        // (see mergeParentsForUpdate below). Leave undefined here.
+        parents: undefined,
         siblings: req.body.siblings,
         previousSchool: req.body.previousSchool,
         tcNumber: req.body.tcNumber,
         mediumOfInstruction: req.body.mediumOfInstruction,
         house: req.body.house,
         medicalConditions: req.body.medicalConditions,
+        // S2: legacy flat allergies list (top-level).
+        allergies: req.body.allergies,
         emergencyContactName: req.body.emergencyContactName,
         emergencyContactPhone: req.body.emergencyContactPhone,
         // Reject client-supplied null for nested objects — the buggy
@@ -308,6 +328,14 @@ router.put(
         }
       }
 
+      // S7: A DOB change can move a student across the COPPA (under-13)
+      // threshold. The create handler computes coppaApplicable at admission,
+      // but PUT never recomputed it, so a corrected DOB left a stale flag.
+      // Recompute whenever the client sends a new dateOfBirth.
+      if (req.body.dateOfBirth) {
+        updateData.coppaApplicable = isCoppaApplicable(req.body.dateOfBirth);
+      }
+
       cleanObject(updateData);
 
       const originalStudent = await Student.findOne(
@@ -315,6 +343,45 @@ router.put(
       );
       if (!originalStudent) {
         return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
+      }
+
+      // S6: Merge incoming parents against the existing array instead of
+      // blind $set replacement. The About-tab single-parent edit previously
+      // rebuilt a fresh array containing only the edited parent — $set then
+      // deleted the other parent AND stripped parentId/isWhatsapp/isParent
+      // (which the rebuilt objects omitted). Match by _id first, then by
+      // stable identity (name+phone+relationship), falling back to index.
+      // Untouched existing parents are carried forward verbatim.
+      if (req.body.parents) {
+        updateData.parents = mergeParentsForUpdate(
+          originalStudent.parents || [],
+          processParents(req.body.parents)
+        );
+      }
+
+      // S8: Same pattern for siblings — carry forward age/class/school that
+      // the client's useStudentFormState rebuild drops (it only kept
+      // {name, inSameSchool, classId}). Match by _id, then name, then index.
+      if (req.body.siblings) {
+        updateData.siblings = mergeSubdocArray(
+          originalStudent.siblings || [],
+          req.body.siblings,
+          (existing) => existing.name
+        );
+      }
+
+      // Nested objects are stored as one Mongoose path. `$set: {healthInfo:
+      // partial}` replaces that whole path, so merge the submitted keys over
+      // the stored value first. Arrays explicitly supplied by the client still
+      // replace their corresponding arrays; omitted sibling keys survive.
+      if (req.body.healthInfo != null) {
+        updateData.healthInfo = mergeNestedObject(originalStudent.healthInfo, req.body.healthInfo);
+      }
+      if (req.body.alumniInfo != null) {
+        updateData.alumniInfo = mergeNestedObject(originalStudent.alumniInfo, req.body.alumniInfo);
+      }
+      if (req.body.ratings != null) {
+        updateData.ratings = mergeNestedObject(originalStudent.ratings, req.body.ratings);
       }
 
       // Optimistic locking: if the client sent the updatedAt it loaded, reject if stale
@@ -351,20 +418,35 @@ router.put(
       // Validate target class exists in the same school when classId changes
       const classChanged =
         updateData.classId && updateData.classId !== originalStudent.classId?.toString();
-      if (classChanged) {
+      if (
+        classChanged ||
+        (updateData.academicYear && updateData.academicYear !== originalStudent.academicYear)
+      ) {
+        const targetClassId = updateData.classId || originalStudent.classId;
         const targetClass = await Class.findOne(
-          scopeBySchool(req.user?.schoolId, { _id: updateData.classId })
+          scopeBySchool(req.user?.schoolId, {
+            _id: targetClassId,
+            isDeleted: { $ne: true },
+          })
         );
         if (!targetClass) {
           return res
             .status(400)
             .json({ error: req.t('common:routes.targetClassNotFoundInYourSchool') });
         }
-        const capacityResult = await checkClassCapacity(updateData.classId, req.user?.schoolId);
-        if (capacityResult?.isFull) {
+        const targetAcademicYear = updateData.academicYear || originalStudent.academicYear;
+        if (targetClass.academicYear && targetClass.academicYear !== targetAcademicYear) {
           return res.status(400).json({
-            error: `Target class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}).`,
+            error: `Target class belongs to ${targetClass.academicYear}, not ${targetAcademicYear}`,
           });
+        }
+        if (classChanged) {
+          const capacityResult = await checkClassCapacity(updateData.classId, req.user?.schoolId);
+          if (capacityResult?.isFull) {
+            return res.status(400).json({
+              error: `Target class is at full capacity (${capacityResult.currentCount}/${capacityResult.capacity}).`,
+            });
+          }
         }
       }
 
@@ -399,19 +481,94 @@ router.put(
         }
       }
 
-      // Use $set so mongoose doesn't treat nested objects (feeDetails,
-      // alumniInfo, healthInfo) as full subdocument replacements when only
-      // a subset of keys is provided. Without this wrap, sending just
-      // {alumniInfo: {since: '2024'}} would erase alumniInfo.reunionEmail
-      // etc.
-      const student = await Student.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
-        { $set: updateData },
-        { new: true }
-      ).populate('classId', 'name section');
-      if (!student) {
-        return res.status(404).json({ error: req.t('common:routes.studentNotFound1') });
+      let feeWarning = null;
+      const mongoSession = await mongoose.startSession();
+      try {
+        await mongoSession.withTransaction(async (session) => {
+          const currentStudent = await Student.findOne(
+            scopeBySchool(req.user?.schoolId, {
+              _id: req.params.id,
+              isDeleted: { $ne: true },
+            })
+          ).session(session);
+          if (!currentStudent) {
+            const error = new Error(req.t('common:routes.studentNotFound1'));
+            error.status = 404;
+            throw error;
+          }
+
+          const oldAcademicYear = currentStudent.academicYear;
+          const oldClassId = currentStudent.classId;
+          const historicalFeeStructure = await StudentFeeStructure.findOne({
+            studentId: currentStudent._id,
+            academicYear: oldAcademicYear,
+            schoolId: extractSchoolId(req.user?.schoolId),
+            isDeleted: { $ne: true },
+          }).session(session);
+
+          Object.assign(currentStudent, updateData);
+          await currentStudent.save({ session });
+
+          // A mid-year class move migrates only records from that same
+          // academic year. A year transition must leave the prior year's
+          // attendance/results in the original class as historical truth.
+          if (classChanged && !academicYearChanged) {
+            const { startYear, endYear } = parseAcademicYear(oldAcademicYear);
+            const yearStartDate = `${startYear}-04-01`;
+            const yearEndDate = `${endYear}-03-31`;
+            await Attendance.updateMany(
+              {
+                studentId: currentStudent._id,
+                classId: oldClassId,
+                schoolId: extractSchoolId(req.user?.schoolId),
+                date: { $gte: yearStartDate, $lte: yearEndDate },
+                isDeleted: { $ne: true },
+              },
+              { $set: { classId: currentStudent.classId } },
+              { session }
+            );
+            await Result.updateMany(
+              {
+                studentId: currentStudent._id,
+                classId: oldClassId,
+                schoolId: extractSchoolId(req.user?.schoolId),
+                academicYear: oldAcademicYear,
+                isDeleted: { $ne: true },
+              },
+              { $set: { classId: currentStudent.classId } },
+              { session }
+            );
+          }
+
+          if (academicYearChanged) {
+            await initializeFeeStructure(currentStudent, { session });
+          } else if (classChanged) {
+            await resyncFeeStructureForClassChange(currentStudent, { session });
+          }
+
+          // Student.parents and the canonical Parent collection are one
+          // consistency boundary. Reconcile them before commit and propagate
+          // any failure so replacing a guardian cannot detach the old account
+          // while silently failing to create/link the new one.
+          await createOrUpdateParentAccount(currentStudent, {
+            session,
+            throwOnError: true,
+          });
+
+          if ((historicalFeeStructure?.totalBalance || 0) > 0) {
+            feeWarning = `Unpaid balance of ₹${historicalFeeStructure.totalBalance} remains recorded against ${oldAcademicYear}.`;
+          }
+        });
+      } finally {
+        await mongoSession.endSession();
       }
+
+      const student = await Student.findOne(
+        scopeBySchool(req.user?.schoolId, {
+          _id: req.params.id,
+          isDeleted: { $ne: true },
+        })
+      ).populate('classId', 'name section');
 
       dispatchWebhookEvent(req.user?.schoolId, 'student.updated', {
         id: student._id,
@@ -420,81 +577,6 @@ router.put(
         classId: student.classId?._id ?? student.classId,
         status: student.status,
       }).catch(() => {});
-
-      try {
-        await createOrUpdateParentAccount(student);
-      } catch (parentError) {
-        console.error('Error auto-syncing parent accounts:', parentError);
-      }
-
-      let feeWarning = null;
-      try {
-        if (classChanged || academicYearChanged) {
-          const resolvedYear = await resolveAcademicYear(student.academicYear);
-
-          // Check for unpaid balance before modifying fee structure
-          const currentFeeStructure = await StudentFeeStructure.findOne({
-            studentId: student._id,
-            academicYear: resolvedYear,
-            schoolId: extractSchoolId(req.user?.schoolId),
-          });
-          const unpaidBalance = currentFeeStructure?.totalBalance || 0;
-
-          // Migrate attendance and result records to the new class so they remain
-          // visible in new-class-scoped queries (fixes AUDIT-343 / AUDIT-15)
-          if (classChanged) {
-            const { startYear, endYear } = parseAcademicYear(resolvedYear);
-            const yearStartDate = `${startYear}-04-01`;
-            const yearEndDate = `${endYear}-03-31`;
-
-            await Attendance.updateMany(
-              {
-                studentId: student._id,
-                classId: originalStudent.classId,
-                schoolId: req.user?.schoolId,
-                date: { $gte: yearStartDate, $lte: yearEndDate },
-              },
-              { $set: { classId: updateData.classId } }
-            );
-
-            await Result.updateMany(
-              {
-                studentId: student._id,
-                classId: originalStudent.classId,
-                schoolId: req.user?.schoolId,
-                academicYear: resolvedYear,
-                isDeleted: { $ne: true },
-              },
-              { $set: { classId: updateData.classId } }
-            );
-          }
-
-          // Re-align fee structure to the new class WITHOUT wiping paid
-          // amounts. The previous deleteMany+init flow zeroed every recorded
-          // paidAmount, so a student who had paid ₹10k appeared to owe the
-          // full new-class amount. resyncFeeStructureForClassChange merges
-          // new feeHeads over the existing structure, preserves paidAmount
-          // on carry-over heads, and keeps old-class heads that still have
-          // payment history so FeePayment refunds stay consistent.
-          if (academicYearChanged) {
-            // Academic-year change is a fresh start — initialise into the new
-            // year instead of merging across year boundaries.
-            await initializeFeeStructure(student);
-          } else {
-            await resyncFeeStructureForClassChange(student);
-          }
-
-          if (unpaidBalance > 0) {
-            feeWarning = `Unpaid balance of ₹${unpaidBalance} was affected by the class/academic-year change.`;
-          }
-        }
-
-        // feeStatus is no longer client-settable so the previous sync block
-        // (copying updateData.feeStatus onto feeStructure.overallStatus) is
-        // removed — overallStatus is authored by the fee/payment code paths.
-      } catch (feeError) {
-        console.error('Error syncing fee structure:', feeError);
-      }
 
       const classFormatted = student.classId
         ? `${student.classId.name.replace('Class ', '')}-${student.classId.section}`
@@ -511,7 +593,15 @@ router.put(
 
       res.json(response);
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      if (error.code === 11000 && (error.keyPattern?.email || error.keyPattern?.phone)) {
+        const field = error.keyPattern.email ? 'email' : 'phone';
+        return res.status(409).json({
+          error: `A parent account with this ${field} already exists in your school`,
+          field: `parents.${field}`,
+          code: 11000,
+        });
+      }
+      res.status(error.status || 500).json({ error: error.message });
     }
   }
 );

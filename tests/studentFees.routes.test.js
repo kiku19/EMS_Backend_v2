@@ -928,7 +928,7 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
     expect(auditLogs[0].context.amount).toBe(5000);
   });
 
-  it('handles payment without feeHeadPayments array gracefully', async () => {
+  it('records aggregate payments on legacy top-level-only fee structures', async () => {
     const school = await createSchoolRecord({
       name: 'No FHP School',
       code: 'NFP-01',
@@ -962,16 +962,35 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    // Send payment without feeHeadPayments — route should not crash
     const res = await request(app)
       .post(`/api/student-fees/student/${student._id}/payment`)
       .set(authHeaders)
       .send({ amount: 1000, academicYear: '2025-26' })
       .expect(200);
 
-    // Totals remain unchanged because no individual fee heads were updated
-    expect(res.body.totalPaid).toBe(0);
+    expect(res.body.totalPaid).toBe(1000);
+    expect(res.body.totalBalance).toBe(4000);
+    expect(res.body.overallStatus).toBe('partial');
     expect(res.body.lastPaymentDate).toBeDefined();
+  });
+
+  it('rejects fee-head allocations that do not equal the payment amount', async () => {
+    const accountant = await createAccountant();
+    const studentId = new mongoose.Types.ObjectId();
+    const feeHeadId = new mongoose.Types.ObjectId();
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .post(`/api/student-fees/student/${studentId}/payment`)
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send({
+        amount: 1000,
+        academicYear: '2025-26',
+        feeHeadPayments: [{ feeHeadId: feeHeadId.toString(), amount: 500 }],
+      })
+      .expect(400);
+
+    expect(response.body.details?.[0]?.field).toBe('feeHeadPayments');
   });
 
   it('stores idempotencyKey on the FeePayment document', async () => {
@@ -1112,6 +1131,96 @@ describe('POST /api/student-fees/student/:studentId/payment', () => {
 
     expect(second.body.code).toBe('IDEMPOTENCY_KEY_USED');
     expect(typeof second.body.receiptNumber).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression — FeePayment idempotency unique index must build cleanly (SCH-210)
+// ---------------------------------------------------------------------------
+//
+// MongoDB partial indexes reject `$ne` (it compiles to `$not: {$eq}`), so the
+// old `partialFilterExpression: { idempotencyKey: { $exists: true, $ne: null } }`
+// made `syncIndexes()` / `createIndexes` fail — meaning the unique idempotency
+// index never actually existed in prod (autoIndex swallows the error). This
+// test guards the corrected spec (`$type: 'string'`) by driving the real index
+// build against the in-memory mongod and asserting the partial unique compound
+// index shows up.
+describe('FeePayment idempotency index (SCH-210)', () => {
+  it('builds the unique partial index without error and with the expected filter', async () => {
+    // Drive the real index build the same way `npm run migrate:indexes` does.
+    await expect(FeePayment.syncIndexes()).resolves.not.toThrow();
+
+    const indexes = await FeePayment.collection.indexes();
+    const compound = indexes.find(
+      (i) => i.key && i.key.schoolId === 1 && i.key.idempotencyKey === 1
+    );
+
+    expect(compound, 'compound (schoolId, idempotencyKey) index should exist').toBeTruthy();
+    expect(compound.unique).toBe(true);
+    expect(compound.partialFilterExpression).toEqual({
+      idempotencyKey: { $type: 'string' },
+    });
+  });
+
+  it('does not treat missing/empty idempotencyKey as a uniqueness collision', async () => {
+    const school = await createSchoolRecord({
+      name: 'No-Key School',
+      code: 'NKY-01',
+      isDefault: true,
+    });
+    const accountant = await createAccountant({ schoolId: school._id });
+    const classRecord = await createClassRecord({
+      name: 'Class 10',
+      section: 'P',
+      schoolId: school._id,
+    });
+    const { tuition } = await createFeeHeads(school._id, '10');
+    const student = await createStudentRecord({
+      name: 'No-Key Student',
+      classId: classRecord._id,
+      schoolId: school._id,
+    });
+
+    await insertFeeStructureDirect({
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      schoolId: school._id,
+      feeHeads: [
+        {
+          feeHeadId: tuition._id,
+          name: 'Tuition Fee',
+          category: 'Academic',
+          amount: 5000,
+          mandatory: true,
+          frequency: 'yearly',
+          paidAmount: 0,
+          balanceAmount: 5000,
+          status: 'pending',
+        },
+      ],
+      totalFee: 5000,
+      totalPaid: 0,
+      totalBalance: 5000,
+      overallStatus: 'pending',
+    });
+
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+
+    // Two payments with no idempotencyKey must both succeed — the partial
+    // index excludes documents where the key isn't a real string.
+    await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({ amount: 1000, academicYear: '2025-26' })
+      .expect(200);
+
+    await request(app)
+      .post(`/api/student-fees/student/${student._id}/payment`)
+      .set(authHeaders)
+      .send({ amount: 500, academicYear: '2025-26' })
+      .expect(200);
   });
 });
 
@@ -1289,15 +1398,17 @@ describe('GET /api/student-fees/all', () => {
     await request(app).get('/api/student-fees/all').expect(401);
   });
 
-  it('returns an empty array when no fee structures exist', async () => {
+  it('returns an empty paginated result when no fee structures exist', async () => {
     const accountant = await createAccountant();
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
     const res = await request(app).get('/api/student-fees/all').set(authHeaders).expect(200);
 
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body).toHaveLength(0);
+    expect(res.body).toMatchObject({
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
+    });
   });
 
   it('returns all fee structures scoped to the school', async () => {
@@ -1353,7 +1464,8 @@ describe('GET /api/student-fees/all', () => {
 
     const res = await request(app).get('/api/student-fees/all').set(authHeaders).expect(200);
 
-    expect(res.body).toHaveLength(2);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.pagination.total).toBe(2);
   });
 
   it('filters by classId query parameter', async () => {
@@ -1418,8 +1530,8 @@ describe('GET /api/student-fees/all', () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].totalFee).toBe(5000);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].totalFee).toBe(5000);
   });
 
   it('filters by status query parameter', async () => {
@@ -1479,8 +1591,8 @@ describe('GET /api/student-fees/all', () => {
       .set(authHeaders)
       .expect(200);
 
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].overallStatus).toBe('paid');
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].overallStatus).toBe('paid');
   });
 
   it('multi-tenancy: only returns fee structures for the authenticated school', async () => {
@@ -1538,7 +1650,7 @@ describe('GET /api/student-fees/all', () => {
 
     const res = await request(app).get('/api/student-fees/all').set(authHeaders).expect(200);
 
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].totalFee).toBe(5000);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].totalFee).toBe(5000);
   });
 });

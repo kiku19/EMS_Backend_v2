@@ -1,10 +1,11 @@
 import UserPermission, { PERMISSION_TEMPLATES } from '../../models/UserPermission.js';
+import CustomRole from '../../models/CustomRole.js';
 import { createLogger } from '../../utils/logger.js';
 import { isSuperAdminUser } from '../../utils/superAdmin.js';
 
 const logger = createLogger('Permissions');
 
-const ACTION_KEYS = ['view', 'create', 'edit', 'delete', 'publish'];
+const ACTION_KEYS = ['view', 'create', 'edit', 'delete', 'publish', 'approve'];
 
 const toPermissionRecord = (module, actions = {}) => ({
   module,
@@ -13,6 +14,7 @@ const toPermissionRecord = (module, actions = {}) => ({
   edit: Boolean(actions.edit),
   delete: Boolean(actions.delete),
   publish: Boolean(actions.publish),
+  approve: Boolean(actions.approve),
 });
 
 export const buildPermissionsArray = (permissionsObject = {}) => {
@@ -71,6 +73,49 @@ export async function ensurePermissionDocument(userPermission, role) {
   }
 
   return userPermission;
+}
+
+/**
+ * Merge a user's own permissions with those of their linked CustomRole.
+ *
+ * Returns a NEW array (does not mutate the UserPermission doc) where, for each
+ * module present on either side, every action is the OR of the user's own
+ * value and the custom role's value. Modules only on one side pass through
+ * unchanged. This is what makes an assigned CustomRole actually expand what a
+ * user can do — previously the customRoleId link was stored but never read.
+ *
+ * @param {object} userPermission - UserPermission document (with .permissions and optional .customRoleId)
+ * @returns {Promise<object[]>} effective modulePermission records
+ */
+async function mergeCustomRolePermissions(userPermission) {
+  const own = Array.isArray(userPermission.permissions) ? userPermission.permissions : [];
+  if (!userPermission.customRoleId) return own;
+
+  let customRole;
+  try {
+    customRole = await CustomRole.findById(userPermission.customRoleId).lean();
+  } catch {
+    customRole = null;
+  }
+  if (!customRole || !Array.isArray(customRole.permissions)) return own;
+
+  const byModule = new Map();
+  // Seed with the user's own permissions (clone so we don't mutate the doc).
+  for (const p of own) {
+    byModule.set(p.module, { ...p });
+  }
+  // OR-in each custom-role permission.
+  for (const rp of customRole.permissions) {
+    const existing = byModule.get(rp.module);
+    if (!existing) {
+      byModule.set(rp.module, { ...rp });
+    } else {
+      for (const action of ACTION_KEYS) {
+        if (rp[action]) existing[action] = true;
+      }
+    }
+  }
+  return Array.from(byModule.values());
 }
 
 /**
@@ -158,14 +203,19 @@ export const checkPermission = (module, action) => {
         await ensurePermissionDocument(userPermission, userPermission.role);
       }
 
-      const modulePermission = userPermission.permissions.find(
-        (permission) => permission.module === module
-      );
+      // Merge in the user's custom-role permissions (if any). Custom roles were
+      // previously dead data: admins could create/assign them but checkPermission
+      // never read the role's permission list, so the entire "Roles & Access"
+      // tab had zero effect. Effective permission = the user's own permission
+      // OR'd with the linked custom role's permission for every action.
+      const effective = await mergeCustomRolePermissions(userPermission);
+
+      const modulePermission = effective.find((permission) => permission.module === module);
 
       if (!modulePermission) {
         // Module isn't in the user's permissions array yet — typically
         // because PERMISSION_TEMPLATES pre-date the module (homework,
-        // hostel, inventory, library, ptm, transport, front-office).
+        // hostel, inventory, library, ptm, transport).
         // Default policy: 'admin' role gets full access so schools can
         // onboard these modules without a migration; every other role
         // denies until the template is extended.
@@ -251,6 +301,39 @@ export function determineRole(userRole) {
   }
 
   return best || 'teacher';
+}
+
+/**
+ * Programmatic permission check (non-middleware).
+ * Mirrors checkPermission's evaluation but returns a boolean instead of ending
+ * the response — for routes that need to OR several permissions together
+ * (e.g. trash restore = settings:edit OR the originating module's delete).
+ *
+ * @param {object} req - Express request (needs req.user)
+ * @param {string} module - Module name (e.g. 'students')
+ * @param {string} action - 'view' | 'create' | 'edit' | 'delete' | 'publish'
+ * @returns {Promise<boolean>}
+ */
+export async function userHasPermission(req, module, action) {
+  if (isSuperAdminUser(req.user)) return true;
+
+  const userId = req.user?.id;
+  const schoolId = req.user?.schoolId;
+  if (!userId || !schoolId) return false;
+
+  const userPermission = await UserPermission.findOne({ userId, schoolId });
+  if (!userPermission) return false;
+
+  await ensurePermissionDocument(userPermission, userPermission.role);
+
+  // Same custom-role merge as checkPermission so the two paths agree.
+  const effective = await mergeCustomRolePermissions(userPermission);
+  const modulePermission = effective.find((p) => p.module === module);
+  if (!modulePermission) {
+    // Same policy as checkPermission: admin gets modules not yet in the template.
+    return userPermission.role === 'admin';
+  }
+  return Boolean(modulePermission[action]);
 }
 
 /**

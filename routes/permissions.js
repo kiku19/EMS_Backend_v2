@@ -1,5 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
+import mongoose from 'mongoose';
+import { PERMISSION_MODULES } from '../constants/permissionModules.js';
 import UserPermission, { PERMISSION_TEMPLATES } from '../models/UserPermission.js';
 import PermissionRequest from '../models/PermissionRequest.js';
 import CustomRole from '../models/CustomRole.js';
@@ -11,8 +13,11 @@ import {
 } from '../middleware/permissions.js';
 import { sanitizeQueryStr, sanitizeQueryId } from '../middleware/validation.js';
 import { authenticate } from '../middleware/auth.js';
+import { requireAdmin } from '../middleware/auth/permissions.js';
 import AuditTrail from '../models/AuditTrail.js';
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
+import School from '../models/School.js';
+import { resolveEnabledModules } from '../config/moduleRegistry.js';
 
 // Fire-and-forget audit entry
 function logPermissionAuditEvent({ schoolId, actorId, action, entityId, newValue, req }) {
@@ -40,28 +45,13 @@ const schoolQuery = (req, extra = {}) => buildSchoolScopedQuery(req.user?.school
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
 const modulePermissionSchema = z.object({
-  module: z.enum([
-    'dashboard',
-    'staff',
-    'students',
-    'classes',
-    'academics',
-    'attendance',
-    'timetable',
-    'fees',
-    'payroll',
-    'messaging',
-    'reports',
-    'settings',
-    'front-desk',
-    'intake-forms',
-    'communication',
-  ]),
+  module: z.enum(PERMISSION_MODULES),
   view: z.boolean().default(false),
   create: z.boolean().default(false),
   edit: z.boolean().default(false),
   delete: z.boolean().default(false),
   publish: z.boolean().default(false),
+  approve: z.boolean().default(false),
 });
 
 const customRoleCreateSchema = z.object({
@@ -79,6 +69,15 @@ const userPermissionUpdateSchema = z.object({
   role: z.enum(['admin', 'teacher', 'accountant', 'receptionist', 'custom']),
   permissions: z.array(modulePermissionSchema),
   customPermissions: z.boolean().optional().default(false),
+  // Optional reference to a CustomRole. When set, checkPermission merges the
+  // custom role's permission list into the user's effective permissions —
+  // without this the entire "Roles & Access" tab was dead data (admins could
+  // create/edit custom roles but they had zero effect on what users could do).
+  customRoleId: z
+    .string()
+    .refine((v) => mongoose.isValidObjectId(v), { message: 'Invalid customRoleId' })
+    .optional()
+    .nullable(),
 });
 
 // Get current user's own permissions (no IDOR risk — userId from auth token)
@@ -113,7 +112,15 @@ router.get('/me', async (req, res) => {
       await ensurePermissionDocument(userPermission, userPermission.role);
     }
 
-    res.json(userPermission);
+    // Include the school's effective enabled-module set so the dashboard can
+    // gate nav + routes from the same payload it already fetches on load.
+    const school = await School.findById(sid).select('enabledModules').lean();
+    const { enabled } = resolveEnabledModules(school?.enabledModules);
+
+    res.json({
+      ...userPermission.toObject(),
+      enabledModules: [...enabled],
+    });
   } catch (error) {
     console.error('Error fetching user permissions:', error);
     res.status(500).json({ error: req.t('common:routes.failedToFetchPermissions') });
@@ -188,7 +195,7 @@ router.put('/user/:userId', async (req, res) => {
         })),
       });
     }
-    const { permissions, role, customPermissions } = parsed.data;
+    const { permissions, role, customPermissions, customRoleId } = parsed.data;
 
     // Verify admin
     const adminPermission = await UserPermission.findOne(schoolQuery(req, { userId: adminId }));
@@ -205,25 +212,42 @@ router.put('/user/:userId', async (req, res) => {
       return res.status(404).json({ error: req.t('common:routes.userNotFound') });
     }
 
-    const updated = await UserPermission.findOneAndUpdate(
-      schoolQuery(req, { userId }),
-      {
-        schoolId: sid,
-        permissions,
-        role,
-        customPermissions,
-        lastUpdated: new Date(),
-        updatedBy: adminId,
-      },
-      { new: true, upsert: true }
-    );
+    // Validate the custom role belongs to this school before linking it —
+    // otherwise an admin could point customRoleId at another tenant's role and
+    // pull its permission list into their school.
+    const resolvedCustomRoleId = customRoleId;
+    if (customRoleId) {
+      const roleExists = await CustomRole.findOne(schoolQuery(req, { _id: customRoleId }))
+        .select('_id')
+        .lean();
+      if (!roleExists) {
+        return res.status(404).json({ error: req.t('common:routes.roleNotFound') });
+      }
+    }
+    // Clear the link when an explicit null is sent (un-assign a custom role).
+    const updateDoc = {
+      schoolId: sid,
+      permissions,
+      role,
+      customPermissions,
+      lastUpdated: new Date(),
+      updatedBy: adminId,
+    };
+    if (resolvedCustomRoleId !== undefined) {
+      updateDoc.customRoleId = resolvedCustomRoleId || null;
+    }
+
+    const updated = await UserPermission.findOneAndUpdate(schoolQuery(req, { userId }), updateDoc, {
+      new: true,
+      upsert: true,
+    });
 
     logPermissionAuditEvent({
       schoolId: req.user.schoolId,
       actorId: adminId,
       action: 'role_changed',
       entityId: userId,
-      newValue: { role, customPermissions },
+      newValue: { role, customPermissions, customRoleId: resolvedCustomRoleId ?? null },
       req,
     });
 
@@ -237,10 +261,36 @@ router.put('/user/:userId', async (req, res) => {
 // Create permission request
 router.post('/request', async (req, res) => {
   try {
-    const { userId, userName, userEmail, module, permissions, reason } = req.body;
+    const { module, permissions, reason } = req.body;
 
-    if (!userId || !userName || !module || !permissions || !reason) {
+    if (!module || !permissions || !reason) {
       return res.status(400).json({ error: req.t('common:routes.missingRequiredFields') });
+    }
+
+    // Identity MUST come from the authenticated session, not the request body —
+    // otherwise an authenticated user could file a permission request
+    // impersonating any other user in the school (or attach a userId that
+    // doesn't belong to the school at all), poisoning the audit trail.
+    const userId = req.user.id || req.user.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: req.t('common:errors.unauthorized') });
+    }
+
+    // The JWT only carries { userId, role, schoolId, userType } — name/email
+    // are NOT on the token, so look the Staff record up (school-scoped) to get
+    // a trustworthy display name + email for the request record.
+    let userName = req.user.name || '';
+    let userEmail = req.user.email || '';
+    if (!userName) {
+      const requester = await Staff.findOne(schoolQuery(req, { _id: userId }))
+        .select('name email')
+        .lean();
+      if (!requester) {
+        return res.status(404).json({ error: req.t('common:routes.userNotFound') });
+      }
+      userName = requester.name || '';
+      userEmail = requester.email || '';
     }
 
     // Check if there's already a pending request for this user and module
@@ -490,9 +540,9 @@ router.get('/custom-roles', async (req, res) => {
       { $match: { schoolId, customRoleId: { $exists: true, $ne: null } } },
       { $group: { _id: '$customRoleId', count: { $sum: 1 } } },
     ]);
-    const countMap = Object.fromEntries(counts.map(c => [String(c._id), c.count]));
+    const countMap = Object.fromEntries(counts.map((c) => [String(c._id), c.count]));
 
-    const rolesWithCounts = roles.map(r => ({
+    const rolesWithCounts = roles.map((r) => ({
       ...r,
       userCount: countMap[String(r._id)] || 0,
     }));
@@ -505,7 +555,7 @@ router.get('/custom-roles', async (req, res) => {
 });
 
 // Create a custom role
-router.post('/custom-roles', async (req, res) => {
+router.post('/custom-roles', requireAdmin, async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const parsed = customRoleCreateSchema.safeParse(req.body);
@@ -542,7 +592,7 @@ router.post('/custom-roles', async (req, res) => {
 });
 
 // Update a custom role
-router.put('/custom-roles/:id', async (req, res) => {
+router.put('/custom-roles/:id', requireAdmin, async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { id } = req.params;
@@ -592,7 +642,7 @@ router.put('/custom-roles/:id', async (req, res) => {
 });
 
 // Delete a custom role
-router.delete('/custom-roles/:id', async (req, res) => {
+router.delete('/custom-roles/:id', requireAdmin, async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
     const { id } = req.params;

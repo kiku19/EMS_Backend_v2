@@ -270,6 +270,260 @@ describe('dashboard routes', () => {
     });
   });
 
+  // ─── Analytics Summary (SCH-204) ───────────────────────────────────────
+  describe('GET /api/dashboard/analytics-summary', () => {
+    it('returns 401 when no auth token is provided', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/analytics-summary').expect(401);
+    });
+
+    it('returns a zeroed summary for a school with no students', async () => {
+      const { app, headers } = await setup('admin', ['Admin']);
+
+      const res = await request(app)
+        .get('/api/dashboard/analytics-summary')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.students).toEqual({
+        total: 0,
+        active: 0,
+        inactive: 0,
+        graduated: 0,
+        transferred: 0,
+        alumni: 0,
+      });
+      expect(res.body.fees.collectionRate).toBe(0);
+      expect(res.body.fees.defaulters).toBe(0);
+      expect(res.body.classDistribution).toEqual([]);
+    });
+
+    it('aggregates status, fee and class breakdowns server-side', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classA = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 1',
+        section: 'A',
+      });
+      const classB = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 2',
+        section: 'B',
+      });
+
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classA._id,
+        name: 'A1',
+        status: 'active',
+        feeStatus: 'paid',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classA._id,
+        name: 'A2',
+        status: 'active',
+        feeStatus: 'overdue',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classB._id,
+        name: 'B1',
+        status: 'active',
+        feeStatus: 'pending',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classB._id,
+        name: 'B2',
+        status: 'transferred',
+        feeStatus: 'paid',
+      });
+
+      const res = await request(app)
+        .get('/api/dashboard/analytics-summary')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.students.total).toBe(4);
+      expect(res.body.students.active).toBe(3);
+      expect(res.body.students.transferred).toBe(1);
+
+      expect(res.body.fees.paid).toBe(2);
+      expect(res.body.fees.pending).toBe(1);
+      expect(res.body.fees.overdue).toBe(1);
+      expect(res.body.fees.defaulters).toBe(2); // pending + overdue
+      expect(res.body.fees.collectionRate).toBe(50); // 2 paid / 4 total
+
+      // classDistribution counts ACTIVE students only, sorted by count desc.
+      expect(res.body.classDistribution).toHaveLength(2);
+      const byName = Object.fromEntries(res.body.classDistribution.map((c) => [c.name, c.count]));
+      expect(byName['Class 1 A']).toBe(2);
+      expect(byName['Class 2 B']).toBe(1);
+      expect(res.body.classDistribution[0].count).toBe(2); // largest first
+    });
+
+    it("scopes results to the caller's school", async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+
+      const otherSchool = await createSchoolRecord({
+        name: `Other School ${nextSeq()}`,
+        code: `OT-${nextSeq()}`,
+      });
+      const otherClass = await createClassRecord({
+        schoolId: otherSchool._id,
+        name: 'Foreign',
+        section: 'X',
+      });
+      await createStudentRecord({
+        schoolId: otherSchool._id,
+        classId: otherClass._id,
+        name: 'Foreign Student',
+        status: 'active',
+        feeStatus: 'paid',
+      });
+
+      const myClass = await createClassRecord({
+        schoolId: school._id,
+        name: 'Mine',
+        section: 'Z',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: myClass._id,
+        name: 'My Student',
+        status: 'active',
+        feeStatus: 'paid',
+      });
+
+      const res = await request(app)
+        .get('/api/dashboard/analytics-summary')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.students.total).toBe(1);
+      expect(res.body.classDistribution).toHaveLength(1);
+      expect(res.body.classDistribution[0].name).toBe('Mine Z');
+    });
+  });
+
+  // ─── Bounded fee summary (PERF-REFACTOR) ───────────────────────────────
+  describe('GET /api/dashboard/fee-summary', () => {
+    it('returns 401 when no auth token is provided', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/fee-summary').expect(401);
+    });
+
+    it('returns zeroed totals for a school with no fee structures', async () => {
+      const { app, headers } = await setup('admin', ['Admin']);
+      const res = await request(app).get('/api/dashboard/fee-summary').set(headers).expect(200);
+
+      expect(res.body.totalCollected).toBe(0);
+      expect(res.body.totalPending).toBe(0);
+      expect(res.body.defaulters).toBe(0);
+      expect(res.body.feeStructuresExist).toBe(false);
+      expect(res.body.recentPayments).toEqual([]);
+    });
+
+    it('aggregates fee totals and counts defaulters server-side', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classRecord = await createClassRecord({ schoolId: school._id });
+      const [s1, s2, s3] = await Promise.all([
+        createStudentRecord({ schoolId: school._id, classId: classRecord._id, name: 'Paid' }),
+        createStudentRecord({ schoolId: school._id, classId: classRecord._id, name: 'Owing' }),
+        createStudentRecord({ schoolId: school._id, classId: classRecord._id, name: 'Partial' }),
+      ]);
+      await StudentFeeStructure.create([
+        {
+          schoolId: school._id,
+          studentId: s1._id,
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          totalFee: 10000,
+          totalPaid: 10000,
+          totalBalance: 0,
+          overallStatus: 'paid',
+        },
+        {
+          schoolId: school._id,
+          studentId: s2._id,
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          totalFee: 10000,
+          totalPaid: 0,
+          totalBalance: 10000,
+          overallStatus: 'pending',
+        },
+        {
+          schoolId: school._id,
+          studentId: s3._id,
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          totalFee: 10000,
+          totalPaid: 4000,
+          totalBalance: 6000,
+          overallStatus: 'partial',
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/api/dashboard/fee-summary?academicYear=2026-27')
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.totalCollected).toBe(14000); // 10000 + 0 + 4000
+      expect(res.body.totalPending).toBe(16000); // 0 + 10000 + 6000
+      // defaulters = structures with totalBalance > 0 (s2 + s3)
+      expect(res.body.defaulters).toBe(2);
+      expect(res.body.feeStructuresExist).toBe(true);
+    });
+
+    it('does not count structures from other schools (multi-tenant isolation)', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const otherSchool = await createSchoolRecord({
+        name: `Other ${nextSeq()}`,
+        code: `OX-${nextSeq()}`,
+      });
+      const myClass = await createClassRecord({ schoolId: school._id });
+      const otherClass = await createClassRecord({ schoolId: otherSchool._id });
+      const myStudent = await createStudentRecord({ schoolId: school._id, classId: myClass._id });
+      const otherStudent = await createStudentRecord({
+        schoolId: otherSchool._id,
+        classId: otherClass._id,
+      });
+      await StudentFeeStructure.create([
+        {
+          schoolId: school._id,
+          studentId: myStudent._id,
+          classId: myClass._id,
+          academicYear: '2026-27',
+          totalPaid: 5000,
+          totalBalance: 1000,
+          overallStatus: 'partial',
+        },
+        {
+          schoolId: otherSchool._id,
+          studentId: otherStudent._id,
+          classId: otherClass._id,
+          academicYear: '2026-27',
+          totalPaid: 999999,
+          totalBalance: 999999,
+          overallStatus: 'pending',
+        },
+      ]);
+
+      const res = await request(app)
+        .get('/api/dashboard/fee-summary?academicYear=2026-27')
+        .set(headers)
+        .expect(200);
+
+      // Only my school's structure counted — other school's 999999 excluded.
+      expect(res.body.totalCollected).toBe(5000);
+      expect(res.body.totalPending).toBe(1000);
+      expect(res.body.defaulters).toBe(1);
+    });
+  });
+
   // ─── Error handling ────────────────────────────────────────────────────
   describe('error handling', () => {
     it('returns 400 for invalid query parameters', async () => {
@@ -286,6 +540,112 @@ describe('dashboard routes', () => {
         .expect(200);
 
       expect(res.body.role).toBe('admin');
+    });
+  });
+
+  // ─── Birthdays (D-3) ───────────────────────────────────────────────────
+  describe('GET /api/dashboard/birthdays', () => {
+    it('returns 401 when no auth token is provided', async () => {
+      const { app } = createTestApp();
+      await request(app).get('/api/dashboard/birthdays').expect(401);
+    });
+
+    it('returns an empty list when no one has a birthday today', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classRecord = await createClassRecord({ schoolId: school._id });
+      // Default DOB (2010-05-15) is almost certainly not today.
+      await createStudentRecord({ schoolId: school._id, classId: classRecord._id });
+
+      const res = await request(app).get('/api/dashboard/birthdays').set(headers).expect(200);
+
+      expect(res.body).toHaveProperty('birthdays');
+      expect(Array.isArray(res.body.birthdays)).toBe(true);
+      expect(res.body.count).toBe(0);
+    });
+
+    it('returns students whose birthday is today, with a class label', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const classRecord = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 5',
+        section: 'A',
+      });
+      // The test clock is frozen (tests/clockSetup.js), so new Date() returns
+      // the fixed "today". Build the DOB as a local YYYY-MM-DD string directly
+      // from month/day — toISOString() would shift it via UTC and miss the match.
+      const now = new Date();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const todayDob = `2010-${mm}-${dd}`;
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+        name: 'Birthday Kid',
+        dateOfBirth: todayDob,
+      });
+      // A student whose birthday is NOT today — must be excluded.
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classRecord._id,
+        name: 'Not Today',
+        dateOfBirth: '2011-01-01',
+      });
+
+      const res = await request(app).get('/api/dashboard/birthdays').set(headers).expect(200);
+
+      expect(res.body.count).toBe(1);
+      const kid = res.body.birthdays[0];
+      expect(kid.name).toBe('Birthday Kid');
+      expect(kid.type).toBe('student');
+      expect(kid.sub).toMatch(/Class 5/);
+    });
+
+    it('matches staff birthdays from a legacy DD/MM/YYYY string dob', async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      // Use the factory (handles required password/code), then set the legacy
+      // String dob directly so we exercise the Mixed-field parsing path.
+      const teacher = await createStaffUser({
+        schoolId: school._id,
+        staffRole: ['Teacher'],
+        permissionRole: 'teacher',
+        name: 'Legacy Dob Teacher',
+      });
+      const { Staff } = await import('../database.js');
+      await Staff.updateOne({ _id: teacher._id }, { dob: `${dd}/${mm}/1988` });
+
+      const res = await request(app).get('/api/dashboard/birthdays').set(headers).expect(200);
+
+      const legacy = res.body.birthdays.find((b) => b.name === 'Legacy Dob Teacher');
+      expect(legacy).toBeDefined();
+      expect(legacy.type).toBe('staff');
+    });
+
+    it("scopes birthdays to the caller's school", async () => {
+      const { school, app, headers } = await setup('admin', ['Admin']);
+      const otherSchool = await createSchoolRecord({
+        name: `Other School ${nextSeq()}`,
+        code: `OB-${nextSeq()}`,
+      });
+      // Build today's DOB as a local string (see note above re: frozen clock).
+      const now = new Date();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const todayDob = `2012-${mm}-${dd}`;
+      // A student in ANOTHER school with a birthday today — must NOT appear.
+      const foreignClass = await createClassRecord({ schoolId: otherSchool._id });
+      await createStudentRecord({
+        schoolId: otherSchool._id,
+        classId: foreignClass._id,
+        name: 'Foreign Birthday',
+        dateOfBirth: todayDob,
+      });
+
+      const res = await request(app).get('/api/dashboard/birthdays').set(headers).expect(200);
+
+      expect(res.body.count).toBe(0);
     });
   });
 });

@@ -53,7 +53,8 @@ class BatchOperationsService {
           classId,
           true, // Skip debounce
           options.schoolId || null,
-          academicYear
+          academicYear,
+          true // skipCache — write-path, must see freshest state (CT16)
         );
 
         if (conflict) {
@@ -296,7 +297,8 @@ class BatchOperationsService {
           classId,
           true, // Skip debounce
           options.schoolId || null,
-          academicYear
+          academicYear,
+          true // skipCache — write-path, must see freshest state (CT16)
         );
 
         if (conflict) {

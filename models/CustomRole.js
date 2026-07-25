@@ -1,32 +1,19 @@
 import mongoose from 'mongoose';
+import { PERMISSION_MODULES } from '../constants/permissionModules.js';
 
 const modulePermissionSchema = new mongoose.Schema(
   {
     module: {
       type: String,
       required: true,
-      enum: [
-        'dashboard',
-        'staff',
-        'students',
-        'classes',
-        'academics',
-        'attendance',
-        'timetable',
-        'fees',
-        'payroll',
-        'messaging',
-        'reports',
-        'settings',
-        'front-desk',
-        'intake-forms',
-      ],
+      enum: PERMISSION_MODULES,
     },
     view: { type: Boolean, default: false },
     create: { type: Boolean, default: false },
     edit: { type: Boolean, default: false },
     delete: { type: Boolean, default: false },
     publish: { type: Boolean, default: false },
+    approve: { type: Boolean, default: false },
   },
   { _id: false }
 );

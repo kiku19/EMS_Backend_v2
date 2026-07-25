@@ -93,13 +93,13 @@ describe('Student Create Drawer — Zod Validation', () => {
     expect(res.body.error).toBeTruthy();
   });
 
-  it('rejects when admissionId is missing', async () => {
+  it('auto-generates admissionId when it is missing', async () => {
     const res = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { admissionId: undefined }))
-      .expect(400);
-    expect(res.body.error).toBeTruthy();
+      .expect(201);
+    expect(res.body.admissionId).toMatch(/\S+/);
   });
 
   it('rejects when academicYear is missing', async () => {
@@ -225,6 +225,16 @@ describe('Student Create Drawer — Zod Validation', () => {
       .send(validStudentPayload(classId, { aadhaarNumber: '123456789012' }))
       .expect(201);
     expect(res.body).toBeTruthy();
+  });
+
+  it('rejects a date of birth in the future', async () => {
+    const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const res = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(validStudentPayload(classId, { dateOfBirth: futureDate }))
+      .expect(400);
+    expect(res.body.error).toBeTruthy();
   });
 
   it('rejects invalid phone number (not 10 digits)', async () => {
@@ -448,7 +458,9 @@ describe('Student Create Drawer — DB Persistence', () => {
 
     expect(student.name).toBe('Priya Sharma');
     expect(student.admissionId).toBe('ADM-FULL-001');
-    expect(student.rollNo).toBe(15);
+    // rollNo is server-auto-assigned (client value 15 ignored) — first student
+    // in this class gets slot 1.
+    expect(student.rollNo).toBe(1);
     expect(student.gender).toBe('Female');
     expect(student.bloodGroup).toBe('B+');
     expect(student.nationality).toBe('Indian');
@@ -564,6 +576,55 @@ describe('Student Create Drawer — Parent Account Sync', () => {
         }),
       ])
     );
+  });
+
+  it('accepts multiple guardians with blank optional email addresses', async () => {
+    const admin = await createStaffUser();
+    const classRecord = await createClassRecord();
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(admin, 'admin');
+
+    const first = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(
+        validStudentPayload(classRecord._id, {
+          admissionId: 'ADM-BLANK-EMAIL-001',
+          parents: [
+            {
+              name: 'Blank Email Parent One',
+              relationship: 'father',
+              phone: '9888800011',
+              email: '',
+            },
+          ],
+        })
+      )
+      .expect(201);
+
+    const second = await request(app)
+      .post('/api/students')
+      .set(authHeaders)
+      .send(
+        validStudentPayload(classRecord._id, {
+          admissionId: 'ADM-BLANK-EMAIL-002',
+          rollNo: 2,
+          parents: [
+            {
+              name: 'Blank Email Parent Two',
+              relationship: 'mother',
+              phone: '9888800012',
+              email: '',
+            },
+          ],
+        })
+      )
+      .expect(201);
+
+    expect(first.body.id).toBeTruthy();
+    expect(second.body.id).toBeTruthy();
+    expect(await Parent.find(piiMatch('phone', '9888800011')).lean()).toHaveLength(1);
+    expect(await Parent.find(piiMatch('phone', '9888800012')).lean()).toHaveLength(1);
   });
 
   it('links to existing parent account if phone already exists', async () => {
@@ -706,36 +767,42 @@ describe('Student Create Drawer — Uniqueness', () => {
     expect(res.body.field).toBe('admissionId');
   });
 
-  it('rejects duplicate rollNo in the same class and academic year', async () => {
-    await request(app)
+  it('auto-assigns rollNo and ignores client input to avoid duplicates', async () => {
+    // Client forces the same rollNo twice; the server assigns sequential slots
+    // (1, then 2) instead of rejecting the second request.
+    const first = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { admissionId: 'ADM-ROLL-A', rollNo: 42 }))
       .expect(201);
+    expect(first.body.rollNo).toBe(1);
 
-    const res = await request(app)
+    const second = await request(app)
       .post('/api/students')
       .set(authHeaders)
       .send(validStudentPayload(classId, { admissionId: 'ADM-ROLL-B', rollNo: 42 }))
-      .expect(409);
-
-    expect(res.body.field).toBe('rollNo');
+      .expect(201);
+    expect(second.body.rollNo).toBe(2);
   });
 
-  it('allows same rollNo in different classes', async () => {
+  it('numbers rollNo independently per class', async () => {
     const classB = await createClassRecord({ name: 'Class 9', section: 'B' });
 
-    await request(app)
+    const a = await request(app)
       .post('/api/students')
       .set(authHeaders)
-      .send(validStudentPayload(classId, { admissionId: 'ADM-DIFFCLASS-A', rollNo: 1 }))
+      .send(validStudentPayload(classId, { admissionId: 'ADM-DIFFCLASS-A' }))
       .expect(201);
 
-    await request(app)
+    const b = await request(app)
       .post('/api/students')
       .set(authHeaders)
-      .send(validStudentPayload(classB._id, { admissionId: 'ADM-DIFFCLASS-B', rollNo: 1 }))
+      .send(validStudentPayload(classB._id, { admissionId: 'ADM-DIFFCLASS-B' }))
       .expect(201);
+
+    // Both are the first student in their respective classes → rollNo 1.
+    expect(a.body.rollNo).toBe(1);
+    expect(b.body.rollNo).toBe(1);
   });
 
   it('rejects when classId does not exist in the database', async () => {

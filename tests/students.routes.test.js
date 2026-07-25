@@ -28,7 +28,7 @@ const defaultParent = [
 ];
 
 describe('students routes', () => {
-  it('supports create, read, update, and permanent deletion for a student', async () => {
+  it('supports create, read, update, and reversible archive for a student', async () => {
     const admin = await createStaffUser();
     const classRecord = await createClassRecord();
     const { app } = createTestApp();
@@ -176,10 +176,11 @@ describe('students routes', () => {
     const attendanceCount = await Attendance.countDocuments({ studentId });
 
     // Soft-delete: document remains with isDeleted=true so trash-restore is
-    // lossless. Attendance is hard-deleted (no isDeleted field on that schema).
+    // lossless. Attendance remains present but is hidden by its soft-delete flag.
     expect(deletedStudent).not.toBeNull();
     expect(deletedStudent.isDeleted).toBe(true);
-    expect(attendanceCount).toBe(0);
+    expect(attendanceCount).toBe(1);
+    expect(await Attendance.countDocuments({ studentId, isDeleted: true })).toBe(1);
 
     await request(app).get(`/api/students/${studentId}`).set(authHeaders).expect(404);
   });
@@ -287,13 +288,15 @@ describe('students routes', () => {
       });
     });
 
-    it('returns 409 when rollNo already exists in the same class and academic year', async () => {
+    it('auto-assigns sequential roll numbers within a class and ignores client input', async () => {
       const admin = await createStaffUser();
       const classRecord = await createClassRecord();
       const { app } = createTestApp();
       const authHeaders = authHeadersFor(admin, 'admin');
 
-      await request(app)
+      // Client attempts to force rollNo 10 — server must ignore it and assign
+      // the next free slot (1) instead.
+      const first = await request(app)
         .post('/api/students')
         .set(authHeaders)
         .send({
@@ -305,8 +308,11 @@ describe('students routes', () => {
           parents: defaultParent,
         })
         .expect(201);
+      expect(first.body.rollNo).toBe(1);
 
-      const response = await request(app)
+      // Second student in the same class gets the next sequential number (2),
+      // not a 409 — the server no longer trusts client-supplied rollNo.
+      const second = await request(app)
         .post('/api/students')
         .set(authHeaders)
         .send({
@@ -317,12 +323,8 @@ describe('students routes', () => {
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
-        .expect(409);
-
-      expect(response.body).toMatchObject({
-        error: expect.stringContaining('Roll number'),
-        field: 'rollNo',
-      });
+        .expect(201);
+      expect(second.body.rollNo).toBe(2);
     });
 
     it('returns 400 when name is missing', async () => {
@@ -345,7 +347,10 @@ describe('students routes', () => {
       expect(response.body.error).toBeTruthy();
     });
 
-    it('returns 400 when admissionId is missing', async () => {
+    it('auto-generates an admissionId when none is provided', async () => {
+      // admissionId is optional on create — the route handler generates one
+      // per school (routes/students/createUpdate.js) when omitted. The UI relies
+      // on this ("Admission ID is generated automatically once the student is saved").
       const admin = await createStaffUser();
       const classRecord = await createClassRecord();
       const { app } = createTestApp();
@@ -355,14 +360,14 @@ describe('students routes', () => {
         .post('/api/students')
         .set(authHeaders)
         .send({
-          name: 'No Admission ID Student',
+          name: 'Auto Admission ID Student',
           academicYear: CURRENT_ACADEMIC_YEAR,
           classId: classRecord._id.toString(),
           parents: defaultParent,
         })
-        .expect(400);
+        .expect(201);
 
-      expect(response.body.error).toBeTruthy();
+      expect(response.body.admissionId).toBeTruthy();
     });
 
     it('returns 400 when classId is missing', async () => {
@@ -1027,6 +1032,56 @@ describe('students routes', () => {
       const { app } = createTestApp();
 
       await request(app).delete(`/api/students/${student._id.toString()}`).expect(401);
+    });
+  });
+
+  // [BUG-014/018] Regression: the statusCounts aggregate must match the table.
+  // aggregate() does not apply Mongoose schema casting, so a $match on the
+  // string schoolId matches nothing and the header / Active filter read 0 while
+  // the table renders the real rows. schoolId must be cast to ObjectId.
+  describe('GET /api/students — statusCounts aggregate', () => {
+    it('reports statusCounts that match the rendered rows', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      // Create 3 active + 1 inactive student in this school/class.
+      await Promise.all([
+        createStudentRecord({
+          name: 'Agg Active 1',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+        }),
+        createStudentRecord({
+          name: 'Agg Active 2',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+        }),
+        createStudentRecord({
+          name: 'Agg Active 3',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+        }),
+        createStudentRecord({
+          name: 'Agg Inactive',
+          classId: classRecord._id,
+          schoolId: classRecord.schoolId,
+          status: 'inactive',
+        }),
+      ]);
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const res = await request(app).get('/api/students?status=all').set(authHeaders).expect(200);
+
+      // The table rows for this school/class.
+      const rowCount = (res.body.data || []).length;
+      expect(rowCount).toBe(4);
+
+      // The aggregate-derived counts MUST agree with the rows (previously 0).
+      const statusCounts = res.body.aggregates?.statusCounts;
+      expect(statusCounts).toBeDefined();
+      expect(statusCounts.all).toBe(rowCount);
+      expect(statusCounts.active).toBe(3);
+      expect(statusCounts.inactive).toBe(1);
     });
   });
 });

@@ -10,6 +10,7 @@ import {
 import { buildSchoolScopedQuery } from '../utils/schoolContext.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { escapeRegex } from './students/helpers.js';
+import { sendSMS, isSmsConfigured } from '../config/sms.js';
 
 const router = express.Router();
 
@@ -29,7 +30,7 @@ const parentPasswordResetLimiter = rateLimit({
 });
 
 // GET /api/parents - List parents with pagination, search, filters
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 20, search, status } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -109,7 +110,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/parents/:id - Single parent with populated children
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAdmin, async (req, res) => {
   try {
     const parent = await Parent.findOne(getParentQuery(req, { _id: req.params.id }))
       .select('-password -fcmTokens -firebaseUid')
@@ -162,7 +163,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/parents/:id/reset-password - Regenerate password from child's DOB+AdmissionId
-router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) => {
+router.post('/:id/reset-password', requireAdmin, parentPasswordResetLimiter, async (req, res) => {
   try {
     const parent = await Parent.findOne(getParentQuery(req, { _id: req.params.id }));
     if (!parent) {
@@ -204,6 +205,9 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
     }
 
     parent.password = plainPassword;
+    // Force a password change on next login: the reset password is a random
+    // temporary credential shared out-of-band, not a long-term secret.
+    parent.mustChangePassword = true;
     await parent.save();
 
     // Keep the student-side parent cache in sync with the canonical Parent record
@@ -211,10 +215,32 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
       console.error(`Error syncing parent ${parent._id} to student after password reset:`, err);
     });
 
+    // Deliver the new password out-of-band (SMS) instead of returning it in the
+    // response body. Returning the plaintext inline leaked the new credential
+    // into logs, browser history, and any proxy in between — and it is useless
+    // to an API caller that isn't the parent. Best-effort: if SMS is not
+    // configured we still reset, but surface that it was NOT delivered so the
+    // operator knows to share it manually.
+    let delivered = false;
+    try {
+      if (parent.phone && isSmsConfigured()) {
+        await sendSMS(parent.phone, `Your new parent portal password is: ${plainPassword}`);
+        delivered = true;
+      }
+    } catch (deliveryError) {
+      console.error(`Password reset delivery failed for parent ${parent._id}:`, deliveryError);
+    }
+
     res.json({
       success: true,
       message: req.t('common:routes.passwordResetSuccessfully'),
-      data: { generatedPassword: plainPassword },
+      data: {
+        // Deliberately NOT returning the plaintext password. Callers learn only
+        // whether it was delivered to a verified channel.
+        delivered,
+        deliveryChannel: delivered ? 'sms' : null,
+        mustChangePassword: true,
+      },
     });
   } catch (error) {
     console.error('Reset parent password error:', error);
@@ -226,7 +252,7 @@ router.post('/:id/reset-password', parentPasswordResetLimiter, async (req, res) 
 });
 
 // PUT /api/parents/:id/status - Activate/deactivate parent account
-router.put('/:id/status', async (req, res) => {
+router.put('/:id/status', requireAdmin, async (req, res) => {
   try {
     const { status } = req.body;
     if (!['active', 'inactive', 'suspended'].includes(status)) {

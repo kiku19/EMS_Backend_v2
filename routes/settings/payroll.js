@@ -135,10 +135,11 @@ const salaryComponentsSchema = z
 // GET /settings/salary-components
 router.get('/salary-components', authenticate, async (req, res) => {
   try {
-    await ensureSchoolSettings(req.user?.schoolId);
-    const settings = await SchoolSettings.findOne(
-      buildSchoolScopedQuery(req.user?.schoolId)
-    ).lean();
+    if (!req.user?.schoolId) {
+      return res.status(400).json({ error: 'schoolId is required' });
+    }
+    await ensureSchoolSettings(req.user.schoolId);
+    const settings = await SchoolSettings.findOne(buildSchoolScopedQuery(req.user.schoolId)).lean();
 
     const defaultComponents = {
       earnings: [

@@ -413,8 +413,56 @@ export const sendSchoolWelcomeEmail = async (
     to: adminUser.email,
     subject: interp(s.schoolWelcome.subject, { schoolName: school.name }),
     html,
+    text: buildSchoolWelcomeEmailText({
+      s,
+      adminName: adminUser.name,
+      school,
+      loginUrl,
+      verificationUrl,
+      trialDays,
+    }),
   });
 };
+
+/**
+ * Plain-text fallback for the school welcome email. Keeps critical info
+ * (login URL, verification URL, school name, trial length) reachable for
+ * clients rendering the email in a plain-text-only context (CI logs, screen
+ * readers, lightweight clients).
+ */
+function buildSchoolWelcomeEmailText({
+  s,
+  adminName,
+  school,
+  loginUrl,
+  verificationUrl,
+  trialDays,
+}) {
+  const lines = [
+    s.schoolWelcome.header,
+    '',
+    interp(s.schoolWelcome.greeting, { name: adminName }),
+    '',
+    `${s.schoolWelcome.trialBefore} ${trialDays}${s.schoolWelcome.trialAfter} — ${s.schoolWelcome.noCCRequired}`,
+    '',
+    `${s.schoolWelcome.schoolLabel} ${school.name}`,
+    `${s.schoolWelcome.codeLabel} ${school.code}`,
+    `${s.schoolWelcome.emailLabel} ${adminName}`,
+  ];
+  if (verificationUrl) {
+    lines.push('', s.schoolWelcome.verifyTitle, s.schoolWelcome.verifyText, verificationUrl);
+  }
+  lines.push(
+    '',
+    s.schoolWelcome.getStarted,
+    '',
+    s.schoolWelcome.loginButton,
+    loginUrl,
+    '',
+    s.schoolWelcome.ignoreText
+  );
+  return lines.join('\n');
+}
 
 /**
  * Send password reset email to a staff member.

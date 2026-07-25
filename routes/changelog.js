@@ -96,6 +96,7 @@ import { z } from 'zod';
 import Changelog from '../models/Changelog.js';
 import ChangelogRead from '../models/ChangelogRead.js';
 import { authenticate } from '../middleware/auth.js';
+import { isSuperAdminUser } from '../utils/superAdmin.js';
 import { logToTrash } from '../services/trashService.js';
 
 const router = express.Router();
@@ -211,8 +212,7 @@ router.put('/:id/read', async (req, res) => {
 // GET /api/changelog/admin — list all entries including drafts
 router.get('/admin', async (req, res) => {
   try {
-    const role = String(req.user?.role || '').toLowerCase();
-    if (role !== 'super_admin' && role !== 'superadmin') {
+    if (!isSuperAdminUser(req.user)) {
       return res.status(403).json({ error: 'Super admin access required' });
     }
 
@@ -238,8 +238,7 @@ router.get('/admin', async (req, res) => {
 // POST /api/changelog/admin — create entry
 router.post('/admin', async (req, res) => {
   try {
-    const role = String(req.user?.role || '').toLowerCase();
-    if (role !== 'super_admin' && role !== 'superadmin') {
+    if (!isSuperAdminUser(req.user)) {
       return res.status(403).json({ error: 'Super admin access required' });
     }
 
@@ -270,8 +269,7 @@ router.post('/admin', async (req, res) => {
 // PUT /api/changelog/admin/:id — update entry
 router.put('/admin/:id', async (req, res) => {
   try {
-    const role = String(req.user?.role || '').toLowerCase();
-    if (role !== 'super_admin' && role !== 'superadmin') {
+    if (!isSuperAdminUser(req.user)) {
       return res.status(403).json({ error: 'Super admin access required' });
     }
 
@@ -300,8 +298,7 @@ router.put('/admin/:id', async (req, res) => {
 // DELETE /api/changelog/admin/:id — delete entry
 router.delete('/admin/:id', async (req, res) => {
   try {
-    const role = String(req.user?.role || '').toLowerCase();
-    if (role !== 'super_admin' && role !== 'superadmin') {
+    if (!isSuperAdminUser(req.user)) {
       return res.status(403).json({ error: 'Super admin access required' });
     }
 

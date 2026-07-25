@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { Exam, Result } from '../database.js';
+import { Exam, ExamSchedule, Result } from '../database.js';
+import TrashItem from '../models/TrashItem.js';
 import {
   authHeadersFor,
   createClassRecord,
@@ -60,6 +61,463 @@ describe('academics routes', () => {
     // Note: duplicate exam rejection relies on a MongoDB partial unique index
     // with $not expression, which MongoMemoryServer does not support.
     // This constraint is tested at the database level in production.
+  });
+
+  describe('PUT /api/exams/:id — tenant and merged validation', () => {
+    it('rejects a cross-school class and a partial passingMarks overflow', async () => {
+      const schoolA = await createSchoolRecord({ name: 'Exam School A', code: 'EX-SA' });
+      const schoolB = await createSchoolRecord({ name: 'Exam School B', code: 'EX-SB' });
+      const adminA = await createStaffUser({ schoolId: schoolA._id });
+      const classA = await createClassRecord({ schoolId: schoolA._id, subjects: ['Math'] });
+      const classB = await createClassRecord({ schoolId: schoolB._id, subjects: ['Math'] });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(adminA, 'admin');
+      const examRes = await request(app)
+        .post('/api/exams')
+        .set(headers)
+        .send({
+          name: 'Tenant Update Exam',
+          classId: classA._id.toString(),
+          maxMarks: 50,
+          passingMarks: 20,
+          startDate: '2026-05-15',
+          endDate: '2026-05-20',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ classId: classB._id.toString() })
+        .expect(404);
+      await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ passingMarks: 60 })
+        .expect(400);
+      await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ maxMarks: 10 })
+        .expect(400);
+      await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ startDate: '2026-05-25' })
+        .expect(400);
+
+      const unchanged = await Exam.findById(examRes.body._id).lean();
+      expect(String(unchanged.classId)).toBe(String(classA._id));
+      expect(unchanged.passingMarks).toBe(20);
+      expect(unchanged.maxMarks).toBe(50);
+      expect(unchanged.startDate.toISOString().slice(0, 10)).toBe('2026-05-15');
+    });
+
+    it('keeps publish lifecycle and result scope out of generic edits', async () => {
+      const school = await createSchoolRecord({ name: 'Exam Lifecycle School', code: 'EX-LIFE' });
+      const admin = await createStaffUser({ schoolId: school._id });
+      const classA = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 8',
+        section: 'A',
+      });
+      const classB = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 8',
+        section: 'B',
+      });
+      await createStudentRecord({
+        schoolId: school._id,
+        classId: classA._id,
+        name: 'Scope Student',
+      });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+      const startDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+
+      const examRes = await request(app)
+        .post('/api/exams/create-with-results')
+        .set(headers)
+        .send({
+          name: 'Lifecycle Guard Exam',
+          classId: classA._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate,
+          academicYear: '2026-27',
+        })
+        .expect(201);
+
+      await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ status: 'results_published' })
+        .expect(400);
+
+      const classMove = await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ classId: classB._id.toString() })
+        .expect(409);
+      expect(classMove.body.code).toBe('EXAM_RESULT_SCOPE_LOCKED');
+
+      const yearMove = await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ academicYear: '2027-28' })
+        .expect(409);
+      expect(yearMove.body.code).toBe('EXAM_RESULT_SCOPE_LOCKED');
+
+      const unchanged = await Exam.findById(examRes.body._id).lean();
+      expect(unchanged.isPublished).toBe(false);
+      expect(unchanged.status).not.toBe('results_published');
+      expect(String(unchanged.classId)).toBe(String(classA._id));
+      expect(unchanged.academicYear).toBe('2026-27');
+    });
+  });
+
+  describe('exam/result request integrity gates', () => {
+    it('rejects invalid exam ids and unsafe list query values as 400s', async () => {
+      const admin = await createStaffUser();
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+
+      await request(app).get('/api/exams/not-an-id').set(headers).expect(400);
+      await request(app).get('/api/exams?skip=-1').set(headers).expect(400);
+      await request(app).get('/api/exams?limit=201').set(headers).expect(400);
+      await request(app).get('/api/exams?classId=not-an-id').set(headers).expect(400);
+    });
+
+    it('rejects a bulk result class that differs from the exam class', async () => {
+      const school = await createSchoolRecord({ name: 'Result Scope School', code: 'RS-SCOPE' });
+      const admin = await createStaffUser({ schoolId: school._id });
+      const classA = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 7',
+        section: 'A',
+      });
+      const classB = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 7',
+        section: 'B',
+      });
+      const studentB = await createStudentRecord({ schoolId: school._id, classId: classB._id });
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+      const startDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const examRes = await request(app)
+        .post('/api/exams')
+        .set(headers)
+        .send({
+          name: 'Class Scope Exam',
+          classId: classA._id.toString(),
+          startDate,
+          academicYear: '2026-27',
+        })
+        .expect(201);
+
+      const response = await request(app)
+        .post('/api/results/bulk')
+        .set(headers)
+        .send({
+          examId: examRes.body._id,
+          classId: classB._id.toString(),
+          results: [{ studentId: studentB._id.toString(), marksObtained: 60 }],
+        })
+        .expect(400);
+      expect(response.body.code).toBe('EXAM_CLASS_MISMATCH');
+      expect(await Result.countDocuments({ examId: examRes.body._id })).toBe(0);
+    });
+
+    it('ranks only entered rows and leaves initialized placeholders pending', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 6', section: 'A' });
+      const students = await Promise.all([
+        createStudentRecord({ classId: classRecord._id, name: 'Entered Student', rollNo: 1 }),
+        createStudentRecord({ classId: classRecord._id, name: 'Pending Student', rollNo: 2 }),
+      ]);
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+      const startDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const examRes = await request(app)
+        .post('/api/exams/create-with-results')
+        .set(headers)
+        .send({
+          name: 'Rank Placeholder Exam',
+          classId: classRecord._id.toString(),
+          startDate,
+          academicYear: '2026-27',
+        })
+        .expect(201);
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(headers)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          results: [{ studentId: students[0]._id.toString(), marksObtained: 70 }],
+        })
+        .expect(200);
+
+      const [entered, pending] = await Promise.all([
+        Result.findOne({ examId: examRes.body._id, studentId: students[0]._id }).lean(),
+        Result.findOne({ examId: examRes.body._id, studentId: students[1]._id }).lean(),
+      ]);
+      expect(entered.rank).toBe(1);
+      expect(pending.status).toBe('pending');
+      expect(pending.marksObtained).toBeNull();
+      expect(pending.rank).toBeUndefined();
+    });
+
+    it('atomically recalculates entered rows when passing marks change without consuming placeholders', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 6', section: 'B' });
+      const students = await Promise.all([
+        createStudentRecord({ classId: classRecord._id, name: 'Threshold Student', rollNo: 1 }),
+        createStudentRecord({ classId: classRecord._id, name: 'Still Pending Student', rollNo: 2 }),
+      ]);
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+      const startDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const examRes = await request(app)
+        .post('/api/exams/create-with-results')
+        .set(headers)
+        .send({
+          name: 'Passing Threshold Exam',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate,
+          academicYear: '2026-27',
+        })
+        .expect(201);
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(headers)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          results: [{ studentId: students[0]._id.toString(), marksObtained: 40 }],
+        })
+        .expect(200);
+
+      await request(app)
+        .put(`/api/exams/${examRes.body._id}`)
+        .set(headers)
+        .send({ passingMarks: 45 })
+        .expect(200);
+
+      const [entered, pending] = await Promise.all([
+        Result.findOne({ examId: examRes.body._id, studentId: students[0]._id }).lean(),
+        Result.findOne({ examId: examRes.body._id, studentId: students[1]._id }).lean(),
+      ]);
+      expect(entered.status).toBe('failed');
+      expect(entered.rank).toBe(1);
+      expect(pending).toMatchObject({ status: 'pending', marksObtained: null });
+      expect(pending.rank).toBeUndefined();
+    });
+
+    it('uses the exam as the canonical class, maximum, and academic year for a single result', async () => {
+      const school = await createSchoolRecord({ name: 'Single Result School', code: 'RS-SINGLE' });
+      const admin = await createStaffUser({ schoolId: school._id });
+      const classA = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 5',
+        section: 'A',
+      });
+      const classB = await createClassRecord({
+        schoolId: school._id,
+        name: 'Class 5',
+        section: 'B',
+      });
+      const [studentA, studentB] = await Promise.all([
+        createStudentRecord({ schoolId: school._id, classId: classA._id }),
+        createStudentRecord({ schoolId: school._id, classId: classB._id }),
+      ]);
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+      const startDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+      const examRes = await request(app)
+        .post('/api/exams')
+        .set(headers)
+        .send({
+          name: 'Canonical Result Exam',
+          classId: classA._id.toString(),
+          maxMarks: 80,
+          passingMarks: 30,
+          startDate,
+          academicYear: '2026-27',
+        })
+        .expect(201);
+
+      const wrongClass = await request(app)
+        .post('/api/results')
+        .set(headers)
+        .send({ examId: examRes.body._id, studentId: studentB._id.toString(), marksObtained: 50 })
+        .expect(400);
+      expect(wrongClass.body.code).toBe('EXAM_CLASS_MISMATCH');
+
+      const wrongMaximum = await request(app)
+        .post('/api/results')
+        .set(headers)
+        .send({
+          examId: examRes.body._id,
+          studentId: studentA._id.toString(),
+          marksObtained: 50,
+          maxMarks: 100,
+        })
+        .expect(400);
+      expect(wrongMaximum.body.code).toBe('EXAM_MAX_MARKS_MISMATCH');
+
+      const wrongYear = await request(app)
+        .post('/api/results')
+        .set(headers)
+        .send({
+          examId: examRes.body._id,
+          studentId: studentA._id.toString(),
+          marksObtained: 50,
+          academicYear: '2027-28',
+        })
+        .expect(400);
+      expect(wrongYear.body.code).toBe('EXAM_ACADEMIC_YEAR_MISMATCH');
+      expect(await Result.countDocuments({ examId: examRes.body._id })).toBe(0);
+    });
+  });
+
+  describe('DELETE /api/exams/:id — restorable cascade', () => {
+    it('atomically archives and restores the exam, its active results, and schedule backlink', async () => {
+      const school = await createSchoolRecord({ name: 'Exam Restore School', code: 'EX-RST' });
+      const admin = await createStaffUser({ schoolId: school._id });
+      const classRecord = await createClassRecord({ schoolId: school._id, subjects: ['Math'] });
+      const [activeStudent, previouslyDeletedStudent] = await Promise.all([
+        createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'Active Result Student',
+          rollNo: 1,
+        }),
+        createStudentRecord({
+          schoolId: school._id,
+          classId: classRecord._id,
+          name: 'Old Deleted Student',
+          rollNo: 2,
+        }),
+      ]);
+      const schedule = await ExamSchedule.create({
+        schoolId: school._id,
+        name: 'Restore Schedule',
+        classIds: [classRecord._id],
+        startDate: new Date('2026-05-01'),
+        endDate: new Date('2026-05-02'),
+        academicYear: '2025-26',
+        status: 'scheduled',
+      });
+      const exam = await Exam.create({
+        schoolId: school._id,
+        name: 'Restore Exam',
+        classId: classRecord._id,
+        subjectName: 'Math',
+        academicYear: '2025-26',
+        startDate: new Date('2026-05-01'),
+        examScheduleId: schedule._id,
+      });
+      schedule.generatedExamIds = [exam._id];
+      await schedule.save();
+      const oldDeletedAt = new Date('2025-01-01T00:00:00.000Z');
+      await Result.create([
+        {
+          schoolId: school._id,
+          examId: exam._id,
+          studentId: activeStudent._id,
+          classId: classRecord._id,
+          academicYear: '2025-26',
+          marksObtained: 80,
+          maxMarks: 100,
+          status: 'passed',
+        },
+        {
+          schoolId: school._id,
+          examId: exam._id,
+          studentId: previouslyDeletedStudent._id,
+          classId: classRecord._id,
+          academicYear: '2025-26',
+          marksObtained: 60,
+          maxMarks: 100,
+          status: 'passed',
+          isDeleted: true,
+          deletedAt: oldDeletedAt,
+        },
+      ]);
+
+      const { app } = createTestApp();
+      const headers = authHeadersFor(admin, 'admin');
+      await request(app).delete(`/api/exams/${exam._id}`).set(headers).expect(200);
+
+      const archivedResults = await Result.find({ examId: exam._id }).sort({ studentId: 1 }).lean();
+      expect(archivedResults.every((result) => result.isDeleted)).toBe(true);
+      const archivedSchedule = await ExamSchedule.findById(schedule._id).lean();
+      expect(archivedSchedule.generatedExamIds.map(String)).not.toContain(String(exam._id));
+      const trashItem = await TrashItem.findOne({ itemType: 'Exam', itemId: exam._id });
+      expect(trashItem?.deletionContext?.cascadeDeletedAt).toBeTruthy();
+
+      await request(app).post(`/api/trash/${trashItem._id}/restore`).set(headers).expect(200);
+
+      const restoredExam = await Exam.findById(exam._id).lean();
+      expect(restoredExam.isDeleted).toBe(false);
+      const restoredActive = await Result.findOne({
+        studentId: activeStudent._id,
+        examId: exam._id,
+      }).lean();
+      expect(restoredActive.isDeleted).toBe(false);
+      const stillDeleted = await Result.findOne({
+        studentId: previouslyDeletedStudent._id,
+        examId: exam._id,
+      }).lean();
+      expect(stillDeleted.isDeleted).toBe(true);
+      expect(stillDeleted.deletedAt.toISOString()).toBe(oldDeletedAt.toISOString());
+      const restoredSchedule = await ExamSchedule.findById(schedule._id).lean();
+      expect(restoredSchedule.generatedExamIds.map(String)).toContain(String(exam._id));
+
+      await request(app).delete(`/api/exams/${exam._id}`).set(headers).expect(200);
+      const secondTrashItem = await TrashItem.findOne({ itemType: 'Exam', itemId: exam._id });
+      await request(app).delete(`/api/trash/${secondTrashItem._id}`).set(headers).expect(200);
+      expect(await Exam.findById(exam._id)).toBeNull();
+      expect(await Result.countDocuments({ examId: exam._id })).toBe(0);
+    });
+  });
+
+  describe('GET /api/exams/class/:classId — academic-year scope', () => {
+    it('returns only exams from the requested academic year', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      await Exam.create([
+        {
+          schoolId: admin.schoolId,
+          name: 'Current Year Exam',
+          classId: classRecord._id,
+          academicYear: '2025-26',
+          startDate: '2026-05-15',
+        },
+        {
+          schoolId: admin.schoolId,
+          name: 'Next Year Exam',
+          classId: classRecord._id,
+          academicYear: '2026-27',
+          startDate: '2026-06-15',
+        },
+      ]);
+
+      const response = await request(app)
+        .get(`/api/exams/class/${classRecord._id}?academicYear=2025-26`)
+        .set(authHeadersFor(admin, 'admin'))
+        .expect(200);
+
+      expect(response.body.map((exam) => exam.name)).toEqual(['Current Year Exam']);
+    });
   });
 
   describe('GET /api/exams — list exams', () => {
@@ -247,6 +705,183 @@ describe('academics routes', () => {
       // it should match only the literal substring ".*Quarterly.*" (zero rows).
       expect(response.body.data).toHaveLength(0);
     });
+
+    it('includes a school-scoped resultsEntered count per exam', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 7', section: 'B' });
+      const studentA = await createStudentRecord({
+        name: 'Asha',
+        rollNo: 1,
+        classId: classRecord._id,
+      });
+      const studentB = await createStudentRecord({
+        name: 'Arun',
+        rollNo: 2,
+        classId: classRecord._id,
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      // Exam with results entered
+      const examWithResults = await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Science Quiz',
+          classId: classRecord._id.toString(),
+          maxMarks: 50,
+          passingMarks: 20,
+          startDate: '2026-05-10',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      // Exam with no results
+      await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'History Quiz',
+          classId: classRecord._id.toString(),
+          maxMarks: 50,
+          passingMarks: 20,
+          startDate: '2026-05-11',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId: examWithResults.body._id,
+          classId: classRecord._id.toString(),
+          results: [
+            { studentId: studentA._id.toString(), marksObtained: 40 },
+            { studentId: studentB._id.toString(), marksObtained: 28 },
+          ],
+        })
+        .expect(200);
+
+      const response = await request(app).get('/api/exams').set(authHeaders).expect(200);
+
+      const science = response.body.data.find((e) => e.name === 'Science Quiz');
+      const history = response.body.data.find((e) => e.name === 'History Quiz');
+
+      expect(science.resultsEntered).toBe(2);
+      expect(history.resultsEntered).toBe(0);
+    });
+
+    it('reports resultsEntered as 0 when an exam has no results', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord();
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Empty Exam',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-05-10',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      const response = await request(app).get('/api/exams').set(authHeaders).expect(200);
+
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body.data[0].resultsEntered).toBe(0);
+    });
+
+    it('does not count another school\u2019s results in resultsEntered', async () => {
+      const schoolA = await createSchoolRecord({ name: 'School Iota', code: 'SCH-IOTA' });
+      const schoolB = await createSchoolRecord({ name: 'School Kappa', code: 'SCH-KAPPA' });
+
+      const adminA = await createStaffUser({ name: 'Admin Iota', schoolId: schoolA._id });
+      const adminB = await createStaffUser({ name: 'Admin Kappa', schoolId: schoolB._id });
+
+      const classA = await createClassRecord({
+        name: 'Class A1',
+        section: 'A',
+        schoolId: schoolA._id,
+      });
+      const classB = await createClassRecord({
+        name: 'Class B1',
+        section: 'A',
+        schoolId: schoolB._id,
+      });
+      const studentA = await createStudentRecord({
+        name: 'A-Scholar',
+        rollNo: 1,
+        classId: classA._id,
+        schoolId: schoolA._id,
+      });
+      const studentB = await createStudentRecord({
+        name: 'B-Scholar',
+        rollNo: 1,
+        classId: classB._id,
+        schoolId: schoolB._id,
+      });
+
+      const { app } = createTestApp();
+      const authHeadersA = authHeadersFor(adminA, 'admin');
+      const authHeadersB = authHeadersFor(adminB, 'admin');
+
+      // Both schools create an exam named identically; each gets its own result.
+      const examA = await request(app)
+        .post('/api/exams')
+        .set(authHeadersA)
+        .send({
+          name: 'Shared Name Exam',
+          classId: classA._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-05-10',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+      const examB = await request(app)
+        .post('/api/exams')
+        .set(authHeadersB)
+        .send({
+          name: 'Shared Name Exam',
+          classId: classB._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-05-10',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeadersA)
+        .send({
+          examId: examA.body._id,
+          classId: classA._id.toString(),
+          results: [{ studentId: studentA._id.toString(), marksObtained: 80 }],
+        })
+        .expect(200);
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeadersB)
+        .send({
+          examId: examB.body._id,
+          classId: classB._id.toString(),
+          results: [{ studentId: studentB._id.toString(), marksObtained: 70 }],
+        })
+        .expect(200);
+
+      // School A's listing must show exactly 1 entered result (its own),
+      // never school B's. Confirms the aggregate is school-scoped.
+      const responseA = await request(app).get('/api/exams').set(authHeadersA).expect(200);
+      expect(responseA.body.data).toHaveLength(1);
+      expect(responseA.body.data[0].resultsEntered).toBe(1);
+    });
   });
 
   describe('GET /api/exams/:id — get single exam', () => {
@@ -288,6 +923,84 @@ describe('academics routes', () => {
       const fakeId = '000000000000000000000000';
 
       await request(app).get(`/api/exams/${fakeId}`).set(authHeaders).expect(404);
+    });
+
+    it('includes examSchedule link (name+status) when the exam was generated from a schedule', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({
+        name: 'Class 8',
+        section: 'A',
+        subjects: ['Math'],
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      // Create + confirm a schedule so an Exam with examScheduleId exists.
+      const schedulePayload = {
+        name: 'Mid-Term Linked',
+        type: 'midterm',
+        classIds: [classRecord._id.toString()],
+        startDate: '2026-04-01',
+        endDate: '2026-04-15',
+        sessionType: 'morning',
+        academicYear: '2025-26',
+      };
+      const scheduleRes = await request(app)
+        .post('/api/exam-schedules')
+        .set(authHeaders)
+        .send(schedulePayload)
+        .expect(201);
+      await request(app)
+        .post(`/api/exam-schedules/${scheduleRes.body._id}/generate`)
+        .set(authHeaders)
+        .expect(200);
+      const confirmRes = await request(app)
+        .post(`/api/exam-schedules/${scheduleRes.body._id}/confirm`)
+        .set(authHeaders)
+        .expect(200);
+
+      // Confirm populated generatedExamIds on the schedule for cross-check.
+      expect(confirmRes.body.generatedExamIds?.length).toBeGreaterThan(0);
+      const linkedExamId =
+        confirmRes.body.generatedExamIds[0]._id || confirmRes.body.generatedExamIds[0];
+
+      const examDetail = await request(app)
+        .get(`/api/exams/${linkedExamId}`)
+        .set(authHeaders)
+        .expect(200);
+
+      expect(examDetail.body.examSchedule).toMatchObject({
+        name: 'Mid-Term Linked',
+        status: 'scheduled',
+      });
+      expect(examDetail.body.examSchedule.id).toBeDefined();
+    });
+
+    it('returns examSchedule: null for a standalone (non-scheduled) exam', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 8', section: 'A' });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const createRes = await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Quiz 1',
+          classId: classRecord._id.toString(),
+          maxMarks: 25,
+          passingMarks: 10,
+          startDate: '2026-05-20',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      const response = await request(app)
+        .get(`/api/exams/${createRes.body._id}`)
+        .set(authHeaders)
+        .expect(200);
+
+      expect(response.body.examSchedule).toBeNull();
     });
   });
 
@@ -669,6 +1382,141 @@ describe('academics routes', () => {
       // Verify results are now published
       const afterPublish = await Result.findOne({ examId, studentId: student._id }).lean();
       expect(afterPublish.isPublished).toBe(true);
+
+      // Published marks are immutable until the explicit unpublish workflow.
+      const editRes = await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId,
+          classId: classRecord._id.toString(),
+          results: [{ studentId: student._id.toString(), marksObtained: 99 }],
+        })
+        .expect(409);
+      expect(editRes.body.code).toBe('PUBLISHED_RESULTS_LOCKED');
+      const unchanged = await Result.findOne({ examId, studentId: student._id }).lean();
+      expect(unchanged.marksObtained).toBe(75);
+    });
+
+    it('keeps initialized rows pending and blocks publish until every active student is entered', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ name: 'Class 11', section: 'A' });
+      const students = await Promise.all([
+        createStudentRecord({ name: 'Pending One', rollNo: 1, classId: classRecord._id }),
+        createStudentRecord({ name: 'Pending Two', rollNo: 2, classId: classRecord._id }),
+      ]);
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+
+      const examRes = await request(app)
+        .post('/api/exams/create-with-results')
+        .set(authHeaders)
+        .send({
+          name: 'Completion Gate Exam',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-05-15',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      const placeholders = await Result.find({ examId: examRes.body._id }).lean();
+      expect(placeholders).toHaveLength(2);
+      expect(placeholders.every((result) => result.marksObtained === null)).toBe(true);
+      expect(placeholders.every((result) => result.status === 'pending')).toBe(true);
+
+      const emptyPublish = await request(app)
+        .post(`/api/exams/${examRes.body._id}/publish`)
+        .set(authHeaders)
+        .expect(409);
+      expect(emptyPublish.body).toMatchObject({
+        code: 'RESULTS_INCOMPLETE',
+        entered: 0,
+        expected: 2,
+      });
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          results: [{ studentId: students[0]._id.toString(), marksObtained: 60 }],
+        })
+        .expect(200);
+      await request(app)
+        .post(`/api/exams/${examRes.body._id}/publish`)
+        .set(authHeaders)
+        .expect(409);
+
+      // An intentional zero is a completed result, not a placeholder.
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          results: [{ studentId: students[1]._id.toString(), marksObtained: 0 }],
+        })
+        .expect(200);
+      await request(app)
+        .post(`/api/exams/${examRes.body._id}/publish`)
+        .set(authHeaders)
+        .expect(200);
+    });
+
+    it('does not revive a soft-deleted result during bulk upsert', async () => {
+      const admin = await createStaffUser();
+      const classRecord = await createClassRecord({ subjects: ['Math'] });
+      const student = await createStudentRecord({
+        name: 'Re-entry Student',
+        rollNo: 1,
+        classId: classRecord._id,
+      });
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+      const examRes = await request(app)
+        .post('/api/exams')
+        .set(authHeaders)
+        .send({
+          name: 'Soft Delete Result Exam',
+          classId: classRecord._id.toString(),
+          maxMarks: 100,
+          passingMarks: 35,
+          startDate: '2026-06-01',
+          academicYear: '2025-26',
+        })
+        .expect(201);
+
+      const deleted = await Result.create({
+        schoolId: classRecord.schoolId,
+        examId: examRes.body._id,
+        studentId: student._id,
+        classId: classRecord._id,
+        marksObtained: 20,
+        maxMarks: 100,
+        status: 'failed',
+        isDeleted: true,
+      });
+
+      await request(app)
+        .post('/api/results/bulk')
+        .set(authHeaders)
+        .send({
+          examId: examRes.body._id,
+          classId: classRecord._id.toString(),
+          results: [{ studentId: student._id.toString(), marksObtained: 80 }],
+        })
+        .expect(200);
+
+      const rows = await Result.find({ examId: examRes.body._id }).sort({ createdAt: 1 }).lean();
+      expect(rows).toHaveLength(2);
+      expect(rows.find((row) => String(row._id) === String(deleted._id))).toMatchObject({
+        marksObtained: 20,
+        isDeleted: true,
+      });
+      expect(rows.find((row) => !row.isDeleted)).toMatchObject({ marksObtained: 80 });
     });
 
     it('returns 404 when publishing a non-existent exam', async () => {

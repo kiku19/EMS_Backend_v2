@@ -98,7 +98,14 @@ function sanitize(obj) {
 async function createAuditEntry(req, responseBody) {
   try {
     const user = req.user;
-    if (!user?.id || !user?.schoolId) return; // unauthenticated — skip
+    if (!user?.id) return; // unauthenticated — skip
+
+    // Super-admin sessions have userType 'super-admin' and a null schoolId.
+    // Previously the null schoolId short-circuited here, silently dropping
+    // every super-admin action from the audit trail. We now record those as
+    // platform-scope entries (schoolId null, actorType 'super-admin') so the
+    // ops console gets a complete activity feed.
+    const isSuperAdmin = user.userType === 'super-admin';
 
     // Allow routes to override action via req._auditAction (e.g. 'settings_changed', 'role_changed')
     let action = req._auditAction || METHOD_TO_ACTION[req.method];
@@ -124,8 +131,10 @@ async function createAuditEntry(req, responseBody) {
       action === 'updated' && sanitizedOld ? computeChanges(sanitizedOld, sanitizedNew) : undefined;
 
     await AuditTrail.create({
-      schoolId: user.schoolId,
-      userId: user.id,
+      schoolId: isSuperAdmin ? null : user.schoolId,
+      // super-admin id ('super-admin') is not an ObjectId — store identity via userName only
+      userId: isSuperAdmin ? null : user.id,
+      actorType: isSuperAdmin ? 'super-admin' : 'school-user',
       userName: user.name || user.email || null,
       action,
       entity,

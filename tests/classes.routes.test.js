@@ -182,7 +182,7 @@ describe('classes routes', () => {
       expect(deleted.deletedAt).toBeTruthy();
     });
 
-    it('returns 400 when class has active students', async () => {
+    it('returns 409 when class has dependent students', async () => {
       const { school, admin } = await setupSchoolWithAdmin();
       const classRecord = await createClassRecord({ schoolId: school._id });
       const { app } = createTestApp();
@@ -193,9 +193,9 @@ describe('classes routes', () => {
       const response = await request(app)
         .delete(`/api/classes/${classRecord._id}`)
         .set(authHeaders)
-        .expect(400);
+        .expect(409);
 
-      expect(response.body.error).toMatch(/active students/i);
+      expect(response.body.error).toMatch(/dependent students/i);
     });
 
     it('returns 404 for a non-existent class', async () => {
@@ -280,6 +280,36 @@ describe('classes routes', () => {
       expect(newStaff.classTeacherOf).toBe('Class 9-A');
     });
 
+    it('PUT /api/classes/:id preserves the teacher mirror when classTeacherId is omitted', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacher(school._id, 'Persistent Teacher');
+      const classRecord = await createClassRecord({
+        name: 'Class 9',
+        section: 'B',
+        schoolId: school._id,
+        classTeacherId: teacher._id,
+      });
+      teacher.isClassTeacher = true;
+      teacher.classTeacherOf = 'Class 9-B';
+      await teacher.save();
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+      await request(app)
+        .put(`/api/classes/${classRecord._id}`)
+        .set(authHeaders)
+        .send({ room: '204' })
+        .expect(200);
+
+      const [updatedClass, updatedTeacher] = await Promise.all([
+        Class.findById(classRecord._id).lean(),
+        Staff.findById(teacher._id).lean(),
+      ]);
+      expect(updatedClass.classTeacherId.toString()).toBe(teacher._id.toString());
+      expect(updatedTeacher.isClassTeacher).toBe(true);
+      expect(updatedTeacher.classTeacherOf).toBe('Class 9-B');
+    });
+
     it('PUT /api/classes/:id/class-teacher assigns teacher and updates Staff', async () => {
       const { school, admin } = await setupSchoolWithAdmin();
       const teacher = await createTeacher(school._id, 'Assigned Teacher');
@@ -334,6 +364,43 @@ describe('classes routes', () => {
         .expect(400);
 
       expect(response.body.error).toMatch(/already assigned/i);
+    });
+
+    it('PUT /api/classes/:id/class-teacher force-reassigns both class and staff mirrors', async () => {
+      const { school, admin } = await setupSchoolWithAdmin();
+      const teacher = await createTeacher(school._id, 'Reassigned Teacher');
+      const sourceClass = await createClassRecord({
+        name: 'Class 5',
+        section: 'A',
+        schoolId: school._id,
+        classTeacherId: teacher._id,
+      });
+      const targetClass = await createClassRecord({
+        name: 'Class 6',
+        section: 'A',
+        schoolId: school._id,
+      });
+      teacher.isClassTeacher = true;
+      teacher.classTeacherOf = 'Class 5-A';
+      await teacher.save();
+
+      const { app } = createTestApp();
+      const authHeaders = authHeadersFor(admin, 'admin');
+      await request(app)
+        .put(`/api/classes/${targetClass._id}/class-teacher`)
+        .set(authHeaders)
+        .send({ classTeacherId: teacher._id.toString(), force: true })
+        .expect(200);
+
+      const [sourceAfter, targetAfter, teacherAfter] = await Promise.all([
+        Class.findById(sourceClass._id).lean(),
+        Class.findById(targetClass._id).lean(),
+        Staff.findById(teacher._id).lean(),
+      ]);
+      expect(sourceAfter.classTeacherId).toBeFalsy();
+      expect(targetAfter.classTeacherId.toString()).toBe(teacher._id.toString());
+      expect(teacherAfter.isClassTeacher).toBe(true);
+      expect(teacherAfter.classTeacherOf).toBe('Class 6-A');
     });
 
     it('DELETE /api/classes/:id clears the assigned teacher isClassTeacher/classTeacherOf', async () => {

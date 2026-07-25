@@ -204,13 +204,20 @@
 
 import { resolveAcademicYear } from '../utils/academicYear.js';
 import express from 'express';
+import mongoose from 'mongoose';
 import FeeHead from '../models/FeeHead.js';
 import StudentFeeStructure from '../models/StudentFeeStructure.js';
-import { Student, Class } from '../database.js';
+import { Student, Class, FeeStructure } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
-import { zodSchemas, validateZod } from '../middleware/validation/validation.js';
-import { computeFeeHeadStatus } from '../utils/feeCalculator.js';
+import {
+  zodSchemas,
+  validateObjectIdParam,
+  validateZod,
+} from '../middleware/validation/validation.js';
+import { emptyFeeActionSchema } from '../validators/index.js';
+import { computeFeeBalance, computeFeeHeadStatus } from '../utils/feeCalculator.js';
+import { annualizedAmount } from '../utils/applyClassFeeStructure.js';
 import { createLogger } from '../utils/logger.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 import { logToTrash } from '../services/trashService.js';
@@ -235,18 +242,26 @@ router.get('/', checkPermission('fees', 'view'), async (req, res) => {
 });
 
 // Get fee head by ID
-router.get('/:id', checkPermission('fees', 'view'), async (req, res) => {
-  try {
-    const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: extractSchoolId(req.user?.schoolId) });
-    if (!feeHead) {
-      return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
+router.get(
+  '/:id',
+  checkPermission('fees', 'view'),
+  validateObjectIdParam('id'),
+  async (req, res) => {
+    try {
+      const feeHead = await FeeHead.findOne({
+        _id: req.params.id,
+        schoolId: extractSchoolId(req.user?.schoolId),
+      });
+      if (!feeHead) {
+        return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
+      }
+      res.json(feeHead);
+    } catch (error) {
+      logger.error('Error fetching fee head:', error);
+      res.status(500).json({ error: error.message });
     }
-    res.json(feeHead);
-  } catch (error) {
-    logger.error('Error fetching fee head:', error);
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Create new fee head
 router.post(
@@ -254,6 +269,7 @@ router.post(
   checkPermission('fees', 'create'),
   validateZod(zodSchemas.createFeeHead),
   async (req, res) => {
+    const session = await mongoose.startSession();
     try {
       const {
         name,
@@ -264,47 +280,55 @@ router.post(
         applicableClasses,
         frequency,
         autoApply,
+        // F7: headType / customType / applicableStreams were validated by Zod
+        // and exist on the FeeHead model, but the handler's fixed field-pick
+        // silently discarded them.
+        headType,
+        customType,
+        applicableStreams,
       } = req.body;
 
       const schoolId = extractSchoolId(req.user?.schoolId);
 
-      // Create fee head
-      const feeHead = new FeeHead({
-        name,
-        category: category || 'Academic',
-        amount,
-        mandatory: mandatory !== undefined ? mandatory : true,
-        description,
-        applicableClasses,
-        frequency: frequency || 'yearly',
-        schoolId,
-        autoApply: autoApply !== undefined ? autoApply : true,
+      let feeHead;
+      let applyResult = { studentsUpdated: 0 };
+      await session.withTransaction(async () => {
+        feeHead = new FeeHead({
+          name,
+          category: category || 'Academic',
+          amount,
+          mandatory: mandatory !== undefined ? mandatory : true,
+          description,
+          applicableClasses,
+          frequency: frequency || 'yearly',
+          schoolId,
+          autoApply: autoApply !== undefined ? autoApply : true,
+          headType,
+          customType,
+          applicableStreams,
+        });
+        await feeHead.save({ session });
+        if (feeHead.autoApply) {
+          applyResult = await applyFeeHeadToStudents(feeHead, schoolId, session);
+        }
       });
 
-      await feeHead.save();
-
-      // Auto-apply to existing students if enabled
-      const response = { feeHead };
-      if (feeHead.autoApply) {
-        try {
-          const applyResult = await applyFeeHeadToStudents(feeHead, schoolId);
-          response.applied = true;
-          response.studentsUpdated = applyResult.studentsUpdated;
-          if (applyResult.studentsUpdated === 0) {
-            response.applyWarning =
-              'Fee head created but no students were found to apply it to. Check that students exist in the selected classes.';
-          }
-        } catch (applyError) {
-          logger.error('Failed to auto-apply fee head to students:', applyError);
-          response.applied = false;
-          response.applyError = `Fee head created but failed to apply to students: ${applyError.message}`;
-        }
+      const response = {
+        feeHead,
+        applied: Boolean(feeHead.autoApply),
+        studentsUpdated: applyResult.studentsUpdated,
+      };
+      if (feeHead.autoApply && applyResult.studentsUpdated === 0) {
+        response.applyWarning =
+          'Fee head created, but no active students matched the selected classes.';
       }
 
       res.status(201).json(response);
     } catch (error) {
       logger.error('Error creating fee head:', error);
       res.status(500).json({ error: error.message });
+    } finally {
+      await session.endSession();
     }
   }
 );
@@ -313,142 +337,161 @@ router.post(
 router.put(
   '/:id',
   checkPermission('fees', 'edit'),
+  validateObjectIdParam('id'),
   validateZod(zodSchemas.updateFeeHead),
   async (req, res) => {
+    const session = await mongoose.startSession();
     try {
-      const {
-        name,
-        category,
-        amount,
-        mandatory,
-        description,
-        applicableClasses,
-        frequency,
-        autoApply,
-        isActive,
-      } = req.body;
-
-      const feeHead = await FeeHead.findOneAndUpdate(
-        { _id: req.params.id, schoolId: req.user.schoolId },
-        {
-          name,
-          category,
-          amount,
-          mandatory,
-          description,
-          applicableClasses,
-          frequency,
-          autoApply,
-          isActive,
-        },
-        { new: true }
-      );
-
-      if (!feeHead) {
-        return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
-      }
-
-      // Re-apply to students if autoApply is enabled
-      const response = { feeHead };
-      if (feeHead.autoApply && feeHead.isActive) {
-        try {
-          const applyResult = await applyFeeHeadToStudents(feeHead, req.user.schoolId);
-          response.applied = true;
-          response.studentsUpdated = applyResult.studentsUpdated;
-          if (applyResult.studentsUpdated === 0) {
-            response.applyWarning = 'Fee head updated but no students were found to apply it to.';
-          }
-        } catch (applyError) {
-          logger.error('Failed to auto-apply fee head to students:', applyError);
-          response.applied = false;
-          response.applyError = `Fee head updated but failed to apply to students: ${applyError.message}`;
+      let feeHead;
+      let applyResult = { studentsUpdated: 0 };
+      await session.withTransaction(async () => {
+        feeHead = await FeeHead.findOne({
+          _id: req.params.id,
+          schoolId: req.user.schoolId,
+        }).session(session);
+        if (!feeHead) {
+          const error = new Error(req.t('common:routes.feeHeadNotFound'));
+          error.code = 'FEE_HEAD_NOT_FOUND';
+          throw error;
         }
+        Object.assign(feeHead, req.body);
+        await feeHead.save({ session });
+        if (feeHead.autoApply && feeHead.isActive) {
+          applyResult = await applyFeeHeadToStudents(feeHead, req.user.schoolId, session);
+        }
+      });
+
+      const response = {
+        feeHead,
+        applied: Boolean(feeHead.autoApply && feeHead.isActive),
+        studentsUpdated: applyResult.studentsUpdated,
+      };
+      if (response.applied && applyResult.studentsUpdated === 0) {
+        response.applyWarning = 'Fee head updated, but no active students matched its classes.';
       }
 
       res.json(response);
     } catch (error) {
+      if (error.code === 'FEE_HEAD_NOT_FOUND') {
+        return res.status(404).json({ error: error.message });
+      }
       logger.error('Error updating fee head:', error);
       res.status(500).json({ error: error.message });
+    } finally {
+      await session.endSession();
     }
   }
 );
 
 // Delete fee head
-router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
-  try {
-    // Snapshot before deletion for trash logging
-    const feeHeadSnapshot = await FeeHead.findOne({
-      _id: req.params.id,
-      schoolId: req.user.schoolId,
-    }).lean();
-
-    const feeHead = await FeeHead.findOneAndDelete({
-      _id: req.params.id,
-      schoolId: req.user.schoolId,
-    });
-
-    if (!feeHead) {
-      return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
-    }
-
-    // Log to trash
-    if (feeHeadSnapshot) {
-      logToTrash({
-        itemType: 'FeeHead',
-        itemId: feeHeadSnapshot._id,
-        itemName: feeHeadSnapshot.name || 'Fee Head',
-        originalData: feeHeadSnapshot,
-        deletedBy: req.user?.id || req.user?._id,
+router.delete(
+  '/:id',
+  checkPermission('fees', 'delete'),
+  validateObjectIdParam('id'),
+  async (req, res) => {
+    try {
+      // Snapshot before deletion for trash logging
+      const feeHeadSnapshot = await FeeHead.findOne({
+        _id: req.params.id,
         schoolId: req.user.schoolId,
-      }).catch(() => {});
+      }).lean();
+
+      const [ledgerReference, structureReference] = await Promise.all([
+        StudentFeeStructure.exists({
+          schoolId: req.user.schoolId,
+          'feeHeads.feeHeadId': req.params.id,
+          isDeleted: { $ne: true },
+        }),
+        FeeStructure.exists({
+          schoolId: req.user.schoolId,
+          'feeHeads.feeHeadId': req.params.id,
+        }),
+      ]);
+
+      const feeHead =
+        ledgerReference || structureReference
+          ? await FeeHead.findOneAndUpdate(
+              { _id: req.params.id, schoolId: req.user.schoolId },
+              { isActive: false, autoApply: false },
+              { new: true }
+            )
+          : await FeeHead.findOneAndDelete({
+              _id: req.params.id,
+              schoolId: req.user.schoolId,
+            });
+
+      if (!feeHead) {
+        return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
+      }
+
+      // Log to trash
+      if (feeHeadSnapshot && !ledgerReference && !structureReference) {
+        logToTrash({
+          itemType: 'FeeHead',
+          itemId: feeHeadSnapshot._id,
+          itemName: feeHeadSnapshot.name || 'Fee Head',
+          originalData: feeHeadSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId: req.user.schoolId,
+        }).catch(() => {});
+      }
+
+      res.json({
+        success: true,
+        archived: Boolean(ledgerReference || structureReference),
+        message:
+          ledgerReference || structureReference
+            ? 'Fee head archived. Existing fee structures and payment history were preserved.'
+            : req.t('common:routes.feeHeadDeletedSuccessfully'),
+      });
+    } catch (error) {
+      logger.error('Error deleting fee head:', error);
+      res.status(500).json({ error: error.message });
     }
-
-    // Save affected structure IDs BEFORE the $pull operation
-    const affectedStructures = await StudentFeeStructure.find(
-      { 'feeHeads.feeHeadId': req.params.id, schoolId: req.user.schoolId },
-      { _id: 1 }
-    ).lean();
-    const affectedIds = affectedStructures.map((s) => s._id);
-
-    // Remove this fee head from all student fee structures
-    await StudentFeeStructure.updateMany(
-      { _id: { $in: affectedIds } },
-      { $pull: { feeHeads: { feeHeadId: req.params.id } } }
-    );
-
-    // Recalculate totals for affected students
-    for (const structureId of affectedIds) {
-      await recalculateStudentFeeStructure(structureId, req.user.schoolId);
-    }
-
-    res.json({ success: true, message: req.t('common:routes.feeHeadDeletedSuccessfully') });
-  } catch (error) {
-    logger.error('Error deleting fee head:', error);
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Apply fee head to all applicable students
-router.post('/:id/apply', checkPermission('fees', 'edit'), async (req, res) => {
-  try {
-    const feeHead = await FeeHead.findOne({ _id: req.params.id, schoolId: extractSchoolId(req.user?.schoolId) });
+router.post(
+  '/:id/apply',
+  checkPermission('fees', 'edit'),
+  validateObjectIdParam('id'),
+  validateZod(emptyFeeActionSchema),
+  async (req, res) => {
+    const session = await mongoose.startSession();
+    try {
+      let result;
+      await session.withTransaction(async () => {
+        const feeHead = await FeeHead.findOne({
+          _id: req.params.id,
+          schoolId: extractSchoolId(req.user?.schoolId),
+          isActive: true,
+        }).session(session);
 
-    if (!feeHead) {
-      return res.status(404).json({ error: req.t('common:routes.feeHeadNotFound') });
+        if (!feeHead) {
+          const error = new Error(req.t('common:routes.feeHeadNotFound'));
+          error.code = 'FEE_HEAD_NOT_FOUND';
+          throw error;
+        }
+        result = await applyFeeHeadToStudents(feeHead, req.user.schoolId, session);
+      });
+
+      res.json({
+        success: true,
+        message: `Fee head applied to ${result.studentsUpdated} students`,
+        studentsUpdated: result.studentsUpdated,
+      });
+    } catch (error) {
+      if (error.code === 'FEE_HEAD_NOT_FOUND') {
+        return res.status(404).json({ error: error.message });
+      }
+      logger.error('Error applying fee head:', error);
+      res.status(500).json({ error: error.message });
+    } finally {
+      await session.endSession();
     }
-
-    const result = await applyFeeHeadToStudents(feeHead, req.user.schoolId);
-
-    res.json({
-      success: true,
-      message: `Fee head applied to ${result.studentsUpdated} students`,
-      studentsUpdated: result.studentsUpdated,
-    });
-  } catch (error) {
-    logger.error('Error applying fee head:', error);
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Helper function to apply fee head to students.
 // Accept class names in any convention — "Class 10", "Grade 10", "10",
@@ -456,7 +499,7 @@ router.post('/:id/apply', checkPermission('fees', 'edit'), async (req, res) => {
 // using "Grade N" or raw numbers got zero class matches and zero students
 // updated (silent no-op). Match ON EITHER side: the raw token OR the
 // "Class N" / "Grade N" wrapped form.
-async function applyFeeHeadToStudents(feeHead, schoolId) {
+async function applyFeeHeadToStudents(feeHead, schoolId, session) {
   try {
     const tokenSet = new Set();
     for (const c of feeHead.applicableClasses || []) {
@@ -466,11 +509,16 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
       tokenSet.add(`Grade ${c}`);
     }
 
-    // Find all classes that match the applicable classes
+    const academicYear = await resolveAcademicYear(null, schoolId);
+
+    // Find all active classes that match the applicable classes in the same
+    // academic year. A same-named historical class must never receive writes.
     const classes = await Class.find({
       schoolId,
       name: { $in: Array.from(tokenSet) },
-    });
+      academicYear,
+      isDeleted: { $ne: true },
+    }).session(session || null);
 
     if (classes.length === 0) {
       return { studentsUpdated: 0 };
@@ -482,13 +530,13 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
     const students = await Student.find({
       schoolId,
       classId: { $in: classIds },
+      academicYear,
       status: 'active',
-    });
-
-    // Resolve the school's current academic year for StudentFeeStructure
-    const academicYear = await resolveAcademicYear(null, schoolId);
+      isDeleted: { $ne: true },
+    }).session(session || null);
 
     let studentsUpdated = 0;
+    const ledgerAmount = annualizedAmount(feeHead);
 
     for (const student of students) {
       // Find or create student fee structure for the current academic year
@@ -496,7 +544,8 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
         studentId: student._id,
         schoolId,
         academicYear,
-      });
+        isDeleted: { $ne: true },
+      }).session(session || null);
 
       if (!feeStructure) {
         feeStructure = new StudentFeeStructure({
@@ -510,7 +559,7 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
 
       // Check if fee head already exists
       const existingIndex = feeStructure.feeHeads.findIndex(
-        (fh) => fh.feeHeadId.toString() === feeHead._id.toString()
+        (fh) => String(fh.feeHeadId || '') === String(feeHead._id)
       );
 
       if (existingIndex >= 0) {
@@ -523,31 +572,57 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
           // Update metadata from the fee head definition
           name: feeHead.name,
           category: feeHead.category,
-          amount: feeHead.amount,
+          baseAmount: feeHead.amount,
+          amount: ledgerAmount,
           mandatory: feeHead.mandatory,
           frequency: feeHead.frequency,
+          // F10: keep the propagated head in sync with the source FeeHead for
+          // the term/due/refund metadata. Previously the spread of
+          // existing.toObject() kept the OLD values, so lowering/editing a head
+          // never refreshed applicableTerms, dueDay or refundable. Source wins
+          // when present; otherwise preserve what was already on the subdoc.
+          applicableTerms:
+            feeHead.applicableTerms ??
+            existing.applicableTerms ??
+            existing.toObject().applicableTerms,
+          dueDay: feeHead.dueDay ?? existing.dueDay ?? existing.toObject().dueDay,
+          refundable: feeHead.refundable ?? existing.refundable ?? existing.toObject().refundable,
           // Preserve the payment data
           paidAmount: preservedPaidAmount,
         };
 
         // Recalculate balance and status using centralized helper
         const headResult = computeFeeHeadStatus({
-          amount: feeHead.amount,
+          amount: ledgerAmount,
           paidAmount: preservedPaidAmount,
         });
         feeStructure.feeHeads[existingIndex].balanceAmount = headResult.balanceAmount;
         feeStructure.feeHeads[existingIndex].status = headResult.status;
+
+        // Capture the surplus when a fee head is lowered below what was
+        // already paid. computeFeeHeadStatus clamps balanceAmount to 0, so
+        // without this the overpaid amount disappears from the ledger and
+        // the school can no longer see what it owes back to the student.
+        const overpaid = Math.max(Number(preservedPaidAmount || 0) - Number(ledgerAmount || 0), 0);
+        feeStructure.feeHeads[existingIndex].overpaidAmount = overpaid;
       } else {
         // Add new fee head with zero payments
         feeStructure.feeHeads.push({
           feeHeadId: feeHead._id,
           name: feeHead.name,
           category: feeHead.category,
-          amount: feeHead.amount,
+          baseAmount: feeHead.amount,
+          amount: ledgerAmount,
           mandatory: feeHead.mandatory,
           frequency: feeHead.frequency,
+          // F10: propagate the term/due/refund metadata from the source FeeHead
+          // so a freshly-applied head carries the same scheduling info as one
+          // built via buildStudentFeeHeads (which copies these for every head).
+          applicableTerms: feeHead.applicableTerms,
+          dueDay: feeHead.dueDay,
+          refundable: feeHead.refundable,
           paidAmount: 0,
-          balanceAmount: feeHead.amount,
+          balanceAmount: ledgerAmount,
           status: 'pending',
         });
       }
@@ -555,19 +630,25 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
       // Recalculate totals
       feeStructure.totalFee = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
       feeStructure.totalPaid = feeStructure.feeHeads.reduce((sum, fh) => sum + fh.paidAmount, 0);
-      feeStructure.totalBalance =
-        feeStructure.totalFee - feeStructure.totalPaid - (feeStructure.discountApplied || 0);
+      const { totalBalance, overallStatus } = computeFeeBalance(feeStructure);
+      feeStructure.totalBalance = totalBalance;
+      feeStructure.overallStatus = overallStatus;
 
-      // Update overall status
-      if (feeStructure.totalBalance <= 0) {
-        feeStructure.overallStatus = 'paid';
-      } else if (feeStructure.totalPaid > 0) {
-        feeStructure.overallStatus = 'partial';
-      } else {
-        feeStructure.overallStatus = 'pending';
-      }
-
-      await feeStructure.save();
+      await feeStructure.save({ session: session || undefined });
+      await Student.findOneAndUpdate(
+        { _id: student._id, schoolId, academicYear },
+        {
+          feeStatus: feeStructure.overallStatus,
+          feeDetails: {
+            totalFee: feeStructure.totalFee,
+            paidAmount: feeStructure.totalPaid,
+            balanceAmount: feeStructure.totalBalance,
+            discountApplied: feeStructure.discountApplied || 0,
+            lastPaymentDate: feeStructure.lastPaymentDate || null,
+          },
+        },
+        { session: session || undefined }
+      );
       studentsUpdated++;
     }
 
@@ -576,26 +657,6 @@ async function applyFeeHeadToStudents(feeHead, schoolId) {
     logger.error('Error applying fee head to students:', error);
     throw error;
   }
-}
-
-// Helper function to recalculate student fee structure
-async function recalculateStudentFeeStructure(structureId, schoolId) {
-  const structure = await StudentFeeStructure.findOne({ _id: structureId, schoolId });
-  if (!structure) return;
-
-  structure.totalFee = structure.feeHeads.reduce((sum, fh) => sum + fh.amount, 0);
-  structure.totalPaid = structure.feeHeads.reduce((sum, fh) => sum + fh.paidAmount, 0);
-  structure.totalBalance = structure.totalFee - structure.totalPaid - structure.discountApplied;
-
-  if (structure.totalBalance <= 0) {
-    structure.overallStatus = 'paid';
-  } else if (structure.totalPaid > 0) {
-    structure.overallStatus = 'partial';
-  } else {
-    structure.overallStatus = 'pending';
-  }
-
-  await structure.save();
 }
 
 export default router;

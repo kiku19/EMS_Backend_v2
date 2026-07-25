@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import School from './School.js';
 
 const usageMetricSchema = new mongoose.Schema(
   {
@@ -177,6 +178,59 @@ const schoolSubscriptionSchema = new mongoose.Schema(
 );
 
 schoolSubscriptionSchema.index({ schoolId: 1, updatedAt: -1 });
+
+// --- Plan source-of-truth reconciliation (Phase 1b) -------------------------
+// SchoolSubscription is the authoritative record for plan/billing state. The
+// matching School.{plan, planStatus, trialEndsAt} fields are a denormalized
+// cache for fast queries/indexes. This hook keeps them in sync whenever a
+// subscription is saved, eliminating the drift that previously occurred when
+// the two collections were written independently.
+//
+// PLAN_KEYS mirrors School.plan's enum. planKey on the subscription is
+// intentionally unconstrained (group/enterprise plans may exist), so we only
+// cache values that School.plan can legally hold.
+const SCHOOL_PLAN_KEYS = new Set(['starter', 'growth', 'scale']);
+
+async function syncSchoolPlanCache(subscription, session) {
+  if (!subscription?.schoolId) return null;
+  const $set = {};
+  if (SCHOOL_PLAN_KEYS.has(subscription.planKey)) {
+    $set.plan = subscription.planKey;
+  }
+  if (subscription.status) {
+    $set.planStatus = subscription.status;
+  }
+  if (subscription.trialEndsAt !== undefined) {
+    $set.trialEndsAt = subscription.trialEndsAt;
+  }
+  if (Object.keys($set).length === 0) return null;
+  return School.updateOne({ _id: subscription.schoolId }, { $set }, { session });
+}
+
+// save hook: fires on `.save()` and `new Model().save()`, which is how every
+// plan/status/trial mutation in billingService is persisted. Within a
+// transaction we reuse the session so a rollback unwinds the cache too.
+schoolSubscriptionSchema.post('save', async function () {
+  const session = this.$session();
+  try {
+    await syncSchoolPlanCache(this, session);
+  } catch (err) {
+    if (session) throw err; // transactional consistency — let it roll back
+    // Outside a transaction, a cache miss must not break the subscription write.
+    // The next lifecycle sync will re-converge.
+  }
+});
+
+// findOneAndUpdate / findByIdAndUpdate insurance: re-sync from the updated doc
+// so future code paths that bypass `.save()` still converge. `res` is the doc.
+schoolSubscriptionSchema.post(['findOneAndUpdate', 'findByIdAndUpdate'], async function (res) {
+  if (!res) return;
+  try {
+    await syncSchoolPlanCache(res, null);
+  } catch {
+    // best-effort — see note above
+  }
+});
 
 export default mongoose.models.SchoolSubscription ||
   mongoose.model('SchoolSubscription', schoolSubscriptionSchema);

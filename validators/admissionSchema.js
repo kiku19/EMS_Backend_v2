@@ -113,7 +113,10 @@ export const createAdmissionSchema = z.object({
     .nullish()
     .or(z.literal('')),
   email: optionalEmail,
-  classApplyingFor: z.string().min(1, 'Class is required'),
+  // Mirrors the Admission model: `classApplyingFor` is an optional String (a
+  // walk-in inquiry may not have a target class decided yet). Do NOT mark it
+  // required here — that would be stricter than the Mongoose schema.
+  classApplyingFor: z.string().max(100).nullish(),
   hscGroup: z.string().nullish(),
   assessmentRequired: z.boolean().default(false),
   assignedTeacher: optionalObjectId,

@@ -66,11 +66,21 @@ const trashItemSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Class',
       },
+      // Exact marker used to restore only records archived by this operation;
+      // records deleted before the student archive must stay deleted.
+      cascadeDeletedAt: Date,
       relatedItems: [
         {
           itemType: String,
           itemId: mongoose.Schema.Types.ObjectId,
           itemName: String,
+        },
+      ],
+      assignedClasses: [
+        {
+          classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+          name: String,
+          section: String,
         },
       ],
     },

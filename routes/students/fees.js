@@ -6,9 +6,20 @@ import { resolveAcademicYear } from '../../utils/academicYear.js';
 import { scopeBySchool, sendReminderSchema, sendRemindersBulkSchema } from './helpers.js';
 import { createLogger } from '../../utils/logger.js';
 import { objectIdParamHandler } from '../../middleware/validation.js';
+import { generateFeeInvoicePdf } from '../../services/feeInvoiceService.js';
 
 const router = express.Router();
 const logger = createLogger('StudentFees');
+
+// Map the reminder domain type ('fee' | 'attendance') to a valid
+// Notification.type enum value. NOTE: 'fee' is NOT a member of the
+// Notification.type enum (the canonical fee/payment type is 'payment'),
+// so passing the raw reminder type straight through made every reminder
+// notification fail validation on save — silently swallowed per-parent while
+// the endpoint still reported success (SCH-209). Reuse 'payment', which the
+// rest of the codebase already uses for fee/payment notifications.
+const REMINDER_NOTIFICATION_TYPE = { fee: 'payment', attendance: 'attendance' };
+
 router.use(authenticate);
 router.param('id', objectIdParamHandler);
 router.param('classId', objectIdParamHandler);
@@ -21,7 +32,11 @@ router.get(
     try {
       const academicYear = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
       const feeStructures = await StudentFeeStructure.find(
-        scopeBySchool(req.user?.schoolId, { classId: req.params.classId, academicYear })
+        scopeBySchool(req.user?.schoolId, {
+          classId: req.params.classId,
+          academicYear,
+          isDeleted: { $ne: true },
+        })
       ).populate('studentId', 'name admissionId rollNo');
 
       const result = feeStructures.map((feeStructure) => ({
@@ -57,8 +72,12 @@ router.get(
 
       const year = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
       const feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
-      ).populate('feeHeads.feeHeadId');
+        scopeBySchool(req.user?.schoolId, {
+          studentId: req.params.id,
+          academicYear: year,
+          isDeleted: { $ne: true },
+        })
+      );
 
       if (!feeStructure) {
         return res.json({
@@ -138,10 +157,11 @@ router.post(
           : `This is a reminder regarding attendance for ${student.name}.`);
 
       const { sendNotification } = await import('../notifications.js');
+      const notifType = REMINDER_NOTIFICATION_TYPE[type] || 'payment';
       let notified = 0;
       for (const parent of parents) {
         try {
-          await sendNotification(parent._id, 'Parent', type, title, body, {
+          await sendNotification(parent._id, 'Parent', notifType, title, body, {
             relatedId: student._id,
             relatedType: 'Student',
             priority: 'normal',
@@ -180,20 +200,26 @@ router.post(
     const schoolId = req.user?.schoolId;
 
     const { sendNotification } = await import('../notifications.js');
+    const notifType = REMINDER_NOTIFICATION_TYPE[type] || 'payment';
     let succeeded = 0;
     let failed = 0;
 
     for (const studentId of studentIds) {
       try {
-        const student = await Student.findOne(
-          scopeBySchool(schoolId, { _id: studentId })
-        );
-        if (!student) { failed++; continue; }
+        const student = await Student.findOne(scopeBySchool(schoolId, { _id: studentId }));
+        if (!student) {
+          failed++;
+          continue;
+        }
 
         const parents = await Parent.find({ 'children.studentId': studentId }).select('_id');
-        if (parents.length === 0) { failed++; continue; }
+        if (parents.length === 0) {
+          failed++;
+          continue;
+        }
 
-        const title = type === 'fee' ? `Fee Reminder: ${student.name}` : `Attendance Reminder: ${student.name}`;
+        const title =
+          type === 'fee' ? `Fee Reminder: ${student.name}` : `Attendance Reminder: ${student.name}`;
         const body =
           message ||
           (type === 'fee'
@@ -202,7 +228,7 @@ router.post(
 
         for (const parent of parents) {
           try {
-            await sendNotification(parent._id, 'Parent', type, title, body, {
+            await sendNotification(parent._id, 'Parent', notifType, title, body, {
               relatedId: student._id,
               relatedType: 'Student',
               priority: 'normal',
@@ -238,10 +264,12 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
     const year = await resolveAcademicYear(req.query.academicYear, req.user?.schoolId);
 
     const feeStructure = await StudentFeeStructure.findOne(
-      scopeBySchool(req.user?.schoolId, { studentId: req.params.id, academicYear: year })
-    )
-      .populate('feeHeads.feeHeadId')
-      .lean();
+      scopeBySchool(req.user?.schoolId, {
+        studentId: req.params.id,
+        academicYear: year,
+        isDeleted: { $ne: true },
+      })
+    ).lean();
 
     // Fetch payment history for this student and academic year
     const payments = await FeePayment.find(
@@ -249,6 +277,7 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
         studentId: req.params.id,
         academicYear: year,
         status: { $ne: 'cancelled' },
+        isDeleted: { $ne: true },
       })
     )
       .sort({ paymentDate: -1 })
@@ -320,5 +349,27 @@ router.get('/:id/fee-invoice', authenticate, checkPermission('fees', 'view'), as
     res.status(500).json({ error: 'Failed to generate fee invoice' });
   }
 });
+
+// GET /:id/fee-invoice.pdf — full-year fee invoice as a PDF stream.
+router.get(
+  '/:id/fee-invoice.pdf',
+  authenticate,
+  checkPermission('fees', 'view'),
+  async (req, res) => {
+    try {
+      const doc = await generateFeeInvoicePdf({
+        studentId: req.params.id,
+        schoolId: req.user?.schoolId,
+        academicYear: req.query.academicYear,
+      });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="fee-invoice.pdf"`);
+      doc.pipe(res);
+    } catch (error) {
+      logger.error('Error generating fee invoice PDF:', error);
+      res.status(error.status || 500).json({ error: 'Failed to generate invoice PDF' });
+    }
+  }
+);
 
 export default router;

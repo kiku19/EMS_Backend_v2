@@ -10,15 +10,15 @@ const schoolSettingsSchema = new mongoose.Schema(
     phone: { type: String, default: '' },
     email: { type: String, default: '' },
     website: { type: String, default: '' },
-    logo: { type: String, default: '' },
+    logo: { type: String, default: '', maxlength: 2048 },
     primaryColor: { type: String, default: '#0d9488' },
     secondaryColor: { type: String, default: '#134e4a' },
     customDomain: { type: String, default: '' },
     udiseNo: { type: String, default: '' },
     affiliationNo: { type: String, default: '' },
     boardOfEducation: { type: String, default: '' },
-    principalSignature: { type: String, default: '' },
-    correspondentSignature: { type: String, default: '' },
+    principalSignature: { type: String, default: '', maxlength: 2048 },
+    correspondentSignature: { type: String, default: '', maxlength: 2048 },
     academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
     currentSession: { type: String, default: CURRENT_ACADEMIC_YEAR },
     academicYearStart: { type: String, default: '' },
@@ -33,6 +33,10 @@ const schoolSettingsSchema = new mongoose.Schema(
         enum: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
       },
     ],
+    breaksPerDay: { type: Number, default: 2 },
+    // CBSE-style alternating-Saturday holiday: auto-marks the 2nd & 4th
+    // Saturday of each month as non-working.
+    secondFourthSaturdayOff: { type: Boolean, default: false },
     holidays: [
       {
         name: { type: String, required: true },
@@ -275,6 +279,26 @@ const schoolSettingsSchema = new mongoose.Schema(
 
     // Currency Configuration (ISO 4217 code, e.g. 'INR', 'USD', 'EUR')
     currency: { type: String, default: 'INR', trim: true, uppercase: true },
+
+    departments: {
+      type: [String],
+      default: [
+        'Academic',
+        'Science',
+        'Mathematics',
+        'Languages',
+        'Social Studies',
+        'Arts',
+        'Sports',
+        'Administration',
+        'Accounts',
+        'IT',
+        'Library',
+        'Transport',
+        'Maintenance',
+        'Others',
+      ],
+    },
 
     // Localization Configuration
     language: {

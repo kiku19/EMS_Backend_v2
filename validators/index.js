@@ -16,10 +16,17 @@ export {
   genderEnum,
 } from './zodHelpers.js';
 
-export { createStudentSchema, updateStudentSchema } from './studentSchema.js';
+export {
+  createStudentSchema,
+  updateStudentSchema,
+  studentListQuerySchema,
+  transferCertificateSchema,
+  studentIdParamSchema,
+} from './studentSchema.js';
 export { createStaffSchema, updateStaffSchema, teacherAssignmentSchema } from './staffSchema.js';
 export {
   createClassSchema,
+  createClassesSchema,
   updateClassSchema,
   updateClassTeacherSchema,
   updateClassSubjectsSchema,
@@ -30,31 +37,64 @@ export {
   yearEndPromotionSchema,
   bulkStudentPromoteSchema,
   weekAttendanceQuerySchema,
+  classRosterQuerySchema,
+  classListQuerySchema,
 } from './classSchema.js';
 export {
   createExamSchema,
   updateExamSchema,
+  examListQuerySchema,
+  bulkCreateExamsSchema,
   bulkResultsSchema,
+  createResultSchema,
+  updateResultSchema,
   createExamScheduleSchema,
   updateExamScheduleSchema,
+  seatExamScheduleSchema,
+  emptyExamActionSchema,
+  emptyExamScheduleActionSchema,
 } from './examSchema.js';
+export { createExamHallSchema, updateExamHallSchema } from './examHallSchema.js';
 export {
   superAdminCreateSchoolSchema,
   superAdminUpdateSchoolSchema,
   superAdminProvisionSchoolSchema,
+  superAdminModulesSchema,
   mongoIdParamSchema,
 } from './superAdminSchema.js';
 export {
   createFeePaymentSchema,
+  feePaymentsListQuerySchema,
+  feeRefundsListQuerySchema,
+  feeAuditListQuerySchema,
+  sendInvoiceSchema,
+  emptyFeeActionSchema,
+  feeTemplateListQuerySchema,
   createRefundSchema,
+  updateFeePaymentSchema,
+  approveRefundSchema,
+  processRefundSchema,
+  rejectRefundSchema,
+  updateRefundSchema,
   studentFeePaymentSchema,
   updateDiscountSchema,
   defaultersQuerySchema,
+  studentFeeBatchSchema,
+  initializeStudentFeeSchema,
+  studentFeesAllQuerySchema,
+  reconcileStudentFeesSchema,
   paymentsSummaryQuerySchema,
+  studentTotalPaidQuerySchema,
   refundsSummaryQuerySchema,
+  feeClassSummaryQuerySchema,
   createFeeTemplateSchema,
   updateFeeTemplateSchema,
 } from './feeSchema.js';
+export {
+  saveFeeStructureSchema,
+  applyFeeStructureSchema,
+  feeStructureSummaryQuerySchema,
+} from './feeStructureSchema.js';
 export {
   bulkPromotionSchema,
   rollbackPromotionSchema,
@@ -121,3 +161,4 @@ export {
   studentLeaveQuerySchema,
 } from './leaveSchema.js';
 export { aiChatSchema, aiChatMessageSchema } from './aiSchema.js';
+export { updateOnboardingStepSchema, ONBOARDING_STEPS } from './onboardingStepSchema.js';

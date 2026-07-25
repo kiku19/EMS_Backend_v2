@@ -1,10 +1,12 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import StudentFeeStructure from '../models/StudentFeeStructure.js';
 import {
   authHeadersFor,
   createClassRecord,
   createSchoolRecord,
   createStaffUser,
+  createStudentRecord,
 } from './helpers/factories.js';
 import { createTestApp } from './helpers/testApp.js';
 
@@ -105,6 +107,104 @@ describe('GET /api/classes-enhanced/:id/fees-overview', () => {
       paid: 0,
       unpaid: 0,
       partial: 0,
+    });
+  });
+
+  it('aggregates collected / pending / overdue from student fee structures', async () => {
+    // Regression test: previously this endpoint read non-existent root fields
+    // (paidAmount / balanceAmount) AND returned totalPaidAmount/totalPendingAmount
+    // keys the frontend never read — so every KPI showed ₹0. It must now read
+    // totalPaid / totalBalance / overallStatus and return collected/pending/overdue.
+    const YEAR = '2025-26';
+    const school = await createSchoolRecord({ name: 'Fee School', code: 'FEE' });
+    const admin = await createStaffUser({
+      email: 'fee.admin@example.com',
+      schoolId: school._id,
+      staffRole: ['Admin'],
+      permissionRole: 'admin',
+    });
+    const cls = await createClassRecord({
+      schoolId: school._id,
+      name: 'Class 5',
+      section: 'A',
+      academicYear: YEAR,
+    });
+    const [sPaid, sPartial, sOverdue] = await Promise.all([
+      createStudentRecord({
+        schoolId: school._id,
+        classId: cls._id,
+        academicYear: YEAR,
+        name: 'Paid Student',
+      }),
+      createStudentRecord({
+        schoolId: school._id,
+        classId: cls._id,
+        academicYear: YEAR,
+        name: 'Partial Student',
+      }),
+      createStudentRecord({
+        schoolId: school._id,
+        classId: cls._id,
+        academicYear: YEAR,
+        name: 'Overdue Student',
+      }),
+    ]);
+
+    await StudentFeeStructure.create([
+      // Fully paid: ₹20,000 paid, ₹0 balance.
+      {
+        schoolId: school._id,
+        academicYear: YEAR,
+        classId: cls._id,
+        studentId: sPaid._id,
+        totalFee: 20000,
+        totalPaid: 20000,
+        totalBalance: 0,
+        overallStatus: 'paid',
+        feeHeads: [],
+      },
+      // Partial: ₹10,000 paid, ₹10,000 balance.
+      {
+        schoolId: school._id,
+        academicYear: YEAR,
+        classId: cls._id,
+        studentId: sPartial._id,
+        totalFee: 20000,
+        totalPaid: 10000,
+        totalBalance: 10000,
+        overallStatus: 'partial',
+        feeHeads: [],
+      },
+      // Overdue: ₹0 paid, ₹20,000 balance.
+      {
+        schoolId: school._id,
+        academicYear: YEAR,
+        classId: cls._id,
+        studentId: sOverdue._id,
+        totalFee: 20000,
+        totalPaid: 0,
+        totalBalance: 20000,
+        overallStatus: 'overdue',
+        feeHeads: [],
+      },
+    ]);
+
+    const { app } = createTestApp();
+    const response = await request(app)
+      .get(`/api/classes-enhanced/${cls._id}/fees-overview?academicYear=${YEAR}`)
+      .set(authHeadersFor(admin, 'admin'))
+      .expect(200);
+
+    // Frontend-facing KPI keys.
+    expect(response.body.collected).toBe(30000); // 20000 + 10000 + 0
+    expect(response.body.pending).toBe(30000); // 0 + 10000 + 20000
+    expect(response.body.overdue).toBe(20000); // only the overdue student
+    // Breakdown counts.
+    expect(response.body).toMatchObject({
+      totalStudents: 3,
+      paid: 1,
+      partial: 1,
+      unpaid: 1,
     });
   });
 });

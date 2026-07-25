@@ -13,7 +13,6 @@ const parentSchema = new mongoose.Schema(
     phone: {
       type: String,
       required: true,
-      index: true,
       trim: true,
     },
     firebaseUid: {
@@ -31,11 +30,16 @@ const parentSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
       sparse: true,
-      index: true,
     },
     password: {
       type: String,
       default: null,
+    },
+    // Set to true when an admin generates/resets the password so the parent is
+    // forced to choose their own password on next login.
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
     },
     avatar: {
       type: String,
@@ -133,11 +137,16 @@ parentSchema.plugin(piiPlugin, {
   searchableFields: ['phone', 'email'],
 });
 
-// Index for frequently queried fields
-parentSchema.index({ schoolId: 1, phone: 1 }, { unique: true });
+// AES-GCM ciphertext is intentionally non-deterministic, so uniqueness must be
+// enforced on the deterministic companion hashes produced by piiPlugin. The
+// old encrypted-value indexes allowed duplicate guardian accounts under load.
 parentSchema.index(
-  { schoolId: 1, email: 1 },
-  { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+  { schoolId: 1, phoneHash: 1 },
+  { unique: true, partialFilterExpression: { phoneHash: { $type: 'string' } } }
+);
+parentSchema.index(
+  { schoolId: 1, emailHash: 1 },
+  { unique: true, partialFilterExpression: { emailHash: { $type: 'string' } } }
 );
 parentSchema.index({ 'children.studentId': 1 });
 parentSchema.index({ createdAt: -1 });

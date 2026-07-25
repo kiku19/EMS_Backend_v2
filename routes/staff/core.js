@@ -1,23 +1,19 @@
 import express from 'express';
 import mongoose from 'mongoose';
-import {
-  Class,
-  Staff,
-  Student,
-  Timetable,
-  TeacherTimetable,
-  getNextStaffCode,
-} from '../../database.js';
-import UserPermission from '../../models/UserPermission.js';
+import { Class, Staff, Student, getNextStaffCode, StaffIdConfig } from '../../database.js';
 import StaffAttendance from '../../models/StaffAttendance.js';
+import Session from '../../models/Session.js';
 import { authenticate } from '../../middleware/auth.js';
-import { checkPermission } from '../../middleware/permissions.js';
+import { checkPermission, userHasPermission } from '../../middleware/permissions.js';
 import { validateZod, createStaffSchema, updateStaffSchema } from '../../validators/index.js';
 import { syncUsageMetrics } from '../../services/billingService.js';
 import { planLimitGate } from '../../middleware/auth/planLimitGate.js';
-import PushToken from '../../models/PushToken.js';
-import { cascadeDeleteStaffReferences } from '../../services/staffDeletionService.js';
-import { logToTrash } from '../../services/trashService.js';
+import { archiveStaff, StaffNotFoundError } from '../../services/staffArchiveService.js';
+// P7: deactivate recurring salary adjustments on soft-delete. Imported directly
+// from the model (not re-exported by database.js) — the model file itself is
+// owned by the Payroll agent, but importing it read-only is safe and keeps the
+// cascade inside the staff delete handler per the issue split.
+import SalaryAdjustment from '../../models/SalaryAdjustment.js';
 import { dispatchWebhookEvent } from '../../services/webhookService.js';
 import { sendWelcomeEmail } from '../../services/emailService.js';
 import { sendSMS } from '../../config/sms.js';
@@ -31,6 +27,8 @@ import {
   validateReporter,
   generatePassword,
 } from './helpers.js';
+import { buildPaginationResponse } from '../../utils/pagination.js';
+import { localTodayString } from '../../utils/dateTimezone.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -61,6 +59,125 @@ function looksLikeEmail(value) {
 
 function looksLikePhone(value) {
   return /^[+]?[\d\s-]{6,}$/.test(value);
+}
+
+async function findClassTeacherTarget({ schoolId, classTeacherOf, session = null }) {
+  if (!classTeacherOf) return null;
+
+  const findScopedClass = async (query) => {
+    const operation = Class.findOne(
+      scopeBySchool(schoolId, { ...query, isDeleted: { $ne: true } })
+    );
+    if (session) operation.session(session);
+    return operation;
+  };
+
+  const targetClass = await findScopedClass({ name: classTeacherOf });
+  if (targetClass) return targetClass;
+
+  // Legacy clients submit "Class name-Section" rather than an id. Split on
+  // the final dash so class names containing dashes keep working.
+  const lastDash = classTeacherOf.lastIndexOf('-');
+  if (lastDash <= 0) return null;
+  return findScopedClass({
+    name: classTeacherOf.slice(0, lastDash),
+    section: classTeacherOf.slice(lastDash + 1).toUpperCase(),
+  });
+}
+
+async function applyClassTeacherAssignment({ staffId, assignedClassId, schoolId, session }) {
+  const staff = await Staff.findOne(
+    scopeBySchool(schoolId, { _id: staffId, isDeleted: { $ne: true } })
+  ).session(session);
+  if (!staff) {
+    const error = new Error('Staff not found');
+    error.status = 404;
+    throw error;
+  }
+
+  let targetClass = null;
+  let previousTeacherId = null;
+  if (assignedClassId) {
+    targetClass = await Class.findOne(
+      scopeBySchool(schoolId, {
+        _id: assignedClassId,
+        isDeleted: { $ne: true },
+      })
+    ).session(session);
+    if (!targetClass) {
+      const error = new Error('Assigned class was not found in this school');
+      error.status = 404;
+      throw error;
+    }
+    previousTeacherId = targetClass.classTeacherId;
+  }
+
+  await Class.updateMany(
+    scopeBySchool(schoolId, {
+      classTeacherId: staff._id,
+      ...(targetClass ? { _id: { $ne: targetClass._id } } : {}),
+      isDeleted: { $ne: true },
+    }),
+    { $unset: { classTeacherId: 1 } },
+    { session }
+  );
+
+  if (targetClass) {
+    await Class.updateOne(
+      scopeBySchool(schoolId, { _id: targetClass._id, isDeleted: { $ne: true } }),
+      { $set: { classTeacherId: staff._id } },
+      { session }
+    );
+    await Staff.updateOne(
+      scopeBySchool(schoolId, { _id: staff._id, isDeleted: { $ne: true } }),
+      {
+        $set: {
+          isClassTeacher: true,
+          classTeacherOf: `${targetClass.name}-${targetClass.section}`,
+        },
+      },
+      { session }
+    );
+
+    if (previousTeacherId && String(previousTeacherId) !== String(staff._id)) {
+      await Staff.updateOne(
+        scopeBySchool(schoolId, {
+          _id: previousTeacherId,
+          isDeleted: { $ne: true },
+        }),
+        { $set: { isClassTeacher: false, classTeacherOf: null } },
+        { session }
+      );
+    }
+    return targetClass;
+  }
+
+  await Staff.updateOne(
+    scopeBySchool(schoolId, { _id: staff._id, isDeleted: { $ne: true } }),
+    { $set: { isClassTeacher: false, classTeacherOf: null } },
+    { session }
+  );
+  return null;
+}
+
+async function updateClassTeacherAssignment({ staffId, assignedClassId, schoolId }) {
+  const session = await mongoose.startSession();
+  let assignedClass = null;
+
+  try {
+    await session.withTransaction(async (transactionSession) => {
+      assignedClass = await applyClassTeacherAssignment({
+        staffId,
+        assignedClassId,
+        schoolId,
+        session: transactionSession,
+      });
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  return assignedClass;
 }
 
 // Build the {$or: [...]} clause for the free-text `q` param.
@@ -100,13 +217,16 @@ async function aggregateFacet(StaffModel, baseQuery, field, { unwindArray = fals
   return rows.map((r) => ({ value: r._id, count: r.count }));
 }
 
-// Build a query object whose `schoolId` is a mongoose.Types.ObjectId, so it
-// works in `aggregate()` pipelines (which bypass Mongoose schema casting).
-function facetBaseQuery(schoolId, extras = {}) {
-  const normalized = mongoose.Types.ObjectId.isValid(String(schoolId))
-    ? new mongoose.Types.ObjectId(String(schoolId))
-    : schoolId;
-  return { ...extras, schoolId: normalized };
+// Convert a normal Mongoose find query to an aggregation-safe query while
+// optionally removing the facet currently being calculated. Other active
+// filters remain in place, so counts describe the user's actual result set.
+function aggregationQueryFromResult(resultQuery, excludedField) {
+  const query = { ...resultQuery };
+  query.schoolId = mongoose.Types.ObjectId.isValid(String(resultQuery.schoolId))
+    ? new mongoose.Types.ObjectId(String(resultQuery.schoolId))
+    : resultQuery.schoolId;
+  if (excludedField) delete query[excludedField];
+  return query;
 }
 
 // Fix: Add isDeleted filter and schoolId to Class query
@@ -117,6 +237,7 @@ function facetBaseQuery(schoolId, extras = {}) {
 router.get('/', checkPermission('staff', 'view'), async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
+    const includePayroll = await userHasPermission(req, 'payroll', 'view');
     const baseQuery = scopeBySchool(schoolId, { isDeleted: { $ne: true } });
     const isPaginated = req.query.page !== undefined;
 
@@ -138,7 +259,7 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
     if (status && status !== 'all') resultQuery.status = status;
 
     if (todayOnly) {
-      const today = new Date().toISOString().split('T')[0];
+      const today = localTodayString();
       const todaysRecords = await StaffAttendance.find(
         scopeBySchool(schoolId, {
           date: today,
@@ -191,15 +312,21 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
       const includeFacets = String(req.query.includeFacets) !== 'false';
       let facets;
       if (includeFacets) {
-        // aggregate() doesn't schema-cast, so schoolId must be a real ObjectId.
-        const facetBase = facetBaseQuery(schoolId);
-        if (q) facetBase.$and = [buildSearchClause(q)];
-        if (todayOnly) facetBase._id = resultQuery._id;
         const [roleFacet, deptFacet, empFacet, genderFacet] = await Promise.all([
-          aggregateFacet(Staff, facetBase, 'role', { unwindArray: true }),
-          aggregateFacet(Staff, facetBase, 'department'),
-          aggregateFacet(Staff, facetBase, 'employmentType'),
-          aggregateFacet(Staff, facetBase, 'gender'),
+          aggregateFacet(Staff, aggregationQueryFromResult(resultQuery, 'role'), 'role', {
+            unwindArray: true,
+          }),
+          aggregateFacet(
+            Staff,
+            aggregationQueryFromResult(resultQuery, 'department'),
+            'department'
+          ),
+          aggregateFacet(
+            Staff,
+            aggregationQueryFromResult(resultQuery, 'employmentType'),
+            'employmentType'
+          ),
+          aggregateFacet(Staff, aggregationQueryFromResult(resultQuery, 'gender'), 'gender'),
         ]);
         facets = {
           role: roleFacet,
@@ -209,18 +336,69 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
         };
       }
 
-      return res.json({
-        data: staffList.map((staff) =>
-          formatStaffResponse(staff, classMap.get(staff._id.toString()))
-        ),
-        pagination: {
+      // Global aggregates (tab counts) over the FULL filtered roster — not
+      // just the current page. The dashboard's All/Present-today/On-leave/
+      // Inactive tabs need school-wide counts; under server pagination the
+      // page only sees its own rows, so these are computed here. `present` and
+      // `onLeave` derive from today's StaffAttendance records; `inactive` is a
+      // status on the Staff doc itself.
+      const today = localTodayString();
+      // Status is the tab being counted, so keep every other active filter
+      // while excluding only status itself.
+      const aggregateBase = aggregationQueryFromResult(resultQuery, 'status');
+      // `inactive` stays bundled (inactive+suspended+terminated): the
+      // dashboard derives the "Active" tab count as `total - inactive`, so
+      // unbundling it here would over-count active. The finer-grained
+      // `suspended` / `terminated` facets are exposed separately (ST8 polish)
+      // so their pills can show real numbers alongside the bundled total.
+      const [presentTodayIds, onLeaveIds, inactiveCount, suspendedCount, terminatedCount] =
+        await Promise.all([
+          StaffAttendance.find(scopeBySchool(schoolId, { date: today, status: 'present' }))
+            .select('staffId')
+            .lean(),
+          StaffAttendance.find(scopeBySchool(schoolId, { date: today, status: 'leave' }))
+            .select('staffId')
+            .lean(),
+          Staff.countDocuments({
+            ...aggregateBase,
+            status: { $in: ['inactive', 'suspended', 'terminated'] },
+          }),
+          Staff.countDocuments({ ...aggregateBase, status: 'suspended' }),
+          Staff.countDocuments({ ...aggregateBase, status: 'terminated' }),
+        ]);
+      const presentTodaySet = new Set(presentTodayIds.map((record) => String(record.staffId)));
+      const onLeaveSet = new Set(onLeaveIds.map((record) => String(record.staffId)));
+      // Present/leave counts are bounded by the filtered roster (the tab
+      // shows "X of the currently-filtered staff are present today").
+      const allFilteredIds = await Staff.distinct('_id', aggregateBase);
+      let presentToday = 0;
+      let onLeave = 0;
+      for (const id of allFilteredIds) {
+        const idStr = String(id);
+        if (presentTodaySet.has(idStr)) presentToday++;
+        if (onLeaveSet.has(idStr)) onLeave++;
+      }
+      const aggregates = {
+        presentToday,
+        onLeave,
+        inactive: inactiveCount,
+        suspended: suspendedCount,
+        terminated: terminatedCount,
+        total: allFilteredIds.length,
+      };
+
+      return res.json(
+        buildPaginationResponse({
+          data: staffList.map((staff) =>
+            formatStaffResponse(staff, classMap.get(staff._id.toString()), { includePayroll })
+          ),
           page,
           limit,
           total,
-          totalPages: Math.ceil(total / limit),
-        },
-        ...(facets ? { facets } : {}),
-      });
+          aggregates,
+          extra: facets ? { facets } : {},
+        })
+      );
     }
 
     // Backward compatible: return plain array when no page param.
@@ -249,16 +427,44 @@ router.get('/', checkPermission('staff', 'view'), async (req, res) => {
     );
 
     res.json(
-      staffList.map((staff) => formatStaffResponse(staff, classMap.get(staff._id.toString())))
+      staffList.map((staff) =>
+        formatStaffResponse(staff, classMap.get(staff._id.toString()), { includePayroll })
+      )
     );
   } catch (error) {
     res.status(500).json({ error: req.t('common:routes.failedToFetchStaffList') });
   }
 });
 
+// GET the next staff code (autogenerated sequence)
+router.get('/next-code', checkPermission('staff', 'view'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const config = await StaffIdConfig.findOne({ schoolId });
+    const currentNumber = config ? config.currentNumber : 0;
+    const prefix = config ? config.prefix : 'EMP';
+    const separator = config ? config.separator : '';
+    const includeYear = config ? config.includeYear : false;
+    const digits = config ? config.digits : 3;
+    const paddedNumber = String(currentNumber + 1).padStart(digits, '0');
+    const year = new Date().getFullYear();
+
+    let staffId = prefix;
+    if (separator) staffId += separator;
+    if (includeYear) staffId += year + (separator || '');
+    staffId += paddedNumber;
+
+    res.json({ nextCode: staffId });
+  } catch (error) {
+    console.error('Error fetching next staff code:', error);
+    res.status(500).json({ error: 'Failed to fetch next staff code' });
+  }
+});
+
 // Fix: Add isDeleted filter and schoolId to Class query
 router.get('/:id', checkPermission('staff', 'view'), async (req, res) => {
   try {
+    const includePayroll = await userHasPermission(req, 'payroll', 'view');
     const staff = await Staff.findOne(
       scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
     ).populate('reporterId', 'name');
@@ -269,7 +475,7 @@ router.get('/:id', checkPermission('staff', 'view'), async (req, res) => {
     const assignedClass = await Class.findOne(
       scopeBySchool(req.user?.schoolId, { classTeacherId: staff._id })
     );
-    res.json(formatStaffResponse(staff, assignedClass));
+    res.json(formatStaffResponse(staff, assignedClass, { includePayroll }));
   } catch (error) {
     res.status(500).json({ error: req.t('common:routes.failedToFetchStaffDetails') });
   }
@@ -314,6 +520,7 @@ router.post(
         staffNumber,
         staffType,
         assignedClasses,
+        assignedClassId,
         isClassTeacher,
         classTeacherOf,
         accountNumber,
@@ -332,6 +539,23 @@ router.post(
       } = req.body;
 
       const schoolId = await resolveRequestSchoolId(req);
+
+      // Resolve the legacy class-name payload before creating anything. The
+      // transaction below receives only an id and re-validates that class in
+      // the same school, preventing a half-created class-teacher relation.
+      let resolvedAssignedClassId = assignedClassId || undefined;
+      if (!resolvedAssignedClassId && isClassTeacher) {
+        const targetClass = await findClassTeacherTarget({
+          schoolId,
+          classTeacherOf,
+        });
+        if (!targetClass) {
+          return res.status(400).json({
+            error: 'The selected class was not found in this school',
+          });
+        }
+        resolvedAssignedClassId = targetClass._id;
+      }
 
       const reporterError = await validateReporter(reporterId, null, schoolId);
       if (reporterError) {
@@ -366,14 +590,15 @@ router.post(
       }
 
       // Fix 1.2/1.3: Pass schoolId for per-school atomic code generation
-      const code = await getNextStaffCode(schoolId);
-      const baseUsername = email ? email.split('@')[0].toLowerCase() : code.toLowerCase();
-      const username = await ensureUniqueUsername(baseUsername, schoolId);
+      // ST15: the staff code is generated as late as possible — inside the
+      // creation transaction, immediately before the save. `getNextStaffCode`
+      // (in database.js) now accepts an optional mongoose session, so its
+      // `findOneAndUpdate($inc)` participates in this transaction and is rolled
+      // back if the save/assignment fails — no more counter gaps (ST15).
       const password = generatePassword(8);
 
-      const staff = new Staff({
+      let staff = new Staff({
         schoolId,
-        code,
         name,
         role: role || staffType,
         department: department || 'General',
@@ -382,7 +607,6 @@ router.post(
         email: email?.toLowerCase(),
         joinDate,
         address,
-        username,
         password,
         reporterId: reporterId || null,
         dob,
@@ -408,8 +632,6 @@ router.post(
         staffNumber,
         staffType,
         assignedClasses,
-        isClassTeacher,
-        classTeacherOf,
         accountNumber,
         ifscCode,
         bankName,
@@ -425,7 +647,43 @@ router.post(
         experience,
       });
 
-      await staff.save();
+      let assignedClass = null;
+      // Declared in the outer scope so the generated code/username remain
+      // available for the post-commit response / SMS after the transaction.
+      let generatedCode = '';
+      let username = '';
+      const creationSession = await mongoose.startSession();
+      try {
+        await creationSession.withTransaction(async (transactionSession) => {
+          // Generate code + username here (late as possible) and assign onto
+          // the in-memory instance before the transactional save.
+          generatedCode = await getNextStaffCode(schoolId, transactionSession);
+          const baseUsername = email
+            ? email.split('@')[0].toLowerCase()
+            : generatedCode.toLowerCase();
+          username = await ensureUniqueUsername(baseUsername, schoolId);
+          staff.code = generatedCode;
+          staff.username = username;
+
+          await staff.save({ session: transactionSession });
+          if (resolvedAssignedClassId) {
+            assignedClass = await applyClassTeacherAssignment({
+              staffId: staff._id,
+              assignedClassId: resolvedAssignedClassId,
+              schoolId,
+              session: transactionSession,
+            });
+          }
+        });
+      } finally {
+        await creationSession.endSession();
+      }
+
+      // The assignment helper uses direct updates so refresh the instance used
+      // for the response and all post-commit side effects.
+      staff = await Staff.findOne(
+        scopeBySchool(schoolId, { _id: staff._id, isDeleted: { $ne: true } })
+      ).populate('reporterId', 'name');
 
       dispatchWebhookEvent(schoolId, 'staff.created', {
         id: staff._id,
@@ -446,51 +704,16 @@ router.post(
         ).catch(() => {});
       }
 
-      await syncUsageMetrics(schoolId);
-      const permissionRole = await buildPermissions(staff.role, staff._id, schoolId);
-
-      // Resolve classTeacherOf via multiple shapes — regex / last-dash split.
-      // The prior /^(.+)-([A-Za-z]+)$/ failed for "Class 10" (no dash),
-      // "Class XI-A-Boys" (multi-dash), Roman-numeral sections, and
-      // classes whose names contain hyphens. Fall back to "find by full
-      // string" then "split on last hyphen" so we handle those too.
-      if (isClassTeacher && classTeacherOf) {
-        let targetClass = await Class.findOne(scopeBySchool(schoolId, { name: classTeacherOf }));
-        if (!targetClass) {
-          const lastDash = classTeacherOf.lastIndexOf('-');
-          if (lastDash > 0) {
-            const className = classTeacherOf.slice(0, lastDash);
-            const section = classTeacherOf.slice(lastDash + 1).toUpperCase();
-            targetClass = await Class.findOne(
-              scopeBySchool(schoolId, { name: className, section })
-            );
-          }
-        }
-        if (targetClass) {
-          // AUDIT-349: Clean up old teacher's class teacher assignment
-          if (targetClass.classTeacherId) {
-            await Staff.findOneAndUpdate(
-              scopeBySchool(schoolId, { _id: targetClass.classTeacherId }),
-              { isClassTeacher: false, classTeacherOf: null }
-            );
-          }
-          await Class.findByIdAndUpdate(targetClass._id, { classTeacherId: staff._id });
-        }
-      }
-
-      const assignedClass =
-        isClassTeacher && classTeacherOf
-          ? await Class.findOne(
-              scopeBySchool(schoolId, {
-                name: classTeacherOf.split('-')[0],
-                section: classTeacherOf.split('-')[1]?.toUpperCase(),
-              })
-            )
-          : null;
+      // The staff record is already committed. Billing telemetry is a
+      // best-effort side effect and must not turn a successful create into a
+      // misleading 500 that invites a duplicate retry.
+      syncUsageMetrics(schoolId).catch(() => {});
+      await buildPermissions(staff.role, staff._id, schoolId);
 
       // Fix 3.10: Do not return password in response - credentials should be sent via email/SMS
+      const includePayroll = await userHasPermission(req, 'payroll', 'view');
       res.status(201).json({
-        ...formatStaffResponse(staff, assignedClass),
+        ...formatStaffResponse(staff, assignedClass, { includePayroll }),
         username,
       });
     } catch (error) {
@@ -660,6 +883,21 @@ router.put(
         updateData.reporterId = reporterId || null;
       }
 
+      // ST7: when a salaryBreakdown is supplied on edit, keep `salary` in sync
+      // with the sum of its components — unless the caller explicitly sent a
+      // `salary` value (which wins). Previously the payroll base was never
+      // recomputed, so editing breakdown components left `salary` stale.
+      if (Array.isArray(salaryBreakdown) && salaryBreakdown.length > 0) {
+        updateData.salaryBreakdown = salaryBreakdown;
+        if (salary === undefined) {
+          const total = salaryBreakdown.reduce(
+            (sum, item) => sum + (parseFloat(item?.amount) || 0),
+            0
+          );
+          updateData.salary = total;
+        }
+      }
+
       Object.keys(updateData).forEach((key) => {
         if (updateData[key] === undefined) {
           delete updateData[key];
@@ -668,9 +906,10 @@ router.put(
 
       let passwordReset = false;
       if (password) {
-        const bcrypt = await import('bcryptjs');
-        const salt = await bcrypt.genSalt(10);
-        updateData.password = await bcrypt.hash(password, salt);
+        // Staff's findOneAndUpdate middleware owns password hashing. Hashing
+        // here as well produced bcrypt(hash(password)), making the new
+        // password impossible to use.
+        updateData.password = password;
         passwordReset = true;
       }
 
@@ -681,7 +920,7 @@ router.put(
       const updateDoc = passwordReset
         ? { $set: updateData, $inc: { tokenVersion: 1 } }
         : updateData;
-      const staff = await Staff.findOneAndUpdate(
+      let staff = await Staff.findOneAndUpdate(
         scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
         updateDoc,
         { new: true }
@@ -690,6 +929,17 @@ router.put(
         return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
       }
       if (passwordReset) {
+        // Access tokens issued by normal login carry a sessionId. Revoke all
+        // active sessions for the target account immediately; tokenVersion
+        // above invalidates refresh tokens as a second line of defence.
+        await Session.updateMany(
+          {
+            userId: staff._id,
+            schoolId: req.user?.schoolId,
+            isRevoked: { $ne: true },
+          },
+          { $set: { isRevoked: true, revokedAt: new Date() } }
+        );
         try {
           const { default: AuditTrail } = await import('../../models/AuditTrail.js');
           await AuditTrail.create({
@@ -709,11 +959,7 @@ router.put(
       }
 
       if (role) {
-        const permissionRole = await buildPermissions(
-          role,
-          staff._id,
-          staff.schoolId || req.user?.schoolId || null
-        );
+        await buildPermissions(role, staff._id, staff.schoolId || req.user?.schoolId || null);
       }
 
       // Back-compat: resolve the legacy shape `{isClassTeacher,
@@ -722,49 +968,33 @@ router.put(
       let resolvedAssignedClassId = assignedClassId;
       if (resolvedAssignedClassId === undefined && isClassTeacher !== undefined) {
         if (isClassTeacher && classTeacherOf) {
-          const classMatch = classTeacherOf.match(/^(.+)-([A-Za-z]+)$/);
-          if (classMatch) {
-            const [, className, section] = classMatch;
-            const target = await Class.findOne(
-              scopeBySchool(req.user?.schoolId, {
-                name: className,
-                section: section.toUpperCase(),
-              })
-            );
-            if (target) resolvedAssignedClassId = target._id;
+          const target = await findClassTeacherTarget({
+            schoolId: req.user?.schoolId,
+            classTeacherOf,
+          });
+          if (!target) {
+            return res.status(400).json({
+              error: 'The selected class was not found in this school',
+            });
           }
+          resolvedAssignedClassId = target._id;
         } else if (!isClassTeacher) {
           // Explicit unassign via the legacy shape
           resolvedAssignedClassId = null;
         }
       }
 
-      // Fix 3.4: Only wipe class teacher assignments when the caller
-      // actually asked to change them.
+      // Class.classTeacherId, the selected staff flags, and any displaced
+      // teacher flags commit together so the two collections cannot drift.
       if (resolvedAssignedClassId !== undefined) {
-        await Class.updateMany(scopeBySchool(req.user?.schoolId, { classTeacherId: staff._id }), {
-          $unset: { classTeacherId: 1 },
+        await updateClassTeacherAssignment({
+          staffId: staff._id,
+          assignedClassId: resolvedAssignedClassId,
+          schoolId: req.user?.schoolId,
         });
-        if (resolvedAssignedClassId) {
-          const assignedClassDoc = await Class.findOneAndUpdate(
-            scopeBySchool(req.user?.schoolId, { _id: resolvedAssignedClassId }),
-            { classTeacherId: staff._id },
-            { new: true }
-          );
-          // AUDIT-348: Sync Staff document's class teacher fields
-          if (assignedClassDoc) {
-            await Staff.findByIdAndUpdate(staff._id, {
-              isClassTeacher: true,
-              classTeacherOf: `${assignedClassDoc.name}-${assignedClassDoc.section}`,
-            });
-          }
-        } else {
-          // Unassigning: clear Staff fields too
-          await Staff.findByIdAndUpdate(staff._id, {
-            isClassTeacher: false,
-            classTeacherOf: null,
-          });
-        }
+        staff = await Staff.findOne(
+          scopeBySchool(req.user?.schoolId, { _id: staff._id, isDeleted: { $ne: true } })
+        ).populate('reporterId', 'name');
       }
 
       const assignedClass = await Class.findOne(
@@ -786,85 +1016,49 @@ router.put(
         });
       }
 
-      res.json(formatStaffResponse(staff, assignedClass));
+      const includePayroll = await userHasPermission(req, 'payroll', 'view');
+      res.json(formatStaffResponse(staff, assignedClass, { includePayroll }));
     } catch (error) {
-      res.status(500).json({ error: req.t('common:routes.failedToUpdateStaffMember') });
+      res.status(error.status || 500).json({
+        error:
+          error.status && error.message
+            ? error.message
+            : req.t('common:routes.failedToUpdateStaffMember'),
+      });
     }
   }
 );
 
-// Fix 1.7/3.3: Soft delete instead of hard delete
+// Reversible archive. Historical and financial records are intentionally
+// preserved; only active account/class-teacher state changes transactionally.
 router.delete('/:id', checkPermission('staff', 'delete'), async (req, res) => {
   try {
-    // Snapshot before mutation for trash logging
-    const staffSnapshot = await Staff.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } })
-    ).lean();
-
-    const staff = await Staff.findOneAndUpdate(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id, isDeleted: { $ne: true } }),
-      {
-        $set: {
-          isDeleted: true,
-          deletedAt: new Date(),
-          deletedBy: req.user.id,
-          status: 'inactive',
-        },
-      },
-      { new: true }
-    );
-
-    if (!staff) {
-      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
-    }
-
-    // Log to trash for restore capability
-    if (staffSnapshot) {
-      logToTrash({
-        itemType: 'Staff',
-        itemId: staff._id,
-        itemName: staffSnapshot.name || 'Staff',
-        originalData: staffSnapshot,
-        deletedBy: req.user.id || req.user._id,
-        schoolId: req.user?.schoolId,
-      }).catch(() => {});
-    }
-
-    // Fix 6.2: Clean up class teacher AFTER verifying school ownership
-    await Class.updateMany(scopeBySchool(req.user?.schoolId, { classTeacherId: staff._id }), {
-      $unset: { classTeacherId: 1 },
+    const { staff } = await archiveStaff({
+      staffId: req.params.id,
+      schoolId: req.user?.schoolId,
+      deletedBy: req.user?.id || req.user?._id,
     });
 
-    // Cascade: delete this staff member's teacher timetable document
-    await TeacherTimetable.deleteMany(scopeBySchool(req.user?.schoolId, { teacherId: staff._id }));
+    // Archival has committed at this point. A metrics outage must not report
+    // failure and prompt a retry against an already-archived account.
+    if (staff.schoolId) syncUsageMetrics(staff.schoolId).catch(() => {});
 
-    // Cascade: null out teacherId in class timetable schedule slots referencing this staff
-    const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    await Promise.all(
-      DAYS.map((day) =>
-        Timetable.updateMany(
-          scopeBySchool(req.user?.schoolId, { [`schedule.${day}.teacherId`]: staff._id }),
-          { $set: { [`schedule.${day}.$[slot].teacherId`]: null } },
-          { arrayFilters: [{ 'slot.teacherId': staff._id }] }
-        )
-      )
+    // P7: cascade-deactivate recurring salary adjustments so future payroll
+    // runs stop applying them for this (now archived) employee. Best-effort —
+    // historical PayrollRecords are preserved; only the recurring template is
+    // turned off. The Payroll agent owns the payroll-run fetch filter side.
+    SalaryAdjustment.updateMany(
+      { employeeId: staff._id, isRecurring: true },
+      { $set: { isActive: false } }
+    ).catch((err) =>
+      console.error('Failed to deactivate recurring salary adjustments on staff delete:', err)
     );
-
-    // Cascade: remove permissions and push tokens for deleted staff
-    await Promise.all([
-      UserPermission.deleteOne({ userId: staff._id }),
-      PushToken.deleteMany({ user: staff._id, userModel: 'Staff' }),
-    ]);
-
-    // Cascade: clean up all orphan documents referencing this staff member
-    await cascadeDeleteStaffReferences(staff._id);
-
-    if (staff.schoolId) {
-      await syncUsageMetrics(staff.schoolId);
-    }
 
     res.json({ success: true });
   } catch (error) {
+    if (error instanceof StaffNotFoundError) {
+      return res.status(404).json({ error: req.t('common:routes.staffNotFound') });
+    }
     res.status(500).json({ error: req.t('common:routes.failedToDeleteStaffMember') });
   }
 });

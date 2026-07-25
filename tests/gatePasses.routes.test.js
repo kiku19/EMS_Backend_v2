@@ -1,11 +1,10 @@
 /**
  * Tests for /api/gate-passes routes (standalone gatePasses.js route file).
  *
- * NOTE: All routes in gatePasses.js use checkPermission('front-office', ...) but
- * the actual module in PERMISSION_TEMPLATES is 'front-desk'. This mismatch means
- * every authenticated request returns 403 (Access Denied). Tests below document
- * this current behavior. The 401 (unauthenticated) tests confirm auth middleware
- * fires before the permission check.
+ * Front-desk permission module: routes use checkPermission('front-desk', ...)
+ * matching the key in PERMISSION_TEMPLATES. (Previously the routes used the
+ * mismatched 'front-office' string, which made every authenticated request
+ * return 403 — now fixed.) Approve/reject use the 'approve' action key.
  */
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';

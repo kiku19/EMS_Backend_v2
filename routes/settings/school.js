@@ -131,102 +131,140 @@ const academicYearSchema = z.object({
   // can't be tripped by an errant form.
   confirm: z.literal(true, {
     errorMap: () => ({
-      message:
-        'Academic-year change requires confirm:true — review the transition preview first',
+      message: 'Academic-year change requires confirm:true — review the transition preview first',
     }),
   }),
 });
 
 const hexColorRegex = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const domainRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+const hostedAssetUrlSchema = z
+  .string()
+  .max(2048)
+  .refine((value) => {
+    if (value === '') return true;
+    try {
+      return new URL(value).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'Brand assets must be hosted at a valid HTTPS URL');
 
-const schoolSettingsSchema = z.object({
-  name: z.string().trim().min(1).max(200).optional(),
-  schoolName: z.string().trim().min(1).max(200).optional(),
-  address: z.string().max(500).optional(),
-  phone: z.string().max(20).optional(),
-  email: z.string().email().or(z.literal('')).optional(),
-  website: z.string().url().or(z.literal('')).optional(),
-  logo: z.string().optional(),
-  primaryColor: z
-    .string()
-    .regex(hexColorRegex, 'Must be a valid hex color (e.g. #0d9488)')
-    .optional(),
-  secondaryColor: z
-    .string()
-    .regex(hexColorRegex, 'Must be a valid hex color (e.g. #134e4a)')
-    .optional(),
-  customDomain: z
-    .string()
-    .refine((v) => v === '' || domainRegex.test(v), {
-      message: 'Must be a valid domain (e.g. school.example.com)',
-    })
-    .optional(),
-  udiseNo: z.string().max(20).optional(),
-  affiliationNo: z.string().max(50).optional(),
-  boardOfEducation: z.string().max(100).optional(),
-  currency: z.string().trim().min(3).max(3).toUpperCase().optional(),
-  principalSignature: z.string().optional(),
-  correspondentSignature: z.string().optional(),
-  examDefaults: z
-    .object({
-      maxMarks: z.number().int().min(1).max(1000).optional(),
-      passingMarks: z.number().int().min(0).max(1000).optional(),
-      duration: z.number().int().min(1).max(600).optional(),
-      weightage: z.number().int().min(0).max(100).optional(),
-      defaultTerm: z.string().max(50).optional(),
-    })
-    .optional(),
-  gradingScale: z
-    .array(
-      z.object({
-        minPercentage: z.number().min(0).max(100),
-        grade: z.string().trim().min(1).max(10),
-        color: z.string().regex(hexColorRegex).or(z.literal('')).optional(),
+const schoolSettingsSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    schoolName: z.string().trim().min(1).max(200).optional(),
+    address: z.string().max(500).optional(),
+    phone: z.string().max(20).optional(),
+    email: z.string().email().or(z.literal('')).optional(),
+    website: z.string().url().or(z.literal('')).optional(),
+    logo: hostedAssetUrlSchema.optional(),
+    primaryColor: z
+      .string()
+      .regex(hexColorRegex, 'Must be a valid hex color (e.g. #0d9488)')
+      .optional(),
+    secondaryColor: z
+      .string()
+      .regex(hexColorRegex, 'Must be a valid hex color (e.g. #134e4a)')
+      .optional(),
+    customDomain: z
+      .string()
+      .refine((v) => v === '' || domainRegex.test(v), {
+        message: 'Must be a valid domain (e.g. school.example.com)',
       })
-    )
-    .optional(),
-  reportCardFormat: z
-    .object({
-      boardType: z.enum(['CBSE', 'ICSE', 'StateBoard', 'IB', 'IGCSE', 'Custom']).optional(),
-      customTitle: z.string().max(100).optional(),
-      showGrade: z.boolean().optional(),
-      showMarks: z.boolean().optional(),
-      showRank: z.boolean().optional(),
-      showAttendance: z.boolean().optional(),
-      showRemarks: z.boolean().optional(),
-      useGradePoints: z.boolean().optional(),
-      passingGrade: z.string().max(5).optional(),
-    })
-    .optional(),
-  attendanceRules: z
-    .object({
-      defaulterThreshold: z.number().int().min(0).max(100).optional(),
-      lockTime: z
-        .string()
-        .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
-        .optional(),
-      allowEdit: z.boolean().optional(),
-      editWindow: z
-        .number()
-        .int()
-        .refine((v) => [12, 24, 48].includes(v), { message: 'Must be 12, 24, or 48' })
-        .optional(),
-      notifyAbsent: z.boolean().optional(),
-      notifyDefaulter: z.boolean().optional(),
-      permissions: z
-        .array(
-          z.object({
-            role: z.string().min(1),
-            canMark: z.boolean(),
-            canEdit: z.boolean(),
-            canLock: z.boolean(),
-          })
-        )
-        .optional(),
-    })
-    .optional(),
-}).strict(); // Reject unknown top-level keys so arbitrary SchoolSettings
+      .optional(),
+    udiseNo: z.string().max(20).optional(),
+    affiliationNo: z.string().max(50).optional(),
+    boardOfEducation: z.string().max(100).optional(),
+    departments: z.array(z.string()).optional(),
+    currency: z.string().trim().min(3).max(3).toUpperCase().optional(),
+    principalSignature: hostedAssetUrlSchema.optional(),
+    correspondentSignature: hostedAssetUrlSchema.optional(),
+    examDefaults: z
+      .object({
+        maxMarks: z.number().int().min(1).max(1000).optional(),
+        passingMarks: z.number().int().min(0).max(1000).optional(),
+        duration: z.number().int().min(1).max(600).optional(),
+        weightage: z.number().int().min(0).max(100).optional(),
+        defaultTerm: z.string().max(50).optional(),
+      })
+      .optional(),
+    gradingScale: z
+      .array(
+        z.object({
+          minPercentage: z.number().min(0).max(100),
+          grade: z.string().trim().min(1).max(10),
+          color: z.string().regex(hexColorRegex).or(z.literal('')).optional(),
+        })
+      )
+      .optional(),
+    reportCardFormat: z
+      .object({
+        boardType: z.enum(['CBSE', 'ICSE', 'StateBoard', 'IB', 'IGCSE', 'Custom']).optional(),
+        customTitle: z.string().max(100).optional(),
+        showGrade: z.boolean().optional(),
+        showMarks: z.boolean().optional(),
+        showRank: z.boolean().optional(),
+        showAttendance: z.boolean().optional(),
+        showRemarks: z.boolean().optional(),
+        useGradePoints: z.boolean().optional(),
+        passingGrade: z.string().max(5).optional(),
+      })
+      .optional(),
+    attendanceRules: z
+      .object({
+        defaulterThreshold: z.number().int().min(0).max(100).optional(),
+        lockTime: z
+          .string()
+          .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+          .optional(),
+        allowEdit: z.boolean().optional(),
+        editWindow: z
+          .number()
+          .int()
+          .refine((v) => [12, 24, 48].includes(v), { message: 'Must be 12, 24, or 48' })
+          .optional(),
+        notifyAbsent: z.boolean().optional(),
+        notifyDefaulter: z.boolean().optional(),
+        permissions: z
+          .array(
+            z.object({
+              role: z.string().min(1),
+              canMark: z.boolean(),
+              canEdit: z.boolean(),
+              canLock: z.boolean(),
+            })
+          )
+          .optional(),
+      })
+      .optional(),
+    // Timings, periods & working week. These mirror SchoolSettings (model +
+    // getDefaultSchoolSettings) but were previously absent from this schema, so
+    // the strict() guard rejected any attempt to save them from the dashboard
+    // (Settings → Academics) or the onboarding wizard. Declaring them here closes
+    // that gap.
+    schoolStartTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+      .optional(),
+    schoolEndTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
+      .optional(),
+    periodDuration: z.number().int().min(5).max(180).optional(),
+    periodsPerDay: z.number().int().min(1).max(20).optional(),
+    breaksPerDay: z.number().int().min(0).max(10).optional(),
+    secondFourthSaturdayOff: z.boolean().optional(),
+    workingDays: z
+      .array(z.enum(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']))
+      .max(7)
+      .optional(),
+    // C14: onboarding completion is synced to the backend so the flag is
+    // consistent across devices/users, not localStorage-only. Without this
+    // allow-list entry the strict() schema would strip it on PUT /settings/school.
+    onboardingCompleted: z.boolean().optional(),
+  })
+  .strict(); // Reject unknown top-level keys so arbitrary SchoolSettings
 // fields can't be mass-assigned by the dashboard or an attacker sending
 // extra JSON keys. Dot-notation nested updates are still supported by the
 // handler via the declared shape above.
@@ -518,98 +556,106 @@ router.get('/board-config/presets', authenticate, async (req, res) => {
 });
 
 // Update school settings (admin/settings-edit only)
-router.put('/school', authenticate, csrfProtect, checkPermission('settings', 'edit'), async (req, res) => {
-  try {
-    const parsed = schoolSettingsSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
-    }
-    let settings = await findSchoolSettings(req);
-    const updates = { ...parsed.data };
-
-    // customDomain is globally unique — two schools claiming the same
-    // domain would make /public-branding return the first-created (race).
-    // Enforce uniqueness at write time since the SchoolSettings schema
-    // doesn't have a unique index we control here.
-    if (updates.customDomain) {
-      const normalized = updates.customDomain.toLowerCase().trim();
-      const conflict = await SchoolSettings.findOne({
-        customDomain: normalized,
-        schoolId: { $ne: req.user?.schoolId },
-      })
-        .select('_id')
-        .lean();
-      if (conflict) {
-        return res.status(409).json({
-          error: 'Custom domain is already in use by another school',
-          code: 'DOMAIN_IN_USE',
-        });
+router.put(
+  '/school',
+  authenticate,
+  csrfProtect,
+  checkPermission('settings', 'edit'),
+  async (req, res) => {
+    try {
+      const parsed = schoolSettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
       }
-      updates.customDomain = normalized;
-    }
+      let settings = await findSchoolSettings(req);
+      const updates = { ...parsed.data };
 
-    // NOTE: academicYear updates must go through PUT /academic-year which has
-    // dedicated Zod validation (academicYearSchema).  Unknown keys are stripped
-    // by Zod's default behavior, so stray academicYear keys are safely ignored.
-
-    if (updates.name && !updates.schoolName) {
-      updates.schoolName = updates.name;
-    }
-
-    if (updates.schoolName && !updates.name) {
-      updates.name = updates.schoolName;
-    }
-
-    if (!settings) {
-      settings = await SchoolSettings.create({
-        ...getDefaultSchoolSettings(req.user?.schoolId),
-        ...updates,
-      });
-    } else {
-      // Use dot-notation $set for nested objects so partial updates don't
-      // overwrite siblings (e.g. sending { examDefaults: { maxMarks: 50 } }
-      // should not erase examDefaults.passingMarks).
-      const flatUpdates = {};
-      for (const [key, value] of Object.entries(updates)) {
-        if (value && typeof value === 'object' && !Array.isArray(value)) {
-          for (const [nestedKey, nestedVal] of Object.entries(value)) {
-            flatUpdates[`${key}.${nestedKey}`] = nestedVal;
-          }
-        } else {
-          flatUpdates[key] = value;
+      // customDomain is globally unique — two schools claiming the same
+      // domain would make /public-branding return the first-created (race).
+      // Enforce uniqueness at write time since the SchoolSettings schema
+      // doesn't have a unique index we control here.
+      if (updates.customDomain) {
+        const normalized = updates.customDomain.toLowerCase().trim();
+        const conflict = await SchoolSettings.findOne({
+          customDomain: normalized,
+          schoolId: { $ne: req.user?.schoolId },
+        })
+          .select('_id')
+          .lean();
+        if (conflict) {
+          return res.status(409).json({
+            error: 'Custom domain is already in use by another school',
+            code: 'DOMAIN_IN_USE',
+          });
         }
+        updates.customDomain = normalized;
       }
 
-      await SchoolSettings.updateOne({ _id: settings._id }, { $set: flatUpdates });
-      settings = await SchoolSettings.findById(settings._id);
-    }
+      // NOTE: academicYear updates must go through PUT /academic-year which has
+      // dedicated Zod validation (academicYearSchema).  Unknown keys are stripped
+      // by Zod's default behavior, so stray academicYear keys are safely ignored.
 
-    // Flag fields whose change retroactively re-renders historical
-    // artifacts (receipts, report cards, branded PDFs). Without a
-    // versioning/effective-date layer we can at least warn the admin so
-    // they don't think a currency flip only affects new receipts.
-    const retroactiveFields = ['currency', 'primaryColor', 'secondaryColor', 'gradingScale'];
-    const changed = retroactiveFields.filter((f) => Object.prototype.hasOwnProperty.call(updates, f));
+      if (updates.name && !updates.schoolName) {
+        updates.schoolName = updates.name;
+      }
 
-    res.json({
-      ...settings.toObject?.() ?? settings,
-      ...(changed.length
-        ? {
-            warning: {
-              code: 'RETROACTIVE_CHANGE',
-              message:
-                'These fields affect how historical receipts / report cards render: ' +
-                `${changed.join(', ')}. Previously-issued documents will re-render with the new values.`,
-              fields: changed,
-            },
+      if (updates.schoolName && !updates.name) {
+        updates.name = updates.schoolName;
+      }
+
+      if (!settings) {
+        settings = await SchoolSettings.create({
+          ...getDefaultSchoolSettings(req.user?.schoolId),
+          ...updates,
+        });
+      } else {
+        // Use dot-notation $set for nested objects so partial updates don't
+        // overwrite siblings (e.g. sending { examDefaults: { maxMarks: 50 } }
+        // should not erase examDefaults.passingMarks).
+        const flatUpdates = {};
+        for (const [key, value] of Object.entries(updates)) {
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            for (const [nestedKey, nestedVal] of Object.entries(value)) {
+              flatUpdates[`${key}.${nestedKey}`] = nestedVal;
+            }
+          } else {
+            flatUpdates[key] = value;
           }
-        : {}),
-    });
-  } catch (error) {
-    console.error('Error updating school settings:', error);
-    res.status(500).json({ error: 'Failed to update school settings' });
+        }
+
+        await SchoolSettings.updateOne({ _id: settings._id }, { $set: flatUpdates });
+        settings = await SchoolSettings.findById(settings._id);
+      }
+
+      // Flag fields whose change retroactively re-renders historical
+      // artifacts (receipts, report cards, branded PDFs). Without a
+      // versioning/effective-date layer we can at least warn the admin so
+      // they don't think a currency flip only affects new receipts.
+      const retroactiveFields = ['currency', 'primaryColor', 'secondaryColor', 'gradingScale'];
+      const changed = retroactiveFields.filter((f) =>
+        Object.prototype.hasOwnProperty.call(updates, f)
+      );
+
+      res.json({
+        ...(settings.toObject?.() ?? settings),
+        ...(changed.length
+          ? {
+              warning: {
+                code: 'RETROACTIVE_CHANGE',
+                message:
+                  'These fields affect how historical receipts / report cards render: ' +
+                  `${changed.join(', ')}. Previously-issued documents will re-render with the new values.`,
+                fields: changed,
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      console.error('Error updating school settings:', error);
+      res.status(500).json({ error: 'Failed to update school settings' });
+    }
   }
-});
+);
 
 router.get('/academic-year', authenticate, async (req, res) => {
   try {
@@ -646,6 +692,44 @@ router.put(
 
       const { academicYear, academicYearStart, academicYearEnd } = parsed.data;
       const settings = await ensureSchoolSettings(req.user?.schoolId);
+      const currentYear = settings.academicYear || CURRENT_ACADEMIC_YEAR;
+
+      // Hard-block the year switch when the target year has no students or
+      // classes yet. The transition-preview endpoint surfaces these as soft
+      // warnings, but the actual PUT previously ignored them and pivoted the
+      // school onto an empty year with no data migration — leaving every
+      // class/fee lookup empty and forcing manual cleanup. Pivoting onto a
+      // target year that genuinely has no students is almost always a mistake
+      // (promotions/rollover not run), so block it with a clear error that
+      // points the operator at the preview. A no-op switch (same year) is fine.
+      if (academicYear !== currentYear) {
+        const scope = buildSchoolScopedQuery(req.user?.schoolId);
+        const [studentsInTargetYear, classesInTargetYear] = await Promise.all([
+          Student.countDocuments({ ...scope, academicYear, isDeleted: { $ne: true } }),
+          Class.countDocuments({ ...scope, academicYear, isDeleted: { $ne: true } }),
+        ]);
+        const blockers = [];
+        if (studentsInTargetYear === 0) {
+          blockers.push(
+            `No students exist for ${academicYear} yet. Run promotions or create admissions before switching.`
+          );
+        }
+        if (classesInTargetYear === 0) {
+          blockers.push(
+            `No classes exist for ${academicYear} yet. Create classes for ${academicYear} first.`
+          );
+        }
+        if (blockers.length > 0) {
+          return res.status(409).json({
+            error: 'Academic-year change blocked: target year is not ready.',
+            code: 'ACADEMIC_YEAR_NOT_READY',
+            blockers,
+            hint:
+              'Review GET /settings/academic-year/transition-preview?targetYear=' + academicYear,
+          });
+        }
+      }
+
       const { startYear, endYear } = parseAcademicYear(academicYear);
 
       settings.academicYear = academicYear;
@@ -708,6 +792,7 @@ router.get('/academic-year/transition-preview', authenticate, async (req, res) =
         ...scope,
         academicYear: currentYear,
         overallStatus: { $in: ['pending', 'partial'] },
+        isDeleted: { $ne: true },
       }),
       Student.countDocuments({ ...scope, academicYear: targetYear, isDeleted: { $ne: true } }),
       Class.countDocuments({ ...scope, academicYear: targetYear, isDeleted: { $ne: true } }),

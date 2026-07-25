@@ -14,6 +14,7 @@ import admissionFormConfigRouter from './settings/admissionFormConfig.js';
 import admissionAndRollConfigRouter from './settings/admissionAndRollConfig.js';
 import payrollRouter from './settings/payroll.js';
 import salaryTemplatesRouter from './settings/salaryTemplates.js';
+import modulesRouter from './settings/modules.js';
 
 const router = express.Router();
 
@@ -37,5 +38,6 @@ router.use('/', admissionFormConfigRouter);
 router.use('/', admissionAndRollConfigRouter);
 router.use('/', payrollRouter);
 router.use('/', salaryTemplatesRouter);
+router.use('/', modulesRouter);
 
 export default router;

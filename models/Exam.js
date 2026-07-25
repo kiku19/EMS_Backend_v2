@@ -18,6 +18,13 @@ const examSchema = new mongoose.Schema(
         'practice',
         'class_test',
         'assignment',
+        // Staff-app exam categories (CreateExamScreen segmented control). The
+        // staff-app sends these as `examType`; the route handler maps
+        // examType → type. Without them in the enum, staff-app exam creation
+        // threw a Mongoose ValidationError (500).
+        'written',
+        'practical',
+        'oral',
       ],
     }, // Canonical field
     examType: { type: String }, // Deprecated - use 'type' instead. Kept for backward compat, auto-migrated via pre-save
@@ -62,6 +69,8 @@ const examSchema = new mongoose.Schema(
 );
 
 examSchema.index({ schoolId: 1, classId: 1, academicYear: 1 });
+// Exams grid: tenant/year filter followed by the release UI's newest-first sort.
+examSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1, startDate: -1, createdAt: -1 });
 examSchema.index(
   { schoolId: 1, classId: 1, name: 1, academicYear: 1 },
   { unique: true, partialFilterExpression: { isDeleted: false } }
