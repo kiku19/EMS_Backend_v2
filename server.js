@@ -82,6 +82,10 @@ import referralRoutes from './routes/referral.js';
 import couponRoutes from './routes/coupons.js';
 import featureFlagsRoutes from './routes/featureFlags.js';
 import superAdminRoutes from './routes/superAdmin.js';
+import superAdminActivityRoutes from './routes/superAdminActivity.js';
+import superAdminTrashRoutes from './routes/superAdminTrash.js';
+import superAdminBillingRoutes from './routes/superAdminBilling.js';
+import superAdminLifecycleRoutes from './routes/superAdminLifecycle.js';
 import schoolGroupsRoutes from './routes/schoolGroups.js';
 import reportsRoutes from './routes/reports.js';
 import exportRoutes from './routes/export.js';
@@ -97,6 +101,7 @@ import { validateEnvironment, config } from './config/environment.js';
 import { authenticate } from './middleware/auth.js';
 import { authenticateParent } from './middleware/parentAuth.js';
 import { moduleAccessGuard } from './middleware/auth/moduleAccess.js';
+import schoolStatusGuard from './middleware/auth/schoolStatusGuard.js';
 import { apiUsageTracker } from './middleware/apiUsageTracker.js';
 import { initializeSocket } from './utils/socketEmitter.js';
 import { createLogger } from './utils/logger.js';
@@ -550,9 +555,18 @@ v1Router.use(authenticate);
 // are never gated; super-admins bypass. See middleware/auth/moduleAccess.js.
 v1Router.use(moduleAccessGuard);
 
+// ─── School Status Guard (Phase 6) ──────────────────────────────────────────
+// Blocks API access for suspended/locked/churned schools (billing stays open so
+// they can pay to reactivate). Super-admin bypasses via null schoolId.
+v1Router.use(schoolStatusGuard);
+
 // ─── Platform Administration ─────────────────────────────────────────────────
 v1Router.use('/permissions', permissionRoutes);
 v1Router.use('/super-admin', superAdminRoutes);
+v1Router.use('/super-admin/activity', superAdminActivityRoutes);
+v1Router.use('/super-admin/trash', superAdminTrashRoutes);
+v1Router.use('/super-admin/billing', superAdminBillingRoutes);
+v1Router.use('/super-admin/lifecycle', superAdminLifecycleRoutes);
 v1Router.use('/school-groups', schoolGroupsRoutes);
 v1Router.use('/referral', referralRoutes);
 v1Router.use('/coupons', couponRoutes);

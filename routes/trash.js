@@ -4,95 +4,14 @@ import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import TrashItem from '../models/TrashItem.js';
 import { escapeRegex } from './students/helpers.js';
-import { permanentlyDeleteStudentData } from '../services/studentDataErasureService.js';
-import { ENTITY_REGISTRY } from '../services/trashService.js';
+import {
+  ENTITY_REGISTRY,
+  restoreTrashItem,
+  permanentlyDeleteTrashItem,
+} from '../services/trashService.js';
 
 const router = express.Router();
 router.use(authenticate);
-
-// ─── Helpers ───
-
-/**
- * Generic restore for a single trash item.
- * Reads restoreStrategy / modelName / softDeleteField from the trash record itself.
- */
-async function restoreTrashItem(trashItem) {
-  const { itemType, restoreStrategy, modelName, softDeleteField, itemId, originalData } =
-    trashItem;
-
-  // BulkCleanup has its own restore path
-  if (itemType === 'BulkCleanup') {
-    const bulkModelName = trashItem.bulkCleanup?.modelName;
-    if (!bulkModelName) throw new Error('BulkCleanup missing modelName');
-    const Model = mongoose.model(bulkModelName);
-    const documents = originalData;
-    if (documents && documents.length > 0) {
-      await Model.insertMany(documents, { ordered: false });
-    }
-    return;
-  }
-
-  if (!modelName) throw new Error(`No modelName on trash item ${trashItem._id}`);
-  const Model = mongoose.model(modelName);
-
-  if (restoreStrategy === 'soft-delete') {
-    const field = softDeleteField || 'isDeleted';
-    // For isActive fields, restore means setting to true; for isDeleted, setting to false
-    const registryEntry = ENTITY_REGISTRY[itemType];
-    const restoreValue =
-      registryEntry?.softDeleteRestore !== undefined ? registryEntry.softDeleteRestore : false;
-
-    const updateFields = { [field]: restoreValue, deletedAt: null, deletedBy: null };
-
-    // For isActive-based entities, don't clear deletedAt/deletedBy (they don't have those)
-    if (field === 'isActive') {
-      delete updateFields.deletedAt;
-      delete updateFields.deletedBy;
-    }
-
-    await Model.findByIdAndUpdate(itemId, { $set: updateFields });
-  } else {
-    // hard-delete restore: re-insert the original document
-    if (!originalData || typeof originalData !== 'object') {
-      throw new Error(`Cannot restore ${itemType}: original data is missing or invalid`);
-    }
-
-    // Try with _id first to preserve references, fall back to without _id on duplicate key
-    try {
-      await Model.create(originalData);
-    } catch (err) {
-      if (err.code === 11000) {
-        const { _id, ...dataWithoutId } = originalData;
-        await Model.create(dataWithoutId);
-      } else {
-        throw err;
-      }
-    }
-  }
-}
-
-/**
- * Generic permanent delete for a single trash item.
- */
-async function permanentlyDeleteTrashItem(trashItem) {
-  const { itemType, modelName, restoreStrategy, itemId } = trashItem;
-
-  // Student has special GDPR-compliant cascading erasure
-  if (itemType === 'Student') {
-    await permanentlyDeleteStudentData(itemId);
-    return;
-  }
-
-  // BulkCleanup — data already deleted from source, nothing to do
-  if (itemType === 'BulkCleanup') return;
-
-  // For soft-deleted items, the document still exists — hard-delete it now
-  if (restoreStrategy === 'soft-delete' && modelName) {
-    const Model = mongoose.model(modelName);
-    await Model.findByIdAndDelete(itemId);
-  }
-  // For hard-deleted items, the document is already gone — nothing to do
-}
 
 // ─── Routes ───
 

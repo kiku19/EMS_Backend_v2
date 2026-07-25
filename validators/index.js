@@ -42,6 +42,7 @@ export {
   superAdminCreateSchoolSchema,
   superAdminUpdateSchoolSchema,
   superAdminProvisionSchoolSchema,
+  superAdminModulesSchema,
   mongoIdParamSchema,
 } from './superAdminSchema.js';
 export {

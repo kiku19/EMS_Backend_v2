@@ -96,8 +96,40 @@ export const selfSignupRateLimiters = [
 
 export const selfSignupLimiter = signupIpHourlyLimiter;
 
+// PR2 — email verification + resend.
+//
+// resend-verification is a public endpoint keyed by the address being asked
+// about, so the email bucket is the right place to cap abuse. Same shape as
+// signupEmailLimiter so the 429 contract stays consistent for the dashboard.
+const resendVerificationEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 3,
+  keyGenerator: (req) => {
+    const email = String(req.body?.email || '')
+      .trim()
+      .toLowerCase();
+    return email ? `resend_verification:email:${email}` : `resend_verification:ip:${req.ip}`;
+  },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: skipOutsideProduction,
+  handler: (req, res, _next, options) => {
+    res
+      .status(429)
+      .set('Retry-After', String(Math.ceil(options.windowMs / 1000)))
+      .json({
+        error: req.t ? req.t('common:errors.tooManyRequests') : 'Too many requests',
+        message: 'Too many verification email requests for this address. Try again later.',
+        retryAfter: Math.ceil(options.windowMs / 1000),
+      });
+  },
+});
+
+export const resendVerificationLimiter = resendVerificationEmailLimiter;
+
 export const SELF_SIGNUP_LIMITS = Object.freeze({
   ipHourly: 5,
   ipDaily: 10,
   emailHourly: 3,
+  resendEmailHourly: 3,
 });
