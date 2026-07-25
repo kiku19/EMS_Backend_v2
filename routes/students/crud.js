@@ -276,6 +276,56 @@ router.get(
         resultMap[_id.toString()] = percentage != null ? Math.round(percentage) : null;
       });
 
+      // Footer totals must describe the full filtered roster, not only the
+      // current page returned by server-side pagination.
+      const allFilteredIds = await Student.distinct('_id', query);
+      const [globalFeeAgg, globalAttAgg] = await Promise.all([
+        StudentFeeStructure.aggregate([
+          {
+            $match: {
+              ...(schoolId ? { schoolId } : {}),
+              studentId: { $in: allFilteredIds },
+              academicYear: feeYear,
+              isDeleted: { $ne: true },
+            },
+          },
+          { $group: { _id: null, totalDue: { $sum: '$totalBalance' } } },
+        ]),
+        Attendance.aggregate([
+          {
+            $match: {
+              studentId: { $in: allFilteredIds },
+              ...(schoolId ? { schoolId } : {}),
+              ...(feeYear && feeYear !== 'all' ? { academicYear: feeYear } : {}),
+            },
+          },
+          {
+            $group: {
+              _id: '$studentId',
+              total: { $sum: 1 },
+              present: {
+                $sum: {
+                  $switch: {
+                    branches: [
+                      { case: { $in: ['$status', ['present', 'late']] }, then: 1 },
+                      { case: { $eq: ['$status', 'halfday'] }, then: 0.5 },
+                    ],
+                    default: 0,
+                  },
+                },
+              },
+            },
+          },
+        ]),
+      ]);
+      const totalDue = globalFeeAgg[0]?.totalDue ?? 0;
+      const attPercentages = globalAttAgg
+        .map(({ total, present }) => (total > 0 ? (present / total) * 100 : null))
+        .filter((value) => value != null && Number.isFinite(value));
+      const avgAttendance = attPercentages.length
+        ? Math.round(attPercentages.reduce((sum, value) => sum + value, 0) / attPercentages.length)
+        : null;
+
       const formatted = students.map((student) => {
         const classInfo = formatStudentClass(student);
         const currentFeeStatus =
@@ -336,7 +386,12 @@ router.get(
           limit: limitNum,
           total,
           noPagination,
-          aggregates: { statusCounts, defaulters: defaulterStudentIds.length },
+          aggregates: {
+            totalDue,
+            avgAttendance,
+            statusCounts,
+            defaulters: defaulterStudentIds.length,
+          },
           // statusCounts stays a top-level field too for back-compat with
           // existing consumers that read it directly off the response.
           extra: { statusCounts },

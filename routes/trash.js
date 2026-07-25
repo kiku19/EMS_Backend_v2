@@ -25,7 +25,6 @@ const TRASH_TYPE_TO_MODULE = Object.freeze({
   Result: 'academics',
   Homework: 'homework',
 });
-
 // ─── Routes ───
 
 /**

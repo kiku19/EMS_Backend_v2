@@ -140,8 +140,11 @@ export function createTestApp() {
 
   // Test-only: chains authenticate → schoolStatusGuard so enforcement can be
   // exercised end-to-end. Mirrors the server.js mount (guard after auth).
-  v1Router.use('/__test/status-guard', authenticate, schoolStatusGuard, (_req, res) =>
-    res.json({ ok: true })
+  v1Router.use(
+    '/__test/status-guard',
+    authenticate,
+    schoolStatusGuard,
+    (_req, res) => res.json({ ok: true })
   );
   // Parent routes must mount before wildcard routers (academics, examSchedule,
   // etc.) which apply router-level `authenticate`. Without this ordering,
