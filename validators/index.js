@@ -161,3 +161,4 @@ export {
   studentLeaveQuerySchema,
 } from './leaveSchema.js';
 export { aiChatSchema, aiChatMessageSchema } from './aiSchema.js';
+export { updateOnboardingStepSchema, ONBOARDING_STEPS } from './onboardingStepSchema.js';
