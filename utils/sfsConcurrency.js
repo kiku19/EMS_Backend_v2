@@ -14,10 +14,19 @@ import { StudentFeeStructure } from '../database.js';
  * Returns the saved doc, or null when no doc matched the filter.
  * Throws if the mutator rejects or if the retries are exhausted.
  */
-export async function updateFeeStructureWithRetry(filter, mutator, { maxRetries = 5, session } = {}) {
+export async function updateFeeStructureWithRetry(
+  filter,
+  mutator,
+  { maxRetries = 5, session } = {}
+) {
+  // Defense-in-depth: never mutate an archived student's fee structure.
+  // Callers (payment/fee flows) already scope to live students, but merging
+  // isDeleted here guarantees a soft-deleted ledger can't be paid/edited even
+  // if a future caller forgets to filter.
+  const mergedFilter = { ...filter, isDeleted: { $ne: true } };
   let lastError = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const doc = await StudentFeeStructure.findOne(filter).session(session || null);
+    const doc = await StudentFeeStructure.findOne(mergedFilter).session(session || null);
     if (!doc) return null;
 
     await mutator(doc);
@@ -26,7 +35,8 @@ export async function updateFeeStructureWithRetry(filter, mutator, { maxRetries 
     } catch (err) {
       // Only retry on the optimistic-concurrency conflict. Anything else —
       // ValidationError, duplicate-key, etc. — the caller should handle.
-      const isVersionConflict = err?.name === 'VersionError' ||
+      const isVersionConflict =
+        err?.name === 'VersionError' ||
         (err?.name === 'MongoServerError' && /version/i.test(err.message));
       if (!isVersionConflict) throw err;
       lastError = err;

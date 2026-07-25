@@ -137,8 +137,20 @@ export async function getSubjectAnalysis(schoolId, { examId, classId, academicYe
 
 /**
  * Rank list for a given exam (sorted by percentage desc).
+ * Returns a full array — kept for non-export callers.
  */
 export async function getRankList(schoolId, { examId, classId, academicYear }) {
+  const cursor = streamRankList(schoolId, { examId, classId, academicYear });
+  const out = [];
+  let doc;
+  while ((doc = await cursor.next())) out.push(doc);
+  return out;
+}
+
+/**
+ * Mongoose query builder shared by getRankList() and streamRankList().
+ */
+function rankListQuery(schoolId, { examId, classId, academicYear }) {
   const match = {
     schoolId: toObjectId(schoolId),
     examId: toObjectId(examId),
@@ -153,6 +165,15 @@ export async function getRankList(schoolId, { examId, classId, academicYear }) {
     .populate('classId', 'name section')
     .sort({ percentage: -1, totalMarksObtained: -1 })
     .select('studentId classId totalMarksObtained totalMaxMarks percentage grade rank status');
+}
+
+/**
+ * Cursor variant of getRankList() — yields one Result document at a time
+ * (already populated + sorted), so exportService.sendStreamedExport() can
+ * stream rows without buffering the whole result set in memory.
+ */
+export function streamRankList(schoolId, opts) {
+  return rankListQuery(schoolId, opts).lean().cursor();
 }
 
 /**
@@ -193,6 +214,7 @@ export async function getFeeCollectionSummary(
   const match = {
     schoolId: toObjectId(schoolId),
     status: 'completed',
+    isDeleted: { $ne: true },
   };
   if (academicYear) match.academicYear = academicYear;
   if (startDate || endDate) {
@@ -227,16 +249,29 @@ export async function getFeeCollectionSummary(
 
 /**
  * Outstanding dues — students with pending or partial fee status.
+ * Returns a full array — kept for non-export callers.
  */
-export async function getOutstandingDues(schoolId, { academicYear, classId }) {
+export async function getOutstandingDues(schoolId, opts) {
+  const cursor = streamOutstandingDues(schoolId, opts);
+  const out = [];
+  let doc;
+  while ((doc = await cursor.next())) out.push(doc);
+  return out;
+}
+
+/**
+ * Shared query builder for outstanding dues.
+ */
+function outstandingDuesQuery(schoolId, { academicYear, classId }) {
   const match = {
     schoolId: toObjectId(schoolId),
     overallStatus: { $in: ['pending', 'partial'] },
+    isDeleted: { $ne: true },
   };
   if (academicYear) match.academicYear = academicYear;
   if (classId) match.classId = toObjectId(classId);
 
-  const results = await StudentFeeStructure.find(match)
+  return StudentFeeStructure.find(match)
     .populate({
       path: 'studentId',
       select: 'name admissionId rollNo status',
@@ -247,9 +282,28 @@ export async function getOutstandingDues(schoolId, { academicYear, classId }) {
       'studentId classId academicYear totalFee totalPaid totalBalance overallStatus lastPaymentDate'
     )
     .sort({ totalBalance: -1 });
+}
 
-  // Filter out records where the student was deleted (populate returns null)
-  return results.filter((r) => r.studentId != null);
+/**
+ * Cursor variant of getOutstandingDues() — yields one StudentFeeStructure
+ * document at a time. Records whose student was soft-deleted (populate
+ * returned null for studentId) are skipped so the stream matches the
+ * array variant's filter. The returned object is a wrapper exposing a
+ * Mongoose-compatible .next() that skips filtered-out docs.
+ */
+export function streamOutstandingDues(schoolId, opts) {
+  const cursor = outstandingDuesQuery(schoolId, opts).lean().cursor();
+  // Wrap so the export helper's `while (await cursor.next())` loop skips
+  // records where populate set studentId to null (soft-deleted student).
+  return {
+    async next() {
+      let doc;
+      while ((doc = await cursor.next())) {
+        if (doc.studentId != null) return doc;
+      }
+      return null;
+    },
+  };
 }
 
 /**
@@ -259,6 +313,7 @@ export async function getFeeHeadWiseCollection(schoolId, { academicYear, startDa
   const match = {
     schoolId: toObjectId(schoolId),
     status: 'completed',
+    isDeleted: { $ne: true },
   };
   if (academicYear) match.academicYear = academicYear;
   if (startDate || endDate) {
@@ -288,6 +343,7 @@ export async function getPaymentModeSummary(schoolId, { academicYear, startDate,
   const match = {
     schoolId: toObjectId(schoolId),
     status: 'completed',
+    isDeleted: { $ne: true },
   };
   if (academicYear) match.academicYear = academicYear;
   if (startDate || endDate) {
@@ -317,6 +373,7 @@ export async function getConcessionReport(schoolId, { academicYear }) {
   const match = {
     schoolId: toObjectId(schoolId),
     discountApplied: { $gt: 0 },
+    isDeleted: { $ne: true },
   };
   if (academicYear) match.academicYear = academicYear;
 
@@ -339,12 +396,33 @@ export async function getConcessionReport(schoolId, { academicYear }) {
 // ─── ATTENDANCE REPORTS ──────────────────────────────────────────────────────
 
 /**
- * Student-wise attendance percentage for a date range.
+ * Per-row transform for the student attendance aggregate: takes a grouped
+ * aggregate document and returns the normalized attendance row. Shared by
+ * getStudentAttendanceReport() (array) and streamStudentAttendanceReport()
+ * (cursor) so both paths stay identical.
  */
-export async function getStudentAttendanceReport(
-  schoolId,
-  { startDate, endDate, classId, studentId }
-) {
+function attendanceRowFromDoc(r) {
+  return {
+    studentId: r._id,
+    studentName: r.student?.name,
+    rollNo: r.student?.rollNo,
+    admissionId: r.student?.admissionId,
+    className: r.class?.name,
+    classSection: r.class?.section,
+    present: r.present,
+    absent: r.absent,
+    late: r.late,
+    leave: r.leave,
+    halfday: r.halfday,
+    total: r.total,
+    percentage: r.total > 0 ? Number((((r.present + r.late) / r.total) * 100).toFixed(2)) : 0,
+  };
+}
+
+/**
+ * Shared aggregate pipeline for student-wise attendance in a date range.
+ */
+function studentAttendancePipeline(schoolId, { startDate, endDate, classId, studentId }) {
   const match = {
     schoolId: toObjectId(schoolId),
     date: { $gte: startDate, $lte: endDate },
@@ -352,7 +430,7 @@ export async function getStudentAttendanceReport(
   if (classId) match.classId = toObjectId(classId);
   if (studentId) match.studentId = toObjectId(studentId);
 
-  const records = await Attendance.aggregate([
+  return [
     { $match: match },
     {
       $group: {
@@ -386,23 +464,34 @@ export async function getStudentAttendanceReport(
     },
     { $unwind: { path: '$class', preserveNullAndEmptyArrays: true } },
     { $sort: { 'student.rollNo': 1 } },
-  ]);
+  ];
+}
 
-  return records.map((r) => ({
-    studentId: r._id,
-    studentName: r.student?.name,
-    rollNo: r.student?.rollNo,
-    admissionId: r.student?.admissionId,
-    className: r.class?.name,
-    classSection: r.class?.section,
-    present: r.present,
-    absent: r.absent,
-    late: r.late,
-    leave: r.leave,
-    halfday: r.halfday,
-    total: r.total,
-    percentage: r.total > 0 ? Number((((r.present + r.late) / r.total) * 100).toFixed(2)) : 0,
-  }));
+/**
+ * Student-wise attendance percentage for a date range.
+ * Returns a full array — kept for non-export callers.
+ */
+export async function getStudentAttendanceReport(schoolId, opts) {
+  const records = await Attendance.aggregate(studentAttendancePipeline(schoolId, opts));
+  return records.map(attendanceRowFromDoc);
+}
+
+/**
+ * Cursor variant of getStudentAttendanceReport() — yields one transformed
+ * attendance row at a time from the aggregate pipeline, so
+ * sendStreamedExport() can stream without buffering the full result set.
+ * Each document from the aggregate cursor is mapped through
+ * attendanceRowFromDoc() on the fly.
+ */
+export function streamStudentAttendanceReport(schoolId, opts) {
+  const cursor = Attendance.aggregate(studentAttendancePipeline(schoolId, opts)).cursor();
+  return {
+    async next() {
+      const doc = await cursor.next();
+      if (doc === null) return null;
+      return attendanceRowFromDoc(doc);
+    },
+  };
 }
 
 /**
@@ -535,7 +624,10 @@ export async function getAbsenteeReport(schoolId, { startDate, endDate, classId 
  * Attendance trend — school-wide (or class-scoped) attendance rate grouped by day/week/month.
  * Returns an array of { period, present, absent, late, leave, halfday, total, rate }.
  */
-export async function getAttendanceTrend(schoolId, { startDate, endDate, classId, groupBy = 'day' }) {
+export async function getAttendanceTrend(
+  schoolId,
+  { startDate, endDate, classId, groupBy = 'day' }
+) {
   const match = {
     schoolId: toObjectId(schoolId),
     date: { $gte: startDate, $lte: endDate },
@@ -937,6 +1029,7 @@ export async function getDashboardMetrics(schoolId, { academicYear }) {
             academicYear: ay,
             status: 'completed',
             paymentDate: { $gte: monthStart, $lte: today },
+            isDeleted: { $ne: true },
           },
         },
         {
@@ -953,6 +1046,7 @@ export async function getDashboardMetrics(schoolId, { academicYear }) {
             schoolId: schoolObjId,
             academicYear: ay,
             overallStatus: { $in: ['pending', 'partial'] },
+            isDeleted: { $ne: true },
           },
         },
         {

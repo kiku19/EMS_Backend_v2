@@ -5,6 +5,7 @@ import { authenticate } from '../../middleware/auth.js';
 import { checkPermission } from '../../middleware/auth/permissions.js';
 import { buildSchoolScopedQuery } from '../../utils/schoolContext.js';
 import { validateZod } from '../../validators/zodHelpers.js';
+import { objectId } from '../../validators/zodHelpers.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -18,18 +19,17 @@ const breakdownItemSchema = z.object({
 const salaryTemplateSchema = z
   .object({
     name: z.string().trim().min(1, 'Template name is required').max(100),
-    breakdown: z
-      .array(breakdownItemSchema)
-      .min(1, 'At least one salary component is required'),
+    breakdown: z.array(breakdownItemSchema).min(1, 'At least one salary component is required'),
   })
   .strict()
-  .refine(
-    (data) => data.breakdown.reduce((sum, item) => sum + item.amount, 0) > 0,
-    { message: 'Total salary must be greater than 0', path: ['breakdown'] }
-  );
+  .refine((data) => data.breakdown.reduce((sum, item) => sum + item.amount, 0) > 0, {
+    message: 'Total salary must be greater than 0',
+    path: ['breakdown'],
+  });
+const salaryTemplateParamsSchema = z.object({ id: objectId }).strip();
 
 // GET /settings/salary-templates
-router.get('/salary-templates', async (req, res) => {
+router.get('/salary-templates', checkPermission('payroll', 'view'), async (req, res) => {
   try {
     const templates = await SalaryTemplate.find({
       ...buildSchoolScopedQuery(req.user?.schoolId),
@@ -48,7 +48,7 @@ router.get('/salary-templates', async (req, res) => {
 // POST /settings/salary-templates
 router.post(
   '/salary-templates',
-  checkPermission('settings', 'edit'),
+  checkPermission('payroll', 'create'),
   validateZod(salaryTemplateSchema),
   async (req, res) => {
     try {
@@ -76,7 +76,8 @@ router.post(
 // PUT /settings/salary-templates/:id
 router.put(
   '/salary-templates/:id',
-  checkPermission('settings', 'edit'),
+  checkPermission('payroll', 'edit'),
+  validateZod(salaryTemplateParamsSchema, 'params'),
   validateZod(salaryTemplateSchema),
   async (req, res) => {
     try {
@@ -114,7 +115,8 @@ router.put(
 // DELETE /settings/salary-templates/:id
 router.delete(
   '/salary-templates/:id',
-  checkPermission('settings', 'edit'),
+  checkPermission('payroll', 'delete'),
+  validateZod(salaryTemplateParamsSchema, 'params'),
   async (req, res) => {
     try {
       const template = await SalaryTemplate.findOneAndUpdate(

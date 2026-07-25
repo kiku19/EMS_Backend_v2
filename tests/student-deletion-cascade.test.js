@@ -41,7 +41,7 @@ import { piiMatch } from '../utils/encryption.js';
 describe('E2E-12: Student deletion → cascade cleanup → data consistency', () => {
   // NOTE: DELETE /api/students/:id is a SOFT-delete (reversible via
   // /api/trash/:id/restore). It marks Student.isDeleted=true, soft-deletes
-  // Result, hard-deletes Attendance, and deliberately PRESERVES
+  // Result and Attendance, and deliberately PRESERVES
   // StudentFeeStructure + FeePayment so payment history survives
   // trash-restore. Permanent erasure (studentDataErasureService) is a
   // separate flow invoked from trash.js.
@@ -320,8 +320,9 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
     expect(softDeleted.isDeleted).toBe(true);
     expect(softDeleted.deletedAt).toBeTruthy();
 
-    // --- Attendance: hard-deleted (no isDeleted field on that schema) ---
-    expect(await Attendance.countDocuments({ studentId: sid })).toBe(0);
+    // --- Attendance: soft-deleted so a trash restore is lossless ---
+    expect(await Attendance.countDocuments({ studentId: sid })).toBe(1);
+    expect(await Attendance.countDocuments({ studentId: sid, isDeleted: true })).toBe(1);
 
     // --- Result: soft-deleted so unpublished/historical rows are hidden
     //     but recoverable from trash ---
@@ -555,7 +556,8 @@ describe('E2E-12: Student deletion → cascade cleanup → data consistency', ()
     // The soft-delete route returns {success, deletedStudentId, trashItemId}
     // but no per-collection counts. We verify the cascade outcomes directly.
     expect(deleteRes.body.success).toBe(true);
-    expect(await Attendance.countDocuments({ studentId: sid })).toBe(0);
+    expect(await Attendance.countDocuments({ studentId: sid })).toBe(2);
+    expect(await Attendance.countDocuments({ studentId: sid, isDeleted: true })).toBe(2);
     // StudentFeeStructure + FeePayment preserved through soft-delete — the
     // separate permanent-erasure flow removes them.
     expect(await FeePayment.countDocuments({ studentId: sid })).toBeGreaterThan(0);

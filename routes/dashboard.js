@@ -130,6 +130,7 @@ import {
   Substitution,
   StudentFeeStructure,
 } from '../database.js';
+import Parent from '../models/Parent.js';
 import StaffAttendance from '../models/StaffAttendance.js';
 import PayrollRecord from '../models/PayrollRecord.js';
 import TeacherLeave from '../models/TeacherLeave.js';
@@ -204,10 +205,40 @@ router.get('/feed', checkPermission('dashboard', 'view'), async (req, res) => {
     const nextWeekDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const nextWeek = nextWeekDate.toISOString().split('T')[0];
 
+    // Aggregate fee structures with an outstanding balance, joining the owning
+    // student and dropping orphaned rows (student soft-deleted / inactive).
+    // Without this join, archived students leave "live" fee rows that surface
+    // as phantom "unpaid fees" priorities. Same $lookup pattern as
+    // /dashboard/fee-summary and /fees/class-summary. Aggregation $match does
+    // not auto-cast, so cast schoolId to ObjectId explicitly.
+    const schoolObjIdForFeed = new mongoose.Types.ObjectId(String(schoolId));
+
     const [feeStructures, pendingSubstitutions, calendarEvents] = await Promise.allSettled([
-      StudentFeeStructure.find({ schoolId, totalBalance: { $gt: 0 } })
-        .select('totalBalance')
-        .lean(),
+      StudentFeeStructure.aggregate([
+        {
+          $match: {
+            schoolId: schoolObjIdForFeed,
+            totalBalance: { $gt: 0 },
+            isDeleted: { $ne: true },
+          },
+        },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: '$student' },
+        {
+          $match: {
+            'student.isDeleted': { $ne: true },
+            'student.status': 'active',
+          },
+        },
+        { $project: { _id: 0, totalBalance: 1 } },
+      ]),
       Substitution.find({
         schoolId,
         date: today,
@@ -373,6 +404,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfDay },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -383,6 +415,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfMonth },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' } } },
@@ -426,6 +459,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfDay },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -436,6 +470,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: last7Days },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -446,6 +481,7 @@ router.get('/stats', checkPermission('dashboard', 'view'), async (req, res) => {
               schoolId,
               createdAt: { $gte: startOfMonth },
               status: { $nin: ['failed', 'cancelled', 'refunded'] },
+              isDeleted: { $ne: true },
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -647,13 +683,293 @@ router.get('/analytics-summary', checkPermission('dashboard', 'view'), async (re
   }
 });
 
-// GET /api/v1/dashboard/birthdays-today
-// [SCH-212] Today's birthdays (students + staff) for the main Dashboard widget.
-// PAG-05 removed the global student roster from AppContext, so the frontend can no
-// longer derive birthdays from `useApp().students` (it's permanently []). This
-// endpoint stays server-side: it does NOT duplicate the analytics-summary aggregate
-// because it returns per-person DOBs (which analytics-summary deliberately omits).
-// Limit is bounded so a large school can't blow up the payload.
+// GET /api/v1/dashboard/fee-summary
+// Bounded fee collection snapshot for the dashboard landing card.
+// [PERF-REFACTOR] Replaces the client walking `studentFeesApi.getAll()` (every
+// fee structure for the school/year) + `feesApi.getPayments()` (every payment)
+// just to compute four numbers and a 6-row recent list. This endpoint
+// aggregates the totals in MongoDB and returns a bounded recent-payment slice,
+// so the dashboard no longer downloads unbounded collections to render KPIs.
+//
+// Response:
+//   { totalCollected, totalPending, defaulters, feeStructuresExist,
+//     recentPayments: [{ _id, amount, paymentDate, receiptNumber,
+//                        paymentMethod, status, studentId }] }
+router.get('/fee-summary', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const parsed = querySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: req.t('common:routes.invalidQueryParameters'),
+        details: parsed.error.errors,
+      });
+    }
+
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    // StudentFeeStructure.schoolId is an ObjectId; aggregation `$match` does
+    // not auto-cast (unlike find/countDocuments), so convert explicitly. Same
+    // pattern as /dashboard/analytics-summary above.
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+
+    const academicYear = parsed.data.academicYear || undefined;
+
+    // Fee-structure scope: school + (optional) academic year, soft-delete safe.
+    // totalPaid/totalBalance are maintained on each StudentFeeStructure doc.
+    // isDeleted filters archived students' fee rows at the source — the $lookup
+    // below also drops them as defense-in-depth.
+    const structureMatch = {
+      schoolId: schoolObjId,
+      isDeleted: { $ne: true },
+      ...(academicYear ? { academicYear } : {}),
+    };
+
+    // One aggregation pass: join the owning student and drop orphaned fee
+    // structures (rows whose student was soft-deleted) before summing the
+    // money totals and counting defaulters. Without this join, archived
+    // students leave behind "live" fee rows that inflate the hero's unpaid-fees
+    // badge even though the school shows zero students — a visible trust bug.
+    // Same $lookup + 'student.isDeleted' pattern as /fees/class-summary.
+    //
+    // todayCollected/monthCollected are aggregated server-side from FeePayment
+    // rather than reduced client-side over a 50-row page. Previously the
+    // dashboard called feesApi.getPayments() (which defaults to page=1,
+    // limit=50) and summed those rows — so schools with >50 payments/year
+    // showed a fraction of the real "collected today/month" headline KPI.
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const monthPrefix = todayStr.slice(0, 7); // YYYY-MM
+    const paymentMatch = {
+      schoolId: schoolObjId,
+      status: { $ne: 'cancelled' },
+      isDeleted: { $ne: true },
+      ...(academicYear ? { academicYear } : {}),
+    };
+
+    const [totalsAgg, recentPayments, todayCollectedAgg, monthCollectedAgg] = await Promise.all([
+      StudentFeeStructure.aggregate([
+        { $match: structureMatch },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: '$student' },
+        {
+          $match: {
+            'student.isDeleted': { $ne: true },
+            'student.status': 'active',
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalCollected: { $sum: '$totalPaid' },
+            totalPending: { $sum: '$totalBalance' },
+            structureCount: { $sum: 1 },
+            // "Defaulters" = joined fee structures with an outstanding balance,
+            // matching the client-side definition (fs.totalBalance > 0).
+            defaulters: {
+              $sum: { $cond: [{ $gt: ['$totalBalance', 0] }, 1, 0] },
+            },
+          },
+        },
+      ]).catch(() => []),
+      // Bounded recent-payments slice (newest first). The {schoolId, paymentDate:-1}
+      // index makes this a cheap index scan; we only ever return 6 rows. We
+      // over-fetch (limit 18) then drop archived-student rows client-side to
+      // avoid a $lookup on this hot path while still returning ~6 live rows.
+      FeePayment.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        ...(academicYear ? { academicYear } : {}),
+      })
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .limit(18)
+        .select('amount paymentDate receiptNumber paymentMethod status studentId classId')
+        .populate({
+          path: 'studentId',
+          select: 'isDeleted status',
+          match: { isDeleted: { $ne: true } },
+        })
+        .lean()
+        .then((rows) => (rows || []).filter((r) => r.studentId).slice(0, 6))
+        .catch(() => []),
+      // "Collected today" summed server-side across ALL of today's payments
+      // (not just a 50-row page). paymentDate is a stored "YYYY-MM-DD" string.
+      // [S4/X16] Join the owning student and drop archived-student rows before
+      // summing, so a departed student's payments don't inflate today's KPI.
+      FeePayment.aggregate([
+        { $match: { ...paymentMatch, paymentDate: todayStr } },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: { path: '$student', preserveNullAndEmptyArrays: false } },
+        { $match: { 'student.isDeleted': { $ne: true } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).catch(() => []),
+      // "Collected this month" — match the "YYYY-MM" prefix of paymentDate.
+      // [S4/X16] Same archived-student exclusion as todayCollected above.
+      FeePayment.aggregate([
+        { $match: { ...paymentMatch, paymentDate: { $regex: `^${monthPrefix}` } } },
+        {
+          $lookup: {
+            from: 'students',
+            localField: 'studentId',
+            foreignField: '_id',
+            as: 'student',
+          },
+        },
+        { $unwind: { path: '$student', preserveNullAndEmptyArrays: false } },
+        { $match: { 'student.isDeleted': { $ne: true } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).catch(() => []),
+    ]);
+
+    const totals = totalsAgg[0] || {
+      totalCollected: 0,
+      totalPending: 0,
+      structureCount: 0,
+      defaulters: 0,
+    };
+
+    return res.json({
+      totalCollected: totals.totalCollected || 0,
+      totalPending: totals.totalPending || 0,
+      defaulters: totals.defaulters || 0,
+      feeStructuresExist: (totals.structureCount || 0) > 0,
+      recentPayments,
+      // Server-computed money KPIs — the true sum of all payments today / this
+      // month, not a reduce over a 50-row page.
+      todayCollected: todayCollectedAgg[0]?.total || 0,
+      monthCollected: monthCollectedAgg[0]?.total || 0,
+    });
+  } catch (error) {
+    logger.error('Dashboard fee-summary error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
+// GET /api/v1/dashboard/birthdays
+// Today's student & staff birthdays. [PAG-05] removed the global student roster
+// from the app shell, so the dashboard can no longer compute birthdays
+// client-side. This endpoint does the month/day match in MongoDB and returns
+// only the people whose birthday is today (plus an optional upcoming window),
+// capped for the dashboard card.
+//
+// Staff.dob is a Mixed field that may hold a legacy String ("DD/MM/YYYY" or
+// ISO) or a Date; Student.dateOfBirth is a validated Date. We normalise both to
+// a Date in the aggregation so $month/$dayOfMonth match reliably.
+router.get('/birthdays', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+    const now = new Date();
+    const todayMonth = now.getMonth() + 1; // 1-12
+    const todayDay = now.getDate();
+
+    // Parse a Staff.dob / Student.dateOfBirth value into a Date. Returns null if
+    // unparseable. Both fields are stored as Strings ("YYYY-MM-DD" or legacy
+    // "DD/MM/YYYY"), so date-only strings are parsed as LOCAL time (not UTC) to
+    // keep getMonth()/getDate() aligned with the user's calendar.
+    const parseDob = (raw) => {
+      if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw;
+      if (typeof raw === 'string') {
+        // "DD/MM/YYYY" legacy format
+        const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (m) {
+          const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+          return isNaN(d.getTime()) ? null : d;
+        }
+        // "YYYY-MM-DD" — parse as local, not UTC (avoids off-by-one across tz).
+        const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) {
+          const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+          return isNaN(d.getTime()) ? null : d;
+        }
+        const d = new Date(raw);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    };
+
+    const [studentRows, staffRows] = await Promise.allSettled([
+      Student.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+        dateOfBirth: { $exists: true, $ne: null },
+      })
+        .populate('classId', 'name section')
+        .select('name dateOfBirth classId')
+        .lean(),
+      Staff.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+      })
+        .select('name dob dobParsed role department')
+        .lean(),
+    ]);
+
+    const students =
+      studentRows.status === 'fulfilled'
+        ? studentRows.value
+            .map((s) => {
+              const d = s.dateOfBirth instanceof Date ? s.dateOfBirth : parseDob(s.dateOfBirth);
+              if (!d) return null;
+              if (d.getMonth() + 1 !== todayMonth || d.getDate() !== todayDay) return null;
+              const cls = s.classId;
+              const label = cls
+                ? `${cls.name || ''}${cls.section ? ' ' + cls.section : ''}`.trim()
+                : 'Student';
+              return { id: `s-${s._id}`, name: s.name, type: 'student', sub: label };
+            })
+            .filter(Boolean)
+        : [];
+
+    const staff =
+      staffRows.status === 'fulfilled'
+        ? staffRows.value
+            .map((s) => {
+              // Prefer the migrated parsed Date; fall back to the Mixed dob.
+              const d = s.dobParsed instanceof Date ? s.dobParsed : parseDob(s.dob);
+              if (!d) return null;
+              if (d.getMonth() + 1 !== todayMonth || d.getDate() !== todayDay) return null;
+              const sub = [s.role, s.department].filter(Boolean).join(' · ') || 'Staff';
+              return { id: `st-${s._id}`, name: s.name, type: 'staff', sub };
+            })
+            .filter(Boolean)
+        : [];
+
+    // Mirror the dashboard's own cap (3 students + 2 staff).
+    const birthdays = [...students.slice(0, 3), ...staff.slice(0, 2)];
+
+    return res.json({ birthdays, count: birthdays.length });
+  } catch (error) {
+    logger.error('Dashboard birthdays error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
+// Compatibility endpoint used by the dashboard birthdays widget (SCH-212).
+// It returns separate student and staff arrays with the richer fields needed
+// by the widget while `/birthdays` keeps its compact combined response.
 router.get('/birthdays-today', checkPermission('dashboard', 'view'), async (req, res) => {
   try {
     const schoolId = extractSchoolId(req.user?.schoolId);
@@ -661,39 +977,37 @@ router.get('/birthdays-today', checkPermission('dashboard', 'view'), async (req,
       return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
     }
     const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
-
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
     const now = new Date();
     const month = now.getMonth() + 1;
     const day = now.getDate();
 
-    // Match month/day regardless of year. `$expr` lets us compare two halves of
-    // the date string without parsing on the client. Field names differ between
-    // collections (Student.dateOfBirth vs Staff.dob), so build one match per side.
-    const studentMonthDay = {
+    const monthDayMatch = (field) => ({
       $expr: {
         $and: [
-          { $eq: [{ $month: { $toDate: '$dateOfBirth' } }, month] },
-          { $eq: [{ $dayOfMonth: { $toDate: '$dateOfBirth' } }, day] },
+          { $eq: [{ $month: { $toDate: field } }, month] },
+          { $eq: [{ $dayOfMonth: { $toDate: field } }, day] },
         ],
       },
-    };
-    const staffMonthDay = {
-      $expr: {
-        $and: [
-          { $eq: [{ $month: { $toDate: '$dob' } }, month] },
-          { $eq: [{ $dayOfMonth: { $toDate: '$dob' } }, day] },
-        ],
-      },
-    };
+    });
 
     const [studentRows, staffRows] = await Promise.allSettled([
-      Student.find({ schoolId: schoolObjId, isDeleted: { $ne: true }, ...studentMonthDay })
+      Student.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+        ...monthDayMatch('$dateOfBirth'),
+      })
         .select('_id name classId dateOfBirth photo')
         .populate('classId', 'name section')
         .limit(limit)
         .lean(),
-      Staff.find({ schoolId: schoolObjId, isDeleted: { $ne: true }, ...staffMonthDay })
+      Staff.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+        ...monthDayMatch('$dob'),
+      })
         .select('_id name dob role department photo picture')
         .limit(limit)
         .lean(),
@@ -701,29 +1015,28 @@ router.get('/birthdays-today', checkPermission('dashboard', 'view'), async (req,
 
     const students =
       studentRows.status === 'fulfilled'
-        ? studentRows.value.map((s) => ({
-            id: `s-${String(s._id)}`,
-            studentId: String(s._id),
-            name: s.name,
-            classId: s.classId ? String(s.classId._id || s.classId) : null,
-            className: s.classId
-              ? `${s.classId.name || ''} ${s.classId.section || ''}`.trim()
+        ? studentRows.value.map((student) => ({
+            id: `s-${String(student._id)}`,
+            studentId: String(student._id),
+            name: student.name,
+            classId: student.classId ? String(student.classId._id || student.classId) : null,
+            className: student.classId
+              ? `${student.classId.name || ''} ${student.classId.section || ''}`.trim()
               : null,
-            dob: s.dateOfBirth || null,
-            photo: s.photo || null,
+            dob: student.dateOfBirth || null,
+            photo: student.photo || null,
           }))
         : [];
-
     const staff =
       staffRows.status === 'fulfilled'
-        ? staffRows.value.map((s) => ({
-            id: `st-${String(s._id)}`,
-            staffId: String(s._id),
-            name: s.name,
-            role: Array.isArray(s.role) ? s.role[0] : s.role || null,
-            department: s.department || null,
-            dob: s.dob || null,
-            photo: s.picture || s.photo || null,
+        ? staffRows.value.map((staffMember) => ({
+            id: `st-${String(staffMember._id)}`,
+            staffId: String(staffMember._id),
+            name: staffMember.name,
+            role: Array.isArray(staffMember.role) ? staffMember.role[0] : staffMember.role || null,
+            department: staffMember.department || null,
+            dob: staffMember.dob || null,
+            photo: staffMember.picture || staffMember.photo || null,
           }))
         : [];
 

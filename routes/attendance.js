@@ -105,6 +105,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import { Attendance, Student } from '../database.js';
+import Class from '../models/Class.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import resolveClassId from '../utils/resolveClassId.js';
@@ -189,10 +190,13 @@ async function notifyParentsOfAbsent(absentStudentIds, date, schoolId) {
     const { Parent, Student } = await import('../database.js');
     const { sendAttendanceAlertWhatsApp } = await import('../services/whatsappService.js');
 
-    // Batch load all students upfront to avoid N+1 query (PERF fix)
-    const students = await Student.find({ _id: { $in: absentStudentIds } })
-      .select('name')
-      .lean();
+    // Batch load all students upfront to avoid N+1 query (PERF fix).
+    // School-scoped: a studentId leaked from another tenant (or a stale
+    // request with no schoolId) must never resolve to another school's
+    // student name.
+    const studentQuery = { _id: { $in: absentStudentIds } };
+    if (schoolId) studentQuery.schoolId = schoolId;
+    const students = await Student.find(studentQuery).select('name').lean();
     const studentMap = {};
     for (const s of students) studentMap[String(s._id)] = s.name || 'your child';
 
@@ -537,8 +541,15 @@ async function markBulkAttendance(req, res) {
     const settings = await SchoolSettings.findOne({ schoolId });
     if (settings) {
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const attendanceDate = new Date(date);
-      const dayOfWeek = dayNames[attendanceDate.getUTCDay()];
+      // Parse the YYYY-MM-DD string as a LOCAL date (not UTC) before deriving
+      // the weekday. `new Date('2026-07-15')` is parsed as UTC midnight, so
+      // getUTCDay() flips to the prior day for IST users after ~5:30am. The
+      // `date` string is already the school's local calendar date, so the
+      // 'T00:00:00' suffix pins it to local midnight and .getDay() yields the
+      // correct local weekday. Mirrors the localTodayString() pattern used
+      // elsewhere in this file (comments at lines 251-256).
+      const attendanceDate = new Date(`${date}T00:00:00`);
+      const dayOfWeek = dayNames[attendanceDate.getDay()];
       const workingDays = settings.workingDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
       if (!workingDays.includes(dayOfWeek)) {
@@ -548,7 +559,11 @@ async function markBulkAttendance(req, res) {
         });
       }
 
-      const dateStr = attendanceDate.toISOString().split('T')[0];
+      // `date` is already the canonical YYYY-MM-DD calendar date — compare it
+      // directly against holidays instead of round-tripping through a UTC
+      // Date which can shift the day (the prior `toISOString().split('T')[0]`
+      // re-derived the date from a UTC instant and drifted by a day off-UTC).
+      const dateStr = date;
       const holiday = (settings.holidays || []).find((h) => h.date === dateStr);
       if (holiday) {
         return res.status(400).json({
@@ -669,6 +684,13 @@ async function markBulkAttendance(req, res) {
     count: results.length,
     bulk: true,
   }).catch(() => {});
+
+  // Recompute the class's averageAttendance so Class.averageAttendance isn't
+  // permanently stale. Bulk marking touches a single class, so one call is
+  // enough. Fire-and-forget — a recalculation failure must not fail the write.
+  Class.updateAverageAttendance(resolved.classId, schoolId).catch((err) =>
+    console.error('[Attendance] Failed to refresh class average attendance:', err.message)
+  );
 
   const io = req.app.get('io');
   emitEvent(io, EVENTS.STUDENT_ATTENDANCE_BULK_UPDATED, {
@@ -979,6 +1001,16 @@ router.post(
         }
       }
 
+      // Look up the existing attendance record BEFORE the upsert so we can
+      // notify parents only on a genuine TRANSITION to absent. Re-saving an
+      // already-absent record (e.g. correcting a different field) must not
+      // re-fire the parent SMS/push — mirrors the bulk path's
+      // priorStatusByStudent transition check.
+      const priorAttendance = await Attendance.findOne(scopeBySchool(schoolId, { studentId, date }))
+        .select('status')
+        .lean();
+      const priorStatus = priorAttendance?.status;
+
       const attendance = await Attendance.findOneAndUpdate(
         scopeBySchool(schoolId, { studentId, date }),
         {
@@ -999,6 +1031,15 @@ router.post(
         status,
       }).catch(() => {});
 
+      // Recompute the affected class's averageAttendance so the stored value
+      // stays current. Fire-and-forget — a recalculation failure must not fail
+      // the attendance write.
+      if (classId) {
+        Class.updateAverageAttendance(classId, schoolId).catch((err) =>
+          console.error('[Attendance] Failed to refresh class average attendance:', err.message)
+        );
+      }
+
       const io = req.app.get('io');
       emitEvent(io, EVENTS.STUDENT_ATTENDANCE_UPDATED, {
         schoolId,
@@ -1008,7 +1049,9 @@ router.post(
         status,
       });
 
-      if (status === 'absent') {
+      // Notify parents only on a transition INTO absent (mirrors the bulk
+      // path). Re-saving an already-absent record must not re-notify.
+      if (status === 'absent' && priorStatus !== 'absent') {
         notifyParentsOfAbsent([studentId], date, schoolId);
       }
 

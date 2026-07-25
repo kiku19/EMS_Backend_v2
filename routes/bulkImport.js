@@ -21,6 +21,8 @@ import {
 } from '../database.js';
 import FeeHead from '../models/FeeHead.js';
 import ImportJob from '../models/ImportJob.js';
+import { computeFeeBalance } from '../utils/feeCalculator.js';
+import { applyLateFeeToFeeStructure } from '../utils/lateFeeCalculator.js';
 import {
   studentRowSchema,
   staffRowSchema,
@@ -253,51 +255,47 @@ router.get('/history/:jobId', async (req, res) => {
 });
 
 // POST /bulk-import/history/:jobId/rollback — rollback a completed import
-router.post(
-  '/history/:jobId/rollback',
-  checkPermission('students', 'delete'),
-  async (req, res) => {
-    try {
-      const schoolId = extractSchoolId(req.user?.schoolId);
-      const job = await ImportJob.findOne({ _id: req.params.jobId, schoolId });
-      if (!job) return res.status(404).json({ error: 'Import job not found' });
-      if (job.status !== 'completed')
-        return res.status(400).json({ error: 'Only completed imports can be rolled back' });
-      if (job.dryRun)
-        return res.status(400).json({ error: 'Dry-run imports have no data to roll back' });
-      if (!job.createdIds || job.createdIds.length === 0)
-        return res.status(400).json({ error: 'No rollback data available for this import' });
+router.post('/history/:jobId/rollback', checkPermission('students', 'delete'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    const job = await ImportJob.findOne({ _id: req.params.jobId, schoolId });
+    if (!job) return res.status(404).json({ error: 'Import job not found' });
+    if (job.status !== 'completed')
+      return res.status(400).json({ error: 'Only completed imports can be rolled back' });
+    if (job.dryRun)
+      return res.status(400).json({ error: 'Dry-run imports have no data to roll back' });
+    if (!job.createdIds || job.createdIds.length === 0)
+      return res.status(400).json({ error: 'No rollback data available for this import' });
 
-      let deletedCount = 0;
-      if (job.type === 'students') {
-        const result = await Student.deleteMany({ _id: { $in: job.createdIds }, schoolId });
-        deletedCount = result.deletedCount;
-      } else if (job.type === 'staff') {
-        const result = await Staff.deleteMany({ _id: { $in: job.createdIds }, schoolId });
-        deletedCount = result.deletedCount;
-      } else if (job.type === 'fees') {
-        const result = await FeePayment.deleteMany({ _id: { $in: job.createdIds }, schoolId });
-        deletedCount = result.deletedCount;
-      } else if (job.type === 'attendance') {
-        const result = await Attendance.deleteMany({ _id: { $in: job.createdIds }, schoolId });
-        deletedCount = result.deletedCount;
-      } else if (job.type === 'results') {
-        const result = await Result.deleteMany({ _id: { $in: job.createdIds }, schoolId });
-        deletedCount = result.deletedCount;
-      } else {
-        return res.status(400).json({ error: `Rollback not supported for type: ${job.type}` });
-      }
-
-      job.status = 'rolled_back';
-      await job.save();
-
-      res.json({ message: `Rollback complete. ${deletedCount} records deleted.`, deletedCount });
-    } catch (err) {
-      logger.error({ err }, 'Import rollback error');
-      res.status(500).json({ error: err.message });
+    let deletedCount = 0;
+    if (job.type === 'students') {
+      const result = await Student.deleteMany({ _id: { $in: job.createdIds }, schoolId });
+      deletedCount = result.deletedCount;
+    } else if (job.type === 'staff') {
+      const result = await Staff.deleteMany({ _id: { $in: job.createdIds }, schoolId });
+      deletedCount = result.deletedCount;
+    } else if (job.type === 'fees') {
+      const result = await FeePayment.deleteMany({ _id: { $in: job.createdIds }, schoolId });
+      deletedCount = result.deletedCount;
+    } else if (job.type === 'attendance') {
+      const result = await Attendance.deleteMany({ _id: { $in: job.createdIds }, schoolId });
+      deletedCount = result.deletedCount;
+    } else if (job.type === 'results') {
+      const result = await Result.deleteMany({ _id: { $in: job.createdIds }, schoolId });
+      deletedCount = result.deletedCount;
+    } else {
+      return res.status(400).json({ error: `Rollback not supported for type: ${job.type}` });
     }
+
+    job.status = 'rolled_back';
+    await job.save();
+
+    res.json({ message: `Rollback complete. ${deletedCount} records deleted.`, deletedCount });
+  } catch (err) {
+    logger.error({ err }, 'Import rollback error');
+    res.status(500).json({ error: err.message });
   }
-);
+});
 
 // ─── STUDENT FEE STRUCTURE INIT ──────────────────────────────────
 
@@ -714,182 +712,182 @@ router.post(
 // ─── FEE PAYMENT IMPORT ──────────────────────────────────────────
 
 // POST /bulk-import/fees[?dryRun=true]
-router.post(
-  '/fees',
-  checkPermission('fees', 'create'),
-  upload.single('file'),
-  async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+router.post('/fees', checkPermission('fees', 'create'), upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
-    const dryRun = req.query.dryRun === 'true';
-    const results = { imported: 0, skipped: 0, failed: [], rows: [] };
+  const dryRun = req.query.dryRun === 'true';
+  const results = { imported: 0, skipped: 0, failed: [], rows: [] };
 
-    try {
-      const { rows } = await parseFile(req.file.buffer, req.file.mimetype, req.file.originalname);
-      if (!rows.length) return res.status(400).json({ error: 'File is empty or has no data rows' });
+  try {
+    const { rows } = await parseFile(req.file.buffer, req.file.mimetype, req.file.originalname);
+    if (!rows.length) return res.status(400).json({ error: 'File is empty or has no data rows' });
 
-      const usedReceiptNumbers = new Set();
-      const createdIds = [];
+    const usedReceiptNumbers = new Set();
+    const createdIds = [];
 
-      for (let i = 0; i < rows.length; i++) {
-        const rowNum = i + 2;
-        const raw = rows[i];
+    for (let i = 0; i < rows.length; i++) {
+      const rowNum = i + 2;
+      const raw = rows[i];
 
-        const parsed = feePaymentRowSchema.safeParse({
-          admissionId: raw.admissionid || raw.admissionId || raw.admission_id,
-          academicYear: raw.academicyear || raw.academicYear || raw.academic_year,
-          amount: raw.amount,
-          paymentDate: raw.paymentdate || raw.paymentDate || raw.payment_date,
-          paymentMode: raw.paymentmode || raw.paymentMode || raw.payment_mode,
-          receiptNumber: raw.receiptnumber || raw.receiptNumber || raw.receipt_number || undefined,
-          remarks: raw.remarks || undefined,
+      const parsed = feePaymentRowSchema.safeParse({
+        admissionId: raw.admissionid || raw.admissionId || raw.admission_id,
+        academicYear: raw.academicyear || raw.academicYear || raw.academic_year,
+        amount: raw.amount,
+        paymentDate: raw.paymentdate || raw.paymentDate || raw.payment_date,
+        paymentMode: raw.paymentmode || raw.paymentMode || raw.payment_mode,
+        receiptNumber: raw.receiptnumber || raw.receiptNumber || raw.receipt_number || undefined,
+        remarks: raw.remarks || undefined,
+      });
+
+      if (!parsed.success) {
+        const errors = parsed.error.issues
+          .map((e) => `${e.path.join('.')}: ${e.message}`)
+          .join('; ');
+        results.failed.push({
+          row: rowNum,
+          admissionId: raw.admissionid || raw.admissionId || '?',
+          error: errors,
         });
+        continue;
+      }
 
-        if (!parsed.success) {
-          const errors = parsed.error.issues
-            .map((e) => `${e.path.join('.')}: ${e.message}`)
-            .join('; ');
-          results.failed.push({
-            row: rowNum,
-            admissionId: raw.admissionid || raw.admissionId || '?',
-            error: errors,
-          });
-          continue;
-        }
+      const data = parsed.data;
 
-        const data = parsed.data;
-
-        const student = await Student.findOne({
-          schoolId,
+      const student = await Student.findOne({
+        schoolId,
+        admissionId: data.admissionId,
+        isDeleted: { $ne: true },
+      });
+      if (!student) {
+        results.failed.push({
+          row: rowNum,
           admissionId: data.admissionId,
-          isDeleted: { $ne: true },
+          error: `Student with admissionId '${data.admissionId}' not found`,
         });
-        if (!student) {
-          results.failed.push({
-            row: rowNum,
-            admissionId: data.admissionId,
-            error: `Student with admissionId '${data.admissionId}' not found`,
-          });
-          continue;
-        }
+        continue;
+      }
 
-        let receiptNumber = data.receiptNumber;
-        if (!receiptNumber) {
-          receiptNumber = await getNextReceiptNumber(schoolId);
-        }
+      let receiptNumber = data.receiptNumber;
+      if (!receiptNumber) {
+        receiptNumber = await getNextReceiptNumber(schoolId);
+      }
 
-        if (usedReceiptNumbers.has(receiptNumber)) {
-          receiptNumber = await getNextReceiptNumber(schoolId);
-        }
+      if (usedReceiptNumbers.has(receiptNumber)) {
+        receiptNumber = await getNextReceiptNumber(schoolId);
+      }
 
-        const existingReceipt = await FeePayment.findOne({ schoolId, receiptNumber });
-        if (existingReceipt) {
-          receiptNumber = await getNextReceiptNumber(schoolId);
-        }
+      const existingReceipt = await FeePayment.findOne({ schoolId, receiptNumber });
+      if (existingReceipt) {
+        receiptNumber = await getNextReceiptNumber(schoolId);
+      }
 
-        usedReceiptNumbers.add(receiptNumber);
+      usedReceiptNumbers.add(receiptNumber);
 
-        if (dryRun) {
-          results.imported++;
-          results.rows.push({
-            row: rowNum,
-            admissionId: data.admissionId,
-            receiptNumber: '(dry-run)',
-            amount: data.amount,
-            status: 'imported',
-          });
-          continue;
-        }
+      if (dryRun) {
+        results.imported++;
+        results.rows.push({
+          row: rowNum,
+          admissionId: data.admissionId,
+          receiptNumber: '(dry-run)',
+          amount: data.amount,
+          status: 'imported',
+        });
+        continue;
+      }
+
+      try {
+        const payment = new FeePayment({
+          schoolId,
+          studentId: student._id,
+          classId: student.classId,
+          academicYear: data.academicYear,
+          receiptNumber,
+          paymentDate: data.paymentDate,
+          amount: data.amount,
+          paymentMode: data.paymentMode,
+          remarks: data.remarks || undefined,
+          status: 'completed',
+        });
+
+        await payment.save();
+        createdIds.push(payment._id);
 
         try {
-          const payment = new FeePayment({
-            schoolId,
-            studentId: student._id,
-            classId: student.classId,
-            academicYear: data.academicYear,
-            receiptNumber,
-            paymentDate: data.paymentDate,
-            amount: data.amount,
-            paymentMode: data.paymentMode,
-            remarks: data.remarks || undefined,
-            status: 'completed',
+          await Student.findByIdAndUpdate(student._id, {
+            $inc: { 'feeDetails.paidAmount': data.amount },
           });
 
-          await payment.save();
-          createdIds.push(payment._id);
-
-          try {
-            await Student.findByIdAndUpdate(student._id, {
-              $inc: { 'feeDetails.paidAmount': data.amount },
-            });
-
-            // Retry-on-VersionError + scope by schoolId so we don't pick up
-            // a cross-tenant row on collision.
-            await updateFeeStructureWithRetry(
-              {
-                studentId: student._id,
-                schoolId: student.schoolId,
-                academicYear: data.academicYear,
-              },
-              async (sfs) => {
-                sfs.totalPaid = (sfs.totalPaid || 0) + data.amount;
-                sfs.totalBalance = Math.max(0, (sfs.totalFee || 0) - sfs.totalPaid);
-                sfs.overallStatus =
-                  sfs.totalBalance <= 0 ? 'paid' : sfs.totalPaid > 0 ? 'partial' : 'pending';
-              }
-            );
-          } catch (updateErr) {
-            logger.warn(
-              { err: updateErr, studentId: student._id },
-              'Could not update fee summary after bulk import payment'
-            );
-          }
-
-          results.imported++;
-          results.rows.push({
-            row: rowNum,
-            admissionId: data.admissionId,
-            receiptNumber,
-            amount: data.amount,
-            status: 'imported',
-          });
-        } catch (saveErr) {
-          logger.error({ err: saveErr, row: rowNum }, 'Fee payment save error in bulk import');
-          results.failed.push({
-            row: rowNum,
-            admissionId: data.admissionId,
-            error: saveErr.message,
-          });
+          // Retry-on-VersionError + scope by schoolId so we don't pick up
+          // a cross-tenant row on collision.
+          await updateFeeStructureWithRetry(
+            {
+              studentId: student._id,
+              schoolId: student.schoolId,
+              academicYear: data.academicYear,
+            },
+            async (sfs) => {
+              sfs.totalPaid = (sfs.totalPaid || 0) + data.amount;
+              // Use the canonical calculator so discountApplied AND
+              // lateFeeApplied are factored in — the previous hand-rolled
+              // math dropped both (and over-counted the balance for any
+              // discounted or overdue student).
+              await applyLateFeeToFeeStructure(sfs);
+              const { totalBalance, overallStatus } = computeFeeBalance(sfs);
+              sfs.totalBalance = totalBalance;
+              sfs.overallStatus = overallStatus;
+            }
+          );
+        } catch (updateErr) {
+          logger.warn(
+            { err: updateErr, studentId: student._id },
+            'Could not update fee summary after bulk import payment'
+          );
         }
-      }
 
-      if (!dryRun) {
-        const job = await createImportJob(
-          schoolId,
-          'fees',
-          req.file.originalname,
-          rows.length,
-          false,
-          req.user?._id
-        );
-        job.createdIds = createdIds;
-        await finalizeImportJob(job, results);
+        results.imported++;
+        results.rows.push({
+          row: rowNum,
+          admissionId: data.admissionId,
+          receiptNumber,
+          amount: data.amount,
+          status: 'imported',
+        });
+      } catch (saveErr) {
+        logger.error({ err: saveErr, row: rowNum }, 'Fee payment save error in bulk import');
+        results.failed.push({
+          row: rowNum,
+          admissionId: data.admissionId,
+          error: saveErr.message,
+        });
       }
-
-      res.json({
-        message: `${dryRun ? '[DRY RUN] ' : ''}Import complete: ${results.imported} imported, ${results.skipped} skipped, ${results.failed.length} failed`,
-        dryRun,
-        ...results,
-      });
-    } catch (err) {
-      logger.error({ err }, 'Fee bulk import error');
-      res.status(500).json({ error: err.message });
     }
+
+    if (!dryRun) {
+      const job = await createImportJob(
+        schoolId,
+        'fees',
+        req.file.originalname,
+        rows.length,
+        false,
+        req.user?._id
+      );
+      job.createdIds = createdIds;
+      await finalizeImportJob(job, results);
+    }
+
+    res.json({
+      message: `${dryRun ? '[DRY RUN] ' : ''}Import complete: ${results.imported} imported, ${results.skipped} skipped, ${results.failed.length} failed`,
+      dryRun,
+      ...results,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Fee bulk import error');
+    res.status(500).json({ error: err.message });
   }
-);
+});
 
 // ─── ATTENDANCE CORRECTION IMPORT ────────────────────────────────
 
@@ -1169,48 +1167,44 @@ router.post(
 // ─── BULK DELETE / ARCHIVE ──────────────────────────────────────
 
 // POST /bulk-import/bulk-delete — bulk soft-delete students or staff
-router.post(
-  '/bulk-delete',
-  checkPermission('students', 'delete'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+router.post('/bulk-delete', checkPermission('students', 'delete'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
-    const { ids, type } = req.body;
+  const { ids, type } = req.body;
 
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ error: 'ids array is required' });
-    }
-    if (!['students', 'staff'].includes(type)) {
-      return res.status(400).json({ error: 'type must be "students" or "staff"' });
-    }
-    if (ids.length > 500) {
-      return res.status(400).json({ error: 'Cannot delete more than 500 records at once' });
-    }
-
-    const validIds = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
-    if (validIds.length !== ids.length) {
-      return res.status(400).json({ error: 'One or more IDs are invalid' });
-    }
-
-    try {
-      const Model = type === 'students' ? Student : Staff;
-      const result = await Model.updateMany(
-        { _id: { $in: validIds }, schoolId, isDeleted: { $ne: true } },
-        { isDeleted: true, deletedAt: new Date() }
-      );
-
-      res.json({
-        message: `${result.modifiedCount} ${type} archived successfully`,
-        modifiedCount: result.modifiedCount,
-        requestedCount: validIds.length,
-      });
-    } catch (err) {
-      logger.error({ err }, 'Bulk delete error');
-      res.status(500).json({ error: err.message });
-    }
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array is required' });
   }
-);
+  if (!['students', 'staff'].includes(type)) {
+    return res.status(400).json({ error: 'type must be "students" or "staff"' });
+  }
+  if (ids.length > 500) {
+    return res.status(400).json({ error: 'Cannot delete more than 500 records at once' });
+  }
+
+  const validIds = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+  if (validIds.length !== ids.length) {
+    return res.status(400).json({ error: 'One or more IDs are invalid' });
+  }
+
+  try {
+    const Model = type === 'students' ? Student : Staff;
+    const result = await Model.updateMany(
+      { _id: { $in: validIds }, schoolId, isDeleted: { $ne: true } },
+      { isDeleted: true, deletedAt: new Date() }
+    );
+
+    res.json({
+      message: `${result.modifiedCount} ${type} archived successfully`,
+      modifiedCount: result.modifiedCount,
+      requestedCount: validIds.length,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Bulk delete error');
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── BULK SMS / NOTIFICATION ────────────────────────────────────
 
@@ -1240,9 +1234,7 @@ router.post('/bulk-notify', checkPermission('students', 'read'), async (req, res
       query.classId = { $in: classIds.filter((id) => mongoose.Types.ObjectId.isValid(id)) };
     }
 
-    const students = await Student.find(query)
-      .select('name parents')
-      .lean();
+    const students = await Student.find(query).select('name parents').lean();
     if (!students.length)
       return res.status(404).json({ error: 'No students found matching criteria' });
 

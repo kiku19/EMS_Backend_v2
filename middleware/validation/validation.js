@@ -859,18 +859,52 @@ export function sanitizeQueryId(val) {
 // Zod Validation Schemas (new code uses Zod per project rules)
 // ============================================================
 import { z } from 'zod';
+import { selfSignupSchema } from '../../validators/signup.js';
+import { verifyEmailSchema, resendVerificationSchema } from '../../validators/verifyEmail.js';
+import { STAFF_ROLES } from '../../constants/staffRoles.js';
 
-const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ObjectId');
 const optionalObjectId = objectId.optional().nullable();
 const timeString = z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format');
 
-const periodSchema = z.object({
-  name: z.string().min(1).max(50),
-  startTime: timeString,
-  endTime: timeString,
-  isBreak: z.boolean().default(false),
-});
+const periodSchema = z
+  .object({
+    _id: objectId.optional(),
+    name: z.string().min(1).max(50),
+    startTime: timeString,
+    endTime: timeString,
+    isBreak: z.boolean().default(false),
+  })
+  .refine((period) => period.startTime < period.endTime, {
+    message: 'Period startTime must be before endTime',
+    path: ['endTime'],
+  });
+
+const periodsSchema = z
+  .array(periodSchema)
+  .min(1)
+  .max(12)
+  .superRefine((periods, ctx) => {
+    for (let index = 1; index < periods.length; index += 1) {
+      const previous = periods[index - 1];
+      const current = periods[index];
+      if (current.startTime < previous.startTime) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Periods must be ordered by start time',
+          path: [index, 'startTime'],
+        });
+      }
+      if (current.startTime < previous.endTime) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Period overlaps with ${previous.name}`,
+          path: [index, 'startTime'],
+        });
+      }
+    }
+  });
 
 const slotSchema = z.object({
   subject: z.string().max(100).default(''),
@@ -888,6 +922,7 @@ const scheduleSchema = z
     Thursday: dayScheduleSchema,
     Friday: dayScheduleSchema,
     Saturday: dayScheduleSchema,
+    Sunday: dayScheduleSchema,
   })
   .default({
     Monday: [],
@@ -896,6 +931,7 @@ const scheduleSchema = z
     Thursday: [],
     Friday: [],
     Saturday: [],
+    Sunday: [],
   });
 
 // Auth schemas (migrated from Joi)
@@ -1075,6 +1111,13 @@ export const zodSchemas = {
   createCalendarEvent: createCalendarEventSchema,
   updateCalendarEvent: updateCalendarEventSchema,
 
+  // Self-serve school signup (no invite required). Mounted behind ENABLE_SELF_SIGNUP.
+  selfSignup: selfSignupSchema,
+
+  // PR2 — email verification + resend. Both public, gated by ENABLE_SELF_SIGNUP.
+  verifyEmail: verifyEmailSchema,
+  resendVerification: resendVerificationSchema,
+
   // POST /api/timetable — Create timetable
   createTimetable: z.object({
     classId: objectId,
@@ -1082,7 +1125,7 @@ export const zodSchemas = {
       .string()
       .regex(/^\d{4}-\d{2}$/)
       .optional(),
-    periods: z.array(periodSchema).min(1).optional(),
+    periods: periodsSchema.optional(),
     schedule: scheduleSchema.optional(),
   }),
 
@@ -1092,7 +1135,7 @@ export const zodSchemas = {
       .string()
       .regex(/^\d{4}-\d{2}$/)
       .optional(),
-    periods: z.array(periodSchema).min(1).optional(),
+    periods: periodsSchema.optional(),
     schedule: scheduleSchema.optional(),
   }),
 
@@ -1130,7 +1173,11 @@ export const zodSchemas = {
 
   // PUT /api/timetable/:classId/periods — Update period config
   updatePeriods: z.object({
-    periods: z.array(periodSchema).min(1).max(12),
+    periods: periodsSchema,
+    academicYear: z
+      .string()
+      .regex(/^\d{4}-\d{2}$/)
+      .optional(),
   }),
 
   // POST /api/timetable/generate-all — Generate all timetables
@@ -1242,18 +1289,7 @@ export const zodSchemas = {
       .array(
         z.object({
           groupName: z.string().min(1).max(200),
-          role: z.enum([
-            'Admin',
-            'Teacher',
-            'Accountant',
-            'Librarian',
-            'Principal',
-            'Vice Principal',
-            'Lab Assistant',
-            'Receptionist',
-            'Administrative',
-            'Teaching',
-          ]),
+          role: z.enum(STAFF_ROLES),
         })
       )
       .max(50)
@@ -1269,20 +1305,7 @@ export const zodSchemas = {
       .max(20)
       .optional(),
     autoProvision: z.boolean().optional(),
-    defaultRole: z
-      .enum([
-        'Admin',
-        'Teacher',
-        'Accountant',
-        'Librarian',
-        'Principal',
-        'Vice Principal',
-        'Lab Assistant',
-        'Receptionist',
-        'Administrative',
-        'Teaching',
-      ])
-      .optional(),
+    defaultRole: z.enum(STAFF_ROLES).optional(),
     ssoOnly: z.boolean().optional(),
     scim: z
       .object({
@@ -1451,47 +1474,49 @@ export const zodSchemas = {
   }),
 
   // POST /api/fee-heads — Create fee head
-  createFeeHead: z.object({
-    name: z.string().min(1, 'Fee head name is required').max(200).trim(),
-    category: z
-      .enum(['Academic', 'Transport', 'Extra-curricular', 'Hostel', 'Other'])
-      .default('Academic'),
-    headType: z
-      .enum([
-        'tuition',
-        'learning',
-        'miscellaneous',
-        'study_materials',
-        'exam_development',
-        'admission',
-        'transport',
-        'lab',
-        'library',
-        'computer',
-        'sports',
-        'extra_curricular',
-        'uniforms_id',
-        'hostel',
-        'custom',
-      ])
-      .optional(),
-    customType: z.string().max(100).optional(),
-    amount: z
-      .number({
-        required_error: 'Amount is required',
-        invalid_type_error: 'Amount must be a number',
-      })
-      .min(0, 'Amount cannot be negative')
-      .max(10000000, 'Amount exceeds maximum'),
-    mandatory: z.boolean().default(true),
-    description: z.string().max(500).optional().default(''),
-    applicableClasses: z
-      .array(z.string().regex(/^(1[0-2]|[1-9])$/, 'Class must be 1-12'))
-      .min(1, 'At least one applicable class is required'),
-    applicableStreams: z.array(z.enum(['Science', 'Commerce', 'Arts', 'All'])).optional(),
-    frequency: z.enum(['monthly', 'quarterly', 'term', 'yearly', 'one-time']).default('yearly'),
-    autoApply: z.boolean().default(true),
-  }),
+  createFeeHead: z
+    .object({
+      name: z.string().min(1, 'Fee head name is required').max(200).trim(),
+      category: z
+        .enum(['Academic', 'Transport', 'Extra-curricular', 'Hostel', 'Other'])
+        .default('Academic'),
+      headType: z
+        .enum([
+          'tuition',
+          'learning',
+          'miscellaneous',
+          'study_materials',
+          'exam_development',
+          'admission',
+          'transport',
+          'lab',
+          'library',
+          'computer',
+          'sports',
+          'extra_curricular',
+          'uniforms_id',
+          'hostel',
+          'custom',
+        ])
+        .optional(),
+      customType: z.string().max(100).optional(),
+      amount: z
+        .number({
+          required_error: 'Amount is required',
+          invalid_type_error: 'Amount must be a number',
+        })
+        .min(0, 'Amount cannot be negative')
+        .max(10000000, 'Amount exceeds maximum'),
+      mandatory: z.boolean().default(true),
+      description: z.string().max(500).optional().default(''),
+      applicableClasses: z
+        .array(z.string().regex(/^(1[0-2]|[1-9])$/, 'Class must be 1-12'))
+        .min(1, 'At least one applicable class is required'),
+      applicableStreams: z.array(z.enum(['Science', 'Commerce', 'Arts', 'All'])).optional(),
+      frequency: z.enum(['monthly', 'quarterly', 'term', 'yearly', 'one-time']).default('yearly'),
+      autoApply: z.boolean().default(true),
+    })
+    .strict(),
 
   // PUT /api/fee-heads/:id — Update fee head
   updateFeeHead: z
@@ -1536,6 +1561,7 @@ export const zodSchemas = {
       autoApply: z.boolean().optional(),
       isActive: z.boolean().optional(),
     })
+    .strict()
     .refine((data) => Object.values(data).some((v) => v !== undefined), {
       message: 'At least one field must be provided',
     }),
@@ -1636,7 +1662,9 @@ export function validateObjectIdParam(paramName) {
         success: false,
         error: req.t ? req.t('common:errors.invalidId') : 'Invalid ID format',
         statusCode: 400,
-        details: [{ field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` }],
+        details: [
+          { field: paramName, message: `${paramName} must be a valid 24-character MongoDB ID` },
+        ],
       });
     }
     next();

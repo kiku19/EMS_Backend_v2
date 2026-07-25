@@ -6,7 +6,7 @@ const feePaymentSchema = new mongoose.Schema(
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-    academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
+    academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
     receiptNumber: { type: String, required: true },
 
     // Payment Details — stored as String YYYY-MM-DD (not Date). Routes
@@ -16,19 +16,28 @@ const feePaymentSchema = new mongoose.Schema(
     // Keep the schema type explicitly String so new records are stored
     // consistently regardless of what shape callers pass.
     paymentDate: { type: String, required: true },
-    amount: { type: Number, required: true },
-    paymentMode: { type: String, required: true }, // 'cash', 'cheque', 'online', 'card'
+    amount: { type: Number, required: true, min: 0.01 },
+    paymentMode: {
+      type: String,
+      required: true,
+      enum: ['cash', 'cheque', 'dd', 'online', 'card', 'upi', 'bank_transfer'],
+    },
 
     // Fee Heads Breakdown
     feeHeads: [
       {
-        feeHeadId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeHead' },
+        // Opaque ledger-head identifier. Class-level custom heads use their
+        // embedded subdocument id and therefore do not always reference the
+        // global FeeHead catalogue.
+        feeHeadId: { type: mongoose.Schema.Types.ObjectId },
         name: String,
-        amount: Number,
+        amount: { type: Number, min: 0 },
         month: String, // For monthly fees
         period: String, // For quarterly/annual fees
       },
     ],
+    installmentIndex: { type: Number, min: 0 },
+    installmentName: String,
 
     // Transaction Details
     transactionId: String, // For online/card payments (gateway payment ID)
@@ -41,14 +50,18 @@ const feePaymentSchema = new mongoose.Schema(
     gatewayVerified: { type: Boolean, default: false }, // True if gateway signature was verified
 
     // Late Fee
-    lateFee: { type: Number, default: 0 },
-    discount: { type: Number, default: 0 },
+    lateFee: { type: Number, default: 0, min: 0 },
+    discount: { type: Number, default: 0, min: 0 },
 
     // Idempotency key to prevent duplicate payments
     idempotencyKey: { type: String, index: true },
 
     // Status
-    status: { type: String, default: 'completed' }, // 'completed', 'pending', 'failed', 'cancelled'
+    status: {
+      type: String,
+      enum: ['completed', 'pending', 'failed', 'cancelled'],
+      default: 'completed',
+    },
 
     // Cancellation tracking
     cancelledAt: Date,
@@ -59,13 +72,22 @@ const feePaymentSchema = new mongoose.Schema(
 
     // Notes
     remarks: String,
+
+    // Soft-delete — set when the owning Student is archived so this payment is
+    // hidden from every read path and restored on undo. Distinct from the
+    // void/cancel flow above (cancelledAt/cancelledBy + status:'cancelled'),
+    // which is an operator action on a single payment. Read sites MUST filter
+    // isDeleted: { $ne: true }.
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', default: null },
   },
   { timestamps: true }
 );
 
-feePaymentSchema.index({ studentId: 1, paymentDate: 1 });
-feePaymentSchema.index({ studentId: 1, academicYear: 1 });
-feePaymentSchema.index({ classId: 1, academicYear: 1 });
+feePaymentSchema.index({ schoolId: 1, studentId: 1, paymentDate: -1 });
+feePaymentSchema.index({ schoolId: 1, studentId: 1, academicYear: 1 });
+feePaymentSchema.index({ schoolId: 1, classId: 1, academicYear: 1 });
 feePaymentSchema.index({ schoolId: 1, receiptNumber: 1 }, { unique: true });
 // Partial unique index: only documents with a real string idempotencyKey
 // participate, so payments made without a key (null/missing) never collide.
@@ -77,5 +99,6 @@ feePaymentSchema.index(
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
 );
 feePaymentSchema.index({ schoolId: 1, paymentDate: -1 });
+feePaymentSchema.index({ schoolId: 1, academicYear: 1, status: 1, paymentDate: -1 });
 
 export default mongoose.model('FeePayment', feePaymentSchema);

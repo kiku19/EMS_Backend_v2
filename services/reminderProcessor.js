@@ -234,6 +234,7 @@ async function processFeeReminder(reminder) {
           $lt: new Date(dueDate.setHours(23, 59, 59, 999)),
         },
         status: { $in: ['pending', 'partial'] },
+        isDeleted: { $ne: true },
       }).populate('studentId');
 
       for (const fee of feePayments) {
@@ -260,6 +261,7 @@ async function processFeeReminder(reminder) {
       const feePayments = await FeePayment.find({
         dueDate: { $lte: overdueDate },
         status: { $in: ['pending', 'partial'] },
+        isDeleted: { $ne: true },
       }).populate('studentId');
 
       for (const fee of feePayments) {

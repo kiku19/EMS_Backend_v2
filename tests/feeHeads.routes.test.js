@@ -297,7 +297,7 @@ describe('fee-heads routes', () => {
       await request(app).delete(`${BASE}/${fakeId}`).set(headers).expect(404);
     });
 
-    it('removes the fee head from student fee structures on delete', async () => {
+    it('archives a referenced fee head and preserves the student ledger history', async () => {
       const feeHead = await FeeHead.create({
         name: 'Removable Fee',
         amount: 1500,
@@ -330,26 +330,29 @@ describe('fee-heads routes', () => {
             amount: 1500,
             mandatory: true,
             frequency: 'yearly',
-            paidAmount: 0,
-            balanceAmount: 1500,
-            status: 'pending',
+            paidAmount: 500,
+            balanceAmount: 1000,
+            status: 'partial',
           },
         ],
         totalFee: 1500,
-        totalPaid: 0,
-        totalBalance: 1500,
-        overallStatus: 'pending',
+        totalPaid: 500,
+        totalBalance: 1000,
+        overallStatus: 'partial',
       });
 
-      await request(app).delete(`${BASE}/${feeHead._id}`).set(headers).expect(200);
+      const response = await request(app).delete(`${BASE}/${feeHead._id}`).set(headers).expect(200);
 
       const structure = await StudentFeeStructure.findOne({
         studentId: student._id,
       });
-      const remaining = structure.feeHeads.filter(
+      const remaining = structure.feeHeads.find(
         (fh) => fh.feeHeadId.toString() === feeHead._id.toString()
       );
-      expect(remaining).toHaveLength(0);
+      const archivedHead = await FeeHead.findById(feeHead._id).lean();
+      expect(response.body.archived).toBe(true);
+      expect(remaining).toMatchObject({ paidAmount: 500, balanceAmount: 1000 });
+      expect(archivedHead).toMatchObject({ isActive: false, autoApply: false });
     });
   });
 
@@ -379,6 +382,7 @@ describe('fee-heads routes', () => {
       const feeHead = await FeeHead.create({
         name: 'Manual Apply Fee',
         amount: 800,
+        frequency: 'monthly',
         applicableClasses: ['8'],
         schoolId: school._id,
         autoApply: false,
@@ -394,6 +398,12 @@ describe('fee-heads routes', () => {
         'feeHeads.feeHeadId': feeHead._id,
       });
       expect(structures).toHaveLength(2);
+      expect(structures[0].feeHeads[0]).toMatchObject({
+        baseAmount: 800,
+        amount: 9600,
+        balanceAmount: 9600,
+      });
+      expect(structures[0].totalFee).toBe(9600);
     });
 
     it('returns 404 when applying a non-existent fee head', async () => {
@@ -452,7 +462,7 @@ describe('fee-heads routes', () => {
       expect(res.body[0].name).toBe('School A Fee');
     });
 
-    it('POST / assigns the schoolId from the authenticated user, not from the request body', async () => {
+    it('POST / rejects schoolId injection from the request body', async () => {
       const otherSchool = await createSchoolRecord({
         name: 'Hijack School',
         code: 'HIJACK',
@@ -462,10 +472,9 @@ describe('fee-heads routes', () => {
         schoolId: otherSchool._id.toString(), // attempt to inject a different schoolId
       });
 
-      const res = await request(app).post(BASE).set(headers).send(payload).expect(201);
+      await request(app).post(BASE).set(headers).send(payload).expect(400);
 
-      // The created fee head should belong to the admin's school, not the injected one
-      expect(res.body.feeHead.schoolId).toBe(school._id.toString());
+      expect(await FeeHead.countDocuments({ name: payload.name })).toBe(0);
     });
   });
 });

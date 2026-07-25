@@ -276,7 +276,9 @@ router.get('/sms-stats', requireAdmin, async (req, res) => {
     since.setDate(since.getDate() - daysNum);
     const schoolObjectId = new mongoose.Types.ObjectId(String(schoolId));
 
-    // Overall SMS delivery stats from announcement recipients (school-scoped via announcement)
+    // Overall SMS delivery stats from announcement recipients (school-scoped via announcement).
+    // Exclude soft-deleted announcements so a deleted broadcast doesn't drag
+    // down the school's delivery rate after the fact.
     const [overallStats] = await AnnouncementRecipient.aggregate([
       {
         $lookup: {
@@ -287,7 +289,12 @@ router.get('/sms-stats', requireAdmin, async (req, res) => {
         },
       },
       { $unwind: '$announcement' },
-      { $match: { 'announcement.schoolId': schoolObjectId } },
+      {
+        $match: {
+          'announcement.schoolId': schoolObjectId,
+          'announcement.isDeleted': { $ne: true },
+        },
+      },
       { $unwind: '$deliveryStatus' },
       { $match: { 'deliveryStatus.channel': 'sms' } },
       {
@@ -323,7 +330,12 @@ router.get('/sms-stats', requireAdmin, async (req, res) => {
         },
       },
       { $unwind: '$announcement' },
-      { $match: { 'announcement.schoolId': schoolObjectId } },
+      {
+        $match: {
+          'announcement.schoolId': schoolObjectId,
+          'announcement.isDeleted': { $ne: true },
+        },
+      },
       { $unwind: '$deliveryStatus' },
       {
         $match: {
@@ -362,7 +374,12 @@ router.get('/sms-stats', requireAdmin, async (req, res) => {
         },
       },
       { $unwind: '$announcement' },
-      { $match: { 'announcement.schoolId': schoolObjectId } },
+      {
+        $match: {
+          'announcement.schoolId': schoolObjectId,
+          'announcement.isDeleted': { $ne: true },
+        },
+      },
       { $unwind: '$deliveryStatus' },
       { $match: { 'deliveryStatus.channel': 'sms', 'deliveryStatus.status': 'failed' } },
       { $sort: { 'deliveryStatus.sentAt': -1 } },
@@ -538,10 +555,14 @@ router.put('/preferences/me', async (req, res) => {
       });
     }
 
-    if (preferences) pref.preferences = preferences;
-    if (quietHours) pref.quietHours = quietHours;
-    if (digestFrequency) pref.digestFrequency = digestFrequency;
-    if (emailDigest) pref.emailDigest = emailDigest;
+    // Use !== undefined (not truthiness) so legitimate falsy resets are
+    // applied: an empty preferences array, quietHours { enabled: false },
+    // emailDigest: false, or digestFrequency: 'never' would otherwise be
+    // dropped by a truthiness check.
+    if (preferences !== undefined) pref.preferences = preferences;
+    if (quietHours !== undefined) pref.quietHours = quietHours;
+    if (digestFrequency !== undefined) pref.digestFrequency = digestFrequency;
+    if (emailDigest !== undefined) pref.emailDigest = emailDigest;
 
     await pref.save();
 

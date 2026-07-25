@@ -65,6 +65,7 @@ router.use(/^\/(?!dashboard)/, featureGate('advancedReports'));
 
 router.get(
   '/dashboard/metrics',
+  checkPermission('dashboard', 'view'),
   validateZod(dashboardMetricsQuerySchema, 'query'),
   async (req, res) => {
     try {

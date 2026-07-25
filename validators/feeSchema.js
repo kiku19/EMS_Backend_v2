@@ -1,7 +1,23 @@
 import { z } from 'zod';
 import { objectId, optionalObjectId, optionalString, academicYear } from './zodHelpers.js';
 
-const paymentModeEnum = z.enum(['cash', 'cheque', 'online', 'card', 'upi', 'bank_transfer']);
+const paymentModeEnum = z.enum(['cash', 'cheque', 'dd', 'online', 'card', 'upi', 'bank_transfer']);
+const invoiceChannelEnum = z.enum(['email', 'sms', 'whatsapp', 'push']);
+
+export const sendInvoiceSchema = z
+  .object({
+    channels: z.array(invoiceChannelEnum).min(1).max(4).default(['email']),
+  })
+  .strict();
+
+export const emptyFeeActionSchema = z.object({}).strict();
+
+export const feeTemplateListQuerySchema = z
+  .object({
+    academicYear: academicYear.optional(),
+    status: z.enum(['active', 'inactive', 'all']).default('active'),
+  })
+  .strict();
 
 // ─── FEE HEAD BREAKDOWN ──────────────────────────────────────────
 const feeHeadBreakdownSchema = z
@@ -10,9 +26,56 @@ const feeHeadBreakdownSchema = z
     name: z.string().min(1, 'Fee head name is required').optional(),
     amount: z.number().min(1, 'Fee head amount must be at least 1'),
   })
-  .passthrough();
+  .strict();
 
 const ONLINE_PAYMENT_MODES = ['online', 'card', 'upi', 'bank_transfer'];
+const dateQuery = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+
+export const feePaymentsListQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    studentId: objectId.optional(),
+    classId: objectId.optional(),
+    academicYear: academicYear.optional(),
+    status: z.enum(['completed', 'pending', 'failed', 'cancelled']).optional(),
+    paymentMode: paymentModeEnum.optional(),
+    startDate: dateQuery.optional(),
+    endDate: dateQuery.optional(),
+    search: z.string().trim().max(100).optional(),
+  })
+  .strict()
+  .refine((value) => !value.startDate || !value.endDate || value.startDate <= value.endDate, {
+    path: ['endDate'],
+    message: 'endDate must be on or after startDate',
+  });
+
+export const feeRefundsListQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    studentId: objectId.optional(),
+    status: z.enum(['pending', 'approved', 'processed', 'rejected']).optional(),
+    academicYear: academicYear.optional(),
+    search: z.string().trim().max(100).optional(),
+  })
+  .strict();
+
+export const feeAuditListQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    studentId: objectId.optional(),
+    action: z.string().trim().min(1).max(100).optional(),
+    entityType: z.string().trim().min(1).max(100).optional(),
+    startDate: dateQuery.optional(),
+    endDate: dateQuery.optional(),
+  })
+  .strict()
+  .refine((value) => !value.startDate || !value.endDate || value.startDate <= value.endDate, {
+    path: ['endDate'],
+    message: 'endDate must be on or after startDate',
+  });
 
 // ─── CREATE FEE PAYMENT ─────────────────────────────────────────
 export const createFeePaymentSchema = z
@@ -21,13 +84,14 @@ export const createFeePaymentSchema = z
     studentName: z.string().max(100).nullish().or(z.literal('')),
     classId: objectId,
     academicYear: academicYear.optional(),
-    paymentDate: z.string().optional(),
+    paymentDate: dateQuery.optional(),
     amount: z
       .number()
       .min(1, 'Payment amount must be at least 1')
       .max(10000000, 'Payment amount seems too large'),
     paymentMode: paymentModeEnum.default('cash'),
     feeHeads: z.array(feeHeadBreakdownSchema).optional().default([]),
+    installmentIndex: z.number().int().min(0).max(24).optional(),
     transactionId: optionalString(100),
     chequeNumber: optionalString(50),
     bankName: optionalString(100),
@@ -35,9 +99,9 @@ export const createFeePaymentSchema = z
     gatewayOrderId: optionalString(200),
     gatewaySignature: optionalString(500),
     remarks: optionalString(500),
-    collectedBy: optionalObjectId,
+    idempotencyKey: z.string().trim().min(8).max(100).optional(),
   })
-  .strip()
+  .strict()
   .refine(
     (data) => !ONLINE_PAYMENT_MODES.includes(data.paymentMode) || Boolean(data.transactionId),
     {
@@ -45,6 +109,14 @@ export const createFeePaymentSchema = z
       path: ['transactionId'],
     }
   )
+  .refine((data) => !['cheque', 'dd'].includes(data.paymentMode) || Boolean(data.chequeNumber), {
+    message: 'chequeNumber is required for cheque and demand draft payments',
+    path: ['chequeNumber'],
+  })
+  .refine((data) => !['cheque', 'dd'].includes(data.paymentMode) || Boolean(data.bankName), {
+    message: 'bankName is required for cheque and demand draft payments',
+    path: ['bankName'],
+  })
   .refine(
     (data) => {
       if (!Array.isArray(data.feeHeads) || data.feeHeads.length === 0) return true;
@@ -58,13 +130,16 @@ export const createFeePaymentSchema = z
   );
 
 // ─── RECORD STUDENT FEE PAYMENT ─────────────────────────────────
-const feeHeadPaymentSchema = z.object({
-  feeHeadId: objectId,
-  amount: z
-    .number()
-    .min(1, 'Fee head payment amount must be at least 1')
-    .max(10000000, 'Fee head payment amount seems too large'),
-});
+const feeHeadPaymentSchema = z
+  .object({
+    feeHeadId: objectId,
+    name: z.string().trim().min(1).max(200).optional(),
+    amount: z
+      .number()
+      .min(1, 'Fee head payment amount must be at least 1')
+      .max(10000000, 'Fee head payment amount seems too large'),
+  })
+  .strict();
 
 export const studentFeePaymentSchema = z
   .object({
@@ -74,11 +149,36 @@ export const studentFeePaymentSchema = z
       .max(10000000, 'Payment amount seems too large'),
     feeHeadPayments: z.array(feeHeadPaymentSchema).optional(),
     paymentMode: paymentModeEnum.default('cash'),
+    transactionId: optionalString(100),
+    chequeNumber: optionalString(50),
+    bankName: optionalString(100),
     remarks: optionalString(500),
     academicYear: academicYear.optional(),
     idempotencyKey: z.string().max(100).optional(),
   })
-  .strip();
+  .strict()
+  .refine(
+    (data) =>
+      !data.feeHeadPayments?.length ||
+      Math.abs(data.feeHeadPayments.reduce((sum, item) => sum + item.amount, 0) - data.amount) <
+        0.01,
+    { path: ['feeHeadPayments'], message: 'Fee-head allocations must equal the payment amount' }
+  )
+  .refine((data) => !['cheque', 'dd'].includes(data.paymentMode) || Boolean(data.chequeNumber), {
+    path: ['chequeNumber'],
+    message: 'chequeNumber is required for cheque and demand draft payments',
+  })
+  .refine((data) => !['cheque', 'dd'].includes(data.paymentMode) || Boolean(data.bankName), {
+    path: ['bankName'],
+    message: 'bankName is required for cheque and demand draft payments',
+  })
+  .refine(
+    (data) => !ONLINE_PAYMENT_MODES.includes(data.paymentMode) || Boolean(data.transactionId),
+    {
+      path: ['transactionId'],
+      message: 'transactionId is required for online, card, upi, and bank transfer payments',
+    }
+  );
 
 // ─── UPDATE DISCOUNT ─────────────────────────────────────────────
 export const updateDiscountSchema = z
@@ -90,7 +190,7 @@ export const updateDiscountSchema = z
     discountReason: optionalString(500),
     academicYear: academicYear.optional(),
   })
-  .strip();
+  .strict();
 
 // ─── DEFAULTERS LIST QUERY ──────────────────────────────────────
 export const defaultersQuerySchema = z
@@ -101,7 +201,37 @@ export const defaultersQuerySchema = z
     minDaysOverdue: z.coerce.number().int().min(0).optional(),
     academicYear: academicYear.optional(),
   })
-  .strip();
+  .strict();
+
+export const studentFeeBatchSchema = z
+  .object({
+    studentIds: z.array(objectId).min(1).max(100),
+    academicYear: academicYear.optional(),
+  })
+  .strict();
+
+export const initializeStudentFeeSchema = z
+  .object({
+    academicYear: academicYear.optional(),
+  })
+  .strict();
+
+export const studentFeesAllQuerySchema = z
+  .object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    academicYear: academicYear.optional(),
+    classId: objectId.optional(),
+    status: z.enum(['pending', 'partial', 'paid', 'overdue']).optional(),
+    search: z.string().trim().max(100).optional(),
+  })
+  .strict();
+
+export const reconcileStudentFeesSchema = z
+  .object({
+    academicYear: academicYear.optional(),
+  })
+  .strict();
 
 // ─── PAYMENTS KPI SUMMARY QUERY (PAG-01) ────────────────────────
 // Backs GET /fees/payments/summary, which computes the Fees-page KPIs
@@ -117,7 +247,14 @@ export const paymentsSummaryQuerySchema = z
       .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be in YYYY-MM-DD format')
       .optional(),
   })
-  .strip();
+  .strict();
+
+export const studentTotalPaidQuerySchema = z
+  .object({
+    studentId: objectId,
+    academicYear: academicYear.optional(),
+  })
+  .strict();
 
 // ─── REFUNDS SUMMARY QUERY (PAG-17) ─────────────────────────────
 // Backs GET /fees/refunds/summary, which computes the Refunds-page KPI cards
@@ -132,7 +269,14 @@ export const refundsSummaryQuerySchema = z
     academicYear: academicYear.optional(),
     search: z.string().max(100).optional(),
   })
-  .strip();
+  .strict();
+
+export const feeClassSummaryQuerySchema = z
+  .object({
+    academicYear: academicYear.optional(),
+    classId: objectId.optional(),
+  })
+  .strict();
 
 // ─── FEE TEMPLATE ──────────────────────────────────────────────
 const feeTemplateFeeHeadSchema = z
@@ -148,7 +292,7 @@ const feeTemplateFeeHeadSchema = z
     dueDay: z.number().int().min(1).max(31).default(10),
     refundable: z.boolean().default(false),
   })
-  .strip();
+  .strict();
 
 const feeTemplateDiscountSchema = z
   .object({
@@ -156,14 +300,14 @@ const feeTemplateDiscountSchema = z
     percentage: z.number().min(0).max(100).optional(),
     conditions: z.string().max(500).optional(),
   })
-  .strip();
+  .strict();
 
 const feeTemplateApplicableForSchema = z
   .object({
     classGrade: z.string().max(20).optional(),
     applicable: z.boolean().optional(),
   })
-  .strip();
+  .strict();
 
 export const createFeeTemplateSchema = z
   .object({
@@ -177,7 +321,7 @@ export const createFeeTemplateSchema = z
     isActive: z.boolean().default(true),
     academicYear: academicYear.optional(),
   })
-  .strip();
+  .strict();
 
 export const updateFeeTemplateSchema = z
   .object({
@@ -191,7 +335,10 @@ export const updateFeeTemplateSchema = z
     isActive: z.boolean().optional(),
     academicYear: academicYear.optional(),
   })
-  .strip();
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one template field must be provided',
+  });
 
 // ─── CREATE REFUND ───────────────────────────────────────────────
 export const createRefundSchema = z
@@ -207,7 +354,10 @@ export const createRefundSchema = z
       .string()
       .min(10, 'Refund reason must be at least 10 characters')
       .max(500, 'Refund reason must not exceed 500 characters'),
-    refundDate: z.string().optional(),
+    refundDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'refundDate must be in YYYY-MM-DD format')
+      .optional(),
     refundMode: paymentModeEnum,
     originalPaymentId: optionalObjectId,
     transactionId: optionalString(100),
@@ -216,4 +366,70 @@ export const createRefundSchema = z
     accountNumber: optionalString(50),
     remarks: optionalString(500),
   })
-  .strip();
+  .strict()
+  .refine((data) => !['cheque', 'dd'].includes(data.refundMode) || Boolean(data.chequeNumber), {
+    path: ['chequeNumber'],
+    message: 'Cheque or demand draft number is required',
+  })
+  .refine(
+    (data) =>
+      !['cheque', 'dd', 'bank_transfer'].includes(data.refundMode) || Boolean(data.bankName),
+    { path: ['bankName'], message: 'Bank name is required for this refund mode' }
+  )
+  .refine((data) => data.refundMode !== 'bank_transfer' || Boolean(data.accountNumber), {
+    path: ['accountNumber'],
+    message: 'Account number is required for bank transfers',
+  })
+  .refine(
+    (data) =>
+      !['online', 'card', 'upi', 'bank_transfer'].includes(data.refundMode) ||
+      Boolean(data.transactionId),
+    { path: ['transactionId'], message: 'Transaction ID is required for electronic refunds' }
+  );
+
+// ─── PAYMENT / REFUND WORKFLOW MUTATIONS ──────────────────────
+// Financial records are deliberately narrow: amount/student/class changes
+// require cancel + re-record so the original ledger remains auditable.
+export const updateFeePaymentSchema = z
+  .object({
+    paymentMode: paymentModeEnum.optional(),
+    transactionId: optionalString(100),
+    chequeNumber: optionalString(50),
+    bankName: optionalString(100),
+    remarks: optionalString(500),
+    paymentDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'paymentDate must be in YYYY-MM-DD format')
+      .optional(),
+  })
+  .strict();
+
+export const approveRefundSchema = z.object({ remarks: optionalString(500) }).strict();
+
+export const processRefundSchema = z
+  .object({
+    transactionId: optionalString(100),
+    chequeNumber: optionalString(50),
+    bankName: optionalString(100),
+    accountNumber: optionalString(50),
+    remarks: optionalString(500),
+  })
+  .strict();
+
+export const rejectRefundSchema = z
+  .object({
+    rejectionReason: z.string().trim().min(10).max(500),
+  })
+  .strict();
+
+export const updateRefundSchema = z
+  .object({
+    amount: z.number().min(1).max(10000000).optional(),
+    reason: z.string().trim().min(10).max(500).optional(),
+    refundMode: paymentModeEnum.optional(),
+    remarks: optionalString(500),
+  })
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one refund field must be provided',
+  });

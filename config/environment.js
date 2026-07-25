@@ -62,6 +62,11 @@ const envSchema = z
     // ── Server — required ───────────────────────────────────────────────────────
     PORT: z.string().regex(/^\d+$/, 'PORT must be a numeric string (e.g. "3001")'),
     NODE_ENV: z.enum(['development', 'staging', 'production', 'test']).default('development'),
+    // Temporary local QA switch; keep false/unset in real deployments.
+    DISABLE_AUTH_RATE_LIMITING: z.enum(['true', 'false']).optional(),
+    // Optional safety-net switch for local QA/incident response. The
+    // per-tenant limiter remains active for authenticated traffic.
+    DISABLE_GLOBAL_RATE_LIMITING: z.enum(['true', 'false']).optional(),
 
     // ── Database — at least one is required (checked in validateEnvironment) ────
     MONGO_URI: z.string().optional(),
@@ -222,6 +227,18 @@ export function validateEnvironment() {
     warnings.push('MSG91_AUTH_KEY not set. SMS and WhatsApp notifications will be unavailable.');
   }
 
+  // Security: PII is encrypted at rest with PII_ENCRYPTION_KEY, silently falling
+  // back to JWT_SECRET when unset. That fallback is a trap — rotating JWT_SECRET
+  // then orphans all encrypted parent/student/staff PII (decrypt fails, data
+  // becomes unreadable). In production, PII should ride its own dedicated key.
+  if (env.NODE_ENV === 'production' && !env.PII_ENCRYPTION_KEY) {
+    warnings.push(
+      'PII_ENCRYPTION_KEY not set — PII encryption is keyed to JWT_SECRET as a fallback. ' +
+        'Rotating JWT_SECRET will make existing parent/student/staff PII undecryptable. ' +
+        'Set a dedicated PII_ENCRYPTION_KEY (>=32 chars) that is independent of JWT_SECRET.'
+    );
+  }
+
   if (!env.GROQ_API_KEY && !env.GEMINI_API_KEY) {
     warnings.push(
       'No AI provider configured (GROQ_API_KEY / GEMINI_API_KEY). AI assistant will be unavailable.'
@@ -236,6 +253,7 @@ export function validateEnvironment() {
     cloudinaryConfigured: Boolean(cloudinaryConfigured),
     redisConfigured: Boolean(env.REDIS_URL),
     emailConfigured: Boolean(env.SMTP_USER && env.SMTP_PASS),
+    piiKeyDedicated: Boolean(env.PII_ENCRYPTION_KEY),
   });
 
   return true;

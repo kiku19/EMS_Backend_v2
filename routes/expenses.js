@@ -2,7 +2,11 @@ import express from 'express';
 const router = express.Router();
 import { authenticate } from '../middleware/auth.js';
 import { validateZod } from '../validators/zodHelpers.js';
-import { createExpenseSchema, updateExpenseSchema } from '../validators/expenseSchema.js';
+import {
+  createExpenseSchema,
+  updateExpenseSchema,
+  rejectExpenseSchema,
+} from '../validators/expenseSchema.js';
 import Expense from '../models/Expense.js';
 import mongoose from 'mongoose';
 
@@ -94,6 +98,9 @@ router.post('/', validateZod(createExpenseSchema), async (req, res) => {
 });
 
 // PUT /expenses/:id
+// P10: status/approvedBy are intentionally NOT accepted here — use the
+// dedicated approve/reject endpoints below so approvedBy is stamped
+// server-side from the authenticated user.
 router.put('/:id', validateZod(updateExpenseSchema), async (req, res) => {
   try {
     const expense = await Expense.findOneAndUpdate(
@@ -102,6 +109,57 @@ router.put('/:id', validateZod(updateExpenseSchema), async (req, res) => {
       { new: true, runValidators: true }
     );
     if (!expense) return res.status(404).json({ error: 'Expense not found' });
+    res.json(expense);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /expenses/:id/approve — approve a pending expense. approvedBy is set
+// from the authenticated user so it can't be spoofed by the client.
+router.post('/:id/approve', async (req, res) => {
+  try {
+    const expense = await Expense.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+      isDeleted: { $ne: true },
+    });
+    if (!expense) return res.status(404).json({ error: 'Expense not found' });
+    if (expense.status === 'approved') {
+      return res.status(409).json({ error: 'Expense is already approved' });
+    }
+    expense.status = 'approved';
+    expense.approvedBy = String(req.user._id);
+    await expense.save();
+    res.json(expense);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /expenses/:id/reject — reject a pending expense, recording who rejected
+// it. An optional reason can be supplied (stored in the description field if
+// present, since the Expense schema has no dedicated rejection-reason path).
+router.post('/:id/reject', validateZod(rejectExpenseSchema), async (req, res) => {
+  try {
+    const expense = await Expense.findOne({
+      _id: req.params.id,
+      schoolId: req.user.schoolId,
+      isDeleted: { $ne: true },
+    });
+    if (!expense) return res.status(404).json({ error: 'Expense not found' });
+    if (expense.status === 'rejected') {
+      return res.status(409).json({ error: 'Expense is already rejected' });
+    }
+    expense.status = 'rejected';
+    expense.approvedBy = String(req.user._id);
+    const { reason } = req.body || {};
+    if (reason) {
+      expense.description = expense.description
+        ? `${expense.description}\n[Rejected: ${reason}]`
+        : `[Rejected: ${reason}]`;
+    }
+    await expense.save();
     res.json(expense);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -5,6 +5,20 @@ import { ensureDocumentSchool } from '../../utils/schoolContext.js';
 import { runWithTenant } from '../../utils/tenantAsyncContext.js';
 
 /**
+ * Does this request target an endpoint that a parent with a forced password
+ * change may still call? Only the password-change endpoint (to clear the flag)
+ * and logout are permitted — every other authenticated route is blocked until
+ * the parent rotates the admin-reset password.
+ *
+ * Matches on the trailing path segment so it works regardless of mount prefix
+ * (`/api/v1/parent/auth/change-password`, `/parent/auth/change-password`, etc.).
+ */
+function isPasswordChangePath(req) {
+  const path = (req.path || req.url || '').toLowerCase();
+  return path.endsWith('/change-password') || path.endsWith('/logout');
+}
+
+/**
  * Authenticate parent JWT token and load parent data
  */
 export const authenticateParent = async (req, res, next) => {
@@ -42,6 +56,20 @@ export const authenticateParent = async (req, res, next) => {
         success: false,
         error: 'ACCOUNT_INACTIVE',
         message: req.t('auth:errors.parentInactive'),
+      });
+    }
+
+    // Force password rotation: when an admin resets a parent's password the
+    // Parent.mustChangePassword flag is set. Until the parent changes it, block
+    // every authenticated endpoint EXCEPT the password-change route itself
+    // (and logout) — otherwise the deterministic/temporary password stays
+    // valid indefinitely. `select('-password')` above strips the password hash
+    // but keeps mustChangePassword, so the check works without a second fetch.
+    if (parent.mustChangePassword && !isPasswordChangePath(req)) {
+      return res.status(403).json({
+        success: false,
+        error: 'PASSWORD_CHANGE_REQUIRED',
+        message: 'Your password was reset by an administrator. Please change it before continuing.',
       });
     }
 

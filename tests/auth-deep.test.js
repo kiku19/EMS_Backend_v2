@@ -276,104 +276,129 @@ describe('E2E-TEST-37: Auth deep — signup, password reset & email verify', () 
   // ─── Email Verification ──────────────────────────────────────────────────────
 
   it('10) email verification with valid token marks school as verified', async () => {
-    // Sign up a school so it exists in the DB (unverified by default)
-    const { app } = createTestApp();
-    const inviteToken = generateSignupInvite({
-      email: 'verify@example.com',
-      schoolName: 'Verify School',
-    });
-
-    const signupRes = await request(app)
-      .post('/api/auth/signup')
-      .send({
-        name: 'Verify Admin',
+    // PR2 (SCH-218): the verify-email endpoint is now gated by ENABLE_SELF_SIGNUP.
+    const previousFlag = process.env.ENABLE_SELF_SIGNUP;
+    process.env.ENABLE_SELF_SIGNUP = 'true';
+    try {
+      // Sign up a school so it exists in the DB (unverified by default)
+      const { app } = createTestApp();
+      const inviteToken = generateSignupInvite({
         email: 'verify@example.com',
         schoolName: 'Verify School',
-        password: 'VerifyPass1',
-        inviteToken,
-      })
-      .expect(201);
+      });
 
-    const schoolId = signupRes.body.user.schoolId;
+      const signupRes = await request(app)
+        .post('/api/auth/signup')
+        .send({
+          name: 'Verify Admin',
+          email: 'verify@example.com',
+          schoolName: 'Verify School',
+          password: 'VerifyPass1',
+          inviteToken,
+        })
+        .expect(201);
 
-    // Craft a valid email verification token
-    const verificationToken = jwt.sign(
-      { purpose: 'email-verification', schoolId, email: 'verify@example.com' },
-      process.env.JWT_SECRET,
-      { expiresIn: '48h' }
-    );
+      const schoolId = signupRes.body.user.schoolId;
 
-    const verifyRes = await request(app)
-      .get('/api/auth/verify-email')
-      .query({ token: verificationToken })
-      .expect(200);
+      // Craft a valid email verification token
+      const verificationToken = jwt.sign(
+        { purpose: 'email-verification', schoolId, email: 'verify@example.com' },
+        process.env.JWT_SECRET,
+        { expiresIn: '48h' }
+      );
 
-    expect(verifyRes.body).toMatchObject({
-      success: true,
-      message: 'Email verified successfully',
-    });
+      const verifyRes = await request(app)
+        .get('/api/auth/verify-email')
+        .query({ token: verificationToken })
+        .expect(200);
 
-    // DB reflects verified status
-    const school = await School.findById(schoolId);
-    expect(school.metadata.emailVerified).toBe(true);
+      expect(verifyRes.body.success).toBe(true);
+      expect(verifyRes.body.message).toMatch(/verified/i);
+
+      // DB reflects verified status on both staff and school metadata
+      const school = await School.findById(schoolId);
+      expect(school.metadata.emailVerified).toBe(true);
+
+      const staff = await Staff.findOne({ schoolId });
+      expect(staff.emailVerified).toBe(true);
+    } finally {
+      if (previousFlag === undefined) {
+        delete process.env.ENABLE_SELF_SIGNUP;
+      } else {
+        process.env.ENABLE_SELF_SIGNUP = previousFlag;
+      }
+    }
   });
 
   it('11) email verification with expired token returns 410 with error', async () => {
-    const school = await createSchoolRecord({ name: 'ExpVerify School', code: 'EXP-VER' });
+    // PR2 (SCH-218): verify-email is gated by ENABLE_SELF_SIGNUP.
+    const previousFlag = process.env.ENABLE_SELF_SIGNUP;
+    process.env.ENABLE_SELF_SIGNUP = 'true';
+    try {
+      const school = await createSchoolRecord({ name: 'ExpVerify School', code: 'EXP-VER' });
 
-    const expiredToken = jwt.sign(
-      { purpose: 'email-verification', schoolId: school._id.toString(), email: 'x@example.com' },
-      process.env.JWT_SECRET,
-      { expiresIn: -1 }
-    );
+      const expiredToken = jwt.sign(
+        { purpose: 'email-verification', schoolId: school._id.toString(), email: 'x@example.com' },
+        process.env.JWT_SECRET,
+        { expiresIn: -1 }
+      );
 
-    const { app } = createTestApp();
+      const { app } = createTestApp();
 
-    const res = await request(app)
-      .get('/api/auth/verify-email')
-      .query({ token: expiredToken })
-      .expect(410);
+      const res = await request(app)
+        .get('/api/auth/verify-email')
+        .query({ token: expiredToken })
+        .expect(410);
 
-    expect(res.body.error).toMatch(/expired/i);
+      expect(res.body.error).toMatch(/expired/i);
+    } finally {
+      if (previousFlag === undefined) {
+        delete process.env.ENABLE_SELF_SIGNUP;
+      } else {
+        process.env.ENABLE_SELF_SIGNUP = previousFlag;
+      }
+    }
   });
 
-  it('12) resend verification email succeeds for authenticated user with unverified school', async () => {
-    const { app } = createTestApp();
+  it('12) resend verification email succeeds for an unverified school', async () => {
+    // PR2 (SCH-218): resend-verification is now a PUBLIC endpoint keyed by
+    // email (no auth required). It is still gated by ENABLE_SELF_SIGNUP.
+    const previousFlag = process.env.ENABLE_SELF_SIGNUP;
+    process.env.ENABLE_SELF_SIGNUP = 'true';
+    try {
+      const { app } = createTestApp();
 
-    // Signup creates an unverified school
-    const inviteToken = generateSignupInvite({
-      email: 'resend@example.com',
-      schoolName: 'Resend School',
-    });
-
-    await request(app)
-      .post('/api/auth/signup')
-      .send({
-        name: 'Resend Admin',
+      const inviteToken = generateSignupInvite({
         email: 'resend@example.com',
         schoolName: 'Resend School',
-        password: 'ResendPass1',
-        inviteToken,
-      })
-      .expect(201);
+      });
 
-    // Login to get a token
-    const loginRes = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'resend@example.com', password: 'ResendPass1' })
-      .expect(200);
+      await request(app)
+        .post('/api/auth/signup')
+        .send({
+          name: 'Resend Admin',
+          email: 'resend@example.com',
+          schoolName: 'Resend School',
+          password: 'ResendPass1',
+          inviteToken,
+        })
+        .expect(201);
 
-    const token = loginRes.body.token;
+      const resendRes = await request(app)
+        .post('/api/auth/resend-verification')
+        .send({ email: 'resend@example.com' })
+        .expect(200);
 
-    const resendRes = await request(app)
-      .post('/api/auth/resend-verification')
-      .set('Authorization', `Bearer ${token}`)
-      .expect(200);
-
-    expect(resendRes.body).toMatchObject({
-      success: true,
-      message: expect.stringContaining('Verification email sent'),
-    });
+      expect(resendRes.body.success).toBe(true);
+      // Generic success message — never reveals whether the account exists.
+      expect(resendRes.body.message).toBeTruthy();
+    } finally {
+      if (previousFlag === undefined) {
+        delete process.env.ENABLE_SELF_SIGNUP;
+      } else {
+        process.env.ENABLE_SELF_SIGNUP = previousFlag;
+      }
+    }
   });
 
   // ─── Login with remember-me / cookie session ────────────────────────────────

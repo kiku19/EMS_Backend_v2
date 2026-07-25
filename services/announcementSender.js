@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import mongoose from 'mongoose';
 import Announcement from '../models/Announcement.js';
 import AnnouncementRecipient from '../models/AnnouncementRecipient.js';
 import { Staff, Student, Class } from '../database.js';
@@ -10,7 +11,10 @@ import { createLogger } from '../utils/logger.js';
 const logger = createLogger('AnnouncementSender');
 
 // Helper function to resolve recipients
-async function resolveRecipients(recipients, schoolId) {
+// Exported so the announcements route (and other callers) reuse the exact
+// same resolution logic — the route previously had a divergent local copy
+// that ignored isActive/schoolId scoping for class students.
+export async function resolveRecipients(recipients, schoolId) {
   const recipientList = [];
   const schoolFilter = schoolId ? { schoolId } : {};
 
@@ -50,21 +54,24 @@ async function resolveRecipients(recipients, schoolId) {
       );
     } else if (recipient.type === 'students') {
       if (recipient.classIds && recipient.classIds.length > 0) {
-        const classes = await Class.find({
-          _id: { $in: recipient.classIds },
+        // Resolve class members directly from Student so we can enforce the
+        // same isActive + schoolId scoping used everywhere else. Reading the
+        // raw cls.students array previously pulled in inactive students and
+        // (if a class doc leaked across tenants) students from another school.
+        const students = await Student.find({
+          classId: { $in: recipient.classIds },
+          isActive: true,
           ...schoolFilter,
-        }).populate('students');
-        for (const cls of classes) {
-          cls.students.forEach((student) => {
-            recipientList.push({
-              userId: student._id,
-              userType: 'Student',
-              name: student.name,
-              email: student.email,
-              phone: student.phone,
-            });
+        });
+        students.forEach((student) => {
+          recipientList.push({
+            userId: student._id,
+            userType: 'Student',
+            name: student.name,
+            email: student.email,
+            phone: student.phone,
           });
-        }
+        });
       } else {
         const students = await Student.find({ isActive: true, ...schoolFilter });
         students.forEach((s) =>
@@ -131,6 +138,149 @@ async function resolveRecipients(recipients, schoolId) {
   return uniqueRecipients;
 }
 
+// Recompute announcement analytics across ALL AnnouncementRecipient docs.
+//
+// The in-memory `recipients` array only reflects the batch processed in the
+// current call, which is wrong for resends: POST /:id/resend invokes
+// sendScheduledAnnouncement once per recipient with specificRecipients=[userId],
+// so the old "analytics.sentCount = recipients.length" code overwrote the
+// totals with the single-recipient batch. Aggregating across every persisted
+// AnnouncementRecipient doc gives correct cumulative totals regardless of how
+// many resend passes have run.
+async function recomputeAnalytics(announcementId) {
+  const [agg] = await AnnouncementRecipient.aggregate([
+    { $match: { announcementId: mongoose.Types.ObjectId(announcementId) } },
+    {
+      $facet: {
+        totals: [
+          {
+            $group: {
+              _id: null,
+              totalRecipients: { $sum: 1 },
+              // Mirrors the per-recipient predicates used below:
+              //  - sent/delivered: at least one deliveryStatus reached sent/delivered/read
+              //  - failed: at least one deliveryStatus is failed
+              sentCount: {
+                $sum: {
+                  $cond: [
+                    {
+                      $gt: [
+                        {
+                          $size: {
+                            $filter: {
+                              input: '$deliveryStatus',
+                              as: 'ds',
+                              cond: {
+                                $in: ['$$ds.status', ['sent', 'delivered', 'read']],
+                              },
+                            },
+                          },
+                        },
+                        0,
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              // deliveredCount counts only recipients with a deliveryStatus
+              // explicitly in delivered/read. Email/SMS/WhatsApp only ever set
+              // status='sent' (no webhooks), so counting 'sent' as delivered
+              // inflated the metric; only inapp delivery (and webhook-driven
+              // confirmations) reach 'delivered'/'read'.
+              deliveredCount: {
+                $sum: {
+                  $cond: [
+                    {
+                      $gt: [
+                        {
+                          $size: {
+                            $filter: {
+                              input: '$deliveryStatus',
+                              as: 'ds',
+                              cond: { $in: ['$$ds.status', ['delivered', 'read']] },
+                            },
+                          },
+                        },
+                        0,
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              failedCount: {
+                $sum: {
+                  $cond: [
+                    {
+                      $gt: [
+                        {
+                          $size: {
+                            $filter: {
+                              input: '$deliveryStatus',
+                              as: 'ds',
+                              cond: { $eq: ['$$ds.status', 'failed'] },
+                            },
+                          },
+                        },
+                        0,
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              openCount: { $sum: { $ifNull: [{ $sum: '$deliveryStatus.openCount' }, 0] } },
+              clickCount: { $sum: { $ifNull: [{ $sum: '$deliveryStatus.clickCount' }, 0] } },
+              bounceCount: {
+                $sum: {
+                  $size: {
+                    $filter: {
+                      input: '$deliveryStatus',
+                      as: 'ds',
+                      cond: { $ifNull: ['$$ds.bouncedAt', false] },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  ]);
+
+  const totals = (agg && agg.totals && agg.totals[0]) || {
+    totalRecipients: 0,
+    sentCount: 0,
+    deliveredCount: 0,
+    failedCount: 0,
+    openCount: 0,
+    clickCount: 0,
+    bounceCount: 0,
+  };
+
+  await Announcement.updateOne(
+    { _id: announcementId },
+    {
+      $set: {
+        'analytics.totalRecipients': totals.totalRecipients,
+        'analytics.sentCount': totals.sentCount,
+        'analytics.deliveredCount': totals.deliveredCount,
+        'analytics.failedCount': totals.failedCount,
+        'analytics.openCount': totals.openCount,
+        'analytics.clickCount': totals.clickCount,
+        'analytics.bounceCount': totals.bounceCount,
+      },
+    }
+  );
+
+  return totals;
+}
+
 // Main function to send scheduled announcement
 export async function sendScheduledAnnouncement(announcementId, specificRecipients = null) {
   let announcement;
@@ -163,22 +313,44 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
         announcement.schoolId
       );
 
-      // Create recipient records
-      recipients = await AnnouncementRecipient.create(
-        resolvedRecipients.map((r) => ({
-          schoolId: announcement.schoolId,
-          announcementId: announcement._id,
-          userId: r.userId,
-          userType: r.userType,
-          name: r.name || '',
-          email: r.email || '',
-          phone: r.phone || '',
-          deliveryStatus: announcement.channels.map((ch) => ({
-            channel: ch.type,
-            status: 'pending',
-          })),
-        }))
-      );
+      // Upsert recipient records. Re-sending a partial/failed announcement
+      // (only `sent` is guarded upstream) previously hit AnnouncementRecipient.create
+      // again and minted duplicate (announcementId, userId) docs. find-or-create
+      // via upsert keeps existing docs (preserving their delivery history) and
+      // only inserts genuinely new recipients.
+      if (resolvedRecipients.length > 0) {
+        const ops = resolvedRecipients.map((r) => ({
+          updateOne: {
+            filter: {
+              announcementId: announcement._id,
+              userId: r.userId,
+            },
+            update: {
+              $setOnInsert: {
+                schoolId: announcement.schoolId,
+                announcementId: announcement._id,
+                userId: r.userId,
+                userType: r.userType,
+                name: r.name || '',
+                email: r.email || '',
+                phone: r.phone || '',
+                deliveryStatus: announcement.channels.map((ch) => ({
+                  channel: ch.type,
+                  status: 'pending',
+                })),
+              },
+            },
+            upsert: true,
+          },
+        }));
+        await AnnouncementRecipient.bulkWrite(ops, { ordered: false });
+      }
+
+      // Re-fetch (including pre-existing docs) so the delivery loop has a
+      // hydrated set to iterate over.
+      recipients = await AnnouncementRecipient.find({
+        announcementId: announcement._id,
+      });
     }
 
     // Update total recipients
@@ -195,6 +367,17 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       for (const recipient of recipients) {
         const deliveryStatus = recipient.deliveryStatus.find((ds) => ds.channel === channelType);
 
+        // Skip suppressed email rows entirely on retries: they are permanently
+        // undeliverable and were intentionally kept at status 'pending' (out of
+        // the failed pool). We detect them by the durable `[suppressed]` marker
+        // written into the schema-backed `error` field on the first attempt.
+        if (
+          typeof deliveryStatus?.error === 'string' &&
+          deliveryStatus.error.startsWith('[suppressed]')
+        ) {
+          continue;
+        }
+
         if (!deliveryStatus || deliveryStatus.status === 'failed') {
           try {
             if (channelType === 'email') {
@@ -208,12 +391,28 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
                 'en',
                 deliveryStatus.trackingToken
               );
-              deliveryStatus.status = result.success ? 'sent' : 'failed';
-              deliveryStatus.sentAt = new Date();
-              if (result.success) {
+              // Suppressed recipients (address on the suppression list) are
+              // NOT a hard failure: counting them as failed/bounced both
+              // distorted analytics and pulled them back into the failed
+              // resend pool (so every resend retried a permanently suppressed
+              // address). Record the suppression in the schema-backed `error`
+              // field for visibility and leave status at 'pending' so the row
+              // is excluded from the failed-based resend query and the failed/
+              // bounce counts. (AnnouncementRecipient.deliveryStatus has no
+              // dedicated suppressed flag, so we reuse `error` as the durable
+              // marker; the in-loop retry guard below also keys off `error`.)
+              if (result.suppressed) {
+                deliveryStatus.status = 'pending'; // explicitly NOT 'failed'
+                deliveryStatus.sentAt = new Date();
+                deliveryStatus.error = `[suppressed] ${result.reason || 'suppressed'}`;
+              } else if (result.success) {
+                deliveryStatus.status = 'sent';
+                deliveryStatus.sentAt = new Date();
                 if (result.messageId) deliveryStatus.messageId = result.messageId;
                 channel.stats.sentCount++;
               } else {
+                deliveryStatus.status = 'failed';
+                deliveryStatus.sentAt = new Date();
                 channel.stats.failedCount++;
                 channel.stats.bounceCount = (channel.stats.bounceCount || 0) + 1;
                 if (result.error) deliveryStatus.bounceReason = result.error;
@@ -276,29 +475,18 @@ export async function sendScheduledAnnouncement(announcementId, specificRecipien
       channel.sentAt = new Date();
     }
 
-    // Update overall analytics
-    announcement.analytics.sentCount = recipients.length;
-    announcement.analytics.deliveredCount = recipients.filter((r) =>
-      r.deliveryStatus.some((ds) => ds.status === 'delivered' || ds.status === 'sent')
-    ).length;
-    announcement.analytics.failedCount = recipients.filter((r) =>
-      r.deliveryStatus.some((ds) => ds.status === 'failed')
-    ).length;
-
-    // Aggregate open/click/bounce counts across all recipients and channels
-    let totalOpenCount = 0;
-    let totalClickCount = 0;
-    let totalBounceCount = 0;
-    for (const r of recipients) {
-      for (const ds of r.deliveryStatus) {
-        totalOpenCount += ds.openCount || 0;
-        totalClickCount += ds.clickCount || 0;
-        if (ds.bouncedAt) totalBounceCount++;
-      }
-    }
-    announcement.analytics.openCount = totalOpenCount;
-    announcement.analytics.clickCount = totalClickCount;
-    announcement.analytics.bounceCount = totalBounceCount;
+    // Recompute analytics across ALL AnnouncementRecipient docs for this
+    // announcement (not just the in-memory `recipients` batch). This matters
+    // for resends, which are invoked per-recipient — writing from the batch
+    // would clobber the cumulative totals with the last single-recipient pass.
+    const totals = await recomputeAnalytics(announcement._id);
+    announcement.analytics.totalRecipients = totals.totalRecipients;
+    announcement.analytics.sentCount = totals.sentCount;
+    announcement.analytics.deliveredCount = totals.deliveredCount;
+    announcement.analytics.failedCount = totals.failedCount;
+    announcement.analytics.openCount = totals.openCount;
+    announcement.analytics.clickCount = totals.clickCount;
+    announcement.analytics.bounceCount = totals.bounceCount;
 
     // Update status
     if (announcement.analytics.failedCount === 0) {

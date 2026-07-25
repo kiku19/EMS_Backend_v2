@@ -8,24 +8,39 @@ const examSubjectSchema = z.object({
   subjectId: optionalObjectId,
   subjectName: z.string().max(100).optional(),
   date: z.coerce.date().optional(),
-  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format').optional(),
-  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format').optional(),
+  startTime: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format')
+    .optional(),
+  endTime: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, 'Must be HH:MM format')
+    .optional(),
   maxMarks: z.number().min(1).max(1000).default(100),
   passingMarks: z.number().min(0).max(1000).default(35),
 });
 
-const examTypeEnum = z.enum([
-  'unit_test',
-  'quiz',
-  'midterm',
-  'final',
-  'quarterly',
-  'half_yearly',
-  'annual',
-  'practice',
-  'class_test',
-  'assignment',
-]).nullish().or(z.literal(''));
+const examTypeEnum = z
+  .enum([
+    'unit_test',
+    'quiz',
+    'midterm',
+    'final',
+    'quarterly',
+    'half_yearly',
+    'annual',
+    'practice',
+    'class_test',
+    'assignment',
+    // Staff-app exam categories (CreateExamScreen segmented control). The
+    // staff-app sends these as `examType`; the route handler maps examType →
+    // type. Kept in sync with models/Exam.js enum.
+    'written',
+    'practical',
+    'oral',
+  ])
+  .nullish()
+  .or(z.literal(''));
 const gradingTypeEnum = z.enum(['numerical', 'grades', 'cgpa']);
 const termEnum = z.enum(['term_1', 'term_2', 'term_3', 'final']).nullish().or(z.literal(''));
 
@@ -151,7 +166,10 @@ export const updateExamSchema = z
       .optional(),
     gradingType: gradingTypeEnum.optional(),
     instructions: optionalString(2000),
-    status: z.enum(['scheduled', 'ongoing', 'completed', 'results_published']).optional(),
+    // Publishing is a guarded lifecycle action. Keeping results_published out
+    // of the generic edit schema prevents callers with edit-only permission
+    // from bypassing result-completeness and publish-permission checks.
+    status: z.enum(['scheduled', 'ongoing', 'completed']).optional(),
     term: termEnum,
     duration: z
       .number()
@@ -187,6 +205,73 @@ export const updateExamSchema = z
     }
   );
 
+// Empty-body actions still use Zod so unexpected input cannot silently alter
+// confirmation/generation semantics in a future handler change.
+export const emptyExamActionSchema = z.object({}).strict();
+export const emptyExamScheduleActionSchema = emptyExamActionSchema;
+
+// Query validation is deliberately strict and bounded. In addition to making
+// pagination deterministic, this prevents raw objects/query operators from
+// reaching MongoDB through Express query parsing.
+export const examListQuerySchema = z
+  .object({
+    academicYear: academicYear.optional(),
+    classId: objectId.optional(),
+    status: z.enum(['scheduled', 'ongoing', 'completed', 'results_published']).optional(),
+    q: z.string().trim().max(100, 'Search must not exceed 100 characters').optional(),
+    skip: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+  })
+  .strict();
+
+// ─── BULK CREATE EXAMS ───────────────────────────────────────────
+// Generates one Exam per (subject × date) for a single class.
+// `subjects` is either the literal string 'all' (use every subject on the
+// class) or an explicit list of subject names. `dates` is either a single
+// date (every subject on the same day) or a per-subject mapping.
+export const bulkCreateExamsSchema = z
+  .object({
+    classId: objectId,
+    name: z
+      .string()
+      .min(2, 'Exam name must be at least 2 characters')
+      .max(200, 'Exam name must not exceed 200 characters')
+      .trim(),
+    type: examTypeEnum,
+    subjects: z.union([
+      z.literal('all'),
+      z.array(z.string().min(1).max(100)).min(1, 'Select at least one subject'),
+    ]),
+    dates: z.union([
+      z.coerce.date({ invalid_type_error: 'Date must be a valid date' }),
+      z
+        .array(
+          z.object({
+            subjectName: z.string().min(1).max(100),
+            date: z.coerce.date({ invalid_type_error: 'Date must be a valid date' }),
+          })
+        )
+        .min(1, 'At least one date is required'),
+    ]),
+    maxMarks: z
+      .number()
+      .min(1, 'Maximum marks must be at least 1')
+      .max(1000, 'Maximum marks cannot exceed 1000')
+      .default(100),
+    passingMarks: z.number().min(0, 'Passing marks cannot be negative').default(35),
+    weightage: z
+      .number()
+      .min(0, 'Weightage cannot be negative')
+      .max(100, 'Weightage cannot exceed 100')
+      .default(10),
+    academicYear: academicYear.nullish().or(z.literal('')),
+  })
+  .strip()
+  .refine((data) => data.passingMarks <= data.maxMarks, {
+    message: 'Passing marks cannot exceed maximum marks',
+    path: ['passingMarks'],
+  });
+
 // ─── BULK RESULTS ─────────────────────────────────────────────────
 export const bulkResultsSchema = z
   .object({
@@ -214,6 +299,39 @@ export const bulkResultsSchema = z
   })
   .strip();
 
+// ─── SINGLE RESULT CREATE / UPDATE ───────────────────────────────
+export const createResultSchema = z
+  .object({
+    examId: objectId,
+    studentId: objectId,
+    classId: optionalObjectId,
+    marksObtained: z.number().min(0, 'Marks cannot be negative').max(1000).optional(),
+    maxMarks: z.number().min(1, 'maxMarks must be at least 1').max(1000).optional(),
+    remarks: optionalString(500),
+    academicYear: academicYear.optional(),
+    status: z.enum(['passed', 'failed', 'absent']).optional(),
+  })
+  .strip()
+  .superRefine((data, ctx) => {
+    if (data.status !== 'absent' && data.marksObtained === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['marksObtained'],
+        message: 'Marks are required unless the student is absent',
+      });
+    }
+  });
+
+export const updateResultSchema = z
+  .object({
+    marksObtained: z.number().min(0, 'Marks cannot be negative').max(1000).optional(),
+    maxMarks: z.number().min(1, 'maxMarks must be at least 1').max(1000).optional(),
+    remarks: optionalString(500),
+    // passed/failed are always derived from marks + the exam threshold.
+    status: z.enum(['absent', 'pending']).optional(),
+  })
+  .strip();
+
 // ─── TIME SLOT ────────────────────────────────────────────────────
 const timeSlotSchema = z
   .object({
@@ -224,28 +342,37 @@ const timeSlotSchema = z
   .optional();
 
 // ─── EXAM SCHEDULE ENTRY ─────────────────────────────────────────
-const examScheduleEntrySchema = z.object({
-  date: z.coerce.date({
-    required_error: 'Entry date is required',
-    invalid_type_error: 'Entry date must be a valid date',
-  }),
-  session: z.enum(['morning', 'afternoon'], {
-    errorMap: () => ({ message: "Session must be 'morning' or 'afternoon'" }),
-  }),
-  subjectName: z
-    .string()
-    .min(1, 'Subject name is required')
-    .max(100, 'Subject name must not exceed 100 characters'),
-  classIds: z
-    .array(z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid 24-character ID'))
-    .optional(),
-  maxMarks: z
-    .number()
-    .min(1, 'Maximum marks must be at least 1')
-    .max(1000, 'Maximum marks cannot exceed 1000')
-    .optional(),
-  passingMarks: z.number().min(0, 'Passing marks cannot be negative').optional(),
-});
+const examScheduleEntrySchema = z
+  .object({
+    date: z.coerce.date({
+      required_error: 'Entry date is required',
+      invalid_type_error: 'Entry date must be a valid date',
+    }),
+    session: z.enum(['morning', 'afternoon'], {
+      errorMap: () => ({ message: "Session must be 'morning' or 'afternoon'" }),
+    }),
+    subjectName: z
+      .string()
+      .min(1, 'Subject name is required')
+      .max(100, 'Subject name must not exceed 100 characters'),
+    classIds: z
+      .array(z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid 24-character ID'))
+      .optional(),
+    maxMarks: z
+      .number()
+      .min(1, 'Maximum marks must be at least 1')
+      .max(1000, 'Maximum marks cannot exceed 1000')
+      .optional(),
+    passingMarks: z.number().min(0, 'Passing marks cannot be negative').optional(),
+  })
+  .refine(
+    (entry) =>
+      entry.passingMarks == null || entry.maxMarks == null || entry.passingMarks <= entry.maxMarks,
+    {
+      message: 'Entry passing marks cannot exceed maximum marks',
+      path: ['passingMarks'],
+    }
+  );
 
 // ─── CREATE EXAM SCHEDULE ─────────────────────────────────────────
 export const createExamScheduleSchema = z
@@ -339,3 +466,11 @@ export const updateExamScheduleSchema = z
       path: ['defaultPassingMarks'],
     }
   );
+
+// POST /exam-schedules/:id/seat — optional seating options in the request body.
+export const seatExamScheduleSchema = z
+  .object({
+    // Allow double-seater benches to hold two students. Default: one per bench.
+    shareBenches: z.coerce.boolean().optional().default(false),
+  })
+  .strip();

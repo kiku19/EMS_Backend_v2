@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { FeePayment, FeeRefund, Student, StudentFeeStructure } from '../database.js';
+import { Counter, FeePayment, FeeRefund, Student, StudentFeeStructure } from '../database.js';
 import { CURRENT_ACADEMIC_YEAR } from '../utils/constants.js';
 import {
   authHeadersFor,
@@ -142,6 +142,7 @@ describe('POST /api/fees/payments', () => {
     const classRecord = await createClassRecord({
       name: 'Class 9',
       section: 'A',
+      schoolId: school._id,
     });
 
     const student = await createStudentRecord({
@@ -162,20 +163,18 @@ describe('POST /api/fees/payments', () => {
     const { app } = createTestApp();
     const authHeaders = authHeadersFor(accountant, 'accountant');
 
-    const paymentResponse = await request(app)
-      .post('/api/fees/payments')
-      .set(authHeaders)
-      .send({
-        studentId: student._id.toString(),
-        studentName: student.name,
-        classId: classRecord._id.toString(),
-        academicYear: '2025-26',
-        paymentDate: '2026-03-06',
-        amount: 500,
-        paymentMode: 'cash',
-        remarks: 'Partial payment',
-      })
-      .expect(201);
+    const paymentResponse = await request(app).post('/api/fees/payments').set(authHeaders).send({
+      studentId: student._id.toString(),
+      studentName: student.name,
+      classId: classRecord._id.toString(),
+      academicYear: '2025-26',
+      paymentDate: '2026-03-06',
+      amount: 500,
+      paymentMode: 'cash',
+      remarks: 'Partial payment',
+    });
+
+    expect(paymentResponse.status, JSON.stringify(paymentResponse.body)).toBe(201);
 
     expect(paymentResponse.body.status).toBe('completed');
     expect(paymentResponse.body.receiptNumber).toMatch(/^RCP-/);
@@ -223,10 +222,7 @@ describe('POST /api/fees/payments', () => {
     expect(res.status).toBe(400);
   });
 
-  it('still creates a payment record when studentId does not exist in DB (non-blocking student update)', async () => {
-    // The route saves the payment first, then tries to update the student in
-    // a non-blocking try/catch. A missing student is silently ignored, so the
-    // route still responds 201.
+  it('rejects a payment when studentId does not exist', async () => {
     const accountant = await createAccountant();
     const classRecord = await createClassRecord({ name: 'Class 10', section: 'A' });
     const { app } = createTestApp();
@@ -238,14 +234,10 @@ describe('POST /api/fees/payments', () => {
       .post('/api/fees/payments')
       .set(authHeaders)
       .send(validPaymentBody(fakeStudentId, classRecord._id))
-      .expect(201);
+      .expect(404);
 
-    expect(res.body.status).toBe('completed');
-    expect(res.body.receiptNumber).toMatch(/^RCP-/);
-
-    const saved = await FeePayment.findById(res.body._id).lean();
-    expect(saved).not.toBeNull();
-    expect(saved.amount).toBe(500);
+    expect(res.body.error).toMatch(/student not found/i);
+    expect(await FeePayment.countDocuments({})).toBe(0);
   });
 
   it('returns 400 when amount is missing (Zod validation)', async () => {
@@ -319,7 +311,7 @@ describe('POST /api/fees/payments', () => {
     expect(res.body.receiptNumber).toMatch(/^RCP-\d{4}-\d+$/);
   });
 
-  it('ignores a client-supplied receipt number and generates server-side', async () => {
+  it('rejects client-supplied receipt numbers', async () => {
     const accountant = await createAccountant();
     const classRecord = await createClassRecord({ name: 'Class 11', section: 'B' });
     const student = await createStudentRecord({
@@ -340,12 +332,71 @@ describe('POST /api/fees/payments', () => {
       .post('/api/fees/payments')
       .set(authHeaders)
       .send(validPaymentBody(student._id, classRecord._id, { receiptNumber: 'RCP-CUSTOM-001' }))
+      .expect(400);
+
+    expect(res.body.details?.some((item) => item.field === '')).toBe(true);
+    expect(await FeePayment.countDocuments({ studentId: student._id })).toBe(0);
+  });
+
+  it('self-heals when the receipt counter is behind existing receipts (no false "concurrent" 409)', async () => {
+    // Reproduces the user's bug: a payment recorded out-of-band (manual insert,
+    // restore, or test seed) occupies a receipt number the counter would
+    // generate. Before the fix this made EVERY subsequent payment fail with
+    // "A payment was already recorded concurrently". The self-healing
+    // generator must fast-forward the counter past the existing receipt.
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 12', section: 'C' });
+    const student = await createStudentRecord({
+      name: 'Self Heal Student',
+      rollNo: 9,
+      classId: classRecord._id,
+      feeDetails: { totalFee: 5000, paidAmount: 0, balanceAmount: 5000 },
+    });
+    await seedStudentFeeStructure({
+      studentId: student._id,
+      classId: classRecord._id,
+      schoolId: student.schoolId,
+    });
+    const { app } = createTestApp();
+    const authHeaders = authHeadersFor(accountant, 'accountant');
+    const schoolId = accountant.schoolId;
+    const year = new Date().getFullYear();
+
+    // Pre-occupy receipt numbers that the counter will reach.
+    // Force the counter to seq=0 so the next generation would be seq=1.
+    await Counter.findByIdAndUpdate(
+      `receiptNumber_${schoolId}`,
+      { $set: { seq: 0 } },
+      { upsert: true, new: true }
+    );
+    // Insert receipts for seq 1..3 directly (simulating out-of-band data).
+    for (const seq of [1, 2, 3]) {
+      await FeePayment.create({
+        schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: CURRENT_ACADEMIC_YEAR,
+        receiptNumber: `RCP-${year}-${String(seq).padStart(6, '0')}`,
+        paymentDate: new Date().toISOString().split('T')[0],
+        amount: 100,
+        paymentMode: 'cash',
+        status: 'completed',
+        feeHeads: [],
+      });
+    }
+
+    // Now record a new payment. The counter would generate RCP-{year}-000001
+    // and collide — the self-healing path must skip ahead to 000004.
+    const res = await request(app)
+      .post('/api/fees/payments')
+      .set(authHeaders)
+      .send(validPaymentBody(student._id, classRecord._id, { amount: 500 }))
       .expect(201);
 
-    // Server-generated receipts follow RCP-YYYY-###### format; any client value
-    // is intentionally ignored to prevent collision + tampering.
-    expect(res.body.receiptNumber).not.toBe('RCP-CUSTOM-001');
-    expect(res.body.receiptNumber).toMatch(/^RCP-\d{4}-\d+$/);
+    expect(res.body.receiptNumber).toBe(`RCP-${year}-000004`);
+    // And the counter must have advanced so the NEXT payment doesn't recollide.
+    const counterAfter = await Counter.findById(`receiptNumber_${schoolId}`);
+    expect(counterAfter.seq).toBeGreaterThanOrEqual(4);
   });
 
   it('marks student feeStatus as paid when payment covers the full fee balance', async () => {
@@ -355,7 +406,11 @@ describe('POST /api/fees/payments', () => {
       isDefault: true,
     });
     const accountant = await createAccountant({ schoolId: school._id });
-    const classRecord = await createClassRecord({ name: 'Class 12', section: 'A' });
+    const classRecord = await createClassRecord({
+      name: 'Class 12',
+      section: 'A',
+      schoolId: school._id,
+    });
     const student = await createStudentRecord({
       name: 'Full Pay Student',
       classId: classRecord._id,
@@ -378,11 +433,7 @@ describe('POST /api/fees/payments', () => {
     expect(refreshed.feeStatus).toBe('paid');
   });
 
-  it('multi-tenancy: payment creation does not update a student belonging to a different school', async () => {
-    // School A's accountant submits a payment referencing School B's student.
-    // scopeBySchool scopes the student lookup to School A's schoolId, so the
-    // student is not found. The payment itself is still saved (201) but the
-    // student's fee totals remain unchanged.
+  it('multi-tenancy: rejects a payment for a student belonging to a different school', async () => {
     const schoolA = await createSchoolRecord({
       name: 'School A',
       code: 'SCH-A-MT',
@@ -391,7 +442,11 @@ describe('POST /api/fees/payments', () => {
     const schoolB = await createSchoolRecord({ name: 'School B', code: 'SCH-B-MT' });
 
     const accountantA = await createAccountant({ schoolId: schoolA._id });
-    const classRecord = await createClassRecord({ name: 'Class 8', section: 'A' });
+    const classRecord = await createClassRecord({
+      name: 'Class 8',
+      section: 'A',
+      schoolId: schoolB._id,
+    });
 
     const studentB = await createStudentRecord({
       name: 'School B Student',
@@ -408,15 +463,200 @@ describe('POST /api/fees/payments', () => {
       .post('/api/fees/payments')
       .set(authHeadersA)
       .send(validPaymentBody(studentB._id, classRecord._id, { amount: 200 }))
-      .expect(201);
+      .expect(404);
 
-    // The payment record is created regardless.
-    expect(res.body.status).toBe('completed');
+    expect(res.body.error).toMatch(/student not found/i);
+    expect(await FeePayment.countDocuments({ schoolId: schoolA._id })).toBe(0);
 
     // School B's student fee totals were NOT updated because the scoped
     // student lookup returned null.
     const unchangedStudent = await Student.findById(studentB._id).lean();
     expect(unchangedStudent.feeDetails.paidAmount ?? 0).toBe(0);
+  });
+
+  it('rejects collector impersonation and derives collectedBy for valid requests', async () => {
+    const accountant = await createAccountant();
+    const otherStaff = await createAccountant({ email: 'other-accountant@example.com' });
+    const classRecord = await createClassRecord({ name: 'Class 7', section: 'A' });
+    const student = await createStudentRecord({
+      name: 'Collector Test Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 0, balanceAmount: 1000 },
+    });
+    const { app } = createTestApp();
+
+    await request(app)
+      .post('/api/fees/payments')
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send(
+        validPaymentBody(student._id, classRecord._id, {
+          collectedBy: otherStaff._id.toString(),
+          idempotencyKey: 'collector-test-001',
+        })
+      )
+      .expect(400);
+
+    const response = await request(app)
+      .post('/api/fees/payments')
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send(
+        validPaymentBody(student._id, classRecord._id, {
+          idempotencyKey: 'collector-test-001',
+        })
+      )
+      .expect(201);
+
+    const saved = await FeePayment.findById(response.body._id).lean();
+    expect(saved.collectedBy.toString()).toBe(accountant._id.toString());
+  });
+
+  it('uses idempotency keys to prevent duplicate ledger and balance updates', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 7', section: 'B' });
+    const student = await createStudentRecord({
+      name: 'Idempotent Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 0, balanceAmount: 1000 },
+    });
+    const { app } = createTestApp();
+    const headers = authHeadersFor(accountant, 'accountant');
+    const body = validPaymentBody(student._id, classRecord._id, {
+      idempotencyKey: 'payment-retry-001',
+    });
+
+    await request(app).post('/api/fees/payments').set(headers).send(body).expect(201);
+    const duplicate = await request(app)
+      .post('/api/fees/payments')
+      .set(headers)
+      .send(body)
+      .expect(409);
+
+    expect(duplicate.body.code).toBe('IDEMPOTENCY_KEY_USED');
+    expect(await FeePayment.countDocuments({ idempotencyKey: 'payment-retry-001' })).toBe(1);
+    const feeStructure = await StudentFeeStructure.findOne({ studentId: student._id }).lean();
+    expect(feeStructure.totalPaid).toBe(500);
+  });
+
+  it('automatically distributes aggregate payments across outstanding fee heads', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 7', section: 'C' });
+    const student = await createStudentRecord({
+      name: 'Distribution Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 0, balanceAmount: 1000 },
+    });
+    await StudentFeeStructure.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      feeHeads: [
+        {
+          feeHeadId: new mongoose.Types.ObjectId(),
+          name: 'Tuition',
+          amount: 300,
+          paidAmount: 0,
+          balanceAmount: 300,
+        },
+        {
+          feeHeadId: new mongoose.Types.ObjectId(),
+          name: 'Activities',
+          amount: 700,
+          paidAmount: 0,
+          balanceAmount: 700,
+        },
+      ],
+      totalFee: 1000,
+      totalPaid: 0,
+      totalBalance: 1000,
+    });
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .post('/api/fees/payments')
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send(
+        validPaymentBody(student._id, classRecord._id, {
+          amount: 500,
+          feeHeads: [],
+          idempotencyKey: 'aggregate-payment-001',
+        })
+      )
+      .expect(201);
+
+    const structure = await StudentFeeStructure.findOne({ studentId: student._id }).lean();
+    expect(structure.feeHeads[0].paidAmount).toBe(300);
+    expect(structure.feeHeads[1].paidAmount).toBe(200);
+    expect(response.body.feeHeads.map((head) => head.amount)).toEqual([300, 200]);
+  });
+
+  it('tracks installment payments without losing the fee-head allocation', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 7', section: 'D' });
+    const student = await createStudentRecord({
+      name: 'Installment Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 0, balanceAmount: 1000 },
+    });
+    await StudentFeeStructure.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      feeHeads: [
+        {
+          feeHeadId: new mongoose.Types.ObjectId(),
+          name: 'Tuition',
+          amount: 1000,
+          paidAmount: 0,
+          balanceAmount: 1000,
+        },
+      ],
+      installments: [
+        {
+          name: 'Term 1',
+          dueDate: new Date('2025-04-15'),
+          amount: 500,
+          paidAmount: 0,
+          balanceAmount: 500,
+          status: 'pending',
+        },
+        {
+          name: 'Term 2',
+          dueDate: new Date('2025-10-15'),
+          amount: 500,
+          paidAmount: 0,
+          balanceAmount: 500,
+          status: 'pending',
+        },
+      ],
+      totalFee: 1000,
+      totalPaid: 0,
+      totalBalance: 1000,
+    });
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .post('/api/fees/payments')
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send(
+        validPaymentBody(student._id, classRecord._id, {
+          amount: 500,
+          feeHeads: [],
+          installmentIndex: 0,
+          idempotencyKey: 'installment-payment-001',
+        })
+      )
+      .expect(201);
+
+    expect(response.body).toMatchObject({ installmentIndex: 0, installmentName: 'Term 1' });
+    const structure = await StudentFeeStructure.findOne({ studentId: student._id }).lean();
+    expect(structure.installments[0]).toMatchObject({
+      paidAmount: 500,
+      balanceAmount: 0,
+      status: 'paid',
+    });
+    expect(structure.feeHeads[0].paidAmount).toBe(500);
   });
 });
 
@@ -762,7 +1002,7 @@ describe('GET /api/fees/payments/:id', () => {
     await request(app).get(`/api/fees/payments/${nonExistentId}`).set(authHeaders).expect(404);
   });
 
-  it('returns 500 for a malformed payment ID', async () => {
+  it('returns 400 for a malformed payment ID', async () => {
     // Mongoose throws a CastError for an invalid ObjectId; the route's
     // catch block returns 500.
     const accountant = await createAccountant();
@@ -771,7 +1011,7 @@ describe('GET /api/fees/payments/:id', () => {
 
     const res = await request(app).get('/api/fees/payments/not-a-valid-objectid').set(authHeaders);
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
   });
 
   it('multi-tenancy: School A admin cannot retrieve a payment belonging to School B', async () => {
@@ -899,6 +1139,289 @@ describe('GET /api/fees/payments/:id', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('GET /api/fees/payments/total-paid', () => {
+  it('returns the complete school- and academic-year-scoped total', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 6', section: 'T' });
+    const student = await createStudentRecord({
+      name: 'Total Paid Student',
+      classId: classRecord._id,
+    });
+    await FeePayment.create([
+      {
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        receiptNumber: 'RCP-TOTAL-001',
+        paymentDate: '2026-03-01',
+        amount: 400,
+        paymentMode: 'cash',
+        status: 'completed',
+      },
+      {
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: '2024-25',
+        receiptNumber: 'RCP-TOTAL-002',
+        paymentDate: '2025-03-01',
+        amount: 900,
+        paymentMode: 'cash',
+        status: 'completed',
+      },
+      {
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        receiptNumber: 'RCP-TOTAL-003',
+        paymentDate: '2026-03-02',
+        amount: 100,
+        paymentMode: 'cash',
+        status: 'cancelled',
+      },
+    ]);
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .get('/api/fees/payments/total-paid')
+      .query({ studentId: student._id.toString(), academicYear: '2025-26' })
+      .set(authHeadersFor(accountant, 'accountant'))
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      totalPaid: 400,
+      paymentCount: 1,
+      academicYear: '2025-26',
+    });
+  });
+});
+
+// Refund financial integrity
+// ---------------------------------------------------------------------------
+
+describe('refund financial integrity', () => {
+  it('does not reverse balances when electronic settlement details are missing', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 6', section: 'E' });
+    const student = await createStudentRecord({
+      name: 'Refund Settlement Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 500, paidAmount: 500, balanceAmount: 0 },
+    });
+    await insertPaymentDirect({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      amount: 500,
+      receiptNumber: 'RCP-REFUND-SETTLEMENT',
+    });
+    const ledger = await StudentFeeStructure.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      feeHeads: [],
+      totalFee: 500,
+      totalPaid: 500,
+      totalBalance: 0,
+      overallStatus: 'paid',
+    });
+    const refund = await FeeRefund.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      refundNumber: 'RFD-SETTLEMENT-001',
+      refundDate: '2026-03-06',
+      amount: 100,
+      reason: 'Electronic refund requires a transaction reference',
+      refundMode: 'online',
+      status: 'approved',
+    });
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .put(`/api/fees/refunds/${refund._id}/process`)
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send({})
+      .expect(400);
+
+    expect(response.body.code).toBe('REFUND_SETTLEMENT_DETAILS_REQUIRED');
+    expect((await FeeRefund.findById(refund._id).lean()).status).toBe('approved');
+    expect((await StudentFeeStructure.findById(ledger._id).lean()).totalPaid).toBe(500);
+  });
+
+  it('serializes concurrent approvals so reservations cannot exceed paid fees', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 6', section: 'R' });
+    const student = await createStudentRecord({
+      name: 'Concurrent Refund Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 100, paidAmount: 100, balanceAmount: 0 },
+    });
+    await insertPaymentDirect({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      amount: 100,
+      receiptNumber: 'RCP-REFUND-RACE',
+    });
+    await StudentFeeStructure.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      feeHeads: [],
+      totalFee: 100,
+      totalPaid: 100,
+      totalBalance: 0,
+      overallStatus: 'paid',
+    });
+    const refunds = await FeeRefund.create([
+      {
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        refundNumber: 'RFD-RACE-001',
+        refundDate: '2026-03-06',
+        amount: 80,
+        reason: 'Duplicate collection requires a refund',
+        refundMode: 'cash',
+        status: 'pending',
+      },
+      {
+        schoolId: student.schoolId,
+        studentId: student._id,
+        classId: classRecord._id,
+        academicYear: '2025-26',
+        refundNumber: 'RFD-RACE-002',
+        refundDate: '2026-03-06',
+        amount: 80,
+        reason: 'Duplicate collection requires a refund',
+        refundMode: 'cash',
+        status: 'pending',
+      },
+    ]);
+    const { app } = createTestApp();
+    const headers = authHeadersFor(accountant, 'accountant');
+
+    const responses = await Promise.all(
+      refunds.map((refund) =>
+        request(app).put(`/api/fees/refunds/${refund._id}/approve`).set(headers).send({})
+      )
+    );
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    const saved = await FeeRefund.find({ _id: { $in: refunds.map((item) => item._id) } }).lean();
+    expect(saved.filter((item) => item.status === 'approved')).toHaveLength(1);
+    expect(saved.filter((item) => item.status === 'pending')).toHaveLength(1);
+  });
+
+  it('keeps an approved refund unchanged when balance reversal cannot be completed', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 6', section: 'A' });
+    const student = await createStudentRecord({
+      name: 'Refund Rollback Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 500, balanceAmount: 500 },
+    });
+    const paymentId = await insertPaymentDirect({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      amount: 500,
+      receiptNumber: 'RCP-REFUND-ROLLBACK',
+    });
+    const refund = await FeeRefund.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      refundNumber: 'RFD-ROLLBACK-001',
+      refundDate: '2026-03-06',
+      amount: 200,
+      reason: 'Duplicate payment requires a refund',
+      refundMode: 'cash',
+      originalPaymentId: paymentId,
+      status: 'approved',
+    });
+    const { app } = createTestApp();
+
+    const response = await request(app)
+      .put(`/api/fees/refunds/${refund._id}/process`)
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send({})
+      .expect(409);
+
+    expect(response.body.code).toBe('FEE_STRUCTURE_NOT_FOUND');
+    const unchanged = await FeeRefund.findById(refund._id).lean();
+    expect(unchanged.status).toBe('approved');
+    expect(unchanged.processedAt).toBeUndefined();
+  });
+
+  it('processes the refund and fee-balance reversal in one transaction', async () => {
+    const accountant = await createAccountant();
+    const classRecord = await createClassRecord({ name: 'Class 6', section: 'B' });
+    const student = await createStudentRecord({
+      name: 'Refund Success Student',
+      classId: classRecord._id,
+      feeDetails: { totalFee: 1000, paidAmount: 500, balanceAmount: 500 },
+    });
+    const paymentId = await insertPaymentDirect({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      amount: 500,
+      receiptNumber: 'RCP-REFUND-SUCCESS',
+    });
+    await StudentFeeStructure.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      feeHeads: [],
+      totalFee: 1000,
+      totalPaid: 500,
+      totalBalance: 500,
+      overallStatus: 'partial',
+    });
+    const refund = await FeeRefund.create({
+      schoolId: student.schoolId,
+      studentId: student._id,
+      classId: classRecord._id,
+      academicYear: '2025-26',
+      refundNumber: 'RFD-SUCCESS-001',
+      refundDate: '2026-03-06',
+      amount: 200,
+      reason: 'Duplicate payment requires a refund',
+      refundMode: 'cash',
+      originalPaymentId: paymentId,
+      status: 'approved',
+    });
+    const { app } = createTestApp();
+
+    await request(app)
+      .put(`/api/fees/refunds/${refund._id}/process`)
+      .set(authHeadersFor(accountant, 'accountant'))
+      .send({ remarks: 'Cash returned at accounts office' })
+      .expect(200);
+
+    const [savedRefund, feeStructure, savedStudent] = await Promise.all([
+      FeeRefund.findById(refund._id).lean(),
+      StudentFeeStructure.findOne({ studentId: student._id }).lean(),
+      Student.findById(student._id).lean(),
+    ]);
+    expect(savedRefund.status).toBe('processed');
+    expect(feeStructure.totalPaid).toBe(300);
+    expect(feeStructure.totalBalance).toBe(700);
+    expect(savedStudent.feeDetails.paidAmount).toBe(300);
+    expect(savedStudent.feeDetails.balanceAmount).toBe(700);
+  });
+});
+
 // GET /api/fees/refunds — pagination, search, and KPI summary (PAG-17)
 // ---------------------------------------------------------------------------
 //

@@ -30,8 +30,7 @@ import {
   RollNumberConfig,
   DocumentConfig,
 } from '../database.js';
-import { authenticate } from '../middleware/auth.js';
-import { checkPermission } from '../middleware/permissions.js';
+import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { validateZod } from '../middleware/validation.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
 
@@ -265,7 +264,9 @@ const DATA_CATEGORIES = {
  * GET /api/data-cleanup/preview
  * Preview counts for all data categories
  */
-router.get('/preview', checkPermission('classes', 'delete'), async (req, res) => {
+// [D7] Data tools (bulk delete + restore) are destructive school-wide operations;
+// gate them with requireAdmin instead of the unrelated `classes:delete` permission.
+router.get('/preview', requireAdmin, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const counts = {};
@@ -311,87 +312,122 @@ router.get('/preview', checkPermission('classes', 'delete'), async (req, res) =>
  * Move data to trash for selected categories, then delete from source collections.
  * Body: { categories: ['students', 'staff', ...] } or { categories: ['all'] }
  */
-router.post(
-  '/execute',
-  checkPermission('classes', 'delete'),
-  validateZod(executeCleanupSchema),
-  async (req, res) => {
-    try {
-      const schoolId = req.user?.schoolId;
-      const { categories } = req.body;
-      const deletedBy = req.user?.id || req.user?._id;
+// [D7] Gate the destructive bulk-cleanup with requireAdmin (was the unrelated
+// `classes:delete` permission). Process in cursor batches instead of loading
+// each whole collection into memory, and cap the snapshot kept in TrashItem so
+// a multi-thousand-row collection can't OOM the process or balloon the trash doc.
+router.post('/execute', requireAdmin, validateZod(executeCleanupSchema), async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const { categories } = req.body;
+    const deletedBy = req.user?.id || req.user?._id;
 
-      const isAll = categories.includes('all');
-      const selectedCategories = isAll
-        ? Object.keys(DATA_CATEGORIES)
-        : categories.filter((c) => DATA_CATEGORIES[c]);
+    const isAll = categories.includes('all');
+    const selectedCategories = isAll
+      ? Object.keys(DATA_CATEGORIES)
+      : categories.filter((c) => DATA_CATEGORIES[c]);
 
-      // 30-day expiry for trash items
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30);
+    // 30-day expiry for trash items
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
 
-      const results = {};
-      let totalMoved = 0;
+    const results = {};
+    let totalMoved = 0;
 
-      for (const categoryKey of selectedCategories) {
-        const category = DATA_CATEGORIES[categoryKey];
-        const categoryResults = {};
+    for (const categoryKey of selectedCategories) {
+      const category = DATA_CATEGORIES[categoryKey];
+      const categoryResults = {};
 
-        for (const { model, name } of category.models) {
-          // Fetch all documents before deleting
-          const documents = await model.find(scopeBySchool(schoolId, model)).lean();
+      for (const { model, name } of category.models) {
+        // [D7] Stream the collection through the cursor in batches. Previously
+        // the whole collection was loaded into a single array via
+        // `model.find().lean()` and then embedded wholesale into one
+        // TrashItem.originalData — for a large collection that is both an OOM
+        // risk and a multi-MB MongoDB document. We now count first, page
+        // through in BATCH_SIZE chunks, and store only a capped snapshot.
+        const scope = scopeBySchool(schoolId, model);
+        const totalCount = await model.countDocuments(scope);
 
-          if (documents.length === 0) {
-            categoryResults[name] = 0;
-            continue;
-          }
-
-          // Save to trash as a bulk cleanup entry
-          await TrashItem.create({
-            itemType: 'BulkCleanup',
-            itemName: `${category.label} — ${name} (${documents.length} records)`,
-            deletedBy,
-            expiresAt,
-            originalData: documents,
-            schoolId,
-            restoreStrategy: 'hard-delete',
-            modelName: model.modelName,
-            bulkCleanup: {
-              category: categoryKey,
-              modelName: model.modelName,
-              recordCount: documents.length,
-              schoolId,
-            },
-          });
-
-          // Now delete from the source collection
-          await model.deleteMany(scopeBySchool(schoolId, model));
-          categoryResults[name] = documents.length;
-          totalMoved += documents.length;
+        if (totalCount === 0) {
+          categoryResults[name] = 0;
+          continue;
         }
 
-        results[categoryKey] = {
-          label: category.label,
-          deleted: categoryResults,
-          total: Object.values(categoryResults).reduce((sum, c) => sum + c, 0),
-        };
+        const BATCH_SIZE = 500;
+        // Cap the snapshot embedded in TrashItem.originalData. The full set is
+        // hard-deleted from the source either way (deleteMany below); the
+        // snapshot is only a best-effort restore preview, so a hard cap keeps
+        // the trash doc bounded. `truncated` records when rows were dropped.
+        const SNAPSHOT_CAP = 5000;
+        const snapshotDocs = [];
+
+        // Read only enough batches to fill the capped snapshot — we don't need
+        // to walk the whole collection since deleteMany(scope) removes the full
+        // set without reading it. totalCount drives the displayed record count
+        // and the truncated flag.
+        for (let skip = 0; skip < Math.min(totalCount, SNAPSHOT_CAP); skip += BATCH_SIZE) {
+          // Order by _id for a stable, resumable walk.
+          const remaining = SNAPSHOT_CAP - snapshotDocs.length;
+          const batch = await model
+            .find(scope)
+            .sort({ _id: 1 })
+            .skip(skip)
+            .limit(Math.min(BATCH_SIZE, remaining))
+            .lean();
+
+          if (batch.length === 0) break;
+          snapshotDocs.push(...batch);
+        }
+
+        const snapshotTruncated = totalCount > snapshotDocs.length;
+
+        await TrashItem.create({
+          itemType: 'BulkCleanup',
+          itemName: `${category.label} — ${name} (${totalCount} records)`,
+          deletedBy,
+          expiresAt,
+          // Capped snapshot — see SNAPSHOT_CAP above.
+          originalData: snapshotDocs,
+          schoolId,
+          restoreStrategy: 'hard-delete',
+          modelName: model.modelName,
+          bulkCleanup: {
+            category: categoryKey,
+            modelName: model.modelName,
+            recordCount: totalCount,
+            snapshotCount: snapshotDocs.length,
+            truncated: snapshotTruncated,
+            schoolId,
+          },
+        });
+
+        // Now hard-delete the full set from the source collection.
+        await model.deleteMany(scope);
+        categoryResults[name] = totalCount;
+        totalMoved += totalCount;
       }
 
-      res.json({
-        success: true,
-        message: `Successfully moved ${totalMoved} records to trash across ${selectedCategories.length} categories`,
-        results,
-        totalDeleted: totalMoved,
-      });
-    } catch (error) {
-      console.error('Error executing data cleanup:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to execute data cleanup',
-        error: error.message,
-      });
+      results[categoryKey] = {
+        label: category.label,
+        deleted: categoryResults,
+        total: Object.values(categoryResults).reduce((sum, c) => sum + c, 0),
+      };
     }
+
+    res.json({
+      success: true,
+      message: `Successfully moved ${totalMoved} records to trash across ${selectedCategories.length} categories`,
+      results,
+      totalDeleted: totalMoved,
+    });
+  } catch (error) {
+    console.error('Error executing data cleanup:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to execute data cleanup',
+      error: error.message,
+    });
   }
-);
+});
 
 export default router;

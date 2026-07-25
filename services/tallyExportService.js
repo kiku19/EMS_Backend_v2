@@ -220,6 +220,7 @@ export async function generateExport({ schoolId, dateFrom, dateTo, academicYear,
     schoolId,
     paymentDate: { $gte: dateFrom, $lte: dateTo },
     status: 'completed',
+    isDeleted: { $ne: true },
   };
   if (academicYear) query.academicYear = academicYear;
 

@@ -80,6 +80,11 @@ const INDEX_MIGRATIONS = [
     description: 'Issue #52: fixed stale records.studentId path to studentId',
     oldIndexName: 'records.studentId_1_date_1',
   },
+  {
+    collection: 'feepayments',
+    description: 'BUG-1: remove stale globally-unique receipt number index',
+    oldIndexName: 'receiptNumber_1',
+  },
 ];
 
 async function migrate() {

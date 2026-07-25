@@ -68,6 +68,13 @@ const payrollRunSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Staff',
     },
+    // Opaque ownership token. User id alone is insufficient because the same
+    // operator can double-submit from two tabs; only the request that acquired
+    // this token may refresh or release the lock.
+    processingLockToken: {
+      type: String,
+      select: false,
+    },
   },
   {
     timestamps: true,

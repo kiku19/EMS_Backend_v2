@@ -22,7 +22,7 @@ const feeTemplateSchema = new mongoose.Schema(
           enum: ['Academic', 'Transport', 'Extra-curricular', 'Hostel', 'Other'],
           default: 'Academic',
         },
-        amount: { type: Number, required: true },
+        amount: { type: Number, required: true, min: 0 },
         frequency: {
           type: String,
           enum: ['monthly', 'quarterly', 'term', 'yearly', 'one-time'],
@@ -35,11 +35,11 @@ const feeTemplateSchema = new mongoose.Schema(
       },
     ],
 
-    totalAnnualFee: { type: Number, required: true },
+    totalAnnualFee: { type: Number, required: true, min: 0 },
     discounts: [
       {
         name: String,
-        percentage: Number,
+        percentage: { type: Number, min: 0, max: 100 },
         conditions: String,
       },
     ],
@@ -56,5 +56,8 @@ const feeTemplateSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+feeTemplateSchema.index({ schoolId: 1, academicYear: 1, isActive: 1, name: 1 });
+feeTemplateSchema.index({ groupId: 1, academicYear: 1, isGroupTemplate: 1, isActive: 1 });
 
 export default mongoose.model('FeeTemplate', feeTemplateSchema);

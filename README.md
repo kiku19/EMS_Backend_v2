@@ -41,3 +41,8 @@ Coverage is collected for `routes/**/*.js` and `models/**/*.js` (plus `middlewar
 | `npm run test:coverage` | Run tests with coverage report |
 | `npm run lint` | Run ESLint |
 | `npm run format` | Format code with Prettier |
+
+## Documentation
+
+See the [backend documentation index](docs/README.md) for operational runbooks,
+architecture notes, guides, policies, video scripts, and load-testing material.
