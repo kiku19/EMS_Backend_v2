@@ -244,67 +244,73 @@ router.post(
 // effective state + whether a per-school override is in force. This is the
 // single read the ops console needs to render the per-school control panel.
 
-router.get('/schools/:id/features', validateZod(mongoIdParamSchema, 'params'), async (req, res) => {
-  try {
-    const school = await School.findById(req.params.id).lean();
-    if (!school) {
-      return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
+router.get(
+  '/schools/:id/features',
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const school = await School.findById(req.params.id).lean();
+      if (!school) {
+        return res.status(404).json({ error: req.t('common:errors.schoolNotFound') });
+      }
+
+      const { managed, enabled } = resolveEnabledModules(school.enabledModules);
+      const modules = TOGGLEABLE_MODULES.map((m) => ({
+        key: m.key,
+        label: m.label,
+        group: m.group,
+        description: m.description,
+        enabled: enabled.has(m.key),
+      }));
+
+      // Effective feature values + plan (getSchoolFeatures auto-provisions a
+      // subscription if one doesn't exist yet, so this never 404s on billing).
+      const { features, planKey, planCapabilities } = await getSchoolFeatures(school._id);
+      const plan = BILLING_PLANS[planKey] || BILLING_PLANS.starter;
+
+      // Flag metadata + override presence per flag for this school.
+      const flagDocs = await FeatureFlag.find({}).sort({ key: 1 }).lean();
+      const flags = flagDocs.map((flag) => {
+        const override = flag.overrideSchools?.find(
+          (o) => String(o.schoolId) === String(school._id)
+        );
+        return {
+          key: flag.key,
+          name: flag.name,
+          description: flag.description,
+          status: flag.status,
+          minimumPlan: flag.minimumPlan,
+          effectiveEnabled: Boolean(features[flag.key]),
+          hasOverride: Boolean(override),
+          overrideEnabled: override ? override.enabled : null,
+        };
+      });
+
+      res.json({
+        school: {
+          id: school._id,
+          name: school.name,
+          code: school.code,
+          status: school.status,
+          plan: planKey,
+          planStatus: school.planStatus,
+        },
+        managed,
+        modules,
+        plan: {
+          key: plan.key,
+          name: plan.name,
+          capabilities: planCapabilities,
+          limits: plan.limits,
+        },
+        flags,
+      });
+    } catch (error) {
+      console.error('Error loading school features:', error);
+      res.status(500).json({ error: 'Failed to load school features' });
     }
-
-    const { managed, enabled } = resolveEnabledModules(school.enabledModules);
-    const modules = TOGGLEABLE_MODULES.map((m) => ({
-      key: m.key,
-      label: m.label,
-      group: m.group,
-      description: m.description,
-      enabled: enabled.has(m.key),
-    }));
-
-    // Effective feature values + plan (getSchoolFeatures auto-provisions a
-    // subscription if one doesn't exist yet, so this never 404s on billing).
-    const { features, planKey, planCapabilities } = await getSchoolFeatures(school._id);
-    const plan = BILLING_PLANS[planKey] || BILLING_PLANS.starter;
-
-    // Flag metadata + override presence per flag for this school.
-    const flagDocs = await FeatureFlag.find({}).sort({ key: 1 }).lean();
-    const flags = flagDocs.map((flag) => {
-      const override = flag.overrideSchools?.find((o) => String(o.schoolId) === String(school._id));
-      return {
-        key: flag.key,
-        name: flag.name,
-        description: flag.description,
-        status: flag.status,
-        minimumPlan: flag.minimumPlan,
-        effectiveEnabled: Boolean(features[flag.key]),
-        hasOverride: Boolean(override),
-        overrideEnabled: override ? override.enabled : null,
-      };
-    });
-
-    res.json({
-      school: {
-        id: school._id,
-        name: school.name,
-        code: school.code,
-        status: school.status,
-        plan: planKey,
-        planStatus: school.planStatus,
-      },
-      managed,
-      modules,
-      plan: {
-        key: plan.key,
-        name: plan.name,
-        capabilities: planCapabilities,
-        limits: plan.limits,
-      },
-      flags,
-    });
-  } catch (error) {
-    console.error('Error loading school features:', error);
-    res.status(500).json({ error: 'Failed to load school features' });
   }
-});
+);
 
 router.patch(
   '/schools/:id/modules',
@@ -321,10 +327,7 @@ router.patch(
       school.enabledModules = normalizeToggleableSelection(req.body.enabledModules);
       await school.save();
 
-      // Bust the module-access cache so the change takes effect immediately on
-      // gated /api/* requests. Without this, moduleAccessGuard serves stale
-      // results for up to its TTL (30s) — the self-service PUT /settings/modules
-      // route already does this; the super-admin path must match.
+      // Apply module changes immediately instead of serving cached access for up to 30 seconds.
       invalidateModuleCache(school._id);
 
       const { enabled } = resolveEnabledModules(school.enabledModules);

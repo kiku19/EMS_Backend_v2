@@ -254,7 +254,9 @@ describe('staff routes', () => {
         hasPrevPage: false,
       });
       // Aggregates (tab counts) are now part of the paginated response.
-      expect(response.body.aggregates).toEqual(expect.objectContaining({ total: 6 }));
+      expect(response.body.aggregates).toEqual(
+        expect.objectContaining({ total: 6 })
+      );
     });
 
     it('does not return soft-deleted staff in the list', async () => {
