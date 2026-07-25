@@ -16,6 +16,15 @@ const AUTH_COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 export const REFRESH_COOKIE_NAME = 'ems_refresh_token';
 const REFRESH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+// Dedicated super-admin cookie names. The ops app (@ems/ops-dashboard) runs on
+// a different port (localhost:5176) from the school dashboard (localhost:5173)
+// but both are the same host → they share the browser cookie jar for :3002.
+// Without separate names, a staff cookie set by the school dashboard is sent
+// on ops requests and vice versa, causing "Super admin access required" errors.
+// The super-admin auth routes use these dedicated names.
+export const SUPER_ADMIN_AUTH_COOKIE_NAME = 'ems_ops_token';
+export const SUPER_ADMIN_REFRESH_COOKIE_NAME = 'ems_ops_refresh';
+
 function getJwtSecret() {
   return getRequiredSecret('JWT_SECRET');
 }
@@ -67,6 +76,20 @@ export function extractTokenFromRequest(req) {
   }
 
   const cookies = parseCookies(req.headers.cookie);
+  // Two cookie jars share localhost: the school dashboard (ems_auth_token) and
+  // the ops app (ems_ops_token). Pick the right one by request path so a stale
+  // staff cookie doesn't shadow the ops cookie on /super-admin/* requests (and
+  // vice versa). Use req.originalUrl (full URL incl. mount prefix) because
+  // req.path inside a mounted router has the prefix stripped.
+  const originalUrl = req.originalUrl || req.url || '';
+  const isOpsRequest = originalUrl.includes('/super-admin');
+  if (isOpsRequest) {
+    return (
+      cookies[SUPER_ADMIN_AUTH_COOKIE_NAME] || // dedicated ops cookie (preferred)
+      cookies[AUTH_COOKIE_NAME] || // legacy shared cookie fallback
+      null
+    );
+  }
   return cookies[AUTH_COOKIE_NAME] || null;
 }
 
@@ -339,6 +362,57 @@ export async function requireGroupAdmin(req, res, next) {
   }
 }
 
+/**
+ * Authorize access to a SPECIFIC school group identified by the `:id` route
+ * param. Super-admins pass. A group-admin may only touch the group their JWT
+ * names (`groupId === id`). Everyone else — including a normal school-staff
+ * token (`userType:'staff'`, `groupId:null`) — is rejected with 403.
+ *
+ * This closes the cross-tenant bypass where the old inline guard
+ * `if (userType === 'group-admin' && groupId !== id) return 403` was ALWAYS
+ * false for normal staff, so they fell through to read/modify any SchoolGroup.
+ *
+ * @param {string} [paramName='id'] Route param holding the group ObjectId.
+ */
+export function requireGroupAdminOfGroup(paramName = 'id') {
+  return async function groupAdminOfGroupGuard(req, res, next) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: req.t('auth:errors.authRequired') });
+      }
+
+      // Super-admins can administer any group.
+      if (isSuperAdminUser(req.user)) {
+        return next();
+      }
+
+      const groupId = req.params[paramName];
+
+      // Only an authenticated group-admin scoped to THIS group is allowed.
+      // A normal staff member (userType 'staff', groupId null) is NOT.
+      const isThisGroupsAdmin =
+        req.user.userType === 'group-admin' &&
+        groupId &&
+        req.user.groupId &&
+        String(req.user.groupId) === String(groupId);
+
+      if (!isThisGroupsAdmin) {
+        return res.status(403).json({
+          error: req.t('common:errors.forbidden'),
+          message: req.t('common:errors.noPermission'),
+        });
+      }
+
+      return next();
+    } catch (error) {
+      return res.status(500).json({
+        error: req.t('auth:errors.permissionCheckFailed'),
+        message: error.message,
+      });
+    }
+  };
+}
+
 export async function requireSuperAdmin(req, res, next) {
   try {
     if (!req.user) {
@@ -374,5 +448,6 @@ export default {
   optionalAuth,
   requireAdmin,
   requireGroupAdmin,
+  requireGroupAdminOfGroup,
   requireSuperAdmin,
 };

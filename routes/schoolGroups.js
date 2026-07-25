@@ -3,7 +3,12 @@ import SchoolGroup from '../models/SchoolGroup.js';
 import School from '../models/School.js';
 import FeeTemplate from '../models/FeeTemplate.js';
 import { Student, Staff } from '../database.js';
-import { authenticate, requireSuperAdmin, requireGroupAdmin } from '../middleware/auth.js';
+import {
+  authenticate,
+  requireSuperAdmin,
+  requireGroupAdmin,
+  requireGroupAdminOfGroup,
+} from '../middleware/auth.js';
 import dns from 'node:dns/promises';
 import {
   validateZod,
@@ -65,44 +70,42 @@ router.post('/', requireSuperAdmin, validateZod(createSchoolGroupSchema), async 
 });
 
 // ─── GET GROUP BY ID (super-admin or group admin of that group) ───────────────
-router.get('/:id', validateZod(mongoIdParamSchema, 'params'), async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get(
+  '/:id',
+  requireGroupAdminOfGroup(),
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: req.t('common:errors.forbidden') });
+      const group = await SchoolGroup.findById(id).lean();
+      if (!group) {
+        return res.status(404).json({ error: 'Group not found' });
+      }
+
+      const branches = await School.find({ groupId: id })
+        .select(
+          'name code status plan planStatus contactEmail contactPhone frontendUrl backendUrl createdAt'
+        )
+        .sort({ name: 1 })
+        .lean();
+
+      res.json({ group: { ...group, branches } });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-
-    const group = await SchoolGroup.findById(id).lean();
-    if (!group) {
-      return res.status(404).json({ error: 'Group not found' });
-    }
-
-    const branches = await School.find({ groupId: id })
-      .select(
-        'name code status plan planStatus contactEmail contactPhone frontendUrl backendUrl createdAt'
-      )
-      .sort({ name: 1 })
-      .lean();
-
-    res.json({ group: { ...group, branches } });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
+);
 
 // ─── UPDATE GROUP ─────────────────────────────────────────────────────────────
 router.put(
   '/:id',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   validateZod(updateSchoolGroupSchema),
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       const group = await SchoolGroup.findByIdAndUpdate(id, { $set: req.body }, { new: true });
       if (!group) {
@@ -117,26 +120,27 @@ router.put(
 );
 
 // ─── LIST BRANCHES IN GROUP ───────────────────────────────────────────────────
-router.get('/:id/branches', validateZod(mongoIdParamSchema, 'params'), async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get(
+  '/:id/branches',
+  requireGroupAdminOfGroup(),
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: req.t('common:errors.forbidden') });
+      const branches = await School.find({ groupId: id })
+        .select(
+          'name code status plan planStatus contactEmail contactPhone frontendUrl backendUrl createdAt'
+        )
+        .sort({ name: 1 })
+        .lean();
+
+      res.json({ branches });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-
-    const branches = await School.find({ groupId: id })
-      .select(
-        'name code status plan planStatus contactEmail contactPhone frontendUrl backendUrl createdAt'
-      )
-      .sort({ name: 1 })
-      .lean();
-
-    res.json({ branches });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
+);
 
 // ─── ADD BRANCH TO GROUP (super-admin only) ───────────────────────────────────
 router.post(
@@ -201,16 +205,13 @@ router.delete(
 // ─── TRANSFER STUDENT BETWEEN BRANCHES ────────────────────────────────────────
 router.post(
   '/:id/transfer',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   validateZod(transferStudentSchema),
   async (req, res) => {
     try {
       const { id } = req.params;
       const { studentId, fromSchoolId, toSchoolId, reason } = req.body;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       // Verify both schools belong to the group
       const [fromSchool, toSchool] = await Promise.all([
@@ -249,90 +250,88 @@ router.post(
 );
 
 // ─── GROUP-LEVEL ANALYTICS ────────────────────────────────────────────────────
-router.get('/:id/analytics', validateZod(mongoIdParamSchema, 'params'), async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get(
+  '/:id/analytics',
+  requireGroupAdminOfGroup(),
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: req.t('common:errors.forbidden') });
-    }
+      const branches = await School.find({ groupId: id }).select('_id name code status').lean();
+      const branchIds = branches.map((b) => b._id);
 
-    const branches = await School.find({ groupId: id }).select('_id name code status').lean();
-    const branchIds = branches.map((b) => b._id);
+      if (branchIds.length === 0) {
+        return res.json({
+          group: { _id: id, branchCount: 0 },
+          branches: [],
+          totals: { students: 0, staff: 0, classes: 0 },
+        });
+      }
 
-    if (branchIds.length === 0) {
-      return res.json({
-        group: { _id: id, branchCount: 0 },
-        branches: [],
-        totals: { students: 0, staff: 0, classes: 0 },
+      const { Staff, Class } = await import('../database.js');
+
+      const [studentCounts, staffCounts, classCounts] = await Promise.all([
+        Student.aggregate([
+          { $match: { schoolId: { $in: branchIds }, isDeleted: { $ne: true } } },
+          { $group: { _id: '$schoolId', count: { $sum: 1 } } },
+        ]),
+        Staff.aggregate([
+          { $match: { schoolId: { $in: branchIds }, isDeleted: { $ne: true } } },
+          { $group: { _id: '$schoolId', count: { $sum: 1 } } },
+        ]),
+        Class.aggregate([
+          { $match: { schoolId: { $in: branchIds }, isDeleted: { $ne: true } } },
+          { $group: { _id: '$schoolId', count: { $sum: 1 } } },
+        ]),
+      ]);
+
+      const toMap = (arr) => new Map(arr.map((e) => [String(e._id), e.count]));
+      const studentMap = toMap(studentCounts);
+      const staffMap = toMap(staffCounts);
+      const classMap = toMap(classCounts);
+
+      const branchStats = branches.map((b) => ({
+        schoolId: b._id,
+        name: b.name,
+        code: b.code,
+        status: b.status,
+        students: studentMap.get(String(b._id)) || 0,
+        staff: staffMap.get(String(b._id)) || 0,
+        classes: classMap.get(String(b._id)) || 0,
+      }));
+
+      const totals = branchStats.reduce(
+        (acc, b) => ({
+          students: acc.students + b.students,
+          staff: acc.staff + b.staff,
+          classes: acc.classes + b.classes,
+        }),
+        { students: 0, staff: 0, classes: 0 }
+      );
+
+      res.json({
+        group: { _id: id, branchCount: branches.length },
+        branches: branchStats,
+        totals,
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-
-    const { Staff, Class } = await import('../database.js');
-
-    const [studentCounts, staffCounts, classCounts] = await Promise.all([
-      Student.aggregate([
-        { $match: { schoolId: { $in: branchIds }, isDeleted: { $ne: true } } },
-        { $group: { _id: '$schoolId', count: { $sum: 1 } } },
-      ]),
-      Staff.aggregate([
-        { $match: { schoolId: { $in: branchIds }, isDeleted: { $ne: true } } },
-        { $group: { _id: '$schoolId', count: { $sum: 1 } } },
-      ]),
-      Class.aggregate([
-        { $match: { schoolId: { $in: branchIds }, isDeleted: { $ne: true } } },
-        { $group: { _id: '$schoolId', count: { $sum: 1 } } },
-      ]),
-    ]);
-
-    const toMap = (arr) => new Map(arr.map((e) => [String(e._id), e.count]));
-    const studentMap = toMap(studentCounts);
-    const staffMap = toMap(staffCounts);
-    const classMap = toMap(classCounts);
-
-    const branchStats = branches.map((b) => ({
-      schoolId: b._id,
-      name: b.name,
-      code: b.code,
-      status: b.status,
-      students: studentMap.get(String(b._id)) || 0,
-      staff: staffMap.get(String(b._id)) || 0,
-      classes: classMap.get(String(b._id)) || 0,
-    }));
-
-    const totals = branchStats.reduce(
-      (acc, b) => ({
-        students: acc.students + b.students,
-        staff: acc.staff + b.staff,
-        classes: acc.classes + b.classes,
-      }),
-      { students: 0, staff: 0, classes: 0 }
-    );
-
-    res.json({
-      group: { _id: id, branchCount: branches.length },
-      branches: branchStats,
-      totals,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
+);
 
 // ─── ASSIGN STAFF TO ADDITIONAL BRANCH ───────────────────────────────────────
 // Adds a school from this group to a staff member's additionalSchoolIds
 router.post(
   '/:id/staff-assignments',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   validateZod(staffBranchAssignmentSchema),
   async (req, res) => {
     try {
       const { id } = req.params;
       const { staffId, targetSchoolId } = req.body;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       // Verify both source school (staff's primary) and target school belong to the group
       const [staff, targetSchool] = await Promise.all([
@@ -374,15 +373,12 @@ router.post(
 // ─── REMOVE STAFF FROM ADDITIONAL BRANCH ─────────────────────────────────────
 router.delete(
   '/:id/staff-assignments/:staffId',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   async (req, res) => {
     try {
-      const { id, staffId } = req.params;
+      const { staffId } = req.params;
       const { targetSchoolId } = req.body;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       if (!targetSchoolId) {
         return res.status(400).json({ error: 'targetSchoolId is required' });
@@ -409,15 +405,12 @@ router.delete(
 // Creates a fee template shared across all branches in the group (requires sharedFeeTemplates=true)
 router.post(
   '/:id/fee-templates',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   validateZod(groupFeeTemplateSchema),
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       const group = await SchoolGroup.findById(id).select('sharedFeeTemplates').lean();
       if (!group) {
@@ -443,58 +436,57 @@ router.post(
 );
 
 // ─── LIST GROUP-LEVEL FEE TEMPLATES ──────────────────────────────────────────
-router.get('/:id/fee-templates', validateZod(mongoIdParamSchema, 'params'), async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get(
+  '/:id/fee-templates',
+  requireGroupAdminOfGroup(),
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: req.t('common:errors.forbidden') });
+      const templates = await FeeTemplate.find({ groupId: id, isGroupTemplate: true })
+        .sort({ name: 1 })
+        .lean();
+
+      res.json({ templates });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-
-    const templates = await FeeTemplate.find({ groupId: id, isGroupTemplate: true })
-      .sort({ name: 1 })
-      .lean();
-
-    res.json({ templates });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
+);
 
 // ─── WHITE-LABEL SETTINGS ─────────────────────────────────────────────────────
 
 // GET /:id/white-label — get group white-label settings
-router.get('/:id/white-label', validateZod(mongoIdParamSchema, 'params'), async (req, res) => {
-  try {
-    const { id } = req.params;
+router.get(
+  '/:id/white-label',
+  requireGroupAdminOfGroup(),
+  validateZod(mongoIdParamSchema, 'params'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-      return res.status(403).json({ error: req.t('common:errors.forbidden') });
+      const group = await SchoolGroup.findById(id).select('whiteLabelSettings name').lean();
+      if (!group) {
+        return res.status(404).json({ error: 'Group not found' });
+      }
+
+      res.json({ whiteLabelSettings: group.whiteLabelSettings || {} });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-
-    const group = await SchoolGroup.findById(id).select('whiteLabelSettings name').lean();
-    if (!group) {
-      return res.status(404).json({ error: 'Group not found' });
-    }
-
-    res.json({ whiteLabelSettings: group.whiteLabelSettings || {} });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
+);
 
 // PUT /:id/white-label — update group white-label settings
 router.put(
   '/:id/white-label',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   validateZod(updateGroupWhiteLabelSchema),
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       const group = await SchoolGroup.findById(id);
       if (!group) {
@@ -533,14 +525,11 @@ router.put(
 // POST /:id/white-label/verify-domain — trigger DNS TXT record verification
 router.post(
   '/:id/white-label/verify-domain',
+  requireGroupAdminOfGroup(),
   validateZod(mongoIdParamSchema, 'params'),
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      if (req.user.userType === 'group-admin' && String(req.user.groupId) !== id) {
-        return res.status(403).json({ error: req.t('common:errors.forbidden') });
-      }
 
       const group = await SchoolGroup.findById(id);
       if (!group) {

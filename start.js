@@ -1,7 +1,7 @@
-import dotenv from 'dotenv';
-
-// Load .env before any other module so validation sees the real values.
-dotenv.config();
+// Sentry early-instrumentation MUST run before any other module so the SDK can
+// instrument express/mongoose/http. instrument.js loads dotenv + calls initSentry().
+// See ./instrument.js for why this is the first import.
+import './instrument.js';
 
 // Validate required environment variables immediately so the process exits
 // with a clear error instead of cryptic failures from later imports.
@@ -10,10 +10,5 @@ validateEnvironment();
 
 const { installConsoleBridge } = await import('./utils/logger.js');
 installConsoleBridge();
-
-const { initSentry } = await import('./utils/sentry.js');
-// Must be initialized before server.js imports express/mongoose so Sentry
-// can instrument those modules via AsyncLocalStorage request isolation.
-initSentry();
 
 await import('./server.js');

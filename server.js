@@ -87,10 +87,12 @@ import couponRoutes from './routes/coupons.js';
 import featureFlagsRoutes from './routes/featureFlags.js';
 import onboardingRoutes from './routes/onboarding.js';
 import superAdminRoutes from './routes/superAdmin.js';
+import superAdminAuthRoutes from './routes/superAdminAuth.js';
 import superAdminActivityRoutes from './routes/superAdminActivity.js';
 import superAdminTrashRoutes from './routes/superAdminTrash.js';
 import superAdminBillingRoutes from './routes/superAdminBilling.js';
 import superAdminLifecycleRoutes from './routes/superAdminLifecycle.js';
+import superAdminCommunicationRoutes from './routes/superAdminCommunication.js';
 import schoolGroupsRoutes from './routes/schoolGroups.js';
 import reportsRoutes from './routes/reports.js';
 import exportRoutes from './routes/export.js';
@@ -106,6 +108,10 @@ import { validateEnvironment, config } from './config/environment.js';
 import { authenticate } from './middleware/auth.js';
 import { authenticateParent } from './middleware/parentAuth.js';
 import { moduleAccessGuard } from './middleware/auth/moduleAccess.js';
+import { csrfProtect } from './middleware/security/csrfProtect.js';
+import { createOpsRateLimiter, requireOpsSecret } from './middleware/security/opsSecurity.js';
+import { validateZod } from './middleware/validation/validation.js';
+import { opsDeploymentSchema } from './validators/opsSchemas.js';
 import schoolStatusGuard from './middleware/auth/schoolStatusGuard.js';
 import { apiUsageTracker } from './middleware/apiUsageTracker.js';
 import { initializeSocket } from './utils/socketEmitter.js';
@@ -237,17 +243,31 @@ const io = new SocketIOServer(httpServer, {
   cors: {
     origin: config.corsOrigins,
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   },
   transports: ['websocket', 'polling'],
 });
 
-// Wire Redis adapter for Socket.IO (enables multi-instance pub/sub)
-// pub and sub MUST be separate connections — Redis pub/sub protocol requirement
+// Wire Redis adapter for Socket.IO (enables multi-instance pub/sub).
+// pub and sub MUST be separate connections — Redis pub/sub protocol requirement.
+//
+// The two clients use `lazyConnect: true` so the connection attempt only begins
+// when we call `.connect()` below. Without this, ioredis connects eagerly and the
+// `createAdapter()` call (which immediately psubscribe()s) races ahead of the
+// connection — with `enableOfflineQueue: false` (see config/redis.js) that emits
+// an *async* `Stream isn't writeable` rejection that the surrounding try/catch
+// cannot catch, crashing the process on boot. Awaiting the connects inside the
+// try guarantees the rejection is observed and the fallback path is taken.
 if (process.env.REDIS_URL) {
   try {
-    const pubClient = new Redis(process.env.REDIS_URL, createRedisOptions('ems-socketio-pub'));
-    const subClient = new Redis(process.env.REDIS_URL, createRedisOptions('ems-socketio-sub'));
+    const pubClient = new Redis(
+      process.env.REDIS_URL,
+      createRedisOptions('ems-socketio-pub', { lazyConnect: true })
+    );
+    const subClient = new Redis(
+      process.env.REDIS_URL,
+      createRedisOptions('ems-socketio-sub', { lazyConnect: true })
+    );
 
     pubClient.on('error', (err) =>
       logger.error({ err: err.message }, 'Socket.IO Redis pub client error')
@@ -258,9 +278,16 @@ if (process.env.REDIS_URL) {
     pubClient.on('reconnecting', () => logger.info('Socket.IO Redis pub client reconnecting'));
     subClient.on('reconnecting', () => logger.info('Socket.IO Redis sub client reconnecting'));
 
+    // Connect BOTH clients before attaching the adapter. createAdapter() issues
+    // psubscribe() on attach, which throws if the clients are not yet writable.
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+
     io.adapter(createAdapter(pubClient, subClient));
     logger.info('Socket.IO Redis adapter enabled — multi-instance WebSocket broadcast active');
   } catch (err) {
+    // Explicit in-memory fallback: a Redis failure at boot must not be fatal.
+    // The process continues single-instance; multi-instance fan-out degrades
+    // gracefully rather than crash-looping.
     logger.warn(
       { err: err.message },
       'Socket.IO Redis adapter setup failed — using default in-memory adapter'
@@ -317,7 +344,7 @@ app.use(
       callback(null, false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
@@ -357,15 +384,39 @@ app.use(
 );
 app.use(mongoSanitize());
 
-app.use(
-  express.json({
-    limit: '50mb',
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
+// Razorpay webhook raw-body capture (scoped to its path, BEFORE the global
+// parser). Signature verification needs the EXACT bytes the client sent, so
+// this path gets its own JSON parser with a `verify` hook that stashes the raw
+// buffer on req.rawBody. It MUST be mounted before the global express.json
+// below, because the global parser consumes the request stream and a later
+// route-level parser would see an empty body ("Raw body unavailable").
+//
+// Previously the raw-body `verify` hook was applied to EVERY request globally
+// (paired with a 50mb limit), which double-buffered every body and burned
+// ~100MB RAM per large request — a DoS amplifier. Now raw-body capture lives
+// ONLY on this one signature-verified path, and the global limit is 1mb.
+const RAZORPAY_WEBHOOK_PATHS = new Set([
+  '/api/v1/billing/razorpay-webhook',
+  '/api/billing/razorpay-webhook',
+]);
+app.use((req, _res, next) => {
+  if (!RAZORPAY_WEBHOOK_PATHS.has(req.path)) return next();
+  return express.json({
+    limit: '1mb',
+    verify: (req2, _res2, buf) => {
+      req2.rawBody = buf;
     },
-  })
-);
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  })(req, _res, next);
+});
+
+// Global JSON body limit. The previous 50mb limit burned ~100MB RAM per large
+// request and was applied to EVERY route. 1mb covers all ordinary JSON
+// payloads; multipart uploads go through multer (fileSize-capped) rather than
+// JSON, and the one route that needs raw bytes (the Razorpay webhook above)
+// captures them via its own scoped parser. No global raw-body capture → no
+// double-buffering on the common path.
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ limit: '1mb', extended: true }));
 
 // OBS-03: Assign unique request ID for log correlation across all requests
 app.use(requestIdMiddleware);
@@ -443,7 +494,13 @@ app.get('/api/status', (_req, res) => {
   res.json(getUptimeStats());
 });
 
-// OBS-07: Error rate stats endpoint (internal/ops use — no auth to keep it lightweight)
+// Internal observability is intentionally outside the school-user API router,
+// but it must never become public when a secret is missing. Apply one
+// fail-closed boundary before every /api/ops/* and /api/metrics handler.
+app.use('/api/ops', createOpsRateLimiter(), requireOpsSecret);
+app.use('/api/metrics', createOpsRateLimiter(), requireOpsSecret);
+
+// OBS-07: Error rate stats endpoint (internal/ops use only)
 app.get('/api/ops/error-rate', (_req, res) => {
   res.json(getErrorRateStats());
 });
@@ -466,16 +523,11 @@ app.get('/api/ops/replica-status', async (_req, res) => {
 });
 
 // OBS-04: Prometheus scrape endpoint — expose key EMS metrics for Grafana/Prometheus
-// Optional: protect with OPS_METRICS_SECRET env var (pass as X-Ops-Secret header)
 app.use('/api/metrics', metricsRoutes);
 
 // OBS-07: Deployment marker — call this from CI/CD after each deploy to enable correlation
 // POST /api/ops/deployment  { version, commitSha }
-app.post('/api/ops/deployment', (req, res) => {
-  const secret = process.env.OPS_DEPLOYMENT_SECRET;
-  if (secret && req.headers['x-ops-secret'] !== secret) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+app.post('/api/ops/deployment', validateZod(opsDeploymentSchema), (req, res) => {
   const { version, commitSha } = req.body || {};
   registerDeployment({ version, commitSha });
   res.json({ ok: true, message: 'Deployment registered for error correlation' });
@@ -515,6 +567,10 @@ app.locals.Staff = Staff;
 const v1Router = express.Router();
 
 v1Router.use(addApiVersionHeader);
+// Global CSRF boundary for every cookie-authenticated mutation, including
+// public-mounted auth refresh/logout routes. Bearer/API-key and webhook traffic
+// pass through; the middleware owns the narrow SAML callback exemption.
+v1Router.use(csrfProtect);
 v1Router.use(auditLogMiddleware);
 v1Router.use(apiUsageTracker);
 // OBS-04: Business metrics tracking (DAU/MAU, feature adoption, client split)
@@ -547,6 +603,12 @@ v1Router.use(
 v1Router.use('/auth', authRoutes);
 v1Router.use('/auth/sso', ssoRoutes);
 v1Router.use('/auth/2fa', twoFactorRoutes);
+// Dedicated super-admin auth surface for the ops console app. MUST mount above
+// the v1Router.use(authenticate) barrier below — /login, /refresh, /logout are
+// public (rate-limited). The GET /session route applies its own
+// `authenticate, requireSuperAdmin` internally, so it stays protected even
+// though the mount point is in the public section.
+v1Router.use('/super-admin/auth', superAdminAuthRoutes);
 v1Router.use('/parent/auth', parentAuthRoutes);
 v1Router.use('/parent', authenticateParent, parentDataRoutes);
 v1Router.use('/parent/messages', parentMessagingRoutes);
@@ -576,7 +638,11 @@ v1Router.use(schoolStatusGuard);
 
 // ─── Platform Administration ─────────────────────────────────────────────────
 v1Router.use('/permissions', permissionRoutes);
+// super-admin/auth is mounted in the public section above (login/refresh/logout
+// need to be reachable without a JWT). The data routes below are all behind the
+// authenticate barrier — /session re-applies its own auth internally.
 v1Router.use('/super-admin', superAdminRoutes);
+v1Router.use('/super-admin', superAdminCommunicationRoutes);
 v1Router.use('/super-admin/activity', superAdminActivityRoutes);
 v1Router.use('/super-admin/trash', superAdminTrashRoutes);
 v1Router.use('/super-admin/billing', superAdminBillingRoutes);
@@ -712,7 +778,8 @@ v1Router.use('/upload', uploadRoutes);
 v1Router.use('/validation', validationRoutes);
 v1Router.use('/seed-data', seedDummyDataRoutes);
 
-// Global safety-net rate limiter — caps any single IP before per-tenant logic
+// Global safety-net rate limiter — caps any single IP before per-tenant logic.
+// The separately mounted operations boundary above has its own stricter limit.
 app.use('/api', createGlobalRateLimiter());
 
 // Mount versioned router — canonical going forward

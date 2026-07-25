@@ -64,6 +64,7 @@ import superAdminActivityRoutes from '../../routes/superAdminActivity.js';
 import superAdminTrashRoutes from '../../routes/superAdminTrash.js';
 import superAdminBillingRoutes from '../../routes/superAdminBilling.js';
 import superAdminLifecycleRoutes from '../../routes/superAdminLifecycle.js';
+import schoolGroupsRoutes from '../../routes/schoolGroups.js';
 import schoolStatusGuard from '../../middleware/auth/schoolStatusGuard.js';
 import transportRoutes from '../../routes/transport.js';
 import hostelRoutes from '../../routes/hostel.js';
@@ -146,6 +147,7 @@ export function createTestApp() {
   v1Router.use('/super-admin/trash', superAdminTrashRoutes);
   v1Router.use('/super-admin/billing', superAdminBillingRoutes);
   v1Router.use('/super-admin/lifecycle', superAdminLifecycleRoutes);
+  v1Router.use('/school-groups', schoolGroupsRoutes);
 
   // Test-only: chains authenticate → schoolStatusGuard so enforcement can be
   // exercised end-to-end. Mirrors the server.js mount (guard after auth).
