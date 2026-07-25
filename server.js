@@ -85,6 +85,7 @@ import billingRoutes from './routes/billing.js';
 import referralRoutes from './routes/referral.js';
 import couponRoutes from './routes/coupons.js';
 import featureFlagsRoutes from './routes/featureFlags.js';
+import onboardingRoutes from './routes/onboarding.js';
 import superAdminRoutes from './routes/superAdmin.js';
 import superAdminAuthRoutes from './routes/superAdminAuth.js';
 import superAdminActivityRoutes from './routes/superAdminActivity.js';
@@ -732,6 +733,16 @@ v1Router.use('/ptm', ptmRoutes);
 
 // ─── Operations & Administration ─────────────────────────────────────────────
 v1Router.use('/audit-logs', auditLogsRoutes);
+
+// ─── Self-Serve Onboarding (PR4) ──────────────────────────────────────────────
+// Mounts only when ENABLE_SELF_SIGNUP=true. The flag is read live on every
+// request so flipping it in Render takes effect on the next boot, with no
+// restart required by an admin pushing a redeploy. PR1 (signup endpoint)
+// and PR4 (this wizard) both gate on the same flag; PR6 will flip it
+// production-wide after hardening + soak.
+if (process.env.ENABLE_SELF_SIGNUP === 'true') {
+  v1Router.use('/onboarding', onboardingRoutes);
+}
 v1Router.use('/dashboard', dashboardRoutes);
 v1Router.use('/trash', trashRoutes);
 v1Router.use('/backup', backupRoutes);

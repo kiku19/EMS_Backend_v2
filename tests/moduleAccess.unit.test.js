@@ -64,7 +64,11 @@ describe('moduleAccessGuard middleware', () => {
   beforeEach(() => clearModuleCache());
 
   it('blocks a disabled module with 403 MODULE_DISABLED', async () => {
-    const school = await School.create({ name: 'Guard A', code: 'GUARDA', enabledModules: ['fees'] });
+    const school = await School.create({
+      name: 'Guard A',
+      code: 'GUARDA',
+      enabledModules: ['fees'],
+    });
     const { res, nextCalled } = await runGuard({ schoolId: school._id, path: '/library/books' });
     expect(nextCalled).toBe(false);
     expect(res.statusCode).toBe(403);
@@ -73,7 +77,11 @@ describe('moduleAccessGuard middleware', () => {
   });
 
   it('allows an enabled module', async () => {
-    const school = await School.create({ name: 'Guard B', code: 'GUARDB', enabledModules: ['fees'] });
+    const school = await School.create({
+      name: 'Guard B',
+      code: 'GUARDB',
+      enabledModules: ['fees'],
+    });
     const { res, nextCalled } = await runGuard({ schoolId: school._id, path: '/fees/collect' });
     expect(nextCalled).toBe(true);
     expect(res.statusCode).toBeNull();

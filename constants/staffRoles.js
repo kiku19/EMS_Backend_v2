@@ -1,5 +1,6 @@
 export const STAFF_ROLES = Object.freeze([
   'Admin',
+  'Administrator',
   'Super Admin',
   'Teacher',
   'Accountant',

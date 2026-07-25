@@ -321,10 +321,7 @@ router.patch(
       school.enabledModules = normalizeToggleableSelection(req.body.enabledModules);
       await school.save();
 
-      // Bust the module-access cache so the change takes effect immediately on
-      // gated /api/* requests. Without this, moduleAccessGuard serves stale
-      // results for up to its TTL (30s) — the self-service PUT /settings/modules
-      // route already does this; the super-admin path must match.
+      // Apply module changes immediately instead of serving cached access for up to 30 seconds.
       invalidateModuleCache(school._id);
 
       const { enabled } = resolveEnabledModules(school.enabledModules);

@@ -967,4 +967,84 @@ router.get('/birthdays', checkPermission('dashboard', 'view'), async (req, res) 
   }
 });
 
+// Compatibility endpoint used by the dashboard birthdays widget (SCH-212).
+// It returns separate student and staff arrays with the richer fields needed
+// by the widget while `/birthdays` keeps its compact combined response.
+router.get('/birthdays-today', checkPermission('dashboard', 'view'), async (req, res) => {
+  try {
+    const schoolId = extractSchoolId(req.user?.schoolId);
+    if (!schoolId) {
+      return res.status(400).json({ error: req.t('common:routes.schoolIdIsRequired') });
+    }
+    const schoolObjId = new mongoose.Types.ObjectId(String(schoolId));
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+
+    const monthDayMatch = (field) => ({
+      $expr: {
+        $and: [
+          { $eq: [{ $month: { $toDate: field } }, month] },
+          { $eq: [{ $dayOfMonth: { $toDate: field } }, day] },
+        ],
+      },
+    });
+
+    const [studentRows, staffRows] = await Promise.allSettled([
+      Student.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+        ...monthDayMatch('$dateOfBirth'),
+      })
+        .select('_id name classId dateOfBirth photo')
+        .populate('classId', 'name section')
+        .limit(limit)
+        .lean(),
+      Staff.find({
+        schoolId: schoolObjId,
+        isDeleted: { $ne: true },
+        status: 'active',
+        ...monthDayMatch('$dob'),
+      })
+        .select('_id name dob role department photo picture')
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const students =
+      studentRows.status === 'fulfilled'
+        ? studentRows.value.map((student) => ({
+            id: `s-${String(student._id)}`,
+            studentId: String(student._id),
+            name: student.name,
+            classId: student.classId ? String(student.classId._id || student.classId) : null,
+            className: student.classId
+              ? `${student.classId.name || ''} ${student.classId.section || ''}`.trim()
+              : null,
+            dob: student.dateOfBirth || null,
+            photo: student.photo || null,
+          }))
+        : [];
+    const staff =
+      staffRows.status === 'fulfilled'
+        ? staffRows.value.map((staffMember) => ({
+            id: `st-${String(staffMember._id)}`,
+            staffId: String(staffMember._id),
+            name: staffMember.name,
+            role: Array.isArray(staffMember.role) ? staffMember.role[0] : staffMember.role || null,
+            department: staffMember.department || null,
+            dob: staffMember.dob || null,
+            photo: staffMember.picture || staffMember.photo || null,
+          }))
+        : [];
+
+    return res.json({ students, staff, count: students.length + staff.length });
+  } catch (error) {
+    logger.error('Dashboard birthdays-today error', { error: error.message });
+    return res.status(500).json({ error: req.t('common:routes.failedToLoadDashboardStatistics') });
+  }
+});
+
 export default router;

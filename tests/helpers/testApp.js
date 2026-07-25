@@ -1,5 +1,14 @@
 import express from 'express';
 import { Staff, Student } from '../../database.js';
+
+// Self-serve signup flow (PR1/PR2 of the Self-Serve School Onboarding
+// Flow epic). Tests for verify-email, resend-verification, and the
+// signup endpoint itself need this enabled to exercise the routes —
+// when ENABLE_SELF_SIGNUP is unset the route handlers short-circuit to
+// 404 to match the production-by-default posture.
+if (!process.env.ENABLE_SELF_SIGNUP) {
+  process.env.ENABLE_SELF_SIGNUP = 'true';
+}
 import { authenticate } from '../../middleware/auth.js';
 import { i18nMiddleware } from '../../middleware/i18n.js';
 import { addApiVersionHeader, deprecationWarning } from '../../middleware/apiVersion.js';
@@ -55,6 +64,7 @@ import superAdminActivityRoutes from '../../routes/superAdminActivity.js';
 import superAdminTrashRoutes from '../../routes/superAdminTrash.js';
 import superAdminBillingRoutes from '../../routes/superAdminBilling.js';
 import superAdminLifecycleRoutes from '../../routes/superAdminLifecycle.js';
+import schoolGroupsRoutes from '../../routes/schoolGroups.js';
 import schoolStatusGuard from '../../middleware/auth/schoolStatusGuard.js';
 import transportRoutes from '../../routes/transport.js';
 import hostelRoutes from '../../routes/hostel.js';
@@ -88,6 +98,7 @@ import googleClassroomRoutes from '../../routes/googleClassroom.js';
 import ssoRoutes from '../../routes/sso.js';
 import apiKeysRoutes from '../../routes/apiKeys.js';
 import auditLogsRoutes from '../../routes/auditLogs.js';
+import onboardingRoutes from '../../routes/onboarding.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
 import { authenticateParent } from '../../middleware/auth/parentAuth.js';
 
@@ -136,6 +147,7 @@ export function createTestApp() {
   v1Router.use('/super-admin/trash', superAdminTrashRoutes);
   v1Router.use('/super-admin/billing', superAdminBillingRoutes);
   v1Router.use('/super-admin/lifecycle', superAdminLifecycleRoutes);
+  v1Router.use('/school-groups', schoolGroupsRoutes);
 
   // Test-only: chains authenticate → schoolStatusGuard so enforcement can be
   // exercised end-to-end. Mirrors the server.js mount (guard after auth).
@@ -220,6 +232,7 @@ export function createTestApp() {
   v1Router.use('/google-classroom', googleClassroomRoutes);
   v1Router.use('/api-keys', apiKeysRoutes);
   v1Router.use('/audit-logs', auditLogsRoutes);
+  v1Router.use('/onboarding', onboardingRoutes);
 
   // Canonical versioned mount
   app.use('/api/v1', v1Router);

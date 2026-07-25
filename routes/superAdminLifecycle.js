@@ -5,9 +5,7 @@ import { validateZod, objectId } from '../validators/index.js';
 import { School } from '../database.js';
 import SchoolSubscription from '../models/SchoolSubscription.js';
 import Session from '../models/Session.js';
-import {
-  invalidateSchoolStatusCache,
-} from '../middleware/auth/schoolStatusGuard.js';
+import { invalidateSchoolStatusCache } from '../middleware/auth/schoolStatusGuard.js';
 
 const router = express.Router();
 router.use(authenticate, requireSuperAdmin);
@@ -39,31 +37,27 @@ async function loadSchoolOr404(res, id) {
 // POST /api/v1/super-admin/lifecycle/:schoolId/suspend
 // Block access (keep data). Revokes sessions so active users are logged out
 // immediately; the status guard keeps them out even if they log back in.
-router.post(
-  '/:schoolId/suspend',
-  validateZod(schoolIdParamSchema, 'params'),
-  async (req, res) => {
-    try {
-      const school = await loadSchoolOr404(res, req.params.schoolId);
-      if (!school) return;
+router.post('/:schoolId/suspend', validateZod(schoolIdParamSchema, 'params'), async (req, res) => {
+  try {
+    const school = await loadSchoolOr404(res, req.params.schoolId);
+    if (!school) return;
 
-      school.status = 'suspended';
-      await school.save();
-      invalidateSchoolStatusCache(school._id);
-      const sessionsRevoked = await revokeSchoolSessions(school._id);
+    school.status = 'suspended';
+    await school.save();
+    invalidateSchoolStatusCache(school._id);
+    const sessionsRevoked = await revokeSchoolSessions(school._id);
 
-      res.json({
-        success: true,
-        status: school.status,
-        sessionsRevoked,
-        message: `${school.name} suspended — access blocked, ${sessionsRevoked} session(s) revoked.`,
-      });
-    } catch (err) {
-      req.log?.error?.({ err }, 'Failed to suspend school');
-      res.status(500).json({ error: 'Failed to suspend school' });
-    }
+    res.json({
+      success: true,
+      status: school.status,
+      sessionsRevoked,
+      message: `${school.name} suspended — access blocked, ${sessionsRevoked} session(s) revoked.`,
+    });
+  } catch (err) {
+    req.log?.error?.({ err }, 'Failed to suspend school');
+    res.status(500).json({ error: 'Failed to suspend school' });
   }
-);
+});
 
 // POST /api/v1/super-admin/lifecycle/:schoolId/reactivate
 // Restore access from suspended/locked. (Churned → re-onboard via active.)
@@ -94,31 +88,27 @@ router.post(
 // POST /api/v1/super-admin/lifecycle/:schoolId/lock
 // Admin/security lock. Same effect as suspend (blocks access) but signals a
 // harder, manual-intervention recovery path.
-router.post(
-  '/:schoolId/lock',
-  validateZod(schoolIdParamSchema, 'params'),
-  async (req, res) => {
-    try {
-      const school = await loadSchoolOr404(res, req.params.schoolId);
-      if (!school) return;
+router.post('/:schoolId/lock', validateZod(schoolIdParamSchema, 'params'), async (req, res) => {
+  try {
+    const school = await loadSchoolOr404(res, req.params.schoolId);
+    if (!school) return;
 
-      school.status = 'locked';
-      await school.save();
-      invalidateSchoolStatusCache(school._id);
-      const sessionsRevoked = await revokeSchoolSessions(school._id);
+    school.status = 'locked';
+    await school.save();
+    invalidateSchoolStatusCache(school._id);
+    const sessionsRevoked = await revokeSchoolSessions(school._id);
 
-      res.json({
-        success: true,
-        status: school.status,
-        sessionsRevoked,
-        message: `${school.name} locked — ${sessionsRevoked} session(s) revoked.`,
-      });
-    } catch (err) {
-      req.log?.error?.({ err }, 'Failed to lock school');
-      res.status(500).json({ error: 'Failed to lock school' });
-    }
+    res.json({
+      success: true,
+      status: school.status,
+      sessionsRevoked,
+      message: `${school.name} locked — ${sessionsRevoked} session(s) revoked.`,
+    });
+  } catch (err) {
+    req.log?.error?.({ err }, 'Failed to lock school');
+    res.status(500).json({ error: 'Failed to lock school' });
   }
-);
+});
 
 // POST /api/v1/super-admin/lifecycle/:schoolId/offboard
 // Permanent offboarding: cancel subscription, revoke all sessions, mark

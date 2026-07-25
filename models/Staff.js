@@ -25,6 +25,8 @@ const staffSchema = new mongoose.Schema(
     },
     phone: String,
     email: String,
+    emailVerified: { type: Boolean, default: false, index: true },
+    emailVerifiedAt: { type: Date },
     joinDate: { type: mongoose.Schema.Types.Mixed }, // Accepts String (legacy) or Date (migrated)
     joinDateParsed: Date, // Migration target: parsed Date from legacy String joinDate
     address: String,
@@ -161,6 +163,7 @@ const staffSchema = new mongoose.Schema(
         linkedAt: { type: Date, default: Date.now },
       },
     ],
+
   },
   { timestamps: true, strict: true }
 );

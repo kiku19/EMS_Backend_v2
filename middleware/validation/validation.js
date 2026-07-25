@@ -859,6 +859,8 @@ export function sanitizeQueryId(val) {
 // Zod Validation Schemas (new code uses Zod per project rules)
 // ============================================================
 import { z } from 'zod';
+import { selfSignupSchema } from '../../validators/signup.js';
+import { verifyEmailSchema, resendVerificationSchema } from '../../validators/verifyEmail.js';
 import { STAFF_ROLES } from '../../constants/staffRoles.js';
 
 const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -1100,6 +1102,10 @@ export const zodSchemas = {
   forgotPassword: forgotPasswordSchema,
   resetPassword: resetPasswordSchema,
 
+  // Self-serve signup email verification (PR2 / SCH-218)
+  verifyEmail: verifyEmailSchema,
+  resendVerification: resendVerificationSchema,
+
   // 2FA
   twoFactorVerifyLogin: twoFactorVerifyLoginSchema,
   twoFactorConfirmSetup: twoFactorConfirmSetupSchema,
@@ -1108,6 +1114,9 @@ export const zodSchemas = {
   // Calendar Events
   createCalendarEvent: createCalendarEventSchema,
   updateCalendarEvent: updateCalendarEventSchema,
+
+  // Self-serve school signup (no invite required). Mounted behind ENABLE_SELF_SIGNUP.
+  selfSignup: selfSignupSchema,
 
   // POST /api/timetable — Create timetable
   createTimetable: z.object({

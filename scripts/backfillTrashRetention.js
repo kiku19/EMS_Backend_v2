@@ -35,10 +35,7 @@ async function main() {
       continue;
     }
     if (apply) {
-      await TrashItem.updateOne(
-        { _id: item._id },
-        { $set: { expiresAt: desired } }
-      );
+      await TrashItem.updateOne({ _id: item._id }, { $set: { expiresAt: desired } });
     }
     extended += 1;
   }
