@@ -1,5 +1,5 @@
 import express from 'express';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { FormAssignment, FormSubmission, IntakeForm } from '../database.js';
 import Staff from '../models/Staff.js';
@@ -23,7 +23,7 @@ router.use((req, res, next) => {
 const formSubmissionLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: (req) => `${req.ip}:${req.params.token || ''}`,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip)}:${req.params.token || ''}`,
   message: { error: 'Too many submissions. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,

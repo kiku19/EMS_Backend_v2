@@ -17,14 +17,14 @@
  * (services/api/core.js) works without a new code path.
  */
 
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 
 const skipOutsideProduction = () => process.env.NODE_ENV !== 'production';
 
 const signupIpHourlyLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: 5,
-  keyGenerator: (req) => `selfsignup:ip_hour:${req.ip}`,
+  keyGenerator: (req) => `selfsignup:ip_hour:${ipKeyGenerator(req.ip)}`,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skip: skipOutsideProduction,
@@ -43,7 +43,7 @@ const signupIpHourlyLimiter = rateLimit({
 const signupIpDailyLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   limit: 10,
-  keyGenerator: (req) => `selfsignup:ip_day:${req.ip}`,
+  keyGenerator: (req) => `selfsignup:ip_day:${ipKeyGenerator(req.ip)}`,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skip: skipOutsideProduction,
@@ -69,7 +69,7 @@ const signupEmailLimiter = rateLimit({
     const email = String(req.body?.adminEmail || '')
       .trim()
       .toLowerCase();
-    return email ? `selfsignup:email:${email}` : `selfsignup:email_ip:${req.ip}`;
+    return email ? `selfsignup:email:${email}` : `selfsignup:email_ip:${ipKeyGenerator(req.ip)}`;
   },
   standardHeaders: 'draft-7',
   legacyHeaders: false,
@@ -108,7 +108,9 @@ const resendVerificationEmailLimiter = rateLimit({
     const email = String(req.body?.email || '')
       .trim()
       .toLowerCase();
-    return email ? `resend_verification:email:${email}` : `resend_verification:ip:${req.ip}`;
+    return email
+      ? `resend_verification:email:${email}`
+      : `resend_verification:ip:${ipKeyGenerator(req.ip)}`;
   },
   standardHeaders: 'draft-7',
   legacyHeaders: false,

@@ -1,4 +1,4 @@
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 
 const skipAuthRateLimitOutsideProd = () => process.env.NODE_ENV !== 'production';
 
@@ -23,7 +23,7 @@ export const resendVerificationLimiter = rateLimit({
   keyGenerator: (req) => {
     const raw = req.body?.email;
     const email = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-    return email ? `resend-verify:${email}` : `resend-verify:ip:${req.ip}`;
+    return email ? `resend-verify:${email}` : `resend-verify:ip:${ipKeyGenerator(req.ip)}`;
   },
   standardHeaders: 'draft-7',
   legacyHeaders: false,

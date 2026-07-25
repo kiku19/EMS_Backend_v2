@@ -122,7 +122,7 @@ import { resolveAcademicYear, parseAcademicYear } from '../utils/academicYear.js
 import SchoolSettings from '../models/SchoolSettings.js';
 import { localTodayString } from '../utils/dateTimezone.js';
 import { validateObjectIdParam } from '../middleware/validation.js';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import cacheService from '../services/cacheService.js';
 
 // Rate-limit POST /notify-parents — parent absence SMS/push are real
@@ -133,7 +133,7 @@ const notifyParentsLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 3,
   keyGenerator: (req) =>
-    `${req.user?.id || req.ip}:${req.body?.classId || ''}:${req.body?.date || ''}`,
+    `${req.user?.id || ipKeyGenerator(req.ip)}:${req.body?.classId || ''}:${req.body?.date || ''}`,
   handler: (req, res) =>
     res.status(429).json({
       error:

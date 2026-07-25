@@ -191,7 +191,7 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import {
   buildRedisStore,
   isAuthRateLimitingDisabled,
@@ -412,7 +412,7 @@ const authLimiter = rateLimit({
   max: 20,
   keyGenerator: (req) => {
     const account = req.body?.email || req.body?.phone || 'nocred';
-    return `auth:route:${account}:${req.ip}`;
+    return `auth:route:${account}:${ipKeyGenerator(req.ip)}`;
   },
   handler: (req, res, _next, options) => {
     const retryAfter = Math.ceil(options.windowMs / 1000);

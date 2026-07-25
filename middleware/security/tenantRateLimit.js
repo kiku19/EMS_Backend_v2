@@ -19,7 +19,7 @@
  * crosses multiples of ALERT_THRESHOLD within the rolling 15-minute window.
  */
 
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import RedisRateLimitStore from 'rate-limit-redis';
 import { getRedisClient, isRedisReady } from '../../config/redis.js';
 import SchoolSubscription from '../../models/SchoolSubscription.js';
@@ -203,7 +203,7 @@ export function createTenantRateLimiter() {
      */
     keyGenerator: (req) => {
       const schoolId = extractSchoolIdFromRequest(req);
-      return schoolId ? `tenant:${schoolId}` : `ip:${req.ip}`;
+      return schoolId ? `tenant:${schoolId}` : `ip:${ipKeyGenerator(req.ip)}`;
     },
 
     standardHeaders: 'draft-7', // emit X-RateLimit-* headers
@@ -248,7 +248,7 @@ export function createSmsRateLimiter() {
 
     keyGenerator: (req) => {
       const schoolId = extractSchoolIdFromRequest(req);
-      return schoolId ? `sms:${schoolId}` : `sms_ip:${req.ip}`;
+      return schoolId ? `sms:${schoolId}` : `sms_ip:${ipKeyGenerator(req.ip)}`;
     },
 
     standardHeaders: 'draft-7',
@@ -295,7 +295,7 @@ export function createAuthRateLimiter({ skip } = {}) {
     // those collapse into one IP-scoped bucket rather than an unbounded wildcard.
     keyGenerator: (req) => {
       const account = req.body?.email || req.body?.phone || 'nocred';
-      return `auth:${account}:${req.ip}`;
+      return `auth:${account}:${ipKeyGenerator(req.ip)}`;
     },
     standardHeaders: 'draft-7',
     legacyHeaders: false,
@@ -326,7 +326,7 @@ export function createGlobalRateLimiter() {
   return rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     limit: 500,
-    keyGenerator: (req) => `global:${req.ip}`,
+    keyGenerator: (req) => `global:${ipKeyGenerator(req.ip)}`,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     store: buildRedisStore(),
