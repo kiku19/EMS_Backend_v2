@@ -275,8 +275,22 @@ export function initializeChatHandlers(io) {
           return;
         }
 
-        // NOTE: We don't check canMessageUser here anymore since we gave basic permissions to all staff
-        // They can message anyone as long as they have SEND_MESSAGE permission
+        // Enforce the same role-based messaging matrix as the REST path
+        // (POST /messages → canMessageUser). Previously this check was commented
+        // out on the socket path, so any role permitted to chat at all could
+        // open a conversation with anyone regardless of the role matrix.
+        // Run it whenever the client is targeting a specific recipient — both
+        // the new-conversation branch (receiverId) and, defensively, when an
+        // existing conversationId is supplied.
+        if (receiverId && receiverModel) {
+          const senderType = socket.userType === 'staff' ? 'staff' : socket.userType;
+          const receiverType = String(receiverModel).toLowerCase();
+          const allowed = await canMessageUser(socket.userId, senderType, receiverId, receiverType);
+          if (!allowed) {
+            socket.emit('error', { message: 'Not allowed to message this recipient' });
+            return;
+          }
+        }
 
         // Find or create conversation (scoped by schoolId for multi-tenancy)
         let conversation;

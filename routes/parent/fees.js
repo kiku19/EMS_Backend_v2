@@ -1,6 +1,6 @@
 import express from 'express';
 import { resolveAcademicYear } from '../../utils/academicYear.js';
-import { Student, FeePayment, getNextReceiptNumber } from '../../database.js';
+import { Student, FeePayment, getNextAvailableReceiptNumber } from '../../database.js';
 import { getFeePaymentGateway } from '../../services/paymentGateway/index.js';
 import { validateParentChildAccess } from '../../middleware/parentAuth.js';
 import { validateZod, zodSchemas } from '../../middleware/validation.js';
@@ -15,6 +15,7 @@ import { applyOutputSchema, paymentOutputSchema } from '../../validators/parentO
 import { scopeBySchool, resolveRequestSchoolId } from './helpers.js';
 import { createLogger } from '../../utils/logger.js';
 import { updateFeeStructureWithRetry } from '../../utils/sfsConcurrency.js';
+import { applyLateFeeToFeeStructure } from '../../utils/lateFeeCalculator.js';
 
 const router = express.Router();
 const logger = createLogger('ParentFees');
@@ -49,6 +50,7 @@ router.get('/students/:id/fees', validateParentChildAccess, async (req, res) => 
       studentId: id,
       academicYear: year,
       schoolId: req.schoolId,
+      isDeleted: { $ne: true },
     }).lean();
 
     let feeDetails;
@@ -78,7 +80,17 @@ router.get('/students/:id/fees', validateParentChildAccess, async (req, res) => 
 
     const { FeePayment: FeePaymentModel } = await import('../../database.js');
 
-    const payments = await FeePaymentModel.find({ studentId: id, schoolId: req.schoolId })
+    // F8: scope the recent-payments list to the resolved academic year and to
+    // completed payments only. Previously the query omitted both, so a parent
+    // could see cancelled/failed rows and payments from prior years mixed into
+    // the "recent payments" card.
+    const payments = await FeePaymentModel.find({
+      studentId: id,
+      schoolId: req.schoolId,
+      academicYear: year,
+      status: 'completed',
+      isDeleted: { $ne: true },
+    })
       .sort({ paymentDate: -1 })
       .limit(10)
       .lean();
@@ -120,7 +132,11 @@ router.post(
       // Verify amount doesn't exceed balance — strict year scope, no cross-year fallback
       const resolvedAcademicYear = await resolveAcademicYear(academicYear);
       const feeStructure = await StudentFeeStructure.findOne(
-        scopeBySchool(req.parent?.schoolId, { studentId, academicYear: resolvedAcademicYear })
+        scopeBySchool(req.parent?.schoolId, {
+          studentId,
+          academicYear: resolvedAcademicYear,
+          isDeleted: { $ne: true },
+        })
       );
 
       if (!feeStructure) {
@@ -254,24 +270,42 @@ router.post(
 
       const year = academicYear || student.classId?.academicYear || (await resolveAcademicYear());
 
-      // Build fee heads breakdown for payment record
+      // Build fee heads breakdown for payment record.
+      // F5: keep feeHeadId so the persisted record can be reversed by id
+      // (routes/fees.js cancel path matches feeHeadId first, then name).
+      // Previously the mapping kept only {name, amount}, so a cancellation
+      // fell back to fragile name matching that almost never hit.
       let paymentFeeHeads = [];
       if (feeHeadPayments && feeHeadPayments.length > 0) {
         paymentFeeHeads = feeHeadPayments.map((fhp) => ({
+          feeHeadId: fhp.feeHeadId,
           name: fhp.name || fhp.feeHeadName || '',
           amount: fhp.amount,
         }));
       }
 
-      // Create FeePayment record (atomic counter — prevents duplicate receipt numbers)
+      // Create FeePayment record (atomic counter — prevents duplicate receipt numbers).
+      // (F11) The receipt number is generated INSIDE the withTransaction below so the
+      // Counter $inc participates in the session — if the transaction aborts (balance
+      // exceeded, idempotency collision, retry exhaustion) the sequence number is no
+      // longer consumed, avoiding gaps like REC-101, REC-103 in finance audits.
       const schoolId = await resolveRequestSchoolId(req);
-      const receiptNumber = await getNextReceiptNumber(schoolId);
+
+      // Idempotency: the confirmed gateway payment_id uniquely identifies this
+      // settlement. Persisting it as `idempotencyKey` (covered by a partial
+      // unique index on FeePayment) makes verify safe to retry — a duplicate
+      // verify for the same payment collides on insert and returns the
+      // original payment instead of crediting the balance a second time.
+      // (F2) Prefer the payment id as the canonical key; fall back to the
+      // order id for mock/dev flows where a payment id may not be issued.
+      const idempotencyKey = razorpay_payment_id || razorpay_order_id || undefined;
+
       const payment = new FeePayment({
         schoolId,
         studentId,
         classId: student.classId?._id || student.classId,
         academicYear: year,
-        receiptNumber,
+        // receiptNumber assigned inside the transaction below (F11).
         paymentDate: new Date().toISOString().split('T')[0],
         amount,
         paymentMode: 'online',
@@ -279,38 +313,124 @@ router.post(
         transactionId: razorpay_payment_id || `mock_${Date.now()}`,
         status: 'completed',
         remarks: `Online payment via parent app. Order: ${razorpay_order_id || 'N/A'}`,
+        // F4: persist the gateway reconciliation fields. The signature was
+        // verified above (verifyPayment → valid), but the result was never
+        // stored, so gatewayVerified stayed false despite a valid payment.
+        // (gatewayPaymentId is intentionally omitted — the model has no such
+        // field; the payment id is already stored as transactionId above.)
+        gatewayOrderId: razorpay_order_id,
+        gatewaySignature: razorpay_signature,
+        gatewayVerified: !mock,
+        idempotencyKey,
       });
 
-      await payment.save();
+      // Atomicity: the payment record and the balance credit MUST commit
+      // together. Previously payment.save() committed first and the
+      // updateFeeStructureWithRetry ran separately — if the balance update
+      // failed (retry exhausted, thrown) the payment was already persisted
+      // with no compensating rollback, so two concurrent verifications of the
+      // same order could both credit the balance and over-charge the student.
+      // Wrapping both in a transaction means either both apply or neither does.
+      let feeStructure = null;
+      const mongoose = (await import('mongoose')).default;
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          // (F11) Generate the receipt number inside the transaction so the
+          // Counter $inc is rolled back if the transaction aborts.
+          payment.receiptNumber = await getNextAvailableReceiptNumber(schoolId, session);
+          await payment.save({ session });
 
-      // Update StudentFeeStructure — strict year scope, no cross-year fallback.
-      // Uses the retry helper so concurrent parent/admin payments don't lose
-      // each other's feeHead updates.
-      const feeStructure = await updateFeeStructureWithRetry(
-        scopeBySchool(req.parent?.schoolId, { studentId, academicYear: year }),
-        async (fs) => {
-          if (feeHeadPayments && feeHeadPayments.length > 0) {
-            for (const fhp of feeHeadPayments) {
-              const head = fs.feeHeads.find(
-                (h) =>
-                  h.feeHeadId?.toString() === fhp.feeHeadId || h._id?.toString() === fhp.feeHeadId
-              );
-              if (head) {
-                head.paidAmount = (head.paidAmount || 0) + fhp.amount;
-                const headResult = computeFeeHeadStatus(head);
-                head.balanceAmount = headResult.balanceAmount;
-                head.status = headResult.status;
+          // Update StudentFeeStructure — strict year scope, no cross-year fallback.
+          feeStructure = await updateFeeStructureWithRetry(
+            scopeBySchool(req.parent?.schoolId, { studentId, academicYear: year }),
+            async (fs) => {
+              // F2: re-check the balance on the freshly-read snapshot inside
+              // the retry loop. The pre-flight check ran outside the
+              // transaction; a concurrent verify of the same order could have
+              // already credited the balance, so without this guard the second
+              // verify would over-charge the student. Throwing aborts the
+              // transaction so the FeePayment saved above never commits.
+              if (Number(amount) > Number(fs.totalBalance || 0)) {
+                const err = new Error(
+                  `Payment amount (₹${amount}) exceeds outstanding balance (₹${fs.totalBalance || 0})`
+                );
+                err.code = 'EXCEEDS_BALANCE';
+                throw err;
               }
-            }
-          }
 
-          fs.totalPaid = (fs.totalPaid || 0) + amount;
-          fs.lastPaymentDate = new Date();
-          const { totalBalance, overallStatus } = computeFeeBalance(fs);
-          fs.totalBalance = totalBalance;
-          fs.overallStatus = overallStatus;
+              if (feeHeadPayments && feeHeadPayments.length > 0) {
+                for (const fhp of feeHeadPayments) {
+                  const head = fs.feeHeads.find(
+                    (h) =>
+                      h.feeHeadId?.toString() === fhp.feeHeadId ||
+                      h._id?.toString() === fhp.feeHeadId
+                  );
+                  if (head) {
+                    head.paidAmount = (head.paidAmount || 0) + fhp.amount;
+                    const headResult = computeFeeHeadStatus(head);
+                    head.balanceAmount = headResult.balanceAmount;
+                    head.status = headResult.status;
+                  }
+                }
+              }
+
+              fs.totalPaid = (fs.totalPaid || 0) + amount;
+              fs.lastPaymentDate = new Date();
+              // Recompute late-fee liability before deriving the balance so a
+              // payment against an overdue account still reflects it.
+              await applyLateFeeToFeeStructure(fs);
+              const { totalBalance, overallStatus } = computeFeeBalance(fs);
+              fs.totalBalance = totalBalance;
+              fs.overallStatus = overallStatus;
+            },
+            { session }
+          );
+        });
+      } catch (error) {
+        // Duplicate (idempotent) verify for the same gateway order: return the
+        // original payment rather than erroring. The partial unique index on
+        // idempotencyKey rejects the second insert.
+        if (idempotencyKey && error?.code === 11000 && error?.keyPattern?.idempotencyKey) {
+          const existing = await FeePayment.findOne({ schoolId, idempotencyKey })
+            .sort({ createdAt: -1 })
+            .lean();
+          if (existing) {
+            const existingFs = await StudentFeeStructure.findOne(
+              scopeBySchool(req.parent?.schoolId, {
+                studentId,
+                academicYear: year,
+                isDeleted: { $ne: true },
+              })
+            ).lean();
+            return res.json({
+              success: true,
+              data: {
+                payment: {
+                  id: existing._id,
+                  amount: existing.amount,
+                  receiptNumber: existing.receiptNumber,
+                  transactionId: existing.transactionId,
+                  paymentDate: existing.paymentDate,
+                  paymentMode: existing.paymentMode,
+                  status: existing.status,
+                },
+                updatedFeeDetails: existingFs
+                  ? {
+                      totalFee: existingFs.totalFee,
+                      paidAmount: existingFs.totalPaid,
+                      balanceAmount: existingFs.totalBalance,
+                      overallStatus: existingFs.overallStatus,
+                    }
+                  : null,
+              },
+            });
+          }
         }
-      );
+        throw error;
+      } finally {
+        await session.endSession();
+      }
 
       // Sync Student.feeDetails and feeStatus from the updated fee structure
       if (feeStructure) {

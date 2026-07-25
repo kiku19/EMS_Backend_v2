@@ -46,6 +46,12 @@ const exportQuerySchema = z.object({
   endDate: z.string().optional(),
   entity: z.string().trim().optional(),
   action: z.enum(ACTION_ENUM).optional(),
+  // [D9] export previously omitted userId, so the export ignored any per-user
+  // filter applied on the list page. buildFilter() already supports it.
+  userId: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/i, 'Invalid userId')
+    .optional(),
   search: z
     .string()
     .trim()
@@ -185,26 +191,42 @@ router.get('/export', requireAdmin, async (req, res) => {
     const { format, ...filterParams } = parsed.data;
     const filter = buildFilter(req.user.schoolId, filterParams);
 
-    // Cap export at 10,000 records for safety
+    // Cap export at 10,000 records for safety. [D9] Surface a truncated flag when
+    // the cap is hit so the caller (and the UI) can warn that rows were dropped.
+    const EXPORT_LIMIT = 10000;
     const logs = await AuditTrail.find(filter)
       .sort({ createdAt: -1 })
-      .limit(10000)
+      .limit(EXPORT_LIMIT)
       .populate('userId', 'name email')
       .lean();
 
+    const truncated = logs.length === EXPORT_LIMIT;
     const date = new Date().toISOString().split('T')[0];
 
     if (format === 'csv') {
       const csv = logsToCsv(logs);
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${date}.csv"`);
+      if (truncated) {
+        res.setHeader('X-Export-Truncated', 'true');
+        res.setHeader('X-Export-Row-Cap', String(EXPORT_LIMIT));
+      }
       return res.send(csv);
     }
 
-    // JSON format
+    // JSON format — include the truncation flag in the body so a UI consumer
+    // can render a warning without parsing response headers.
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${date}.json"`);
-    res.json(logs);
+    if (truncated) {
+      res.setHeader('X-Export-Truncated', 'true');
+      res.setHeader('X-Export-Row-Cap', String(EXPORT_LIMIT));
+    }
+    res.json({
+      logs,
+      truncated: truncated || undefined,
+      rowCap: truncated ? EXPORT_LIMIT : undefined,
+    });
   } catch (error) {
     console.error('Error exporting audit logs:', error);
     res.status(500).json({ error: 'Failed to export audit logs' });

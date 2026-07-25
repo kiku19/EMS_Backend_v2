@@ -29,11 +29,13 @@ import classesRoutes from '../../routes/classes.js';
 import classesEnhancedRoutes from '../../routes/classesEnhanced.js';
 import classSettingsRoutes from '../../routes/classSettings.js';
 import examScheduleRoutes from '../../routes/examSchedule.js';
+import academicPerformanceRoutes from '../../routes/academicPerformance.js';
 import hallTicketsRoutes from '../../routes/hallTickets.js';
 import feeHeadsRoutes from '../../routes/feeHeads.js';
 import feesRoutes from '../../routes/fees.js';
 import feeStructureRoutes from '../../routes/feeStructure.js';
 import feeSettingsRoutes from '../../routes/feeSettings.js';
+import feeReminderConfigRoutes from '../../routes/feeReminderConfig.js';
 import feeTemplatesRoutes from '../../routes/feeTemplates.js';
 import homeworkRoutes from '../../routes/homework.js';
 import intakeFormsRoutes from '../../routes/intakeForms.js';
@@ -52,6 +54,7 @@ import searchRoutes from '../../routes/search.js';
 import permissionRoutes from '../../routes/permissions.js';
 import publicRoutes from '../../routes/public.js';
 import settingsRoutes from '../../routes/settings.js';
+import curriculaRoutes from '../../routes/curricula.js';
 import staffRoutes from '../../routes/staff.js';
 import staffAttendanceRoutes from '../../routes/staffAttendance.js';
 import studentFeesRoutes from '../../routes/studentFees.js';
@@ -81,6 +84,7 @@ import substitutionsRoutes from '../../routes/substitutions.js';
 import substitutionAlertsRoutes from '../../routes/substitutionAlerts.js';
 import backupRoutes from '../../routes/backup.js';
 import bulkImportRoutes from '../../routes/bulkImport.js';
+import bulkOpsRoutes from '../../routes/bulkOps.js';
 import ptmRoutes from '../../routes/ptm.js';
 import reportsRoutes from '../../routes/reports.js';
 import promotionRoutes from '../../routes/promotion.js';
@@ -93,6 +97,7 @@ import googleClassroomRoutes from '../../routes/googleClassroom.js';
 import ssoRoutes from '../../routes/sso.js';
 import apiKeysRoutes from '../../routes/apiKeys.js';
 import auditLogsRoutes from '../../routes/auditLogs.js';
+import onboardingRoutes from '../../routes/onboarding.js';
 import { initializeSocket } from '../../utils/socketEmitter.js';
 import { authenticateParent } from '../../middleware/auth/parentAuth.js';
 
@@ -154,6 +159,7 @@ export function createTestApp() {
   v1Router.use('/parent/messages', parentMessagingRoutes);
   v1Router.use('/parent', authenticateParent, parentDataRoutes);
   v1Router.use('/', academicsRoutes);
+  v1Router.use('/academic-performance', academicPerformanceRoutes);
   v1Router.use('/announcements', announcementRoutes);
   v1Router.use('/communication-logs', communicationLogsRoutes);
   v1Router.use('/billing', billingRoutes);
@@ -170,6 +176,7 @@ export function createTestApp() {
   v1Router.use('/notifications', notificationRoutes);
   v1Router.use('/permissions', permissionRoutes);
   v1Router.use('/settings', settingsRoutes);
+  v1Router.use('/curricula', curriculaRoutes);
   v1Router.use('/staff', staffRoutes);
   v1Router.use('/staff-attendance', staffAttendanceRoutes);
   v1Router.use('/student-fees', studentFeesRoutes);
@@ -179,6 +186,7 @@ export function createTestApp() {
   v1Router.use('/timetable-cleanup', timetableCleanupRoutes);
   v1Router.use('/teacher-timetable', teacherTimetableRoutes);
   v1Router.use('/fee-settings', feeSettingsRoutes);
+  v1Router.use('/fee-reminder-config', feeReminderConfigRoutes);
   v1Router.use('/fee-templates', feeTemplatesRoutes);
   v1Router.use('/payroll', payrollRoutes);
   v1Router.use('/trash', trashRoutes);
@@ -204,6 +212,7 @@ export function createTestApp() {
   v1Router.use('/substitution-alerts', substitutionAlertsRoutes);
   v1Router.use('/backup', backupRoutes);
   v1Router.use('/bulk-import', bulkImportRoutes);
+  v1Router.use('/bulk-ops', bulkOpsRoutes);
   v1Router.use('/ptm', ptmRoutes);
   v1Router.use('/reports', reportsRoutes);
   v1Router.use('/promotions', promotionRoutes);
@@ -221,6 +230,7 @@ export function createTestApp() {
   v1Router.use('/google-classroom', googleClassroomRoutes);
   v1Router.use('/api-keys', apiKeysRoutes);
   v1Router.use('/audit-logs', auditLogsRoutes);
+  v1Router.use('/onboarding', onboardingRoutes);
 
   // Canonical versioned mount
   app.use('/api/v1', v1Router);

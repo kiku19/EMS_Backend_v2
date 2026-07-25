@@ -1,310 +1,347 @@
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import mongoose from 'mongoose';
 import { createTestApp } from './helpers/testApp.js';
 import { School, Staff } from '../database.js';
 import AuditTrail from '../models/AuditTrail.js';
-import { createSchoolRecord, createStaffUser } from './helpers/factories.js';
+import { zodSchemas } from '../middleware/validation/validation.js';
+import * as emailService from '../services/emailService.js';
 
-// Self-serve signup email verification + resend tests (PR2 / SCH-218).
-// Covers the spec acceptance criteria: happy verification, expired token,
-// already-verified, tampered token, resend idempotency, resend rate limit,
-// feature-flag 404, and the audit-log entry shape.
+const ENABLE_FLAG = 'ENABLE_SELF_SIGNUP';
 
-describe('PR2 / SCH-218 — email verification + resend', () => {
-  beforeEach(() => {
-    // Reset the feature flag for each test so we can test both branches
-    // explicitly. The testApp.js bootstrap sets ENABLE_SELF_SIGNUP=true
-    // when unset; tests that want the flag off clear it here.
+// JWT_SECRET is randomised per test process by tests/setup.js, so read it
+// dynamically inside beforeEach. Fall back to a 64-char placeholder only when
+// the env has not been initialised (e.g. when this file is run in isolation
+// without the global setup).
+function getJwtSecret() {
+  return process.env.JWT_SECRET || 'x'.repeat(64);
+}
+
+function issueVerificationToken({ schoolId, email, expiresIn = '24h', secret }) {
+  return jwt.sign({ purpose: 'email-verification', schoolId, email }, secret || getJwtSecret(), {
+    expiresIn,
+  });
+}
+
+async function makeSchoolAndAdmin({ verified = false, email = 'admin@example.com' } = {}) {
+  const school = await School.create({
+    name: 'Test Academy',
+    code: `TEST${Date.now()}${Math.floor(Math.random() * 1000)}`,
+    contactEmail: email,
+    plan: 'starter',
+    planStatus: 'trialing',
+    trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+    provisioning: { status: 'pending' },
+    enabledModules: [],
+    isDefault: false,
   });
 
-  it('returns 404 when ENABLE_SELF_SIGNUP is false', async () => {
-    const prev = process.env.ENABLE_SELF_SIGNUP;
-    process.env.ENABLE_SELF_SIGNUP = 'false';
-    try {
-      const { app } = createTestApp();
-      const res = await request(app)
-        .post('/api/auth/verify-email')
-        .send({ token: 'does-not-matter' })
-        .expect(404);
-      expect(res.body).toMatchObject({ error: 'Not found' });
-    } finally {
-      if (prev === undefined) delete process.env.ENABLE_SELF_SIGNUP;
-      else process.env.ENABLE_SELF_SIGNUP = prev;
-    }
+  const staff = new Staff({
+    schoolId: school._id,
+    code: `STAFF${Date.now()}${Math.floor(Math.random() * 1000)}`,
+    name: 'Test Admin',
+    email,
+    role: 'Administrator',
+    userType: 'staff',
+    status: 'active',
+    password: '$2b$10$abcdefghijklmnopqrstuvwxyzABCDEF0123456789012345678901234',
+    emailVerified: verified,
+    emailVerifiedAt: verified ? new Date() : undefined,
   });
+  await staff.save();
+  return { school, staff };
+}
 
-  it('returns 404 on GET /verify-email when flag is off', async () => {
-    const prev = process.env.ENABLE_SELF_SIGNUP;
-    process.env.ENABLE_SELF_SIGNUP = 'false';
-    try {
-      const { app } = createTestApp();
-      await request(app).get('/api/auth/verify-email').query({ token: 'x' }).expect(404);
-    } finally {
-      if (prev === undefined) delete process.env.ENABLE_SELF_SIGNUP;
-      else process.env.ENABLE_SELF_SIGNUP = prev;
-    }
+let originalFlag;
+let originalNodeEnv;
+let emailSpy;
+
+beforeEach(() => {
+  originalFlag = process.env[ENABLE_FLAG];
+  process.env[ENABLE_FLAG] = 'true';
+  originalNodeEnv = process.env.NODE_ENV;
+  // Stay outside production so the limiter is permissive for the rate-limit
+  // test that explicitly flips NODE_ENV=production mid-test.
+  process.env.NODE_ENV = 'test';
+
+  emailSpy = vi.spyOn(emailService, 'sendSchoolWelcomeEmail').mockResolvedValue({
+    messageId: 'test',
+    accepted: ['admin@example.com'],
   });
+});
 
-  it('returns 404 on POST /resend-verification when flag is off', async () => {
-    const prev = process.env.ENABLE_SELF_SIGNUP;
-    process.env.ENABLE_SELF_SIGNUP = 'false';
-    try {
-      const { app } = createTestApp();
-      await request(app)
-        .post('/api/auth/resend-verification')
-        .send({ email: 'someone@example.com' })
-        .expect(404);
-    } finally {
-      if (prev === undefined) delete process.env.ENABLE_SELF_SIGNUP;
-      else process.env.ENABLE_SELF_SIGNUP = prev;
-    }
-  });
+afterEach(async () => {
+  if (originalFlag === undefined) {
+    delete process.env[ENABLE_FLAG];
+  } else {
+    process.env[ENABLE_FLAG] = originalFlag;
+  }
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
+  vi.restoreAllMocks();
+  await School.deleteMany({ name: /Test Academy/ });
+  await Staff.deleteMany({ email: /@example\.com$/ });
+  // AuditTrail is append-only — bypass the model and clear the raw collection.
+  try {
+    await mongoose.connection.collection('audittrails').deleteMany({
+      entity: 'auth',
+      action: 'email.verified',
+    });
+  } catch {
+    // If the collection doesn't exist yet, nothing to clean.
+  }
+});
 
-  it('returns 400 when verify-email token is missing', async () => {
+describe('POST /api/auth/verify-email', () => {
+  it('returns 404 when ENABLE_SELF_SIGNUP is off', async () => {
+    process.env[ENABLE_FLAG] = 'false';
     const { app } = createTestApp();
-    const res = await request(app).post('/api/auth/verify-email').send({}).expect(400);
-    expect(res.body.details?.[0]?.field).toBe('token');
-  });
+    const { school } = await makeSchoolAndAdmin();
 
-  it('verifies a valid token, flips School + Staff flags, writes audit entry', async () => {
-    const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Verify OK School', code: 'VOK-1' });
-    const staff = await createStaffUser({
-      name: 'Verify Admin',
-      email: 'verify-ok@example.com',
-      password: 'Password123',
-      schoolId: school._id,
+    const token = issueVerificationToken({
+      schoolId: school._id.toString(),
+      email: 'admin@example.com',
     });
 
-    const token = jwt.sign(
-      {
-        purpose: 'email-verification',
-        schoolId: school._id.toString(),
-        email: 'verify-ok@example.com',
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
+    const res = await request(app).post('/api/auth/verify-email').send({ token });
+    expect(res.status).toBe(404);
+  });
 
-    const res = await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
+  it('rejects a missing token with 400', async () => {
+    const { app } = createTestApp();
+    const res = await request(app).post('/api/auth/verify-email').send({});
+    expect(res.status).toBe(400);
+  });
 
+  it('verifies a fresh token: sets Staff.emailVerified, mirrors to school metadata, writes audit, returns user', async () => {
+    const { app } = createTestApp();
+    const { school, staff } = await makeSchoolAndAdmin();
+
+    const token = issueVerificationToken({
+      schoolId: school._id.toString(),
+      email: 'admin@example.com',
+    });
+
+    const res = await request(app).post('/api/auth/verify-email').send({ token });
+    expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       success: true,
-      alreadyVerified: false,
+      user: expect.objectContaining({
+        email: 'admin@example.com',
+        emailVerified: true,
+      }),
     });
+    expect(res.body.user.emailVerifiedAt).toBeTruthy();
 
-    const updatedSchool = await School.findById(school._id);
-    expect(updatedSchool.metadata?.emailVerified).toBe(true);
-    expect(updatedSchool.metadata?.emailVerifiedAt).toBeTruthy();
+    const reloadedStaff = await Staff.findById(staff._id);
+    expect(reloadedStaff.emailVerified).toBe(true);
+    expect(reloadedStaff.emailVerifiedAt).toBeTruthy();
 
-    const updatedStaff = await Staff.findById(staff._id);
-    expect(updatedStaff.emailVerified).toBe(true);
-    expect(updatedStaff.emailVerifiedAt).toBeTruthy();
+    const reloadedSchool = await School.findById(school._id);
+    expect(reloadedSchool.metadata?.emailVerified).toBe(true);
+    expect(reloadedSchool.metadata?.emailVerifiedAt).toBeTruthy();
 
-    // The audit write is fire-and-forget so poll briefly for it to land.
-    let verifyEntry = null;
-    for (let i = 0; i < 20 && !verifyEntry; i += 1) {
-      const fresh = await AuditTrail.find({}).lean();
-      verifyEntry = fresh.find((e) => e.action === 'email_verified');
-      if (!verifyEntry) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
-    expect(verifyEntry, 'expected an email_verified audit-log entry to be written').toBeTruthy();
-    if (verifyEntry) {
-      expect(String(verifyEntry.schoolId)).toBe(String(school._id));
-    }
+    // Audit trail write is fire-and-forget; wait for the chained promise to
+    // flush before asserting.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const audit = await AuditTrail.findOne({
+      entity: 'auth',
+      action: 'email.verified',
+      entityId: staff._id.toString(),
+    });
+    expect(audit).toBeTruthy();
+    expect(audit.schoolId.toString()).toBe(school._id.toString());
   });
 
-  it('returns 410 when token is expired', async () => {
+  it('returns 410 for an expired token and leaves staff unverified', async () => {
     const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Expired School', code: 'EXP-V2' });
+    const { school, staff } = await makeSchoolAndAdmin();
 
-    const expiredToken = jwt.sign(
+    const expiredToken = issueVerificationToken({
+      schoolId: school._id.toString(),
+      email: 'admin@example.com',
+      expiresIn: '-1s',
+    });
+
+    const res = await request(app).post('/api/auth/verify-email').send({ token: expiredToken });
+    expect(res.status).toBe(410);
+
+    const reloaded = await Staff.findById(staff._id);
+    expect(reloaded.emailVerified).toBe(false);
+  });
+
+  it('returns 400 for a tampered token', async () => {
+    const { app } = createTestApp();
+    const { school } = await makeSchoolAndAdmin();
+
+    const token = issueVerificationToken({
+      schoolId: school._id.toString(),
+      email: 'admin@example.com',
+    });
+    const tampered = `${token.slice(0, -4)}AAAA`;
+
+    const res = await request(app).post('/api/auth/verify-email').send({ token: tampered });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns alreadyVerified=true and does NOT overwrite timestamp when staff is already verified', async () => {
+    const { app } = createTestApp();
+    const { school, staff } = await makeSchoolAndAdmin({ verified: true });
+    const originalTimestamp = staff.emailVerifiedAt;
+
+    const token = issueVerificationToken({
+      schoolId: school._id.toString(),
+      email: 'admin@example.com',
+    });
+
+    const res = await request(app).post('/api/auth/verify-email').send({ token });
+    expect(res.status).toBe(200);
+    expect(res.body.alreadyVerified).toBe(true);
+
+    const reloaded = await Staff.findById(staff._id);
+    expect(reloaded.emailVerifiedAt?.getTime()).toBe(originalTimestamp?.getTime());
+  });
+
+  it('returns 400 for a token signed with the wrong secret', async () => {
+    const { app } = createTestApp();
+    const { school } = await makeSchoolAndAdmin();
+
+    const wrong = jwt.sign(
       {
         purpose: 'email-verification',
         schoolId: school._id.toString(),
-        email: 'expired@example.com',
+        email: 'admin@example.com',
       },
-      process.env.JWT_SECRET,
-      { expiresIn: -1 }
+      'a'.repeat(64),
+      { expiresIn: '1h' }
     );
 
-    const res = await request(app)
-      .post('/api/auth/verify-email')
-      .send({ token: expiredToken })
-      .expect(410);
-    expect(res.body.error).toMatch(/expired/i);
+    const res = await request(app).post('/api/auth/verify-email').send({ token: wrong });
+    expect(res.status).toBe(400);
   });
+});
 
-  it('returns 400 when token signature is tampered', async () => {
-    const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Tamper School', code: 'TMP-1' });
-
-    const validToken = jwt.sign(
-      {
-        purpose: 'email-verification',
-        schoolId: school._id.toString(),
-        email: 'tamper@example.com',
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    const tampered = `${validToken.slice(0, -3)}AAA`;
-
-    await request(app).post('/api/auth/verify-email').send({ token: tampered }).expect(400);
-  });
-
-  it('returns 400 when token purpose is not email-verification', async () => {
-    const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Wrong Purpose', code: 'WP-1' });
-
-    const wrongPurpose = jwt.sign(
-      { purpose: 'login', schoolId: school._id.toString() },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    await request(app).post('/api/auth/verify-email').send({ token: wrongPurpose }).expect(400);
-  });
-
-  it('is idempotent — already-verified returns 200 with alreadyVerified: true', async () => {
-    const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Already Ver School', code: 'ALR-V1' });
-    await createStaffUser({
-      name: 'Already Ver Admin',
-      email: 'already-verified@example.com',
-      schoolId: school._id,
-    });
-
-    const token = jwt.sign(
-      {
-        purpose: 'email-verification',
-        schoolId: school._id.toString(),
-        email: 'already-verified@example.com',
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    // First call verifies
-    await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
-    // Second call sees the school-level flag already set
-    const second = await request(app).post('/api/auth/verify-email').send({ token }).expect(200);
-    expect(second.body.alreadyVerified).toBe(true);
-  });
-
-  it('GET /verify-email accepts a token in query string (legacy email links)', async () => {
-    const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'GET Verify School', code: 'GET-V1' });
-    await createStaffUser({
-      name: 'Get Ver Admin',
-      email: 'get-verify@example.com',
-      schoolId: school._id,
-    });
-
-    const token = jwt.sign(
-      {
-        purpose: 'email-verification',
-        schoolId: school._id.toString(),
-        email: 'get-verify@example.com',
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    await request(app).get('/api/auth/verify-email').query({ token }).expect(200);
-  });
-
-  it('resend-verification is idempotent and returns 200 for unknown emails', async () => {
+describe('POST /api/auth/resend-verification', () => {
+  it('returns 404 when ENABLE_SELF_SIGNUP is off', async () => {
+    process.env[ENABLE_FLAG] = 'false';
     const { app } = createTestApp();
 
     const res = await request(app)
       .post('/api/auth/resend-verification')
-      .send({ email: 'no-such-user@example.com' })
-      .expect(200);
-
-    expect(res.body).toMatchObject({ success: true });
+      .send({ email: 'admin@example.com' });
+    expect(res.status).toBe(404);
   });
 
-  it('resend-verification is idempotent for already-verified staff', async () => {
+  it('rejects missing email with 400', async () => {
     const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Resend AV School', code: 'RSV-AV1' });
-    const staff = await createStaffUser({
-      name: 'Already Verified',
-      email: 'already-ver@example.com',
-      schoolId: school._id,
-    });
-    staff.emailVerified = true;
-    staff.emailVerifiedAt = new Date();
-    await staff.save();
-
-    const res = await request(app)
-      .post('/api/auth/resend-verification')
-      .send({ email: 'already-ver@example.com' })
-      .expect(200);
-    expect(res.body).toMatchObject({ success: true });
+    const res = await request(app).post('/api/auth/resend-verification').send({});
+    expect(res.status).toBe(400);
   });
 
-  it('resend-verification issues a fresh token for unverified staff', async () => {
-    const { app } = createTestApp();
-    const school = await createSchoolRecord({ name: 'Resend Unv School', code: 'RSV-UV1' });
-    await createStaffUser({
-      name: 'Unverified Admin',
-      email: 'unverified@example.com',
-      schoolId: school._id,
-    });
-
-    // Stub the email service to capture the call without actually sending
-    const emailVerificationService = await import('../services/emailVerificationService.js');
-    const spy = vi.spyOn(emailVerificationService, 'issueEmailVerificationToken');
-    // Re-require so the spy is in place for the next call
-    vi.resetModules();
-
-    // Use the live handler — the spy above is in a different module instance
-    // but we still assert via the visible behavior (200 response).
-    const res = await request(app)
-      .post('/api/auth/resend-verification')
-      .send({ email: 'unverified@example.com' })
-      .expect(200);
-    expect(res.body).toMatchObject({ success: true });
-
-    spy.mockRestore();
-  });
-
-  it('resend-verification normalizes the email (lowercase + trim)', async () => {
-    const { app } = createTestApp();
-    // Unknown email but with whitespace + uppercase — must still succeed.
-    await request(app)
-      .post('/api/auth/resend-verification')
-      .send({ email: '  MIXEDcase@example.COM  ' })
-      .expect(200);
-  });
-
-  it('resend-verification rejects an invalid email body with 400', async () => {
+  it('rejects invalid email with 400', async () => {
     const { app } = createTestApp();
     const res = await request(app)
       .post('/api/auth/resend-verification')
-      .send({ email: 'not-an-email' })
-      .expect(400);
-    expect(res.body.details?.[0]?.field).toBe('email');
+      .send({ email: 'not-an-email' });
+    expect(res.status).toBe(400);
   });
 
-  it('resend-verification rate-limits at 4th attempt within the same hour', async () => {
-    // The limiter skips outside production. In the test runner NODE_ENV is
-    // 'test' so the limiter is bypassed — instead we assert the wiring by
-    // checking the response stays 200 even after 5 hits (rate limit is off
-    // in test, but the route still works). A separate test will exercise the
-    // limiter via NODE_ENV=production if needed (left out to avoid
-    // flakiness from polluting the global limiter state).
+  it('is idempotent: returns 200 with alreadyVerified=true without sending an email when already verified', async () => {
     const { app } = createTestApp();
-    for (let i = 0; i < 5; i += 1) {
-      const res = await request(app)
+    await makeSchoolAndAdmin({ verified: true });
+
+    const res = await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'admin@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.alreadyVerified).toBe(true);
+    expect(emailSpy).not.toHaveBeenCalled();
+  });
+
+  it('sends a fresh email on the happy path', async () => {
+    const { app } = createTestApp();
+    const { school } = await makeSchoolAndAdmin();
+
+    const res = await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'admin@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.alreadyVerified).toBeUndefined();
+    // Fire-and-forget: give the microtask queue a chance to flush the .catch.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(emailSpy).toHaveBeenCalledTimes(1);
+    const [adminArg, schoolArg, token] = emailSpy.mock.calls[0];
+    expect(adminArg.email).toBe('admin@example.com');
+    expect(schoolArg.code).toBe(school.code);
+    expect(schoolArg.name).toBe(school.name);
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThan(20);
+  });
+
+  it('leaks no information: unknown email returns the same generic 200', async () => {
+    const { app } = createTestApp();
+    const res = await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'nobody@example.com' });
+    expect(res.status).toBe(200);
+    expect(res.body.alreadyVerified).toBeUndefined();
+    expect(emailSpy).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits beyond 3 attempts per email per hour in production', async () => {
+    process.env.NODE_ENV = 'production';
+    const { app } = createTestApp();
+    await makeSchoolAndAdmin();
+
+    for (let i = 0; i < 3; i += 1) {
+      const ok = await request(app)
         .post('/api/auth/resend-verification')
-        .send({ email: `rate-limit-${i}@example.com` });
-      expect(res.status).toBe(200);
+        .send({ email: 'admin@example.com' });
+      expect(ok.status).toBe(200);
     }
+    const blocked = await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'admin@example.com' });
+    expect(blocked.status).toBe(429);
+  });
+});
+
+describe('verifyEmail Zod schema', () => {
+  it('rejects empty token strings', () => {
+    const result = zodSchemas.verifyEmail.safeParse({ token: '   ' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects unknown fields (strict)', () => {
+    const result = zodSchemas.verifyEmail.safeParse({ token: 'abc', extra: 'nope' });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a valid token', () => {
+    const result = zodSchemas.verifyEmail.safeParse({ token: 'abc.def.ghi' });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('resendVerification Zod schema', () => {
+  it('lowercases and trims email', () => {
+    const result = zodSchemas.resendVerification.safeParse({ email: '  Admin@Example.COM ' });
+    expect(result.success).toBe(true);
+    expect(result.data.email).toBe('admin@example.com');
+  });
+
+  it('rejects non-email strings', () => {
+    const result = zodSchemas.resendVerification.safeParse({ email: 'foo' });
+    expect(result.success).toBe(false);
   });
 });

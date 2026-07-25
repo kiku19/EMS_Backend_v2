@@ -10,7 +10,10 @@ import {
   validateZod,
   createFeeTemplateSchema,
   updateFeeTemplateSchema,
+  feeTemplateListQuerySchema,
 } from '../validators/index.js';
+import { validateObjectIdParam } from '../middleware/validation.js';
+import { annualizedAmount } from '../utils/applyClassFeeStructure.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -27,66 +30,115 @@ async function resolveRequestSchoolId(req) {
   return extractSchoolId(school._id);
 }
 
-router.get('/', checkPermission('fees', 'view'), async (req, res) => {
-  try {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    const query = scopeBySchool(schoolId);
-    if (req.query.academicYear) query.academicYear = req.query.academicYear;
-    const ownTemplates = await FeeTemplate.find(query).sort({ name: 1 });
+function calculateTemplateTotal(feeHeads = []) {
+  return feeHeads.reduce((total, head) => total + annualizedAmount(head), 0);
+}
 
-    // Include group-level templates if school belongs to a group with sharedFeeTemplates=true
-    let groupTemplates = [];
-    if (schoolId) {
-      const school = await School.findById(schoolId).select('groupId').lean();
-      if (school?.groupId) {
-        const group = await SchoolGroup.findById(school.groupId)
-          .select('sharedFeeTemplates')
-          .lean();
-        if (group?.sharedFeeTemplates) {
-          groupTemplates = await FeeTemplate.find({
-            groupId: school.groupId,
-            isGroupTemplate: true,
-            isActive: true,
-          })
-            .sort({ name: 1 })
+async function findAccessibleTemplate(req, templateId) {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  const ownTemplate = await FeeTemplate.findOne(scopeBySchool(schoolId, { _id: templateId }));
+  if (ownTemplate) return ownTemplate;
+  const school = await School.findById(schoolId).select('groupId').lean();
+  if (!school?.groupId) return null;
+  const group = await SchoolGroup.findById(school.groupId).select('sharedFeeTemplates').lean();
+  if (!group?.sharedFeeTemplates) return null;
+  return FeeTemplate.findOne({
+    _id: templateId,
+    groupId: school.groupId,
+    isGroupTemplate: true,
+    isActive: true,
+  });
+}
+
+router.get(
+  '/',
+  checkPermission('fees', 'view'),
+  validateZod(feeTemplateListQuerySchema, 'query'),
+  async (req, res) => {
+    try {
+      const schoolId = extractSchoolId(req.user?.schoolId);
+      const ownStatusQuery =
+        req.query.status === 'all'
+          ? {}
+          : req.query.status === 'inactive'
+            ? { isActive: false }
+            : { isActive: { $ne: false } };
+      const query = scopeBySchool(schoolId, ownStatusQuery);
+      if (req.query.academicYear) query.academicYear = req.query.academicYear;
+      const ownTemplates = await FeeTemplate.find(query).sort({ name: 1 });
+
+      // Include group-level templates if school belongs to a group with sharedFeeTemplates=true
+      let groupTemplates = [];
+      // Inactive group templates are not accessible to an individual school.
+      // They are therefore omitted from both `inactive` and `all`; group owners
+      // manage that lifecycle at the group level.
+      if (schoolId && req.query.status !== 'inactive') {
+        const school = await School.findById(schoolId).select('groupId').lean();
+        if (school?.groupId) {
+          const group = await SchoolGroup.findById(school.groupId)
+            .select('sharedFeeTemplates')
             .lean();
+          if (group?.sharedFeeTemplates) {
+            groupTemplates = await FeeTemplate.find({
+              groupId: school.groupId,
+              isGroupTemplate: true,
+              isActive: true,
+              ...(req.query.academicYear ? { academicYear: req.query.academicYear } : {}),
+            })
+              .sort({ name: 1 })
+              .lean();
+          }
         }
       }
+
+      res.json([...ownTemplates, ...groupTemplates]);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    res.json([...ownTemplates, ...groupTemplates]);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
-router.get('/:id/usage', checkPermission('fees', 'view'), async (req, res) => {
-  try {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    const structures = await FeeStructure.find(
-      scopeBySchool(schoolId, { templateId: req.params.id })
-    ).select('appliedTo').lean();
-    const structureCount = structures.length;
-    const studentCount = structures.reduce((sum, s) => sum + (s.appliedTo?.length || 0), 0);
-    res.json({ structureCount, studentCount });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/:id', checkPermission('fees', 'view'), async (req, res) => {
-  try {
-    const template = await FeeTemplate.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-    );
-    if (!template) {
-      return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+router.get(
+  '/:id/usage',
+  checkPermission('fees', 'view'),
+  validateObjectIdParam('id'),
+  async (req, res) => {
+    try {
+      const schoolId = extractSchoolId(req.user?.schoolId);
+      const template = await findAccessibleTemplate(req, req.params.id);
+      if (!template) {
+        return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+      }
+      const structures = await FeeStructure.find(
+        scopeBySchool(schoolId, { templateId: req.params.id })
+      )
+        .select('appliedTo')
+        .lean();
+      const structureCount = structures.length;
+      const studentCount = structures.reduce((sum, s) => sum + (s.appliedTo?.length || 0), 0);
+      res.json({ structureCount, studentCount });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-    res.json(template);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
+
+router.get(
+  '/:id',
+  checkPermission('fees', 'view'),
+  validateObjectIdParam('id'),
+  async (req, res) => {
+    try {
+      const template = await findAccessibleTemplate(req, req.params.id);
+      if (!template) {
+        return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+      }
+      res.json(template);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 router.post(
   '/',
@@ -118,6 +170,13 @@ router.post(
         academicYear,
         schoolId,
       });
+      const calculatedTotal = calculateTemplateTotal(feeHeads);
+      if (feeHeads.length && Math.abs(calculatedTotal - totalAnnualFee) > 0.01) {
+        return res.status(400).json({
+          error: `Total annual fee must equal the annualized fee-head total (${calculatedTotal}).`,
+          code: 'TEMPLATE_TOTAL_MISMATCH',
+        });
+      }
       await template.save();
       res.status(201).json(template);
     } catch (error) {
@@ -129,18 +188,27 @@ router.post(
 router.put(
   '/:id',
   checkPermission('fees', 'edit'),
+  validateObjectIdParam('id'),
   validateZod(updateFeeTemplateSchema),
   async (req, res) => {
     try {
-      // req.body is already validated and stripped by Zod — no raw fields leak through
-      const template = await FeeTemplate.findOneAndUpdate(
-        scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
-        req.body,
-        { new: true }
+      const template = await FeeTemplate.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
       );
       if (!template) {
         return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
       }
+      const mergedHeads = req.body.feeHeads || template.feeHeads || [];
+      const mergedTotal = req.body.totalAnnualFee ?? template.totalAnnualFee;
+      const calculatedTotal = calculateTemplateTotal(mergedHeads);
+      if (mergedHeads.length && Math.abs(calculatedTotal - mergedTotal) > 0.01) {
+        return res.status(400).json({
+          error: `Total annual fee must equal the annualized fee-head total (${calculatedTotal}).`,
+          code: 'TEMPLATE_TOTAL_MISMATCH',
+        });
+      }
+      Object.assign(template, req.body);
+      await template.save();
       res.json(template);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -148,41 +216,56 @@ router.put(
   }
 );
 
-router.delete('/:id', checkPermission('fees', 'delete'), async (req, res) => {
-  try {
-    // Snapshot before deletion for trash logging
-    const templateSnapshot = await FeeTemplate.findOne(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-    ).lean();
+router.delete(
+  '/:id',
+  checkPermission('fees', 'delete'),
+  validateObjectIdParam('id'),
+  async (req, res) => {
+    try {
+      // Snapshot before deletion for trash logging
+      const templateSnapshot = await FeeTemplate.findOne(
+        scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+      ).lean();
 
-    const template = await FeeTemplate.findOneAndDelete(
-      scopeBySchool(req.user?.schoolId, { _id: req.params.id })
-    );
-    if (!template) {
-      return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+      const appliedStructure = await FeeStructure.exists(
+        scopeBySchool(req.user?.schoolId, { templateId: req.params.id })
+      );
+      const template = appliedStructure
+        ? await FeeTemplate.findOneAndUpdate(
+            scopeBySchool(req.user?.schoolId, { _id: req.params.id }),
+            { isActive: false },
+            { new: true }
+          )
+        : await FeeTemplate.findOneAndDelete(
+            scopeBySchool(req.user?.schoolId, { _id: req.params.id })
+          );
+      if (!template) {
+        return res.status(404).json({ error: req.t('common:routes.feeTemplateNotFound') });
+      }
+
+      // Log to trash
+      if (templateSnapshot && !appliedStructure) {
+        logToTrash({
+          itemType: 'FeeTemplate',
+          itemId: templateSnapshot._id,
+          itemName: templateSnapshot.name || 'Fee Template',
+          originalData: templateSnapshot,
+          deletedBy: req.user?.id || req.user?._id,
+          schoolId: req.user?.schoolId,
+        }).catch(() => {});
+      }
+
+      res.json({
+        success: true,
+        archived: Boolean(appliedStructure),
+        message: appliedStructure
+          ? 'Template archived. Existing class fee structures retain their source history.'
+          : 'Template deleted.',
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-
-    // Clear dangling templateId references in FeeStructure documents
-    await FeeStructure.updateMany(scopeBySchool(req.user?.schoolId, { templateId: template._id }), {
-      $unset: { templateId: 1 },
-    });
-
-    // Log to trash
-    if (templateSnapshot) {
-      logToTrash({
-        itemType: 'FeeTemplate',
-        itemId: templateSnapshot._id,
-        itemName: templateSnapshot.name || 'Fee Template',
-        originalData: templateSnapshot,
-        deletedBy: req.user?.id || req.user?._id,
-        schoolId: req.user?.schoolId,
-      }).catch(() => {});
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 export default router;

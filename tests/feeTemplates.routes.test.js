@@ -88,13 +88,32 @@ describe('fee-templates routes', () => {
       expect(res.body.schoolId.toString()).toBe(school._id.toString());
     });
 
-    it('assigns schoolId from authenticated user, ignoring body schoolId', async () => {
+    it('rejects a client-supplied schoolId', async () => {
       const otherSchool = await createSchoolRecord({ name: 'Other School', code: 'OTH' });
       const payload = buildTemplatePayload({ schoolId: otherSchool._id.toString() });
 
-      const res = await request(app).post(BASE).set(headers).send(payload).expect(201);
+      await request(app).post(BASE).set(headers).send(payload).expect(400);
+      expect(await FeeTemplate.countDocuments({ name: 'Standard Template' })).toBe(0);
+    });
 
-      expect(res.body.schoolId.toString()).toBe(school._id.toString());
+    it('rejects a total that does not match annualized fee heads', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send(
+          buildTemplatePayload({
+            totalAnnualFee: 1000,
+            feeHeads: [
+              {
+                name: 'Monthly Tuition',
+                amount: 1000,
+                frequency: 'monthly',
+                category: 'Academic',
+              },
+            ],
+          })
+        )
+        .expect(400);
     });
 
     it('returns 400 when required fields are missing', async () => {
@@ -107,7 +126,7 @@ describe('fee-templates routes', () => {
   // GET / — list
   // ───────────────────────────────────────────────────────────────
   describe('GET /', () => {
-    it('returns all fee templates for the school sorted by name', async () => {
+    it('returns active fee templates for the school sorted by name by default', async () => {
       await FeeTemplate.create({
         schoolId: school._id,
         name: 'Zebra Template',
@@ -132,12 +151,132 @@ describe('fee-templates routes', () => {
       expect(res.body[1].name).toBe('Zebra Template');
     });
 
+    it('keeps inactive templates out of the default selector response', async () => {
+      await FeeTemplate.create([
+        {
+          schoolId: school._id,
+          name: 'Active Template',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          isActive: true,
+        },
+        {
+          schoolId: school._id,
+          name: 'Archived Template',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          isActive: false,
+        },
+      ]);
+
+      const res = await request(app).get(BASE).set(headers).expect(200);
+
+      expect(res.body.map((template) => template.name)).toEqual(['Active Template']);
+    });
+
+    it('returns only inactive templates when status=inactive', async () => {
+      await FeeTemplate.create([
+        {
+          schoolId: school._id,
+          name: 'Active Template',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          isActive: true,
+        },
+        {
+          schoolId: school._id,
+          name: 'Archived Template',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          isActive: false,
+        },
+      ]);
+
+      const res = await request(app).get(`${BASE}?status=inactive`).set(headers).expect(200);
+
+      expect(res.body.map((template) => template.name)).toEqual(['Archived Template']);
+    });
+
+    it('returns active and inactive own-school templates when status=all', async () => {
+      await FeeTemplate.create([
+        {
+          schoolId: school._id,
+          name: 'Active Template',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          isActive: true,
+        },
+        {
+          schoolId: school._id,
+          name: 'Archived Template',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          isActive: false,
+        },
+      ]);
+
+      const res = await request(app).get(`${BASE}?status=all`).set(headers).expect(200);
+
+      expect(res.body.map((template) => template.name)).toEqual([
+        'Active Template',
+        'Archived Template',
+      ]);
+    });
+
+    it('combines status and academic-year filters', async () => {
+      await FeeTemplate.create([
+        {
+          schoolId: school._id,
+          name: 'Current Archived',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          academicYear: '2025-26',
+          isActive: false,
+        },
+        {
+          schoolId: school._id,
+          name: 'Other Archived',
+          section: 'Primary',
+          totalAnnualFee: 1000,
+          feeHeads: [],
+          academicYear: '2024-25',
+          isActive: false,
+        },
+      ]);
+
+      const res = await request(app)
+        .get(`${BASE}?status=inactive&academicYear=2025-26`)
+        .set(headers)
+        .expect(200);
+
+      expect(res.body.map((template) => template.name)).toEqual(['Current Archived']);
+    });
+
+    it('rejects invalid or unknown list filters', async () => {
+      const invalidStatus = await request(app)
+        .get(`${BASE}?status=deleted`)
+        .set(headers)
+        .expect(400);
+      expect(invalidStatus.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'status' })])
+      );
+
+      await request(app).get(`${BASE}?includeDeleted=true`).set(headers).expect(400);
+    });
+
     it('returns empty array when no templates exist', async () => {
       const res = await request(app).get(BASE).set(headers).expect(200);
       expect(res.body).toEqual([]);
     });
 
-    it('does not return templates belonging to another school', async () => {
+    it('does not return templates belonging to another school, including status=all', async () => {
       const schoolB = await createSchoolRecord({ name: 'School B', code: 'SBB' });
       await FeeTemplate.create({
         schoolId: schoolB._id,
@@ -145,9 +284,10 @@ describe('fee-templates routes', () => {
         section: 'Primary',
         totalAnnualFee: 5000,
         feeHeads: [],
+        isActive: false,
       });
 
-      const res = await request(app).get(BASE).set(headers).expect(200);
+      const res = await request(app).get(`${BASE}?status=all`).set(headers).expect(200);
       expect(res.body).toHaveLength(0);
     });
   });
@@ -220,7 +360,7 @@ describe('fee-templates routes', () => {
         .expect(404);
     });
 
-    it('ignores schoolId override in body', async () => {
+    it('rejects schoolId overrides in update bodies', async () => {
       const template = await FeeTemplate.create({
         schoolId: school._id,
         name: 'Secure Template',
@@ -230,14 +370,15 @@ describe('fee-templates routes', () => {
       });
       const otherSchool = await createSchoolRecord({ name: 'Injected School', code: 'INJ' });
 
-      const res = await request(app)
+      await request(app)
         .put(`${BASE}/${template._id}`)
         .set(headers)
         .send({ schoolId: otherSchool._id.toString(), name: 'Updated Name' })
-        .expect(200);
+        .expect(400);
 
-      // schoolId should remain unchanged
-      expect(res.body.schoolId.toString()).toBe(school._id.toString());
+      const unchanged = await FeeTemplate.findById(template._id).lean();
+      expect(unchanged.schoolId.toString()).toBe(school._id.toString());
+      expect(unchanged.name).toBe('Secure Template');
     });
   });
 

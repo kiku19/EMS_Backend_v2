@@ -93,6 +93,44 @@ describe('calendar events routes', () => {
     it('returns 400 when date is missing', async () => {
       await request(app).post(BASE).set(headers).send({ title: 'No Date Event' }).expect(400);
     });
+
+    it('persists all event fields and accepts the UI daily recurrence option', async () => {
+      const response = await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Daily planning',
+          date: '2025-07-01',
+          type: 'holiday',
+          allDay: true,
+          description: 'Planning notes',
+          holidayType: 'School',
+          academicYear: '2025-26',
+          recurrence: { freq: 'daily', interval: 2, endCount: 3 },
+        })
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        title: 'Daily planning',
+        description: 'Planning notes',
+        holidayType: 'School',
+        academicYear: '2025-26',
+        recurrence: expect.objectContaining({ freq: 'daily', interval: 2, endCount: 3 }),
+      });
+    });
+
+    it('rejects invalid recurrence and academic-year values through Zod', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Invalid recurrence',
+          date: '2025-07-01',
+          academicYear: '2025',
+          recurrence: { freq: 'hourly' },
+        })
+        .expect(400);
+    });
   });
 
   // ───────────────────────────────────────────────────────────────
@@ -129,6 +167,230 @@ describe('calendar events routes', () => {
 
       expect(res.body[0].title).toBe('Early Event');
       expect(res.body[res.body.length - 1].title).toBe('Late Event');
+    });
+
+    it('validates range query parameters and academic year', async () => {
+      await request(app).get(`${BASE}?startDate=2025-07-01`).set(headers).expect(400);
+      await request(app)
+        .get(`${BASE}?startDate=2025-07-10&endDate=2025-07-01`)
+        .set(headers)
+        .expect(400);
+      await request(app)
+        .get(`${BASE}?startDate=2025-07-01&endDate=2025-07-10&academicYear=bad`)
+        .set(headers)
+        .expect(400);
+    });
+
+    it('applies endCount from the series start instead of restarting it per query window', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Three days only',
+          date: '2025-01-01',
+          recurrence: { freq: 'daily', endCount: 3 },
+        });
+
+      const finalOccurrence = await request(app)
+        .get(`${BASE}?startDate=2025-01-03&endDate=2025-01-10`)
+        .set(headers)
+        .expect(200);
+      expect(finalOccurrence.body.map((event) => event.date)).toEqual(['2025-01-03']);
+
+      const afterSeries = await request(app)
+        .get(`${BASE}?startDate=2025-01-04&endDate=2025-01-10`)
+        .set(headers)
+        .expect(200);
+      expect(afterSeries.body).toHaveLength(0);
+    });
+
+    it('keeps the original day anchor when a monthly recurrence crosses February', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Month end',
+          date: '2025-01-31',
+          recurrence: { freq: 'monthly', endCount: 3 },
+        });
+
+      const response = await request(app)
+        .get(`${BASE}?startDate=2025-01-01&endDate=2025-03-31`)
+        .set(headers)
+        .expect(200);
+      expect(response.body.map((event) => event.date)).toEqual([
+        '2025-01-31',
+        '2025-02-28',
+        '2025-03-31',
+      ]);
+    });
+
+    it('filters explicit academic years while retaining legacy unscoped events', async () => {
+      await request(app).post(BASE).set(headers).send({
+        title: 'Current year',
+        date: '2025-06-01',
+        academicYear: '2025-26',
+      });
+      await request(app).post(BASE).set(headers).send({
+        title: 'Other year',
+        date: '2025-06-02',
+        academicYear: '2024-25',
+      });
+      await request(app).post(BASE).set(headers).send({
+        title: 'Legacy event',
+        date: '2025-06-03',
+      });
+
+      const response = await request(app)
+        .get(`${BASE}?startDate=2025-06-01&endDate=2025-06-30&academicYear=2025-26`)
+        .set(headers)
+        .expect(200);
+      expect(response.body.map((event) => event.title)).toEqual(['Current year', 'Legacy event']);
+    });
+  });
+
+  describe('recurring occurrence and series operations', () => {
+    it('edits one occurrence without changing the rest of the series', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Weekly assembly',
+          date: '2025-01-01',
+          description: 'Original',
+          recurrence: { freq: 'weekly', endCount: 3 },
+        });
+      const before = await request(app)
+        .get(`${BASE}?startDate=2025-01-01&endDate=2025-01-31`)
+        .set(headers);
+      const occurrence = before.body.find((event) => event.date === '2025-01-08');
+      expect(occurrence.id).toMatch(/_2025-01-08$/);
+
+      const update = await request(app)
+        .put(`${BASE}/${occurrence.id}?scope=occurrence`)
+        .set(headers)
+        .send({ title: 'Special assembly', description: 'Only this date' })
+        .expect(200);
+      expect(update.body).toMatchObject({
+        title: 'Special assembly',
+        date: '2025-01-08',
+        isRecurrenceOverride: true,
+      });
+
+      const after = await request(app)
+        .get(`${BASE}?startDate=2025-01-01&endDate=2025-01-31`)
+        .set(headers);
+      expect(after.body.map((event) => [event.date, event.title])).toEqual([
+        ['2025-01-01', 'Weekly assembly'],
+        ['2025-01-08', 'Special assembly'],
+        ['2025-01-15', 'Weekly assembly'],
+      ]);
+    });
+
+    it('keeps recurrence metadata when an occurrence is moved beyond the series end date', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Short weekly series',
+          date: '2025-01-01',
+          recurrence: { freq: 'weekly', endDate: '2025-01-08' },
+        });
+      const january = await request(app)
+        .get(`${BASE}?startDate=2025-01-01&endDate=2025-01-31`)
+        .set(headers)
+        .expect(200);
+
+      await request(app)
+        .put(`${BASE}/${january.body[1].id}?scope=occurrence`)
+        .set(headers)
+        .send({ date: '2025-02-15', title: 'Moved occurrence' })
+        .expect(200);
+
+      const february = await request(app)
+        .get(`${BASE}?startDate=2025-02-01&endDate=2025-02-28`)
+        .set(headers)
+        .expect(200);
+      expect(february.body).toHaveLength(1);
+      expect(february.body[0]).toMatchObject({
+        title: 'Moved occurrence',
+        date: '2025-02-15',
+        seriesStartDate: '2025-01-01',
+        isRecurrenceOverride: true,
+        recurrence: expect.objectContaining({ freq: 'weekly', endDate: '2025-01-08' }),
+      });
+    });
+
+    it('updates an entire series when series scope is explicit', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Old series title',
+          date: '2025-02-01',
+          recurrence: { freq: 'weekly', endCount: 2 },
+        });
+      const list = await request(app)
+        .get(`${BASE}?startDate=2025-02-01&endDate=2025-02-28`)
+        .set(headers);
+
+      await request(app)
+        .put(`${BASE}/${list.body[1].id}?scope=series`)
+        .set(headers)
+        .send({ title: 'New series title' })
+        .expect(200);
+
+      const after = await request(app)
+        .get(`${BASE}?startDate=2025-02-01&endDate=2025-02-28`)
+        .set(headers);
+      expect(after.body.map((event) => event.title)).toEqual([
+        'New series title',
+        'New series title',
+      ]);
+    });
+
+    it('deletes one occurrence by default and deletes the series only when requested', async () => {
+      await request(app)
+        .post(BASE)
+        .set(headers)
+        .send({
+          title: 'Daily series',
+          date: '2025-03-01',
+          recurrence: { freq: 'daily', endCount: 3 },
+        });
+      const before = await request(app)
+        .get(`${BASE}?startDate=2025-03-01&endDate=2025-03-10`)
+        .set(headers);
+
+      await request(app).delete(`${BASE}/${before.body[1].id}`).set(headers).expect(200);
+      const afterOccurrenceDelete = await request(app)
+        .get(`${BASE}?startDate=2025-03-01&endDate=2025-03-10`)
+        .set(headers);
+      expect(afterOccurrenceDelete.body.map((event) => event.date)).toEqual([
+        '2025-03-01',
+        '2025-03-03',
+      ]);
+
+      await request(app)
+        .delete(`${BASE}/${afterOccurrenceDelete.body[0].id}?scope=series`)
+        .set(headers)
+        .expect(200);
+      const afterSeriesDelete = await request(app)
+        .get(`${BASE}?startDate=2025-03-01&endDate=2025-03-10`)
+        .set(headers);
+      expect(afterSeriesDelete.body).toHaveLength(0);
+    });
+
+    it('returns a validation error for malformed synthetic IDs instead of a cast error', async () => {
+      await request(app)
+        .put(`${BASE}/not-an-object-id_2025-03-01?scope=occurrence`)
+        .set(headers)
+        .send({ title: 'Bad reference' })
+        .expect(400);
+      await request(app)
+        .delete(`${BASE}/not-an-object-id_2025-03-01?scope=occurrence`)
+        .set(headers)
+        .expect(400);
     });
   });
 

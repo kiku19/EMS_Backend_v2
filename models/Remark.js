@@ -7,6 +7,11 @@ const remarkSchema = new mongoose.Schema(
 
     // Link to student
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+    // Snapshot of the student's class at remark-creation time. Server-derived
+    // from student.classId in routes/students/academics.js; without this path
+    // Mongoose strict mode silently dropped it, so remarks could never be
+    // filtered/classified by class.
+    classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
 
     // Remark details
     title: { type: String, required: true },
@@ -38,6 +43,7 @@ const remarkSchema = new mongoose.Schema(
 
 // Index for efficient queries
 remarkSchema.index({ schoolId: 1, studentId: 1, date: -1 });
+remarkSchema.index({ schoolId: 1, classId: 1, date: -1 });
 remarkSchema.index({ authorId: 1, date: -1 });
 remarkSchema.index({ category: 1 });
 

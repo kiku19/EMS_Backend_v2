@@ -49,3 +49,27 @@ export function computeGrade(percentage, gradingScale = null) {
   // Fallback: return the lowest grade in the scale
   return scale[scale.length - 1].grade;
 }
+
+/**
+ * Compute a percentage from marks/maxMarks.
+ *
+ * Single source of truth for percentage derivation across the app. Previously
+ * the Result pre-save hook, the bulk/single/update result handlers in
+ * academics.js and the recalculate handler in academicPerformance.js each
+ * computed it with subtly different expressions (different rounding, some
+ * clamped to 0–100, some not), which let inconsistent percentages leak into
+ * grades/ranks. This helper standardises on: round to 2 decimal places, then
+ * clamp to the [0, 100] range. A non-positive `maxMarks` yields 0.
+ *
+ * @param {number} marks - marks obtained (null/undefined treated as 0)
+ * @param {number} maxMarks - maximum marks (denominator)
+ * @returns {number} percentage in [0, 100] rounded to 2dp
+ */
+export function computePercentage(marks, maxMarks) {
+  const m = Number(marks) || 0;
+  const max = Number(maxMarks);
+  if (!max || max <= 0) return 0;
+  const raw = (m / max) * 100;
+  const rounded = Math.round((raw + Number.EPSILON) * 100) / 100;
+  return Math.min(100, Math.max(0, rounded));
+}

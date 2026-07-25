@@ -7,7 +7,11 @@ import { Admission, Appointment, Feedback, CallLog, Staff, Student } from '../da
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
-import { validateStageTransition, updateAdmissionSchema } from '../validators/admissionSchema.js';
+import {
+  validateStageTransition,
+  createAdmissionSchema,
+  updateAdmissionSchema,
+} from '../validators/admissionSchema.js';
 import { logToTrash } from '../services/trashService.js';
 
 function scopeBySchool(schoolId, query = {}) {
@@ -167,39 +171,44 @@ router.get('/admissions', checkPermission('front-desk', 'view'), async (req, res
 router.post('/admissions', checkPermission('front-desk', 'create'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
-    const {
-      studentName,
-      dateOfBirth,
-      parentName,
-      phoneNumber,
-      email,
-      classApplyingFor,
-      hscGroup,
-      assessmentRequired,
-      assignedTeacher,
-      testDate,
-      testTime,
-      source,
-      documents,
-    } = req.body;
+
+    // Validate the request body with Zod. Previously the create handler
+    // destructured req.body directly, so any shape (wrong types, missing
+    // required studentName/classApplyingFor, junk fields) flowed straight into
+    // Admission.create and either crashed opaquely or stored garbage.
+    const parsed = createAdmissionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: parsed.error.issues.map((i) => ({
+          field: i.path.join('.'),
+          message: i.message,
+        })),
+      });
+    }
 
     const admissionData = {
-      studentName,
-      dateOfBirth,
-      parentName,
-      phoneNumber,
-      email,
-      classApplyingFor,
-      hscGroup,
-      assessmentRequired,
-      assignedTeacher: assignedTeacher || undefined,
-      testDate,
-      testTime,
-      source,
-      documents,
+      ...parsed.data,
       schoolId,
       dateOfInquiry: new Date().toISOString().split('T')[0],
     };
+
+    // assignedTeacher must belong to the caller's school. Without this scope
+    // check a front-desk user could attach any Staff id from another tenant to
+    // an admission, leaking that staff member's name into this school's record.
+    if (admissionData.assignedTeacher) {
+      const teacher = await Staff.findOne({
+        _id: admissionData.assignedTeacher,
+        schoolId,
+      }).select('_id');
+      if (!teacher) {
+        return res.status(400).json({
+          success: false,
+          error: 'Assigned teacher was not found in this school',
+        });
+      }
+    }
 
     const admission = await Admission.create(admissionData);
 
@@ -253,6 +262,21 @@ router.put('/admissions/:id', checkPermission('front-desk', 'edit'), async (req,
         return res.status(400).json({
           success: false,
           error: transitionError,
+        });
+      }
+    }
+
+    // assignedTeacher (if being changed) must belong to this school — same
+    // cross-tenant guard as the create handler.
+    if (parsed.data.assignedTeacher) {
+      const teacher = await Staff.findOne({
+        _id: parsed.data.assignedTeacher,
+        schoolId,
+      }).select('_id');
+      if (!teacher) {
+        return res.status(400).json({
+          success: false,
+          error: 'Assigned teacher was not found in this school',
         });
       }
     }

@@ -267,10 +267,11 @@
 
 import express from 'express';
 import { z } from 'zod';
-import { connectDB, Staff, Student, Class } from '../database.js';
+import { connectDB } from '../database.js';
 import Announcement from '../models/Announcement.js';
 import AnnouncementRecipient from '../models/AnnouncementRecipient.js';
 import { sendAnnouncementEmail, buildAnnouncementEmailHtml } from '../services/emailService.js';
+import { sendScheduledAnnouncement, resolveRecipients } from '../services/announcementSender.js';
 import { sendEmail } from '../config/email.js';
 import { sendAnnouncementSMS } from '../services/smsService.js';
 import { sendAnnouncementWhatsApp } from '../services/whatsappService.js';
@@ -374,126 +375,10 @@ async function resolveRequestSchoolId(req) {
 // All routes require authentication
 router.use(authenticate);
 
-// Helper function to resolve recipients
-async function resolveRecipients(recipients, schoolId) {
-  const recipientList = [];
-  const schoolFilter = schoolId ? { schoolId } : {};
-
-  for (const recipient of recipients) {
-    if (recipient.type === 'all') {
-      // Get all staff
-      const staff = await Staff.find({ isActive: true, ...schoolFilter });
-      staff.forEach((s) =>
-        recipientList.push({
-          userId: s._id,
-          userType: 'Staff',
-          email: s.email,
-          phone: s.phone,
-        })
-      );
-
-      // Get all students
-      const students = await Student.find({ isActive: true, ...schoolFilter });
-      students.forEach((s) =>
-        recipientList.push({
-          userId: s._id,
-          userType: 'Student',
-          email: s.email,
-          phone: s.phone,
-        })
-      );
-    } else if (recipient.type === 'staff') {
-      const staff = await Staff.find({ isActive: true, ...schoolFilter });
-      staff.forEach((s) =>
-        recipientList.push({
-          userId: s._id,
-          userType: 'Staff',
-          email: s.email,
-          phone: s.phone,
-        })
-      );
-    } else if (recipient.type === 'students') {
-      if (recipient.classIds && recipient.classIds.length > 0) {
-        // Get students from specific classes
-        const classes = await Class.find({ _id: { $in: recipient.classIds }, ...schoolFilter });
-        for (const cls of classes) {
-          for (const studentId of cls.students) {
-            const student = await Student.findById(studentId);
-            if (student) {
-              recipientList.push({
-                userId: student._id,
-                userType: 'Student',
-                email: student.email,
-                phone: student.phone,
-              });
-            }
-          }
-        }
-      } else {
-        // All students
-        const students = await Student.find({ isActive: true, ...schoolFilter });
-        students.forEach((s) =>
-          recipientList.push({
-            userId: s._id,
-            userType: 'Student',
-            email: s.email,
-            phone: s.phone,
-          })
-        );
-      }
-    } else if (recipient.type === 'parents') {
-      // Get parents of students
-      const students = await Student.find({ isActive: true, ...schoolFilter });
-      students.forEach((s) => {
-        if (s.parent && s.parent.email) {
-          recipientList.push({
-            userId: s._id, // Use student ID as reference
-            userType: 'Parent',
-            email: s.parent.email,
-            phone: s.parent.phone,
-          });
-        }
-      });
-    } else if (recipient.type === 'custom' && recipient.userIds) {
-      // Custom user list
-      for (const userId of recipient.userIds) {
-        // Check if Staff or Student
-        const staff = await Staff.findOne({ _id: userId, ...schoolFilter });
-        if (staff) {
-          recipientList.push({
-            userId: staff._id,
-            userType: 'Staff',
-            email: staff.email,
-            phone: staff.phone,
-          });
-        } else {
-          const student = await Student.findOne({ _id: userId, ...schoolFilter });
-          if (student) {
-            recipientList.push({
-              userId: student._id,
-              userType: 'Student',
-              email: student.email,
-              phone: student.phone,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  // Remove duplicates
-  const uniqueRecipients = [];
-  const seen = new Set();
-  for (const r of recipientList) {
-    const key = `${r.userId}-${r.userType}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      uniqueRecipients.push(r);
-    }
-  }
-
-  return uniqueRecipients;
-}
+// NOTE: recipient resolution is shared with the sender via
+// `resolveRecipients` imported from services/announcementSender.js. A previous
+// route-local copy diverged from the sender (it ignored isActive + schoolId
+// scoping for class students and read the raw cls.students array).
 
 // POST /api/announcements - Create announcement (draft)
 router.post('/', async (req, res) => {
@@ -553,7 +438,8 @@ router.get('/', async (req, res) => {
   try {
     const { status, recipients, channel, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
 
-    const query = {};
+    // Exclude soft-deleted announcements (DELETE /:id flips isDeleted = true)
+    const query = { isDeleted: { $ne: true } };
 
     if (status) {
       query.status = status;
@@ -592,7 +478,8 @@ router.get('/', async (req, res) => {
 router.get('/stats', async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
-    const baseQuery = scopeBySchool(schoolId);
+    // Exclude soft-deleted announcements (DELETE /:id flips isDeleted = true)
+    const baseQuery = scopeBySchool(schoolId, { isDeleted: { $ne: true } });
 
     // Count sent this month
     const now = new Date();
@@ -833,12 +720,17 @@ router.post('/:id/send', smsRateLimiter, async (req, res) => {
       return res.status(404).json({ error: req.t('common:routes.announcementNotFound') });
     }
 
-    if (announcement.status === 'sent') {
+    // Block re-send once the announcement has reached a terminal/active
+    // delivery state. Previously only 'sent' was guarded, so a 'partial' or
+    // 'failed' announcement could be re-sent: the sender re-resolved every
+    // recipient and re-inserted a second full set of AnnouncementRecipient
+    // rows, duplicating deliveries. ('sending' is also blocked to prevent
+    // overlapping send passes on the same announcement.)
+    if (['sent', 'sending', 'partial'].includes(announcement.status)) {
       return res.status(400).json({ error: req.t('common:routes.announcementAlreadySent') });
     }
 
-    // Import the send function
-    const { sendScheduledAnnouncement } = await import('../services/announcementSender.js');
+    // sendScheduledAnnouncement is imported at the top of this module.
     const sendResult = await sendScheduledAnnouncement(announcement._id);
 
     dispatchWebhookEvent(req.user?.schoolId, 'announcement.sent', {
@@ -1008,21 +900,26 @@ router.post('/:id/resend', smsRateLimiter, async (req, res) => {
       'deliveryStatus.status': 'failed',
     });
 
+    // Determine the target recipient user IDs in a single pass, then call
+    // sendScheduledAnnouncement ONCE with the full array. The previous code
+    // looped per-recipient calling the sender with specificRecipients=[userId],
+    // and each pass overwrote analytics.sentCount/deliveredCount/failedCount
+    // from only that one recipient — clobbering cumulative totals. The sender
+    // now recomputes analytics across all AnnouncementRecipient docs, but a
+    // single call is still cheaper and avoids N redundant recomputations.
+    let failedIds;
     if (recipients && recipients.length > 0) {
-      // Resend to specific recipients
+      // Resend to the intersection of the requested IDs and the failed set
       const targetRecipients = failedRecipients.filter((r) =>
         recipients.includes(r.userId.toString())
       );
-
-      // Trigger resend logic
-      const { sendScheduledAnnouncement } = await import('../services/announcementSender.js');
-      for (const recipient of targetRecipients) {
-        await sendScheduledAnnouncement(announcement._id, [recipient.userId]);
-      }
+      failedIds = targetRecipients.map((r) => r.userId);
     } else {
       // Resend to all failed
-      const { sendScheduledAnnouncement } = await import('../services/announcementSender.js');
-      const failedIds = failedRecipients.map((r) => r.userId);
+      failedIds = failedRecipients.map((r) => r.userId);
+    }
+
+    if (failedIds.length > 0) {
       await sendScheduledAnnouncement(announcement._id, failedIds);
     }
 

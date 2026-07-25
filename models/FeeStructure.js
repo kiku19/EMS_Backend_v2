@@ -5,15 +5,16 @@ const feeStructureSchema = new mongoose.Schema(
   {
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
-    academicYear: { type: String, default: CURRENT_ACADEMIC_YEAR },
+    academicYear: { type: String, required: true, default: CURRENT_ACADEMIC_YEAR },
     templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeTemplate' },
 
     feeHeads: [
       {
-        feeHeadId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeHead' },
+        // Opaque identifier: custom class heads are not catalogue documents.
+        feeHeadId: { type: mongoose.Schema.Types.ObjectId },
         name: String,
         category: String,
-        amount: Number,
+        amount: { type: Number, min: 0 },
         frequency: String,
         mandatory: { type: Boolean, default: true },
         applicableTerms: [Number],
@@ -32,7 +33,7 @@ const feeStructureSchema = new mongoose.Schema(
         {
           name: String,
           dueDate: String,
-          amount: Number,
+          amount: { type: Number, min: 0 },
           status: {
             type: String,
             enum: ['pending', 'partial', 'paid', 'overdue'],
@@ -42,7 +43,7 @@ const feeStructureSchema = new mongoose.Schema(
       ],
     },
 
-    totalAnnualFee: Number,
+    totalAnnualFee: { type: Number, min: 0 },
     isCustomized: { type: Boolean, default: false },
     appliedDate: Date,
     appliedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }],

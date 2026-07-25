@@ -2,6 +2,7 @@ import express from 'express';
 import Message from '../models/Message.js';
 import Conversation from '../models/Conversation.js';
 import UserPresence from '../models/UserPresence.js';
+import Parent from '../models/Parent.js';
 import { Staff, Student } from '../database.js';
 import {
   hasPermission,
@@ -1258,6 +1259,66 @@ router.get('/contacts', async (req, res) => {
   } catch (error) {
     logger.error({ err: error }, 'Get contacts error');
     res.status(500).json({ error: 'Failed to get contacts' });
+  }
+});
+
+// GET /api/v1/messages/parent-contacts
+// Returns the school's parents as chat contacts. The conversation participant
+// model already supports userModel 'Parent', but the dashboard's contact list
+// was built only from staff + students — so an admin could never start a chat
+// with a parent. This endpoint closes that gap.
+//
+// Each parent is de-duplicated by id and returned with a primary-child label
+// (class + relationship) so the contact list reads like "Asha (Class 5 A · mother)".
+router.get('/parent-contacts', async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    if (!schoolId) {
+      return res.status(400).json({ error: 'School ID is required' });
+    }
+
+    // Active parents with at least one child link. Populate the child's class
+    // so we can show "Class X · relationship" as the contact subtitle.
+    const parents = await Parent.find({
+      schoolId,
+      status: 'active',
+      'children.0': { $exists: true },
+    })
+      .populate({
+        path: 'children.studentId',
+        select: 'name classId',
+        populate: { path: 'classId', select: 'name section' },
+      })
+      .select('name avatar email children')
+      .lean();
+
+    const contacts = parents.map((p) => {
+      // Pick the primary child (isPrimary) or the first linked child.
+      const kids = Array.isArray(p.children) ? p.children : [];
+      const primary = kids.find((c) => c.isPrimary && c.studentId) || kids.find((c) => c.studentId);
+      const child = primary?.studentId;
+      let role = 'Parent';
+      if (child) {
+        const cls = child.classId;
+        const classLabel = cls
+          ? `${cls.name || ''}${cls.section ? ' ' + cls.section : ''}`.trim()
+          : '';
+        const rel = primary?.relationship || 'parent';
+        role = [classLabel, rel].filter(Boolean).join(' · ') || 'Parent';
+      }
+      return {
+        id: String(p._id),
+        name: p.name,
+        role,
+        avatar: p.avatar || null,
+        type: 'parent',
+      };
+    });
+
+    return res.json({ contacts });
+  } catch (error) {
+    logger.error({ err: error }, 'Get parent contacts error');
+    res.status(500).json({ error: 'Failed to get parent contacts' });
   }
 });
 

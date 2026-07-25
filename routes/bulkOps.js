@@ -13,7 +13,6 @@
  */
 
 import express from 'express';
-import mongoose from 'mongoose';
 import { authenticate } from '../middleware/auth.js';
 import { checkPermission } from '../middleware/permissions.js';
 import { extractSchoolId } from '../utils/schoolContext.js';
@@ -27,6 +26,8 @@ import {
   FeeHead,
 } from '../database.js';
 import { createLogger } from '../utils/logger.js';
+import { archiveStudent, StudentNotFoundError } from '../services/studentArchiveService.js';
+import { incrementUsageMetric } from '../services/billingService.js';
 import {
   batchCreateStudentsSchema,
   batchUpdateStudentsSchema,
@@ -58,333 +59,334 @@ function buildResponse(results) {
 // ─── STUDENTS ────────────────────────────────────────────────────
 
 // POST /bulk-ops/students/batch-create
-router.post(
-  '/students/batch-create',
-  checkPermission('students', 'create'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+router.post('/students/batch-create', checkPermission('students', 'create'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
-    const parsed = batchCreateStudentsSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
-      });
+  const parsed = batchCreateStudentsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+    });
+  }
+
+  const { items } = parsed.data;
+  const results = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+
+    // Verify classId belongs to this school
+    const classDoc = await Class.findOne({
+      _id: item.classId,
+      schoolId,
+      isDeleted: { $ne: true },
+    })
+      .select('_id')
+      .lean();
+    if (!classDoc) {
+      results.push({ index: i, status: 'failed', error: `Class '${item.classId}' not found` });
+      continue;
     }
 
-    const { items } = parsed.data;
-    const results = [];
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-
-      // Verify classId belongs to this school
-      const classDoc = await Class.findOne({
-        _id: item.classId,
-        schoolId,
-        isDeleted: { $ne: true },
-      })
-        .select('_id')
-        .lean();
-      if (!classDoc) {
-        results.push({ index: i, status: 'failed', error: `Class '${item.classId}' not found` });
-        continue;
-      }
-
-      // Duplicate admission ID check
-      const existing = await Student.findOne({
-        schoolId,
+    // Duplicate admission ID check
+    const existing = await Student.findOne({
+      schoolId,
+      admissionId: item.admissionId,
+      isDeleted: { $ne: true },
+    })
+      .select('_id')
+      .lean();
+    if (existing) {
+      results.push({
+        index: i,
+        status: 'failed',
         admissionId: item.admissionId,
-        isDeleted: { $ne: true },
-      })
-        .select('_id')
-        .lean();
-      if (existing) {
-        results.push({
-          index: i,
-          status: 'failed',
-          admissionId: item.admissionId,
-          error: `Admission ID '${item.admissionId}' already exists`,
-        });
-        continue;
-      }
-
-      try {
-        const student = new Student({
-          schoolId,
-          name: item.name,
-          admissionId: item.admissionId,
-          academicYear: item.academicYear,
-          classId: item.classId,
-          rollNo: item.rollNo || undefined,
-          gender: item.gender || undefined,
-          dateOfBirth: item.dateOfBirth || undefined,
-          parents: [
-            {
-              name: item.parentName,
-              phone: item.parentPhone || undefined,
-              email: item.parentEmail || undefined,
-              relationship: 'Parent',
-              isWhatsapp: false,
-            },
-          ],
-          phone: item.phone || undefined,
-          email: item.email || undefined,
-          address: item.address || undefined,
-          status: item.status || 'active',
-          feeStatus: 'pending',
-        });
-
-        await student.save();
-
-        // Initialize fee structure if applicable
-        await initStudentFeeStructure(student);
-
-        results.push({
-          index: i,
-          status: 'success',
-          id: student._id,
-          admissionId: item.admissionId,
-        });
-      } catch (err) {
-        logger.error({ err, index: i }, 'Batch student create error');
-        results.push({
-          index: i,
-          status: 'failed',
-          admissionId: item.admissionId,
-          error: err.message,
-        });
-      }
-    }
-
-    res.json(buildResponse(results));
-  }
-);
-
-// POST /bulk-ops/students/batch-update
-router.post(
-  '/students/batch-update',
-  checkPermission('students', 'update'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
-
-    const parsed = batchUpdateStudentsSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+        error: `Admission ID '${item.admissionId}' already exists`,
       });
+      continue;
     }
-
-    const body = parsed.data;
-    const results = [];
-
-    // Mode A: same data to multiple IDs — use bulkWrite for a single DB round-trip
-    if ('ids' in body) {
-      const { ids, data } = body;
-      const updateSet = buildStudentUpdateSet(data);
-      try {
-        const bulkOps = ids.map((id) => ({
-          updateOne: {
-            filter: { _id: id, schoolId, isDeleted: { $ne: true } },
-            update: { $set: updateSet },
-          },
-        }));
-        const bulkResult = await Student.bulkWrite(bulkOps, { ordered: false });
-        ids.forEach((id, i) => {
-          results.push({ index: i, id, status: 'success' });
-        });
-        // Adjust for any that weren't matched (matched < total)
-        const unmatched = ids.length - bulkResult.matchedCount;
-        if (unmatched > 0) {
-          logger.warn({ unmatched }, 'Some students not found during batch update');
-        }
-      } catch (err) {
-        logger.error({ err }, 'Batch student bulkWrite error');
-        return res.status(500).json({ error: err.message });
-      }
-    } else {
-      // Mode B: per-item updates
-      const { items } = body;
-      for (let i = 0; i < items.length; i++) {
-        const { id, ...data } = items[i];
-        try {
-          const updated = await Student.findOneAndUpdate(
-            { _id: id, schoolId, isDeleted: { $ne: true } },
-            { $set: buildStudentUpdateSet(data) },
-            { new: false }
-          )
-            .select('_id')
-            .lean();
-
-          if (!updated) {
-            results.push({
-              index: i,
-              id,
-              status: 'failed',
-              error: req.t('students:errors.notFound'),
-            });
-          } else {
-            results.push({ index: i, id, status: 'success' });
-          }
-        } catch (err) {
-          logger.error({ err, id }, 'Batch student update error');
-          results.push({ index: i, id, status: 'failed', error: err.message });
-        }
-      }
-    }
-
-    res.json(buildResponse(results));
-  }
-);
-
-// POST /bulk-ops/students/batch-delete
-router.post(
-  '/students/batch-delete',
-  checkPermission('students', 'delete'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
-
-    const parsed = batchDeleteSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
-      });
-    }
-
-    const { ids } = parsed.data;
 
     try {
-      const result = await Student.updateMany(
-        { _id: { $in: ids }, schoolId, isDeleted: { $ne: true } },
-        { isDeleted: true, deletedAt: new Date() }
-      );
+      const student = new Student({
+        schoolId,
+        name: item.name,
+        admissionId: item.admissionId,
+        academicYear: item.academicYear,
+        classId: item.classId,
+        rollNo: item.rollNo || undefined,
+        gender: item.gender || undefined,
+        dateOfBirth: item.dateOfBirth || undefined,
+        parents: [
+          {
+            name: item.parentName,
+            phone: item.parentPhone || undefined,
+            email: item.parentEmail || undefined,
+            relationship: 'Parent',
+            isWhatsapp: false,
+          },
+        ],
+        phone: item.phone || undefined,
+        email: item.email || undefined,
+        address: item.address || undefined,
+        status: item.status || 'active',
+        feeStatus: 'pending',
+      });
 
-      res.json({
-        summary: {
-          total: ids.length,
-          succeeded: result.modifiedCount,
-          failed: ids.length - result.modifiedCount,
-        },
-        modifiedCount: result.modifiedCount,
+      await student.save();
+
+      // Initialize fee structure if applicable
+      await initStudentFeeStructure(student);
+
+      results.push({
+        index: i,
+        status: 'success',
+        id: student._id,
+        admissionId: item.admissionId,
       });
     } catch (err) {
-      logger.error({ err }, 'Batch student delete error');
-      res.status(500).json({ error: err.message });
+      logger.error({ err, index: i }, 'Batch student create error');
+      results.push({
+        index: i,
+        status: 'failed',
+        admissionId: item.admissionId,
+        error: err.message,
+      });
     }
   }
-);
+
+  res.json(buildResponse(results));
+});
+
+// POST /bulk-ops/students/batch-update
+router.post('/students/batch-update', checkPermission('students', 'update'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+
+  const parsed = batchUpdateStudentsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+    });
+  }
+
+  const body = parsed.data;
+  const results = [];
+
+  // Mode A: same data to multiple IDs — use bulkWrite for a single DB round-trip
+  if ('ids' in body) {
+    const { ids, data } = body;
+    const updateSet = buildStudentUpdateSet(data);
+    try {
+      const bulkOps = ids.map((id) => ({
+        updateOne: {
+          filter: { _id: id, schoolId, isDeleted: { $ne: true } },
+          update: { $set: updateSet },
+        },
+      }));
+      const bulkResult = await Student.bulkWrite(bulkOps, { ordered: false });
+      ids.forEach((id, i) => {
+        results.push({ index: i, id, status: 'success' });
+      });
+      // Adjust for any that weren't matched (matched < total)
+      const unmatched = ids.length - bulkResult.matchedCount;
+      if (unmatched > 0) {
+        logger.warn({ unmatched }, 'Some students not found during batch update');
+      }
+    } catch (err) {
+      logger.error({ err }, 'Batch student bulkWrite error');
+      return res.status(500).json({ error: err.message });
+    }
+  } else {
+    // Mode B: per-item updates
+    const { items } = body;
+    for (let i = 0; i < items.length; i++) {
+      const { id, ...data } = items[i];
+      try {
+        const updated = await Student.findOneAndUpdate(
+          { _id: id, schoolId, isDeleted: { $ne: true } },
+          { $set: buildStudentUpdateSet(data) },
+          { new: false }
+        )
+          .select('_id')
+          .lean();
+
+        if (!updated) {
+          results.push({
+            index: i,
+            id,
+            status: 'failed',
+            error: req.t('students:errors.notFound'),
+          });
+        } else {
+          results.push({ index: i, id, status: 'success' });
+        }
+      } catch (err) {
+        logger.error({ err, id }, 'Batch student update error');
+        results.push({ index: i, id, status: 'failed', error: err.message });
+      }
+    }
+  }
+
+  res.json(buildResponse(results));
+});
+
+// POST /bulk-ops/students/batch-delete
+router.post('/students/batch-delete', checkPermission('students', 'delete'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+
+  const parsed = batchDeleteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+    });
+  }
+
+  const { ids } = parsed.data;
+
+  const results = [];
+  let activeArchived = 0;
+
+  for (let index = 0; index < ids.length; index++) {
+    const id = ids[index];
+    try {
+      const archived = await archiveStudent({
+        studentId: id,
+        schoolId,
+        deletedBy: req.user?.id || req.user?._id,
+      });
+      if (archived.wasActive) activeArchived += 1;
+      results.push({
+        index,
+        id,
+        status: 'success',
+        trashItemId: archived.trashItem?._id,
+      });
+    } catch (err) {
+      if (!(err instanceof StudentNotFoundError)) {
+        logger.error({ err, id }, 'Batch student archive error');
+      }
+      results.push({
+        index,
+        id,
+        status: 'failed',
+        error: err instanceof StudentNotFoundError ? 'Student not found' : err.message,
+      });
+    }
+  }
+
+  if (activeArchived > 0) {
+    await incrementUsageMetric(schoolId, 'students', -activeArchived).catch((err) => {
+      logger.warn({ err, activeArchived }, 'Unable to update student usage after batch archive');
+    });
+  }
+
+  const succeeded = results.filter((result) => result.status === 'success').length;
+  res.json({ ...buildResponse(results), modifiedCount: succeeded });
+});
 
 // ─── STAFF ───────────────────────────────────────────────────────
 
 // POST /bulk-ops/staff/batch-update
-router.post(
-  '/staff/batch-update',
-  checkPermission('staff', 'update'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+router.post('/staff/batch-update', checkPermission('staff', 'update'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
-    const parsed = batchUpdateStaffSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
-      });
-    }
-
-    const body = parsed.data;
-    const results = [];
-
-    if ('ids' in body) {
-      const { ids, data } = body;
-      const updateSet = buildStaffUpdateSet(data);
-      try {
-        const bulkOps = ids.map((id) => ({
-          updateOne: {
-            filter: { _id: id, schoolId, isDeleted: { $ne: true } },
-            update: { $set: updateSet },
-          },
-        }));
-        await Staff.bulkWrite(bulkOps, { ordered: false });
-        ids.forEach((id, i) => {
-          results.push({ index: i, id, status: 'success' });
-        });
-      } catch (err) {
-        logger.error({ err }, 'Batch staff bulkWrite error');
-        return res.status(500).json({ error: err.message });
-      }
-    } else {
-      const { items } = body;
-      for (let i = 0; i < items.length; i++) {
-        const { id, ...data } = items[i];
-        try {
-          const updated = await Staff.findOneAndUpdate(
-            { _id: id, schoolId, isDeleted: { $ne: true } },
-            { $set: buildStaffUpdateSet(data) },
-            { new: false }
-          )
-            .select('_id')
-            .lean();
-
-          results.push(
-            updated
-              ? { index: i, id, status: 'success' }
-              : { index: i, id, status: 'failed', error: req.t('common:errors.staffNotFound') }
-          );
-        } catch (err) {
-          logger.error({ err, id }, 'Batch staff update error');
-          results.push({ index: i, id, status: 'failed', error: err.message });
-        }
-      }
-    }
-
-    res.json(buildResponse(results));
+  const parsed = batchUpdateStaffSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+    });
   }
-);
 
-// POST /bulk-ops/staff/batch-delete
-router.post(
-  '/staff/batch-delete',
-  checkPermission('staff', 'delete'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+  const body = parsed.data;
+  const results = [];
 
-    const parsed = batchDeleteSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
-      });
-    }
-
-    const { ids } = parsed.data;
-
+  if ('ids' in body) {
+    const { ids, data } = body;
+    const updateSet = buildStaffUpdateSet(data);
     try {
-      const result = await Staff.updateMany(
-        { _id: { $in: ids }, schoolId, isDeleted: { $ne: true } },
-        { isDeleted: true, deletedAt: new Date() }
-      );
-
-      res.json({
-        summary: {
-          total: ids.length,
-          succeeded: result.modifiedCount,
-          failed: ids.length - result.modifiedCount,
+      const bulkOps = ids.map((id) => ({
+        updateOne: {
+          filter: { _id: id, schoolId, isDeleted: { $ne: true } },
+          update: { $set: updateSet },
         },
-        modifiedCount: result.modifiedCount,
+      }));
+      await Staff.bulkWrite(bulkOps, { ordered: false });
+      ids.forEach((id, i) => {
+        results.push({ index: i, id, status: 'success' });
       });
     } catch (err) {
-      logger.error({ err }, 'Batch staff delete error');
-      res.status(500).json({ error: err.message });
+      logger.error({ err }, 'Batch staff bulkWrite error');
+      return res.status(500).json({ error: err.message });
+    }
+  } else {
+    const { items } = body;
+    for (let i = 0; i < items.length; i++) {
+      const { id, ...data } = items[i];
+      try {
+        const updated = await Staff.findOneAndUpdate(
+          { _id: id, schoolId, isDeleted: { $ne: true } },
+          { $set: buildStaffUpdateSet(data) },
+          { new: false }
+        )
+          .select('_id')
+          .lean();
+
+        results.push(
+          updated
+            ? { index: i, id, status: 'success' }
+            : { index: i, id, status: 'failed', error: req.t('common:errors.staffNotFound') }
+        );
+      } catch (err) {
+        logger.error({ err, id }, 'Batch staff update error');
+        results.push({ index: i, id, status: 'failed', error: err.message });
+      }
     }
   }
-);
+
+  res.json(buildResponse(results));
+});
+
+// POST /bulk-ops/staff/batch-delete
+router.post('/staff/batch-delete', checkPermission('staff', 'delete'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+
+  const parsed = batchDeleteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+    });
+  }
+
+  const { ids } = parsed.data;
+
+  try {
+    const result = await Staff.updateMany(
+      { _id: { $in: ids }, schoolId, isDeleted: { $ne: true } },
+      { isDeleted: true, deletedAt: new Date() }
+    );
+
+    res.json({
+      summary: {
+        total: ids.length,
+        succeeded: result.modifiedCount,
+        failed: ids.length - result.modifiedCount,
+      },
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Batch staff delete error');
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── ATTENDANCE ──────────────────────────────────────────────────
 
@@ -468,74 +470,70 @@ router.post(
 
 // POST /bulk-ops/results/batch-create
 // Upserts exam results for multiple students.
-router.post(
-  '/results/batch-create',
-  checkPermission('academics', 'create'),
-  async (req, res) => {
-    const schoolId = extractSchoolId(req.user?.schoolId);
-    if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
+router.post('/results/batch-create', checkPermission('academics', 'create'), async (req, res) => {
+  const schoolId = extractSchoolId(req.user?.schoolId);
+  if (!schoolId) return res.status(400).json({ error: req.t('common:errors.unauthorized') });
 
-    const parsed = batchResultsSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
-      });
-    }
-
-    const { examId, records } = parsed.data;
-    const results = [];
-
-    for (let i = 0; i < records.length; i++) {
-      const { studentId, marksObtained, maxMarks = 100, remarks } = records[i];
-
-      const student = await Student.findOne({ _id: studentId, schoolId, isDeleted: { $ne: true } })
-        .select('_id classId academicYear')
-        .lean();
-
-      if (!student) {
-        results.push({
-          index: i,
-          studentId,
-          status: 'failed',
-          error: req.t('students:errors.notFound'),
-        });
-        continue;
-      }
-
-      try {
-        const percentage = maxMarks > 0 ? Math.round((marksObtained / maxMarks) * 10000) / 100 : 0;
-
-        const doc = await Result.findOneAndUpdate(
-          { schoolId, examId, studentId, isDeleted: { $ne: true } },
-          {
-            schoolId,
-            examId,
-            studentId,
-            classId: student.classId,
-            academicYear: student.academicYear,
-            marksObtained,
-            maxMarks,
-            totalMarksObtained: marksObtained,
-            totalMaxMarks: maxMarks,
-            percentage,
-            remarks: remarks || undefined,
-            enteredBy: req.user?._id || undefined,
-            enteredAt: new Date(),
-          },
-          { upsert: true, new: true }
-        );
-
-        results.push({ index: i, studentId, status: 'success', id: doc._id, percentage });
-      } catch (err) {
-        logger.error({ err, studentId }, 'Batch result upsert error');
-        results.push({ index: i, studentId, status: 'failed', error: err.message });
-      }
-    }
-
-    res.json(buildResponse(results));
+  const parsed = batchResultsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+    });
   }
-);
+
+  const { examId, records } = parsed.data;
+  const results = [];
+
+  for (let i = 0; i < records.length; i++) {
+    const { studentId, marksObtained, maxMarks = 100, remarks } = records[i];
+
+    const student = await Student.findOne({ _id: studentId, schoolId, isDeleted: { $ne: true } })
+      .select('_id classId academicYear')
+      .lean();
+
+    if (!student) {
+      results.push({
+        index: i,
+        studentId,
+        status: 'failed',
+        error: req.t('students:errors.notFound'),
+      });
+      continue;
+    }
+
+    try {
+      const percentage = maxMarks > 0 ? Math.round((marksObtained / maxMarks) * 10000) / 100 : 0;
+
+      const doc = await Result.findOneAndUpdate(
+        { schoolId, examId, studentId, isDeleted: { $ne: true } },
+        {
+          schoolId,
+          examId,
+          studentId,
+          classId: student.classId,
+          academicYear: student.academicYear,
+          marksObtained,
+          maxMarks,
+          totalMarksObtained: marksObtained,
+          totalMaxMarks: maxMarks,
+          percentage,
+          remarks: remarks || undefined,
+          enteredBy: req.user?._id || undefined,
+          enteredAt: new Date(),
+        },
+        { upsert: true, new: true }
+      );
+
+      results.push({ index: i, studentId, status: 'success', id: doc._id, percentage });
+    } catch (err) {
+      logger.error({ err, studentId }, 'Batch result upsert error');
+      results.push({ index: i, studentId, status: 'failed', error: err.message });
+    }
+  }
+
+  res.json(buildResponse(results));
+});
 
 // ─── FIELD BUILDERS ──────────────────────────────────────────────
 

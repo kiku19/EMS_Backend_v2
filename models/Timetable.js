@@ -93,6 +93,7 @@ timetableSchema.index(
   { schoolId: 1, classId: 1, academicYear: 1 },
   { unique: true, partialFilterExpression: { isDeleted: false } }
 );
+timetableSchema.index({ schoolId: 1, academicYear: 1, isDeleted: 1 });
 timetableSchema.index({ 'schedule.Monday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Tuesday.teacherId': 1 });
 timetableSchema.index({ 'schedule.Wednesday.teacherId': 1 });

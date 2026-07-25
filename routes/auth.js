@@ -192,6 +192,10 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 import { rateLimit } from 'express-rate-limit';
+import {
+  buildRedisStore,
+  isAuthRateLimitingDisabled,
+} from '../middleware/security/tenantRateLimit.js';
 import { Staff } from '../database.js';
 import Session from '../models/Session.js';
 import { createLogger } from '../utils/logger.js';
@@ -228,16 +232,13 @@ import School from '../models/School.js';
 import AuditTrail from '../models/AuditTrail.js';
 import { buildStaffAuthPayload, generateStaffRefreshToken } from './authHelpers.js';
 import { issueTwoFactorToken, isTrustedDevice } from './twoFactor.js';
-import { piiMatch } from '../utils/encryption.js';
-import { resendVerificationLimiter } from '../middleware/security/resendVerificationLimiter.js';
-import { issueEmailVerificationToken } from '../services/emailVerificationService.js';
-
-// Self-serve signup feature flag (PR1 / PR2 of the Self-Serve School
-// Onboarding Flow epic). Default false; PR6 flips on staging for soak
-// before production. Verification routes also gate on this flag per the
-// PR2 acceptance criteria — when off, no verification emails can be
-// consumed by clients.
-const isSelfSignupEnabled = () => process.env.ENABLE_SELF_SIGNUP === 'true';
+import { createSchoolWithAdmin } from '../services/schoolProvisioningService.js';
+import Parent from '../models/Parent.js';
+import {
+  selfSignupRateLimiters,
+  resendVerificationLimiter,
+} from '../middleware/security/selfSignupLimiter.js';
+import { hmac, piiMatch } from '../utils/encryption.js';
 
 // Write an auth audit entry — never throws, always fire-and-forget
 function logAuthEvent(action, staff, req) {
@@ -336,12 +337,50 @@ const TOKEN_EXPIRES_IN_MS = 8 * 60 * 60 * 1000; // Must match JWT_EXPIRES_IN in 
 
 const getJwtRefreshSecret = () => getRequiredSecret('JWT_REFRESH_SECRET');
 
+// Optional CAPTCHA verification (Turnstile or hCaptcha). Only enforced when
+// CAPTCHA_SECRET is set; dev/test always skip. Both providers use the same
+// `siteverify` endpoint shape, so a single helper covers both.
+async function verifyCaptchaToken(token, remoteIp) {
+  const secret = process.env.CAPTCHA_SECRET?.trim();
+  if (!secret) return { required: false, ok: true };
+  if (!token || typeof token !== 'string') {
+    return { required: true, ok: false, reason: 'missing' };
+  }
+
+  const params = new URLSearchParams();
+  params.set('secret', secret);
+  params.set('response', token);
+  if (remoteIp) params.set('remoteip', remoteIp);
+
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      logger.warn({ status: response.status }, 'CAPTCHA siteverify non-OK status');
+      return { required: true, ok: false, reason: 'verification_failed' };
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    const success = payload?.success === true;
+    return { required: true, ok: success, reason: success ? null : 'invalid_token' };
+  } catch (err) {
+    logger.warn({ err: err?.message || err }, 'CAPTCHA verification threw — failing closed');
+    return { required: true, ok: false, reason: 'verification_failed' };
+  }
+}
+
 // The auth/credential rate limiters below relax outside production (covers
 // local dev and the test runner) so iterating locally isn't locked out after a
-// handful of attempts. Production (NODE_ENV=production) enforces every limit.
+// handful of attempts. DISABLE_AUTH_RATE_LIMITING=true is a temporary QA
+// escape hatch for environments that must run with NODE_ENV=production.
 // Mirrors the codebase convention of gating non-prod behaviour on
 // `NODE_ENV !== 'production'` (see parentAuth.js, billingService.js).
-const skipAuthRateLimitOutsideProd = () => process.env.NODE_ENV !== 'production';
+const skipAuthRateLimitOutsideProd = () =>
+  isAuthRateLimitingDisabled() || process.env.NODE_ENV !== 'production';
 
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -365,10 +404,29 @@ const staffRefreshLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
-  handler: (req, res) => res.status(429).json({ error: req.t('auth:errors.tooManyLoginAttempts') }),
+  // [BUG-002/032] Aligned with the router-level auth limiter (createAuthRateLimiter):
+  // account + IP keying (a NAT'd school shares one egress IP but many accounts),
+  // a Redis store so the count is consistent across PM2 workers, and a Retry-After
+  // header + body field so the frontend can show "try again in X min" instead of a
+  // silent 429. Previously this was max:5, IP-only, in-memory, with no Retry-After.
+  max: 20,
+  keyGenerator: (req) => {
+    const account = req.body?.email || req.body?.phone || 'nocred';
+    return `auth:route:${account}:${req.ip}`;
+  },
+  handler: (req, res, _next, options) => {
+    const retryAfter = Math.ceil(options.windowMs / 1000);
+    res
+      .status(429)
+      .set('Retry-After', String(retryAfter))
+      .json({
+        error: req.t('auth:errors.tooManyLoginAttempts'),
+        retryAfter,
+      });
+  },
   standardHeaders: true,
   legacyHeaders: false,
+  store: buildRedisStore(),
   skipSuccessfulRequests: true,
   skip: skipAuthRateLimitOutsideProd,
 });
@@ -621,12 +679,252 @@ router.post('/signup', signupLimiter, validateZod(zodSchemas.signup), async (req
   }
 });
 
+function isSelfSignupEnabled() {
+  return process.env.ENABLE_SELF_SIGNUP === 'true';
+}
+
+async function checkSelfSignupUniqueness({ email, phone, code }) {
+  const conflicts = [];
+
+  if (email) {
+    const existingStaff = await Staff.findOne({
+      ...piiMatch('email', email),
+      isDeleted: { $ne: true },
+    }).lean();
+    if (existingStaff) conflicts.push({ field: 'adminEmail', reason: 'email_taken' });
+  }
+
+  if (phone) {
+    const existingStaffByPhone = await Staff.findOne({
+      ...piiMatch('phone', phone),
+      isDeleted: { $ne: true },
+    }).lean();
+    if (existingStaffByPhone) conflicts.push({ field: 'adminPhone', reason: 'phone_taken' });
+
+    const phoneHash = hmac(phone);
+    const existingParent = await Parent.findOne({
+      $or: [{ phoneHash }, { phone }],
+      status: { $ne: 'deleted' },
+    }).lean();
+    if (existingParent) conflicts.push({ field: 'adminPhone', reason: 'phone_taken_parent' });
+  }
+
+  if (code) {
+    const existingSchool = await School.findOne({ code }).lean();
+    if (existingSchool) conflicts.push({ field: 'schoolCode', reason: 'code_taken' });
+  }
+
+  return conflicts;
+}
+
+function logSelfSignupConflict(req, conflicts, payload) {
+  logger.warn(
+    {
+      conflicts: conflicts.map((c) => c.field),
+      ip: req.ip,
+      ua: req.headers['user-agent'],
+      schoolNameHash: payload?.schoolName ? hmac(payload.schoolName) : null,
+    },
+    'Self-serve signup duplicate preflight failed'
+  );
+}
+
+// Self-serve signup: public, no invite token, no auth middleware. Mounted
+// behind the ENABLE_SELF_SIGNUP feature flag (404 when off). This endpoint
+// is the ONLY unscoped query path in the platform — every lookup below
+// either (a) needs to run before the school exists (uniqueness checks,
+// rate limiters keyed by IP/email) or (b) writes a new school+admin pair
+// (the provisioning service). Audit line-by-line before extending.
+async function handleSelfSignup(req, res) {
+  try {
+    if (!isSelfSignupEnabled()) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const body = req.body || {};
+
+    // Honeypot: bots auto-fill every field. A non-empty `company_website` is a
+    // strong signal. Return a fake 201 so the bot can't distinguish; do not
+    // create anything and do not advance the rate-limit counter visibly
+    // (the limiters still ran, but no side effect occurred).
+    if (body.company_website && String(body.company_website).trim() !== '') {
+      logger.warn({ ip: req.ip }, 'Self-serve honeypot triggered');
+      return res.status(201).json({
+        success: true,
+        message: 'Account created. Please check your email to verify.',
+        user: null,
+        school: null,
+        verificationRequired: true,
+      });
+    }
+
+    const captchaResult = await verifyCaptchaToken(
+      body.captchaToken,
+      req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip
+    );
+    if (captchaResult.required && !captchaResult.ok) {
+      return res.status(400).json({
+        error: 'CAPTCHA verification failed',
+        reason: captchaResult.reason,
+      });
+    }
+
+    const { adminEmail, adminPhone, schoolCode } = body;
+    const conflicts = await checkSelfSignupUniqueness({
+      email: adminEmail,
+      phone: adminPhone,
+      code: schoolCode,
+    });
+
+    if (conflicts.length > 0) {
+      logSelfSignupConflict(req, conflicts, body);
+      // Email-enumeration resistance: generic message; structured per-field
+      // detail so the dashboard can surface field-level errors. PR3 reads
+      // `errors[].field` and `errors[].reason`.
+      return res.status(409).json({
+        error: 'Unable to create account with these details',
+        errors: conflicts,
+      });
+    }
+
+    let result;
+    try {
+      result = await createSchoolWithAdmin({
+        school: {
+          name: body.schoolName,
+          code: body.schoolCode,
+          contactEmail: body.adminEmail,
+          contactPhone: body.adminPhone,
+          source: body.source || 'self-signup',
+          timezone: body.timezone,
+          currency: body.currency,
+        },
+        admin: {
+          name: body.adminName,
+          email: body.adminEmail,
+          phone: body.adminPhone,
+          password: body.password,
+        },
+      });
+    } catch (err) {
+      // Race: two concurrent signups with the same email/code slip past the
+      // preflight check; surface the same generic 409 shape.
+      if (err?.code === 11000) {
+        logSelfSignupConflict(req, [{ field: 'adminEmail', reason: 'race_conflict' }], body);
+        return res.status(409).json({
+          error: 'Unable to create account with these details',
+          errors: [{ field: 'adminEmail', reason: 'race_conflict' }],
+        });
+      }
+      throw err;
+    }
+
+    const { school, admin } = result;
+
+    // Issue access + refresh JWTs and set httpOnly cookies exactly like login.
+    const authPayload = await buildStaffAuthPayload(admin);
+    const sessionId = randomUUID();
+    const token = generateToken(admin._id.toString(), admin.role, {
+      schoolId: authPayload.schoolId,
+      userType: 'staff',
+      sessionId,
+    });
+    const refreshToken = generateStaffRefreshToken(
+      admin._id.toString(),
+      authPayload.schoolId,
+      admin.tokenVersion || 1,
+      sessionId
+    );
+    await createSessionRecord(admin, req, sessionId);
+    logAuthEvent('signup', admin, req);
+
+    setAuthCookie(res, token);
+    setRefreshCookie(res, refreshToken);
+
+    // 24h email-verification token. Fire-and-forget the welcome email — do
+    // not block the response on SMTP; failures are logged but never fail
+    // the request.
+    try {
+      const jwtSecret = getRequiredSecret('JWT_SECRET');
+      const verificationToken = jwt.sign(
+        {
+          purpose: 'email-verification',
+          schoolId: school._id.toString(),
+          email: adminEmail,
+        },
+        jwtSecret,
+        { expiresIn: '24h' }
+      );
+
+      sendSchoolWelcomeEmail(
+        { name: admin.name, email: adminEmail },
+        { name: school.name, code: school.code, trialEndsAt: school.trialEndsAt },
+        verificationToken
+      ).catch((err) =>
+        logger.warn({ err: err?.message || err }, 'Failed to send self-signup welcome email')
+      );
+    } catch (emailErr) {
+      logger.warn(
+        { err: emailErr?.message || emailErr },
+        'Failed to issue verification token for self-signup'
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: req.t('auth:success.schoolCreated'),
+      school: serializeSchool(school),
+      user: {
+        id: admin._id.toString(),
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+        schoolId: school._id.toString(),
+        emailVerified: false,
+      },
+      token,
+      refreshToken,
+      tokenExpiresAt: Date.now() + TOKEN_EXPIRES_IN_MS,
+      verificationRequired: true,
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({
+        error: 'Unable to create account with these details',
+        errors: [{ field: 'adminEmail', reason: 'race_conflict' }],
+      });
+    }
+    logger.error({ err: err?.message || err }, 'Self-serve signup failed');
+    return res.status(500).json({ error: req.t('auth:errors.signupFailed') });
+  }
+}
+
+// Self-serve signup endpoint. Mounted behind ENABLE_SELF_SIGNUP (404 when off).
+// Rate limiters run before validation so abusive callers can't probe the
+// validation schema for free.
+router.post('/self-signup', ...selfSignupRateLimiters, async (req, res, next) => {
+  if (!isSelfSignupEnabled()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  validateZod(zodSchemas.selfSignup)(req, res, (err) => {
+    if (err) return next(err);
+    return handleSelfSignup(req, res);
+  });
+});
+
 // Shared handler for email verification (used by both GET and POST).
-// Extended in PR2 / SCH-218 to also flip the per-staff `emailVerified`
-// flag and emit an `email.verified` audit-log entry, so the dashboard's
-// "verify to continue" interstitial can be driven off the staff record
-// even for self-serve signups where no school-level audit entry exists.
+//
+// PR2 (SCH-218): gated by ENABLE_SELF_SIGNUP — verification only exists for the
+// self-serve flow. Sets Staff.emailVerified = true (the spec'd truth) and
+// mirrors the flag onto school.metadata.emailVerified so the dashboard banner
+// can read from either source. Writes an audit entry on success and returns
+// the updated Staff user so the dashboard can refresh AuthContext without an
+// extra round-trip.
 async function handleVerifyEmail(token, req, res) {
+  if (!isSelfSignupEnabled()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
   if (!token) {
     return res.status(400).json({ error: req.t('auth:errors.verificationTokenRequired') });
   }
@@ -653,72 +951,84 @@ async function handleVerifyEmail(token, req, res) {
       return res.status(404).json({ error: req.t('auth:errors.schoolNotFound') });
     }
 
-    // Idempotent: if the school-level flag is already set, still try to
-    // flip the staff-level flag below (the staff may have been created
-    // after the school-level verification, e.g. for an additional admin).
-    const schoolAlreadyVerified = Boolean(school.metadata?.emailVerified);
+    // Token carries the verified address (PR1 self-signup signs it as
+    // `email: adminEmail`). Use it to find the matching Staff across both
+    // legacy invite-based and self-serve signups; piiMatch keeps the lookup
+    // stable against the encrypted email field.
+    const verifiedEmail = payload.email;
+    const staffQuery = verifiedEmail
+      ? { schoolId: school._id, ...piiMatch('email', verifiedEmail) }
+      : { schoolId: school._id, role: 'Administrator', isDeleted: { $ne: true } };
+    const staff = await Staff.findOne(staffQuery);
 
-    if (!schoolAlreadyVerified) {
-      school.metadata = {
-        ...(school.metadata || {}),
-        emailVerified: true,
-        emailVerifiedAt: new Date().toISOString(),
-      };
-      school.markModified('metadata');
-      await school.save();
-    }
-
-    // Flip the per-staff flag when we can locate the staff by email. The
-    // PII-encrypted `email` field is searched via `piiMatch`, which is the
-    // established lookup pattern for Staff email uniqueness checks. We do
-    // NOT fail the verification when the staff can't be found — that would
-    // regress legacy invite-based schools whose staff record predates the
-    // `emailVerified` field.
-    let staffForAudit = null;
-    if (payload.email) {
-      const staff = await Staff.findOne({
-        ...piiMatch('email', payload.email),
-        schoolId: school._id,
-        isDeleted: { $ne: true },
+    if (!staff) {
+      // The token is structurally valid (signed + unexpired + right purpose)
+      // but the staff row has been deleted. We must not leak whether it ever
+      // existed — collapse to the same generic response shape used for
+      // already-verified so enumeration is impossible.
+      logger.warn(
+        { schoolId: school._id.toString(), hasEmail: !!verifiedEmail },
+        'Verify-email token references a missing staff account'
+      );
+      return res.json({
+        success: true,
+        message: req.t('auth:success.emailAlreadyVerified'),
+        alreadyVerified: true,
       });
-      if (staff && !staff.emailVerified) {
-        staff.emailVerified = true;
-        staff.emailVerifiedAt = new Date();
-        await staff.save();
-        staffForAudit = staff;
-      } else if (staff?.emailVerified) {
-        staffForAudit = staff;
-      }
     }
 
-    if (staffForAudit) {
-      // PR6 audit-action conventions: actor is the staff themselves, entity
-      // is "email_verification", and we tag with the schoolId so future
-      // runs can scope audit-log queries.
-      logAuthEvent('email_verified', staffForAudit, req);
-    } else {
-      // Fallback: log against the school so we still get an audit row even
-      // for legacy invite-based schools where staff is missing.
-      AuditTrail.create({
-        schoolId: school._id,
-        action: 'email.verified',
-        entity: 'school',
-        entityId: school._id.toString(),
-        method: req.method,
-        path: req.path,
-        ipAddress:
-          req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-          req.connection?.remoteAddress ||
-          req.ip,
-        userAgent: req.headers['user-agent'] || null,
-        metadata: { source: schoolAlreadyVerified ? 'already_verified' : 'fresh' },
-      }).catch(() => {});
+    if (staff.emailVerified) {
+      return res.json({
+        success: true,
+        message: req.t('auth:success.emailAlreadyVerified'),
+        alreadyVerified: true,
+        user: { id: staff._id.toString(), emailVerified: true },
+      });
     }
+
+    const verifiedAt = new Date();
+    staff.emailVerified = true;
+    staff.emailVerifiedAt = verifiedAt;
+    await staff.save();
+
+    // Mirror the flag onto the school metadata so dashboard code reading
+    // school.metadata.emailVerified (banner, onboarding check, etc.) keeps
+    // working without having to denormalise the Staff collection.
+    school.metadata = {
+      ...(school.metadata || {}),
+      emailVerified: true,
+      emailVerifiedAt: verifiedAt.toISOString(),
+    };
+    school.markModified('metadata');
+    await school.save();
+
+    AuditTrail.create({
+      schoolId: school._id,
+      userId: staff._id,
+      userName: staff.name || staff.email || null,
+      action: 'email.verified',
+      entity: 'auth',
+      entityId: staff._id.toString(),
+      method: req.method,
+      path: req.path,
+      ipAddress:
+        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+        req.connection?.remoteAddress ||
+        req.ip,
+      userAgent: req.headers['user-agent'] || null,
+    }).catch(() => {});
 
     return res.json({
       success: true,
       message: req.t('auth:success.emailVerified'),
-      alreadyVerified: schoolAlreadyVerified,
+      user: {
+        id: staff._id.toString(),
+        name: staff.name,
+        email: staff.email,
+        emailVerified: true,
+        emailVerifiedAt: verifiedAt.toISOString(),
+        schoolId: school._id.toString(),
+      },
     });
   } catch (err) {
     logger.error({ err }, 'Email verification error');
@@ -726,36 +1036,28 @@ async function handleVerifyEmail(token, req, res) {
   }
 }
 
-// POST preferred — token in body avoids exposure in URL/browser history/Referer.
-// Gated behind ENABLE_SELF_SIGNUP per PR2 acceptance criteria: the spec
-// rolls both verification routes in with the self-serve flow.
+// POST preferred — token in body avoids exposure in URL/browser history/Referer
 router.post('/verify-email', validateZod(zodSchemas.verifyEmail), async (req, res) => {
-  if (!isSelfSignupEnabled()) {
-    return res.status(404).json({ error: 'Not found' });
-  }
-  return handleVerifyEmail(req.body.token, req, res);
+  const token = String(req.body.token || '').trim();
+  return handleVerifyEmail(token, req, res);
 });
 
 // GET kept for backward-compat email links; Referrer-Policy mitigates leakage
-router.get('/verify-email', (req, res) => {
-  if (!isSelfSignupEnabled()) {
-    return res.status(404).json({ error: 'Not found' });
-  }
+router.get('/verify-email', async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
-  return handleVerifyEmail(String(req.query.token || '').trim(), req, res);
+  const token = String(req.query.token || '').trim();
+  return handleVerifyEmail(token, req, res);
 });
 
-// Public, idempotent resend endpoint (PR2 / SCH-218).
-// Body: { email }. Rate-limited 3/hour/email (skipped outside production).
-//
-// Email-enumeration resistance: the response is the same 200 success shape
-// whether the email is registered, unverified, already verified, or
-// unknown. The rate limiter + idempotency are the only signals an attacker
-// gets. We deliberately do NOT differentiate the cases in the response.
+// Public, idempotent resend. Body carries the address; we look up the staff
+// and re-issue a fresh 24h token. If the address is already verified, return
+// 200 with alreadyVerified=true and skip the send — leaking verification
+// state via differential responses is what we explicitly want to avoid.
+// Rate-limited by the email-keyed limiter in middleware/security/selfSignupLimiter.
 router.post(
   '/resend-verification',
-  validateZod(zodSchemas.resendVerification),
   resendVerificationLimiter,
+  validateZod(zodSchemas.resendVerification),
   async (req, res) => {
     if (!isSelfSignupEnabled()) {
       return res.status(404).json({ error: 'Not found' });
@@ -766,56 +1068,70 @@ router.post(
       .toLowerCase();
 
     try {
-      // Locate the staff by encrypted-email match. `piiMatch` handles the
-      // PII encryption layer; we then pick the most recent active staff as
-      // the canonical admin for the school.
       const staff = await Staff.findOne({
         ...piiMatch('email', email),
         isDeleted: { $ne: true },
-      })
-        .sort({ createdAt: -1 })
-        .lean();
+      });
 
-      // Idempotent success path: unknown email OR already verified.
-      if (!staff || staff.emailVerified) {
-        logger.debug(
-          { emailExists: Boolean(staff), alreadyVerified: Boolean(staff?.emailVerified) },
-          'Resend verification: idempotent 200 returned'
+      // Generic 200 either way: never disclose whether the account exists.
+      if (!staff) {
+        logger.info({ emailHash: hmac(email) }, 'Resend verification: no matching staff');
+        return res.json({
+          success: true,
+          message: 'If an account exists for that email, a verification link has been sent.',
+        });
+      }
+
+      if (staff.emailVerified) {
+        return res.json({
+          success: true,
+          message: 'If an account exists for that email, a verification link has been sent.',
+          alreadyVerified: true,
+        });
+      }
+
+      const school = await School.findById(staff.schoolId);
+      if (!school) {
+        logger.warn(
+          { staffId: staff._id.toString() },
+          'Resend verification: staff has no school — bailing'
         );
         return res.json({
           success: true,
-          message: req.t('auth:success.emailVerified'),
+          message: 'If an account exists for that email, a verification link has been sent.',
         });
       }
 
-      const school = await School.findById(staff.schoolId).lean();
-      if (!school) {
-        // School was deleted after the staff was created — same idempotent
-        // 200 to avoid leaking school existence.
-        return res.json({
-          success: true,
-          message: req.t('auth:success.emailVerified'),
-        });
-      }
+      const jwtSecret = getRequiredSecret('JWT_SECRET');
+      const verificationToken = jwt.sign(
+        {
+          purpose: 'email-verification',
+          schoolId: school._id.toString(),
+          email,
+        },
+        jwtSecret,
+        { expiresIn: '24h' }
+      );
 
-      const token = issueEmailVerificationToken({ school, staff, email, req });
+      const adminName =
+        staff.name || school.metadata?.ownerName || school.billingContactName || 'Admin';
 
-      if (!token) {
-        // JWT_SECRET missing — surface a 500 because we can't honor the
-        // request, but never leak why.
-        return res.status(500).json({
-          error: req.t('auth:errors.verificationFailed'),
-        });
-      }
+      sendSchoolWelcomeEmail(
+        { name: adminName, email },
+        { name: school.name, code: school.code, trialEndsAt: school.trialEndsAt },
+        verificationToken
+      ).catch((err) =>
+        logger.warn({ err: err?.message || err }, 'Failed to resend verification email')
+      );
 
       return res.json({
         success: true,
-        message: req.t('auth:success.emailVerified'),
+        message: 'If an account exists for that email, a verification link has been sent.',
       });
     } catch (err) {
-      logger.error({ err: err?.message || err, email }, 'Resend verification error');
+      logger.error({ err: err?.message || err }, 'Resend verification error');
       return res.status(500).json({
-        error: req.t('auth:errors.verificationFailed'),
+        error: 'Failed to resend verification email. Please try again.',
       });
     }
   }
@@ -860,12 +1176,20 @@ router.post('/login', authLimiter, validateZod(zodSchemas.login), async (req, re
     }
 
     // SSO-only mode: block password login if school requires SSO
-    const staffSchool = await School.findById(staff.schoolId).select('ssoConfig').lean();
+    const staffSchool = await School.findById(staff.schoolId).select('ssoConfig code').lean();
     if (staffSchool?.ssoConfig?.ssoOnly) {
       logAuthEvent('login_blocked_sso_only', staff, req);
+      // Surface the school code + an enabled provider so the frontend can build
+      // the correct SSO initiate URL (GET /auth/sso/:provider/initiate?schoolCode=).
+      const cfg = staffSchool.ssoConfig;
+      const ssoProvider = ['google', 'microsoft', 'saml'].find(
+        (p) => cfg[p]?.enabled && (p === 'saml' ? cfg[p].entryPoint : cfg[p].clientId)
+      );
       return res.status(403).json({
         error: 'Password login is disabled for this school. Please use Single Sign-On (SSO).',
         ssoOnly: true,
+        schoolCode: staffSchool.code || undefined,
+        ssoProvider: ssoProvider || undefined,
       });
     }
 

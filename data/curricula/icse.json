@@ -1,0 +1,19 @@
+{
+  "id": "icse",
+  "name": "ICSE / ISC (Council for the Indian School Certificate Examinations)",
+  "description": "CISCE syllabus. Grades 1-5 follow the primary group; 6-10 (ICSE) include a third language and grouped Science (Physics, Chemistry, Biology); 11-12 (ISC) are elective streams (Science stream shown as representative).",
+  "grades": {
+    "1": ["English", "Hindi", "Mathematics", "Environmental Science", "Computer Studies", "Art", "Physical Education"],
+    "2": ["English", "Hindi", "Mathematics", "Environmental Science", "Computer Studies", "Art", "Physical Education"],
+    "3": ["English", "Hindi", "Mathematics", "Environmental Science", "Computer Studies", "Art", "Physical Education"],
+    "4": ["English", "Hindi", "Mathematics", "Environmental Science", "Computer Studies", "Art", "Physical Education", "General Knowledge"],
+    "5": ["English", "Hindi", "Mathematics", "Environmental Science", "Computer Studies", "Art", "Physical Education", "General Knowledge"],
+    "6": ["English", "Hindi", "Mathematics", "Physics", "Chemistry", "Biology", "History & Civics", "Geography", "Computer Studies", "Art", "Physical Education"],
+    "7": ["English", "Hindi", "Mathematics", "Physics", "Chemistry", "Biology", "History & Civics", "Geography", "Computer Studies", "Art", "Physical Education"],
+    "8": ["English", "Hindi", "Mathematics", "Physics", "Chemistry", "Biology", "History & Civics", "Geography", "Computer Studies", "Art", "Physical Education"],
+    "9": ["English", "Hindi", "Mathematics", "Physics", "Chemistry", "Biology", "History & Civics", "Geography", "Computer Applications", "Economics", "Physical Education"],
+    "10": ["English", "Hindi", "Mathematics", "Physics", "Chemistry", "Biology", "History & Civics", "Geography", "Computer Applications", "Economics", "Physical Education"],
+    "11": ["English", "Physics", "Chemistry", "Mathematics", "Biology", "Computer Science", "Economics", "Physical Education"],
+    "12": ["English", "Physics", "Chemistry", "Mathematics", "Biology", "Computer Science", "Economics", "Physical Education"]
+  }
+}

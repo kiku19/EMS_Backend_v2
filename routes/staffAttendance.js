@@ -17,9 +17,32 @@ import {
   leaveApprovalSchema,
 } from '../validators/staffAttendanceSchema.js';
 import SchoolSettings from '../models/SchoolSettings.js';
+// P8: best-effort LOP recompute trigger. payroll.js does NOT import this file,
+// so a static import is safe (no circular dependency).
+import { recomputeLOPForStaff } from './payroll.js';
 
 const router = express.Router();
 router.use(authenticate);
+
+// P8: Fire-and-forget LOP recompute after an attendance write mutates a month
+// that already has a generated (unpaid) PayrollRecord. Never throws to the
+// caller; a payroll failure must not break attendance marking. recomputeLOPForStaff
+// itself skips paid/locked records, so this is safe to call optimistically.
+function triggerLOPRecompute(staffId, dateString, schoolId, performedBy) {
+  if (!staffId || !dateString || !schoolId) return;
+  // StaffAttendance.date is stored as a 'YYYY-MM-DD' string.
+  const parts = String(dateString).slice(0, 10).split('-');
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  if (!month || !year) return;
+  try {
+    recomputeLOPForStaff(staffId, month, year, { schoolId, performedBy }).catch((err) =>
+      console.error('[StaffAttendance] LOP recompute failed:', err)
+    );
+  } catch (err) {
+    console.error('[StaffAttendance] LOP recompute threw synchronously:', err);
+  }
+}
 
 // Rate limit for mobile attendance actions: max 20 requests per 15 min per IP
 const mobileAttendanceLimiter = rateLimit({
@@ -55,13 +78,19 @@ async function validateWorkingDay(date, schoolId) {
     const workingDays = settings.workingDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
     if (!workingDays.includes(dayOfWeek)) {
-      return { error: `Cannot mark attendance on ${dayOfWeek} — it is not a working day`, nonWorkingDay: true };
+      return {
+        error: `Cannot mark attendance on ${dayOfWeek} — it is not a working day`,
+        nonWorkingDay: true,
+      };
     }
 
     const dateStr = attendanceDate.toISOString().split('T')[0];
     const holiday = (settings.holidays || []).find((h) => h.date === dateStr);
     if (holiday) {
-      return { error: `Cannot mark attendance on ${dateStr} — it is a holiday (${holiday.name})`, holiday: true };
+      return {
+        error: `Cannot mark attendance on ${dateStr} — it is a holiday (${holiday.name})`,
+        holiday: true,
+      };
     }
   } catch (_) {
     // Non-blocking — if settings can't be fetched, allow attendance marking
@@ -132,7 +161,9 @@ router.get('/report', checkPermission('staff', 'view'), async (req, res) => {
 
     const [records, staffList] = await Promise.all([
       StaffAttendance.find(query).sort({ date: 1 }).lean(),
-      Staff.find(scopeBySchool(schoolId, { status: 'active' })).select('name department role').lean(),
+      Staff.find(scopeBySchool(schoolId, { status: 'active' }))
+        .select('name department role')
+        .lean(),
     ]);
 
     // Build a staffId -> staff info map
@@ -341,6 +372,9 @@ router.post(
         }
       }
 
+      // P8: best-effort LOP recompute for the affected employee/month.
+      triggerLOPRecompute(staffId, date, schoolId, req.user?._id || markedBy);
+
       res.json(attendance);
     } catch (error) {
       console.error('[StaffAttendance] Error marking attendance:', error);
@@ -405,7 +439,9 @@ router.post(
               _id: { $in: staffIds },
               isDeleted: { $ne: true },
             })
-          ).select('name role staffType teacherAssignments').lean();
+          )
+            .select('name role staffType teacherAssignments')
+            .lean();
 
           const absentTeachers = staffMembers.filter(
             (s) =>
@@ -445,6 +481,12 @@ router.post(
         }
       }
 
+      // P8: best-effort LOP recompute for every employee whose attendance was
+      // just written. Fire-and-forget per employee; failures never break marking.
+      for (const staffId of staffIds) {
+        triggerLOPRecompute(staffId, date, schoolId, req.user?._id || markedBy);
+      }
+
       res.json({ success: true, modified: result.modifiedCount, upserted: result.upsertedCount });
     } catch (error) {
       console.error('[StaffAttendance] Error bulk marking attendance:', error);
@@ -454,55 +496,104 @@ router.post(
 );
 
 // Regularize attendance
-router.put('/:id/regularize', checkPermission('staff', 'edit'), validateZod(regularizeAttendanceSchema), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { date, status, checkInTime, checkOutTime, reason } = req.body;
-    const regularizedBy = req.user.id;
-
-    // Prevent regularizing attendance for future dates
-    if (date) {
-      const today = new Date().toISOString().split('T')[0];
-      if (date > today) {
-        return res.status(400).json({ error: 'Cannot regularize attendance for future dates' });
-      }
-    }
-
-    const schoolId = await resolveRequestSchoolId(req);
-
-    let attendance = null;
-
-    // Try to find by ID (if it's a valid attendance ID)
+router.put(
+  '/:id/regularize',
+  checkPermission('staff', 'edit'),
+  validateZod(regularizeAttendanceSchema),
+  async (req, res) => {
     try {
-      attendance = await StaffAttendance.findOne(scopeBySchool(schoolId, { _id: id }));
-    } catch (e) {
-      // Ignore cast error, might be staffId
-    }
+      const { id } = req.params;
+      const { date, status, checkInTime, checkOutTime, reason } = req.body;
+      const regularizedBy = req.user.id;
 
-    // If not found by ID, try finding by staffId and date
-    if (!attendance && date) {
-      attendance = await StaffAttendance.findOne(scopeBySchool(schoolId, { staffId: id, date }));
-    }
+      // Prevent regularizing attendance for future dates
+      if (date) {
+        const today = new Date().toISOString().split('T')[0];
+        if (date > today) {
+          return res.status(400).json({ error: 'Cannot regularize attendance for future dates' });
+        }
+      }
 
-    // If still not found, and we have date, create new record (upsert logic)
-    if (!attendance && date) {
-      attendance = new StaffAttendance({
-        staffId: id,
-        date,
-        status,
-        checkInTime: checkInTime || '-',
-        checkOutTime: checkOutTime || '-',
-        reason: reason || '',
-        markedBy: regularizedBy,
-        checkInMethod: 'admin',
-        schoolId,
-        regularization: {
-          regularizedBy,
-          regularizedAt: new Date(),
-          previousStatus: 'unmarked',
-          regularizationReason: reason,
-        },
-      });
+      const schoolId = await resolveRequestSchoolId(req);
+
+      let attendance = null;
+
+      // Try to find by ID (if it's a valid attendance ID)
+      try {
+        attendance = await StaffAttendance.findOne(scopeBySchool(schoolId, { _id: id }));
+      } catch (e) {
+        // Ignore cast error, might be staffId
+      }
+
+      // If not found by ID, try finding by staffId and date
+      if (!attendance && date) {
+        attendance = await StaffAttendance.findOne(scopeBySchool(schoolId, { staffId: id, date }));
+      }
+
+      // If still not found, and we have date, create new record (upsert logic)
+      if (!attendance && date) {
+        attendance = new StaffAttendance({
+          staffId: id,
+          date,
+          status,
+          checkInTime: checkInTime || '-',
+          checkOutTime: checkOutTime || '-',
+          reason: reason || '',
+          markedBy: regularizedBy,
+          checkInMethod: 'admin',
+          schoolId,
+          regularization: {
+            regularizedBy,
+            regularizedAt: new Date(),
+            previousStatus: 'unmarked',
+            regularizationReason: reason,
+          },
+        });
+        await attendance.save();
+
+        // Emit socket event for real-time update
+        if (req.app?.get('io')) {
+          const staff = await Staff.findById(attendance.staffId);
+          req.app.get('io').emit('attendance_updated', {
+            type: 'staff',
+            staffId: attendance.staffId.toString(),
+            staffName: staff?.name || 'Unknown',
+            date: attendance.date,
+            status: attendance.status,
+            inTime: attendance.checkInTime,
+            outTime: attendance.checkOutTime,
+            reason: attendance.reason || '',
+          });
+        }
+
+        // P8: best-effort LOP recompute for the affected employee/month.
+        triggerLOPRecompute(
+          attendance.staffId,
+          attendance.date,
+          schoolId,
+          req.user?._id || regularizedBy
+        );
+
+        return res.json(attendance);
+      }
+
+      if (!attendance) {
+        return res.status(404).json({ error: 'Attendance record not found' });
+      }
+
+      attendance.regularization = {
+        regularizedBy,
+        regularizedAt: new Date(),
+        previousStatus: attendance.status,
+        regularizationReason: reason,
+      };
+
+      attendance.status = status;
+      attendance.checkInTime = checkInTime;
+      attendance.checkOutTime = checkOutTime;
+      attendance.reason = reason;
+      attendance.lastModifiedBy = regularizedBy;
+
       await attendance.save();
 
       // Emit socket event for real-time update
@@ -520,196 +611,176 @@ router.put('/:id/regularize', checkPermission('staff', 'edit'), validateZod(regu
         });
       }
 
-      return res.json(attendance);
+      // P8: best-effort LOP recompute for the affected employee/month.
+      triggerLOPRecompute(
+        attendance.staffId,
+        attendance.date,
+        schoolId,
+        req.user?._id || regularizedBy
+      );
+
+      res.json(attendance);
+    } catch (error) {
+      console.error('[StaffAttendance] Error regularizing attendance:', error);
+      res.status(500).json({ error: 'Failed to regularize attendance' });
     }
-
-    if (!attendance) {
-      return res.status(404).json({ error: 'Attendance record not found' });
-    }
-
-    attendance.regularization = {
-      regularizedBy,
-      regularizedAt: new Date(),
-      previousStatus: attendance.status,
-      regularizationReason: reason,
-    };
-
-    attendance.status = status;
-    attendance.checkInTime = checkInTime;
-    attendance.checkOutTime = checkOutTime;
-    attendance.reason = reason;
-    attendance.lastModifiedBy = regularizedBy;
-
-    await attendance.save();
-
-    // Emit socket event for real-time update
-    if (req.app?.get('io')) {
-      const staff = await Staff.findById(attendance.staffId);
-      req.app.get('io').emit('attendance_updated', {
-        type: 'staff',
-        staffId: attendance.staffId.toString(),
-        staffName: staff?.name || 'Unknown',
-        date: attendance.date,
-        status: attendance.status,
-        inTime: attendance.checkInTime,
-        outTime: attendance.checkOutTime,
-        reason: attendance.reason || '',
-      });
-    }
-
-    res.json(attendance);
-  } catch (error) {
-    console.error('[StaffAttendance] Error regularizing attendance:', error);
-    res.status(500).json({ error: 'Failed to regularize attendance' });
   }
-});
+);
 
 // ============ MOBILE APP ENDPOINTS ============
 
 // Mark attendance from mobile app (with status and reason)
-router.post('/mobile/mark', mobileAttendanceLimiter, authenticate, validateZod(mobileAttendanceMarkSchema), async (req, res) => {
-  try {
-    const { status, location } = req.body;
-    const reason = sanitizeString(req.body.reason);
-    const staffId = req.user.id;
-    const date = new Date().toISOString().split('T')[0];
-    const currentTime = new Date().toLocaleTimeString('en-US', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    // AUDIT-306: Validate staff exists with schoolId scoping
-    const mobileSchoolId = await resolveRequestSchoolId(req);
-    const staff = await Staff.findOne(scopeBySchool(mobileSchoolId, { _id: staffId, isDeleted: { $ne: true } }));
-    if (!staff) {
-      return res.status(404).json({
-        success: false,
-        error: req.t('common:errors.staffNotFound'),
+router.post(
+  '/mobile/mark',
+  mobileAttendanceLimiter,
+  authenticate,
+  validateZod(mobileAttendanceMarkSchema),
+  async (req, res) => {
+    try {
+      const { status, location } = req.body;
+      const reason = sanitizeString(req.body.reason);
+      const staffId = req.user.id;
+      const date = new Date().toISOString().split('T')[0];
+      const currentTime = new Date().toLocaleTimeString('en-US', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
       });
-    }
 
-    // Validate status
-    const validStatuses = ['present', 'absent', 'leave', 'halfday'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid status. Must be one of: present, absent, leave, halfday',
-      });
-    }
-
-    // Check if attendance was already marked by admin — don't allow mobile override
-    // Use mobileSchoolId (already resolved at line 452) for consistent scoping
-    const existingAttendance = await StaffAttendance.findOne(
-      scopeBySchool(mobileSchoolId, { staffId, date })
-    );
-    if (existingAttendance && existingAttendance.checkInMethod === 'admin') {
-      return res.status(409).json({
-        success: false,
-        error: `Attendance already marked as '${existingAttendance.status}' by admin. Contact your administrator to modify.`,
-      });
-    }
-
-    // Validate reason for non-present statuses
-    if (status !== 'present' && !reason?.trim()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Reason is required for absent/leave/halfday',
-      });
-    }
-
-    // Upsert attendance record — reuse mobileSchoolId from line 452 (removed duplicate call)
-    const newAttendance = await StaffAttendance.findOneAndUpdate(
-      scopeBySchool(mobileSchoolId, { staffId, date }),
-      {
-        staffId,
-        date,
-        status,
-        checkInTime: status === 'present' ? currentTime : '-',
-        checkOutTime: existingAttendance?.checkOutTime || '-',
-        reason: reason || '',
-        checkInMethod: 'mobile',
-        checkInLocation: location || null,
-        markedBy: staffId,
-        lastModifiedBy: staffId,
-        schoolId: mobileSchoolId,
-      },
-      { upsert: true, new: true }
-    );
-
-    // TRIGGER: Create substitution alerts if teacher is absent
-    if (status === 'absent' || status === 'leave') {
-      try {
-        // Check if staff is a teacher
-        const isTeacher =
-          staff.role?.includes('Teacher') ||
-          staff.staffType?.includes('Teacher') ||
-          staff.teacherAssignments?.length > 0;
-
-        if (isTeacher) {
-          // Create substitution alerts for this teacher's classes today
-          const substitutions = await substitutionService.createSubstitutionFromAbsence(
-            staffId,
-            date,
-            reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`
-          );
-
-          // Emit substitution alert to dashboard
-          if (req.app?.get('io') && substitutions.length > 0) {
-            req.app.get('io').emit('substitution_alert', {
-              type: 'new_alerts',
-              teacherName: staff.name,
-              teacherId: staffId,
-              date: date,
-              count: substitutions.length,
-              substitutions: substitutions.map((s) => ({
-                id: s._id,
-                classId: s.classId,
-                period: s.period,
-              })),
-            });
-          }
-        }
-      } catch (subError) {
-        // Log error but don't fail the attendance marking
-        console.error('[StaffAttendance] Error creating substitution alerts:', subError);
+      // AUDIT-306: Validate staff exists with schoolId scoping
+      const mobileSchoolId = await resolveRequestSchoolId(req);
+      const staff = await Staff.findOne(
+        scopeBySchool(mobileSchoolId, { _id: staffId, isDeleted: { $ne: true } })
+      );
+      if (!staff) {
+        return res.status(404).json({
+          success: false,
+          error: req.t('common:errors.staffNotFound'),
+        });
       }
-    }
 
-    // Emit socket event for real-time update (if socket.io is available)
-    if (req.app?.get('io')) {
-      req.app.get('io').emit('attendance_updated', {
-        type: 'staff',
-        staffId: staffId.toString(),
-        staffName: staff.name,
-        date: date,
-        status: status,
-        inTime: newAttendance.checkInTime,
-        outTime: '-',
-        reason: reason || '',
+      // Validate status
+      const validStatuses = ['present', 'absent', 'leave', 'halfday'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid status. Must be one of: present, absent, leave, halfday',
+        });
+      }
+
+      // Check if attendance was already marked by admin — don't allow mobile override
+      // Use mobileSchoolId (already resolved at line 452) for consistent scoping
+      const existingAttendance = await StaffAttendance.findOne(
+        scopeBySchool(mobileSchoolId, { staffId, date })
+      );
+      if (existingAttendance && existingAttendance.checkInMethod === 'admin') {
+        return res.status(409).json({
+          success: false,
+          error: `Attendance already marked as '${existingAttendance.status}' by admin. Contact your administrator to modify.`,
+        });
+      }
+
+      // Validate reason for non-present statuses
+      if (status !== 'present' && !reason?.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Reason is required for absent/leave/halfday',
+        });
+      }
+
+      // Upsert attendance record — reuse mobileSchoolId from line 452 (removed duplicate call)
+      const newAttendance = await StaffAttendance.findOneAndUpdate(
+        scopeBySchool(mobileSchoolId, { staffId, date }),
+        {
+          staffId,
+          date,
+          status,
+          checkInTime: status === 'present' ? currentTime : '-',
+          checkOutTime: existingAttendance?.checkOutTime || '-',
+          reason: reason || '',
+          checkInMethod: 'mobile',
+          checkInLocation: location || null,
+          markedBy: staffId,
+          lastModifiedBy: staffId,
+          schoolId: mobileSchoolId,
+        },
+        { upsert: true, new: true }
+      );
+
+      // TRIGGER: Create substitution alerts if teacher is absent
+      if (status === 'absent' || status === 'leave') {
+        try {
+          // Check if staff is a teacher
+          const isTeacher =
+            staff.role?.includes('Teacher') ||
+            staff.staffType?.includes('Teacher') ||
+            staff.teacherAssignments?.length > 0;
+
+          if (isTeacher) {
+            // Create substitution alerts for this teacher's classes today
+            const substitutions = await substitutionService.createSubstitutionFromAbsence(
+              staffId,
+              date,
+              reason || `${status.charAt(0).toUpperCase() + status.slice(1)}`
+            );
+
+            // Emit substitution alert to dashboard
+            if (req.app?.get('io') && substitutions.length > 0) {
+              req.app.get('io').emit('substitution_alert', {
+                type: 'new_alerts',
+                teacherName: staff.name,
+                teacherId: staffId,
+                date: date,
+                count: substitutions.length,
+                substitutions: substitutions.map((s) => ({
+                  id: s._id,
+                  classId: s.classId,
+                  period: s.period,
+                })),
+              });
+            }
+          }
+        } catch (subError) {
+          // Log error but don't fail the attendance marking
+          console.error('[StaffAttendance] Error creating substitution alerts:', subError);
+        }
+      }
+
+      // Emit socket event for real-time update (if socket.io is available)
+      if (req.app?.get('io')) {
+        req.app.get('io').emit('attendance_updated', {
+          type: 'staff',
+          staffId: staffId.toString(),
+          staffName: staff.name,
+          date: date,
+          status: status,
+          inTime: newAttendance.checkInTime,
+          outTime: '-',
+          reason: reason || '',
+        });
+      }
+
+      res.json({
+        success: true,
+        message: existingAttendance
+          ? 'Attendance updated successfully'
+          : 'Attendance marked successfully',
+        updated: !!existingAttendance,
+        attendance: {
+          id: newAttendance._id,
+          staffId: newAttendance.staffId,
+          date: newAttendance.date,
+          status: newAttendance.status,
+          checkInTime: newAttendance.checkInTime,
+          reason: newAttendance.reason,
+        },
       });
+    } catch (error) {
+      console.error('[StaffAttendance] Error marking mobile attendance:', error);
+      res.status(500).json({ error: 'Failed to mark attendance' });
     }
-
-    res.json({
-      success: true,
-      message: existingAttendance
-        ? 'Attendance updated successfully'
-        : 'Attendance marked successfully',
-      updated: !!existingAttendance,
-      attendance: {
-        id: newAttendance._id,
-        staffId: newAttendance.staffId,
-        date: newAttendance.date,
-        status: newAttendance.status,
-        checkInTime: newAttendance.checkInTime,
-        reason: newAttendance.reason,
-      },
-    });
-  } catch (error) {
-    console.error('[StaffAttendance] Error marking mobile attendance:', error);
-    res.status(500).json({ error: 'Failed to mark attendance' });
   }
-});
+);
 
 // Check-in (from mobile app)
 router.post('/mobile/checkin', mobileAttendanceLimiter, authenticate, async (req, res) => {
@@ -793,105 +864,114 @@ router.post('/mobile/checkout', mobileAttendanceLimiter, authenticate, async (re
 });
 
 // Apply for leave (from mobile app)
-router.post('/mobile/leave/apply', mobileAttendanceLimiter, authenticate, validateZod(mobileLeaveApplySchema), async (req, res) => {
-  let numberOfDays;
-  try {
-    const { leaveType, startDate, endDate } = req.body;
-    const reason = sanitizeString(req.body.reason);
-    const staffId = req.user.id;
+router.post(
+  '/mobile/leave/apply',
+  mobileAttendanceLimiter,
+  authenticate,
+  validateZod(mobileLeaveApplySchema),
+  async (req, res) => {
+    let numberOfDays;
+    try {
+      const { leaveType, startDate, endDate } = req.body;
+      const reason = sanitizeString(req.body.reason);
+      const staffId = req.user.id;
 
-    // Validate startDate <= endDate
-    if (startDate > endDate) {
-      return res.status(400).json({ error: 'Start date must be before or equal to end date' });
-    }
-    // Calculate number of days (use UTC to avoid timezone off-by-one)
-    const start = new Date(startDate + 'T00:00:00Z');
-    const end = new Date(endDate + 'T00:00:00Z');
-    numberOfDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+      // Validate startDate <= endDate
+      if (startDate > endDate) {
+        return res.status(400).json({ error: 'Start date must be before or equal to end date' });
+      }
+      // Calculate number of days (use UTC to avoid timezone off-by-one)
+      const start = new Date(startDate + 'T00:00:00Z');
+      const end = new Date(endDate + 'T00:00:00Z');
+      numberOfDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
 
-    const leaveSchoolId = await resolveRequestSchoolId(req);
+      const leaveSchoolId = await resolveRequestSchoolId(req);
 
-    // Create attendance records for each day
-    const operations = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      operations.push({
-        updateOne: {
-          filter: scopeBySchool(leaveSchoolId, { staffId, date: dateStr }),
-          update: {
-            $set: {
-              staffId,
-              date: dateStr,
-              status: 'leave',
-              reason,
-              checkInTime: '-',
-              checkOutTime: '-',
-              checkInMethod: 'mobile',
-              leaveApplication: {
-                appliedAt: new Date(),
-                leaveType,
-                startDate,
-                endDate,
-                numberOfDays,
-                approvalStatus: 'pending',
+      // Create attendance records for each day
+      const operations = [];
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        operations.push({
+          updateOne: {
+            filter: scopeBySchool(leaveSchoolId, { staffId, date: dateStr }),
+            update: {
+              $set: {
+                staffId,
+                date: dateStr,
+                status: 'leave',
+                reason,
+                checkInTime: '-',
+                checkOutTime: '-',
+                checkInMethod: 'mobile',
+                leaveApplication: {
+                  appliedAt: new Date(),
+                  leaveType,
+                  startDate,
+                  endDate,
+                  numberOfDays,
+                  approvalStatus: 'pending',
+                },
+                lastModifiedBy: staffId,
+                schoolId: leaveSchoolId,
               },
-              lastModifiedBy: staffId,
-              schoolId: leaveSchoolId,
             },
+            upsert: true,
           },
-          upsert: true,
-        },
-      });
-    }
+        });
+      }
 
-    const result = await StaffAttendance.bulkWrite(operations, { ordered: false });
+      const result = await StaffAttendance.bulkWrite(operations, { ordered: false });
 
-    const savedCount = (result.modifiedCount || 0) + (result.upsertedCount || 0);
+      const savedCount = (result.modifiedCount || 0) + (result.upsertedCount || 0);
 
-    if (savedCount === 0) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to submit leave application — no days were saved',
-      });
-    }
+      if (savedCount === 0) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to submit leave application — no days were saved',
+        });
+      }
 
-    if (savedCount < numberOfDays) {
-      return res.status(207).json({
-        success: false,
-        message: `Leave partially saved: ${savedCount} of ${numberOfDays} days saved`,
-        numberOfDays,
-        savedCount,
-        modified: result.modifiedCount,
-        upserted: result.upsertedCount,
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Leave application submitted successfully',
-      numberOfDays,
-      modified: result.modifiedCount,
-      upserted: result.upsertedCount,
-    });
-  } catch (error) {
-    // bulkWrite with ordered:false may throw BulkWriteError with partial results
-    if (error.name === 'BulkWriteError' || error.name === 'MongoBulkWriteError') {
-      const partialResult = error.result || {};
-      const savedCount = (partialResult.nModified || 0) + (partialResult.nUpserted || 0);
-      console.error(`[StaffAttendance] Partial leave save: ${savedCount}/${numberOfDays} days`, error.message);
-      if (savedCount > 0) {
+      if (savedCount < numberOfDays) {
         return res.status(207).json({
           success: false,
           message: `Leave partially saved: ${savedCount} of ${numberOfDays} days saved`,
           numberOfDays,
           savedCount,
+          modified: result.modifiedCount,
+          upserted: result.upsertedCount,
         });
       }
+
+      res.json({
+        success: true,
+        message: 'Leave application submitted successfully',
+        numberOfDays,
+        modified: result.modifiedCount,
+        upserted: result.upsertedCount,
+      });
+    } catch (error) {
+      // bulkWrite with ordered:false may throw BulkWriteError with partial results
+      if (error.name === 'BulkWriteError' || error.name === 'MongoBulkWriteError') {
+        const partialResult = error.result || {};
+        const savedCount = (partialResult.nModified || 0) + (partialResult.nUpserted || 0);
+        console.error(
+          `[StaffAttendance] Partial leave save: ${savedCount}/${numberOfDays} days`,
+          error.message
+        );
+        if (savedCount > 0) {
+          return res.status(207).json({
+            success: false,
+            message: `Leave partially saved: ${savedCount} of ${numberOfDays} days saved`,
+            numberOfDays,
+            savedCount,
+          });
+        }
+      }
+      console.error('[StaffAttendance] Error applying for leave:', error);
+      res.status(500).json({ error: 'Failed to submit leave application' });
     }
-    console.error('[StaffAttendance] Error applying for leave:', error);
-    res.status(500).json({ error: 'Failed to submit leave application' });
   }
-});
+);
 
 // Get pending leave applications
 router.get('/leave/pending', checkPermission('staff', 'view'), async (req, res) => {
@@ -978,40 +1058,40 @@ router.put(
 );
 
 // Get staff attendance summary
-router.get(
-  '/summary/:staffId',
-  checkPermission('staff', 'view'),
-  async (req, res) => {
-    try {
-      const { staffId } = req.params;
-      const month = parseInt(req.query.month);
-      const year = parseInt(req.query.year);
+router.get('/summary/:staffId', checkPermission('staff', 'view'), async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const month = parseInt(req.query.month);
+    const year = parseInt(req.query.year);
 
-      const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      const endDate = `${year}-${String(month).padStart(2, '0')}-31`;
+    const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+    // ST9: compute the true last day of the month. The previous hardcoded
+    // `-31` produced an invalid date (e.g. 2025-02-31) for any month with
+    // fewer than 31 days, which silently broke the summary range.
+    const lastDay = new Date(year, month, 0).getDate();
+    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
 
-      const attendance = await StaffAttendance.find(
-        scopeBySchool(req.user?.schoolId, {
-          staffId,
-          date: { $gte: startDate, $lte: endDate },
-        })
-      );
+    const attendance = await StaffAttendance.find(
+      scopeBySchool(req.user?.schoolId, {
+        staffId,
+        date: { $gte: startDate, $lte: endDate },
+      })
+    );
 
-      const summary = {
-        present: attendance.filter((a) => a.status === 'present').length,
-        absent: attendance.filter((a) => a.status === 'absent').length,
-        leave: attendance.filter((a) => a.status === 'leave').length,
-        halfday: attendance.filter((a) => a.status === 'halfday').length,
-        unmarked: attendance.filter((a) => a.status === 'unmarked').length,
-        total: attendance.length,
-      };
+    const summary = {
+      present: attendance.filter((a) => a.status === 'present').length,
+      absent: attendance.filter((a) => a.status === 'absent').length,
+      leave: attendance.filter((a) => a.status === 'leave').length,
+      halfday: attendance.filter((a) => a.status === 'halfday').length,
+      unmarked: attendance.filter((a) => a.status === 'unmarked').length,
+      total: attendance.length,
+    };
 
-      res.json(summary);
-    } catch (error) {
-      console.error('[StaffAttendance] Error fetching attendance summary:', error);
-      res.status(500).json({ error: 'Failed to fetch attendance summary' });
-    }
+    res.json(summary);
+  } catch (error) {
+    console.error('[StaffAttendance] Error fetching attendance summary:', error);
+    res.status(500).json({ error: 'Failed to fetch attendance summary' });
   }
-);
+});
 
 export default router;

@@ -8,7 +8,9 @@ import { validateZod } from '../../validators/zodHelpers.js';
 import {
   createSubjectSchema,
   updateSubjectSchema,
+  importCurriculumSchema,
 } from '../../validators/settingsSubjectSchema.js';
+import { getCurriculum, toMasterSubjects } from '../../utils/curricula.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -88,14 +90,18 @@ router.post(
         // Duplicate code check
         if (req.body.code) {
           const codeUpper = req.body.code.toUpperCase();
-          if (settings.subjects.some(s => s.code && s.code.toUpperCase() === codeUpper)) {
-            return res.status(409).json({ message: `Subject code "${req.body.code}" is already in use` });
+          if (settings.subjects.some((s) => s.code && s.code.toUpperCase() === codeUpper)) {
+            return res
+              .status(409)
+              .json({ message: `Subject code "${req.body.code}" is already in use` });
           }
         }
         // Duplicate name check
         const nameLower = req.body.name.toLowerCase();
-        if (settings.subjects.some(s => s.name.toLowerCase() === nameLower)) {
-          return res.status(409).json({ message: `A subject named "${req.body.name}" already exists` });
+        if (settings.subjects.some((s) => s.name.toLowerCase() === nameLower)) {
+          return res
+            .status(409)
+            .json({ message: `A subject named "${req.body.name}" already exists` });
         }
 
         settings.subjects.push(req.body);
@@ -136,15 +142,25 @@ router.put(
       // Duplicate code check (excluding the subject being updated)
       if (req.body.code) {
         const codeUpper = req.body.code.toUpperCase();
-        if (settings.subjects.some((s, i) => i !== subjectIndex && s.code && s.code.toUpperCase() === codeUpper)) {
-          return res.status(409).json({ message: `Subject code "${req.body.code}" is already in use` });
+        if (
+          settings.subjects.some(
+            (s, i) => i !== subjectIndex && s.code && s.code.toUpperCase() === codeUpper
+          )
+        ) {
+          return res
+            .status(409)
+            .json({ message: `Subject code "${req.body.code}" is already in use` });
         }
       }
       // Duplicate name check (excluding the subject being updated)
       if (req.body.name) {
         const nameLower = req.body.name.toLowerCase();
-        if (settings.subjects.some((s, i) => i !== subjectIndex && s.name.toLowerCase() === nameLower)) {
-          return res.status(409).json({ message: `A subject named "${req.body.name}" already exists` });
+        if (
+          settings.subjects.some((s, i) => i !== subjectIndex && s.name.toLowerCase() === nameLower)
+        ) {
+          return res
+            .status(409)
+            .json({ message: `A subject named "${req.body.name}" already exists` });
         }
       }
 
@@ -225,6 +241,78 @@ router.post(
     } catch (error) {
       console.error('Error syncing subjects:', error);
       res.status(500).json({ error: 'Failed to sync subjects to classes' });
+    }
+  }
+);
+
+// ── POST /subjects/import-curriculum — import bundled curriculum ─
+// Merges a curriculum's subjects into the master directory, then syncs to
+// classes. Existing subjects are kept (their _id/code preserved) and their
+// assignedClasses are extended with the union of the curriculum's grades;
+// brand-new subjects are appended.
+router.post(
+  '/subjects/import-curriculum',
+  authenticate,
+  checkPermission('settings', 'edit'),
+  validateZod(importCurriculumSchema),
+  async (req, res) => {
+    try {
+      const { curriculumId, grades } = req.body;
+
+      const curriculum = getCurriculum(curriculumId);
+      if (!curriculum) {
+        return res.status(404).json({ error: 'Curriculum not found' });
+      }
+
+      const incoming = toMasterSubjects(curriculumId, grades);
+      if (incoming.length === 0) {
+        return res.json({ subjects: [], classesUpdated: 0, imported: 0, merged: 0 });
+      }
+
+      let settings = await findSchoolSettings(req);
+      if (!settings) {
+        settings = await SchoolSettings.create(await getDefaultSchoolSettings(req.user?.schoolId));
+      }
+
+      const existingByName = new Map(
+        (settings.subjects || []).map((s) => [s.name.toLowerCase(), s])
+      );
+
+      let imported = 0;
+      let merged = 0;
+      for (const inc of incoming) {
+        const existing = existingByName.get(inc.name.toLowerCase());
+        if (existing) {
+          const union = [
+            ...new Set([...(existing.assignedClasses || []), ...inc.assignedClasses]),
+          ].sort((a, b) => a - b);
+          existing.assignedClasses = union;
+          merged++;
+        } else {
+          const created = {
+            name: inc.name,
+            code: inc.code || '',
+            assignedClasses: inc.assignedClasses,
+          };
+          settings.subjects.push(created);
+          existingByName.set(inc.name.toLowerCase(), created);
+          imported++;
+        }
+      }
+      settings.markModified('subjects');
+      await settings.save();
+
+      const { classesUpdated } = await syncSubjectsToClasses(req.user?.schoolId);
+
+      res.json({
+        subjects: settings.subjects,
+        classesUpdated,
+        imported,
+        merged,
+      });
+    } catch (error) {
+      console.error('Error importing curriculum:', error);
+      res.status(500).json({ error: 'Failed to import curriculum' });
     }
   }
 );

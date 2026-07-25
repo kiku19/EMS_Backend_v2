@@ -1,4 +1,5 @@
 import express from 'express';
+import { z } from 'zod';
 import GatePass from '../models/GatePass.js';
 import { Student, Staff, Class } from '../database.js';
 import { authenticate } from '../middleware/auth.js';
@@ -7,6 +8,21 @@ import { extractSchoolId } from '../utils/schoolContext.js';
 import { validateZod } from '../validators/zodHelpers.js';
 import { createGatePassSchema, updateGatePassSchema } from '../validators/frontDeskSchema.js';
 import { logToTrash } from '../services/trashService.js';
+
+// Validated body for the mark-used endpoint. whoCollected is mandatory;
+// signatureUrl is optional (some gates photograph the collector instead of
+// capturing a signature). Previously this was a manual `if (!whoCollected)`
+// check that accepted arbitrary objects and skipped signature validation.
+const markGatePassUsedSchema = z
+  .object({
+    whoCollected: z
+      .string()
+      .min(1, 'Who collected is required')
+      .max(150, 'Collector name is too long')
+      .trim(),
+    signatureUrl: z.string().max(1000).optional(),
+  })
+  .strip();
 
 function scopeBySchool(schoolId, query = {}) {
   const normalizedSchoolId = extractSchoolId(schoolId);
@@ -30,7 +46,7 @@ router.use(authenticate);
  * Get all gate passes with optional filters
  * Query params: status (active/all/today/pending), studentId, class, section, startDate, endDate
  */
-router.get('/', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const { status, studentId, class: className, section, startDate, endDate } = req.query;
 
@@ -117,7 +133,7 @@ router.get('/', checkPermission('front-office', 'view'), async (req, res) => {
  * GET /api/gate-passes/active
  * Get all active gate passes
  */
-router.get('/active', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/active', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePasses = await GatePass.find(
@@ -146,7 +162,7 @@ router.get('/active', checkPermission('front-office', 'view'), async (req, res) 
  * GET /api/gate-passes/today
  * Get today's gate passes
  */
-router.get('/today', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/today', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const startOfDay = new Date();
@@ -181,37 +197,33 @@ router.get('/today', checkPermission('front-office', 'view'), async (req, res) =
  * GET /api/gate-passes/student/:id
  * Get gate passes by student ID
  */
-router.get(
-  '/student/:id',
-  checkPermission('front-office', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePasses = await GatePass.find(scopeBySchool(schoolId, { studentId: req.params.id }))
-        .sort({ createdAt: -1 })
-        .populate('approvedByStaffId', 'name code')
-        .populate('requestedById', 'name code');
-      res.json({
-        success: true,
-        data: gatePasses,
-        count: gatePasses.length,
-      });
-    } catch (error) {
-      console.error('❌ Get student gate passes error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-        message: 'Failed to fetch student gate passes',
-      });
-    }
+router.get('/student/:id', checkPermission('front-desk', 'view'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePasses = await GatePass.find(scopeBySchool(schoolId, { studentId: req.params.id }))
+      .sort({ createdAt: -1 })
+      .populate('approvedByStaffId', 'name code')
+      .populate('requestedById', 'name code');
+    res.json({
+      success: true,
+      data: gatePasses,
+      count: gatePasses.length,
+    });
+  } catch (error) {
+    console.error('❌ Get student gate passes error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to fetch student gate passes',
+    });
   }
-);
+});
 
 /**
  * GET /api/gate-passes/pending
  * Get gate passes pending approval
  */
-router.get('/pending', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/pending', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePasses = await GatePass.find(scopeBySchool(schoolId, { approvalStatus: 'PENDING' }))
@@ -237,7 +249,7 @@ router.get('/pending', checkPermission('front-office', 'view'), async (req, res)
  * GET /api/gate-passes/:id
  * Get single gate pass by ID
  */
-router.get('/:id', checkPermission('front-office', 'view'), async (req, res) => {
+router.get('/:id', checkPermission('front-desk', 'view'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }))
@@ -272,7 +284,7 @@ router.get('/:id', checkPermission('front-office', 'view'), async (req, res) => 
  */
 router.post(
   '/',
-  checkPermission('front-office', 'create'),
+  checkPermission('front-desk', 'create'),
   validateZod(createGatePassSchema),
   async (req, res) => {
     try {
@@ -297,8 +309,13 @@ router.post(
         notes,
       } = req.body;
 
-      // Get student details
-      const student = await Student.findById(studentId).populate('classId');
+      // Get student details — scoped to the caller's school. Without the
+      // schoolId filter any authenticated front-desk user could mint a gate
+      // pass for a student in another tenant by guessing an admissionId.
+      const student = await Student.findOne({
+        _id: studentId,
+        schoolId: req.user.schoolId,
+      }).populate('classId');
       if (!student) {
         return res.status(404).json({
           success: false,
@@ -306,8 +323,12 @@ router.post(
         });
       }
 
-      // Get requesting staff details
-      const requestingStaff = await Staff.findById(req.user.id);
+      // Get requesting staff details — also school-scoped so a token issued for
+      // one tenant cannot reference a staff document from another.
+      const requestingStaff = await Staff.findOne({
+        _id: req.user.id,
+        schoolId: req.user.schoolId,
+      });
       if (!requestingStaff) {
         return res.status(404).json({
           success: false,
@@ -432,7 +453,7 @@ router.post(
  */
 router.put(
   '/:id',
-  checkPermission('front-office', 'edit'),
+  checkPermission('front-desk', 'edit'),
   validateZod(updateGatePassSchema),
   async (req, res) => {
     try {
@@ -552,121 +573,113 @@ router.put(
  * POST /api/gate-passes/:id/approve
  * Approve gate pass
  */
-router.post(
-  '/:id/approve',
-  checkPermission('front-office', 'approve'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+router.post('/:id/approve', checkPermission('front-desk', 'approve'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
-      if (!gatePass) {
-        return res.status(404).json({
-          success: false,
-          error: 'Gate pass not found',
-        });
-      }
-
-      // Check if already processed
-      if (gatePass.approvalStatus !== 'PENDING') {
-        return res.status(400).json({
-          success: false,
-          error: `Gate pass already ${gatePass.approvalStatus.toLowerCase()}`,
-        });
-      }
-
-      const staff = await Staff.findById(req.user.id);
-      if (!staff) {
-        return res.status(404).json({
-          success: false,
-          error: req.t('common:errors.staffNotFound'),
-        });
-      }
-
-      await gatePass.approve(staff);
-
-      // TODO: Send notifications to front office, security, parents
-
-      // Populate for response
-      await gatePass.populate('studentId', 'name admissionId photo rollNo');
-      await gatePass.populate('approvedByStaffId', 'name code');
-      await gatePass.populate('requestedById', 'name code');
-
-      res.json({
-        success: true,
-        data: gatePass,
-        message: 'Gate pass approved successfully',
-      });
-    } catch (error) {
-      console.error('❌ Approve gate pass error:', error);
-      res.status(500).json({
+    if (!gatePass) {
+      return res.status(404).json({
         success: false,
-        error: error.message,
-        message: 'Failed to approve gate pass',
+        error: 'Gate pass not found',
       });
     }
+
+    // Check if already processed
+    if (gatePass.approvalStatus !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        error: `Gate pass already ${gatePass.approvalStatus.toLowerCase()}`,
+      });
+    }
+
+    const staff = await Staff.findById(req.user.id);
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        error: req.t('common:errors.staffNotFound'),
+      });
+    }
+
+    await gatePass.approve(staff);
+
+    // TODO: Send notifications to front office, security, parents
+
+    // Populate for response
+    await gatePass.populate('studentId', 'name admissionId photo rollNo');
+    await gatePass.populate('approvedByStaffId', 'name code');
+    await gatePass.populate('requestedById', 'name code');
+
+    res.json({
+      success: true,
+      data: gatePass,
+      message: 'Gate pass approved successfully',
+    });
+  } catch (error) {
+    console.error('❌ Approve gate pass error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to approve gate pass',
+    });
   }
-);
+});
 
 /**
  * POST /api/gate-passes/:id/reject
  * Reject gate pass
  */
-router.post(
-  '/:id/reject',
-  checkPermission('front-office', 'approve'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+router.post('/:id/reject', checkPermission('front-desk', 'approve'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
-      if (!gatePass) {
-        return res.status(404).json({
-          success: false,
-          error: 'Gate pass not found',
-        });
-      }
-
-      // Check if already processed
-      if (gatePass.approvalStatus !== 'PENDING') {
-        return res.status(400).json({
-          success: false,
-          error: `Gate pass already ${gatePass.approvalStatus.toLowerCase()}`,
-        });
-      }
-
-      const { reason } = req.body;
-
-      if (!reason) {
-        return res.status(400).json({
-          success: false,
-          error: 'Rejection reason is required',
-        });
-      }
-
-      await gatePass.reject(reason);
-
-      // TODO: Notify requester
-
-      // Populate for response
-      await gatePass.populate('studentId', 'name admissionId photo rollNo');
-      await gatePass.populate('requestedById', 'name code');
-
-      res.json({
-        success: true,
-        data: gatePass,
-        message: 'Gate pass rejected successfully',
-      });
-    } catch (error) {
-      console.error('❌ Reject gate pass error:', error);
-      res.status(500).json({
+    if (!gatePass) {
+      return res.status(404).json({
         success: false,
-        error: error.message,
-        message: 'Failed to reject gate pass',
+        error: 'Gate pass not found',
       });
     }
+
+    // Check if already processed
+    if (gatePass.approvalStatus !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        error: `Gate pass already ${gatePass.approvalStatus.toLowerCase()}`,
+      });
+    }
+
+    const { reason } = req.body;
+
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rejection reason is required',
+      });
+    }
+
+    await gatePass.reject(reason);
+
+    // TODO: Notify requester
+
+    // Populate for response
+    await gatePass.populate('studentId', 'name admissionId photo rollNo');
+    await gatePass.populate('requestedById', 'name code');
+
+    res.json({
+      success: true,
+      data: gatePass,
+      message: 'Gate pass rejected successfully',
+    });
+  } catch (error) {
+    console.error('❌ Reject gate pass error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to reject gate pass',
+    });
   }
-);
+});
 
 /**
  * POST /api/gate-passes/:id/mark-used
@@ -674,7 +687,8 @@ router.post(
  */
 router.post(
   '/:id/mark-used',
-  checkPermission('front-office', 'edit'),
+  checkPermission('front-desk', 'edit'),
+  validateZod(markGatePassUsedSchema),
   async (req, res) => {
     try {
       const schoolId = await resolveRequestSchoolId(req);
@@ -695,22 +709,35 @@ router.post(
         });
       }
 
-      // Check if already used
-      if (gatePass.status === 'USED') {
+      // Reject passes that are no longer redeemable. Previously only USED was
+      // blocked, so a CANCELLED or EXPIRED pass could still be marked used at
+      // the gate, resurrecting a voided exit.
+      if (['CANCELLED', 'EXPIRED', 'USED'].includes(gatePass.status)) {
         return res.status(400).json({
           success: false,
-          error: 'Gate pass already used',
+          error: `Gate pass cannot be marked as used (status: ${gatePass.status})`,
+        });
+      }
+
+      // Enforce expiry at read time: the schema defaults EXPIRED status to
+      // ACTIVE, so a pass whose leavingDate is in the past is still ACTIVE in
+      // storage until a job flips it. Treat any pass whose leavingDate is
+      // before today as expired here and persist that transition so the gate
+      // log stays consistent. (A daily TTL/job should eventually batch this;
+      // see trashService for analogous expiry handling.)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const leavingDate = gatePass.leavingDate ? new Date(gatePass.leavingDate) : null;
+      if (leavingDate && leavingDate < today) {
+        gatePass.status = 'EXPIRED';
+        await gatePass.save();
+        return res.status(400).json({
+          success: false,
+          error: 'Gate pass has expired and can no longer be used',
         });
       }
 
       const { whoCollected, signatureUrl } = req.body;
-
-      if (!whoCollected) {
-        return res.status(400).json({
-          success: false,
-          error: 'Who collected is required',
-        });
-      }
 
       await gatePass.markAsUsed(whoCollected, signatureUrl);
 
@@ -740,67 +767,63 @@ router.post(
  * POST /api/gate-passes/:id/cancel
  * Cancel gate pass
  */
-router.post(
-  '/:id/cancel',
-  checkPermission('front-office', 'edit'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
+router.post('/:id/cancel', checkPermission('front-desk', 'edit'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
 
-      if (!gatePass) {
-        return res.status(404).json({
-          success: false,
-          error: 'Gate pass not found',
-        });
-      }
-
-      // Check if already used
-      if (gatePass.status === 'USED') {
-        return res.status(400).json({
-          success: false,
-          error: 'Cannot cancel used gate pass',
-        });
-      }
-
-      const { reason } = req.body;
-
-      if (!reason) {
-        return res.status(400).json({
-          success: false,
-          error: 'Cancellation reason is required',
-        });
-      }
-
-      await gatePass.cancel(reason);
-
-      // TODO: Notify relevant parties
-
-      // Populate for response
-      await gatePass.populate('studentId', 'name admissionId photo rollNo');
-      await gatePass.populate('requestedById', 'name code');
-
-      res.json({
-        success: true,
-        data: gatePass,
-        message: 'Gate pass cancelled successfully',
-      });
-    } catch (error) {
-      console.error('❌ Cancel gate pass error:', error);
-      res.status(500).json({
+    if (!gatePass) {
+      return res.status(404).json({
         success: false,
-        error: error.message,
-        message: 'Failed to cancel gate pass',
+        error: 'Gate pass not found',
       });
     }
+
+    // Check if already used
+    if (gatePass.status === 'USED') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot cancel used gate pass',
+      });
+    }
+
+    const { reason } = req.body;
+
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cancellation reason is required',
+      });
+    }
+
+    await gatePass.cancel(reason);
+
+    // TODO: Notify relevant parties
+
+    // Populate for response
+    await gatePass.populate('studentId', 'name admissionId photo rollNo');
+    await gatePass.populate('requestedById', 'name code');
+
+    res.json({
+      success: true,
+      data: gatePass,
+      message: 'Gate pass cancelled successfully',
+    });
+  } catch (error) {
+    console.error('❌ Cancel gate pass error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to cancel gate pass',
+    });
   }
-);
+});
 
 /**
  * DELETE /api/gate-passes/:id
  * Delete gate pass (only if not used)
  */
-router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res) => {
+router.delete('/:id', checkPermission('front-desk', 'delete'), async (req, res) => {
   try {
     const schoolId = await resolveRequestSchoolId(req);
     const gatePass = await GatePass.findOne(scopeBySchool(schoolId, { _id: req.params.id }));
@@ -851,40 +874,36 @@ router.delete('/:id', checkPermission('front-office', 'delete'), async (req, res
  * Download gate pass PDF
  * TODO: Implement PDF generation
  */
-router.get(
-  '/:id/download',
-  checkPermission('front-office', 'view'),
-  async (req, res) => {
-    try {
-      const schoolId = await resolveRequestSchoolId(req);
-      const gatePass = await GatePass.findOne(
-        scopeBySchool(schoolId, { _id: req.params.id })
-      ).populate('studentId', 'name admissionId photo rollNo');
+router.get('/:id/download', checkPermission('front-desk', 'view'), async (req, res) => {
+  try {
+    const schoolId = await resolveRequestSchoolId(req);
+    const gatePass = await GatePass.findOne(
+      scopeBySchool(schoolId, { _id: req.params.id })
+    ).populate('studentId', 'name admissionId photo rollNo');
 
-      if (!gatePass) {
-        return res.status(404).json({
-          success: false,
-          error: 'Gate pass not found',
-        });
-      }
-
-      // TODO: Generate PDF
-      res.json({
-        success: true,
-        data: {
-          gatePass: gatePass,
-          message: 'PDF generation to be implemented',
-        },
-      });
-    } catch (error) {
-      console.error('❌ Download gate pass error:', error);
-      res.status(500).json({
+    if (!gatePass) {
+      return res.status(404).json({
         success: false,
-        error: error.message,
-        message: 'Failed to download gate pass',
+        error: 'Gate pass not found',
       });
     }
+
+    // TODO: Generate PDF
+    res.json({
+      success: true,
+      data: {
+        gatePass: gatePass,
+        message: 'PDF generation to be implemented',
+      },
+    });
+  } catch (error) {
+    console.error('❌ Download gate pass error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      message: 'Failed to download gate pass',
+    });
   }
-);
+});
 
 export default router;
