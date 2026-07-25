@@ -156,8 +156,17 @@ export async function getActivityFeed(rawFilters) {
         page: [
           { $skip: skip },
           { $limit: limit },
-          { $lookup: { from: SCHOOLS_COLL, localField: 'schoolId', foreignField: '_id', as: '_school' } },
-          { $lookup: { from: STAFF_COLL, localField: 'actorId', foreignField: '_id', as: '_actor' } },
+          {
+            $lookup: {
+              from: SCHOOLS_COLL,
+              localField: 'schoolId',
+              foreignField: '_id',
+              as: '_school',
+            },
+          },
+          {
+            $lookup: { from: STAFF_COLL, localField: 'actorId', foreignField: '_id', as: '_actor' },
+          },
           {
             $addFields: {
               schoolName: { $arrayElemAt: ['$_school.name', 0] },

@@ -31,9 +31,7 @@ const listQuerySchema = z.object({
 });
 
 const trashIdParamSchema = z.object({
-  trashItemId: z
-    .string()
-    .regex(/^[a-f0-9]{24}$/i, 'trashItemId must be a 24-char hex id'),
+  trashItemId: z.string().regex(/^[a-f0-9]{24}$/i, 'trashItemId must be a 24-char hex id'),
 });
 
 // GET /api/v1/super-admin/trash
@@ -68,7 +66,12 @@ router.get('/', validateZod(listQuerySchema, 'query'), async (req, res) => {
       itemName: item.itemName,
       restoreStrategy: item.restoreStrategy,
       school: item.schoolId
-        ? { _id: item.schoolId._id, name: item.schoolId.name, code: item.schoolId.code, status: item.schoolId.status }
+        ? {
+            _id: item.schoolId._id,
+            name: item.schoolId.name,
+            code: item.schoolId.code,
+            status: item.schoolId.status,
+          }
         : null,
       deletedBy: item.deletedBy
         ? { _id: item.deletedBy._id, name: item.deletedBy.name, email: item.deletedBy.email }

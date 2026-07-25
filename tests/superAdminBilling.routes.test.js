@@ -31,7 +31,10 @@ function staffHeaders(staff) {
   };
 }
 
-async function makeActiveSubscription(schoolId, { planKey = 'growth', billingCycle = 'monthly' } = {}) {
+async function makeActiveSubscription(
+  schoolId,
+  { planKey = 'growth', billingCycle = 'monthly' } = {}
+) {
   return SchoolSubscription.findOneAndUpdate(
     { schoolId },
     {
@@ -47,7 +50,11 @@ async function makeActiveSubscription(schoolId, { planKey = 'growth', billingCyc
   );
 }
 
-async function makeInvoice(schoolId, subscriptionId, { amount = 2499, status = 'issued', invoiceNumber, paidAt = null } = {}) {
+async function makeInvoice(
+  schoolId,
+  subscriptionId,
+  { amount = 2499, status = 'issued', invoiceNumber, paidAt = null } = {}
+) {
   return SchoolInvoice.create({
     schoolId,
     subscriptionId,
@@ -123,7 +130,11 @@ describe('super-admin billing', () => {
     const subA = await makeActiveSubscription(schoolA._id);
     const subB = await makeActiveSubscription(schoolB._id);
     await makeInvoice(schoolA._id, subA._id, { invoiceNumber: 'INV-A1' });
-    await makeInvoice(schoolB._id, subB._id, { invoiceNumber: 'INV-B1', status: 'paid', paidAt: new Date() });
+    await makeInvoice(schoolB._id, subB._id, {
+      invoiceNumber: 'INV-B1',
+      status: 'paid',
+      paidAt: new Date(),
+    });
 
     const res = await request(app).get(`${BASE}/invoices`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
@@ -174,7 +185,11 @@ describe('super-admin billing', () => {
 
   it('refunds a paid invoice', async () => {
     const sub = await makeActiveSubscription(schoolA._id);
-    await makeInvoice(schoolA._id, sub._id, { invoiceNumber: 'INV-REF', status: 'paid', paidAt: new Date() });
+    await makeInvoice(schoolA._id, sub._id, {
+      invoiceNumber: 'INV-REF',
+      status: 'paid',
+      paidAt: new Date(),
+    });
 
     const res = await request(app)
       .post(`${BASE}/invoices/INV-REF/refund`)

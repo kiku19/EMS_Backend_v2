@@ -30,10 +30,7 @@ export const optionalPhoneIntl = phoneIntl.nullish().or(z.literal(''));
 // consistent behaviour across Zod versions and require a proper TLD (≥2 chars)
 export const optionalEmail = z
   .string()
-  .regex(
-    /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
-    'Must be a valid email address'
-  )
+  .regex(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, 'Must be a valid email address')
   .nullish()
   .or(z.literal(''));
 

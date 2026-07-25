@@ -36,7 +36,13 @@ function staffHeaders(staff) {
   };
 }
 
-async function trashForClass({ classId, deletedBy, schoolId, itemName = 'Test Class', daysLeft = 30 }) {
+async function trashForClass({
+  classId,
+  deletedBy,
+  schoolId,
+  itemName = 'Test Class',
+  daysLeft = 30,
+}) {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + daysLeft);
   return TrashItem.create({
@@ -80,8 +86,18 @@ describe('super-admin cross-school trash', () => {
   });
 
   it('lists trash across all schools with school + actor populated', async () => {
-    await trashForClass({ classId: classA._id, deletedBy: adminA._id, schoolId: schoolA._id, itemName: 'Grade 1' });
-    await trashForClass({ classId: classB._id, deletedBy: adminA._id, schoolId: schoolB._id, itemName: 'Grade 2' });
+    await trashForClass({
+      classId: classA._id,
+      deletedBy: adminA._id,
+      schoolId: schoolA._id,
+      itemName: 'Grade 1',
+    });
+    await trashForClass({
+      classId: classB._id,
+      deletedBy: adminA._id,
+      schoolId: schoolB._id,
+      itemName: 'Grade 2',
+    });
 
     const res = await request(app).get(BASE).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
@@ -108,7 +124,12 @@ describe('super-admin cross-school trash', () => {
 
   it('returns stats with byType, bySchool, and expiringSoon', async () => {
     await trashForClass({ classId: classA._id, deletedBy: adminA._id, schoolId: schoolA._id });
-    await trashForClass({ classId: classB._id, deletedBy: adminA._id, schoolId: schoolB._id, daysLeft: 3 });
+    await trashForClass({
+      classId: classB._id,
+      deletedBy: adminA._id,
+      schoolId: schoolB._id,
+      daysLeft: 3,
+    });
 
     const res = await request(app).get(`${BASE}/stats`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
@@ -121,11 +142,13 @@ describe('super-admin cross-school trash', () => {
   });
 
   it('restores a soft-deleted item on a school’s behalf and clears the trash record', async () => {
-    const trash = await trashForClass({ classId: classA._id, deletedBy: adminA._id, schoolId: schoolA._id });
+    const trash = await trashForClass({
+      classId: classA._id,
+      deletedBy: adminA._id,
+      schoolId: schoolA._id,
+    });
 
-    const res = await request(app)
-      .post(`${BASE}/${trash._id}/restore`)
-      .set(SUPER_ADMIN_HEADERS);
+    const res = await request(app).post(`${BASE}/${trash._id}/restore`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
 
@@ -138,7 +161,11 @@ describe('super-admin cross-school trash', () => {
   });
 
   it('permanently deletes an item across tenants', async () => {
-    const trash = await trashForClass({ classId: classB._id, deletedBy: adminA._id, schoolId: schoolB._id });
+    const trash = await trashForClass({
+      classId: classB._id,
+      deletedBy: adminA._id,
+      schoolId: schoolB._id,
+    });
 
     const res = await request(app).delete(`${BASE}/${trash._id}`).set(SUPER_ADMIN_HEADERS);
     expect(res.status).toBe(200);

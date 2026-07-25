@@ -85,7 +85,9 @@ describe('settings/modules routes', () => {
       expect(res.body.modules.find((m) => m.key === 'fees').enabled).toBe(true);
       expect(res.body.modules.find((m) => m.key === 'library').enabled).toBe(true);
       expect(res.body.modules.find((m) => m.key === 'academics').enabled).toBe(false);
-      expect(res.body.enabledModules).toEqual(expect.arrayContaining(['fees', 'library', ...CORE_MODULES]));
+      expect(res.body.enabledModules).toEqual(
+        expect.arrayContaining(['fees', 'library', ...CORE_MODULES])
+      );
 
       // Re-fetch confirms persistence.
       const after = await request(app)
