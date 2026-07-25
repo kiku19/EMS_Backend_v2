@@ -4,6 +4,32 @@ import { createLogger } from '../../utils/logger.js';
 const logger = createLogger('CSRF');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const AMBIENT_AUTH_COOKIE_NAMES = new Set([
+  'ems_auth_token',
+  'ems_refresh_token',
+  'ems_ops_token',
+  'ems_ops_refresh',
+]);
+
+// SAML identity providers POST the signed assertion from their own origin.
+// That endpoint validates the SAML response + state itself and must remain
+// reachable even when a user already has an EMS cookie in the browser.
+const CROSS_SITE_CALLBACK_PATHS = new Set([
+  '/api/auth/sso/saml/callback',
+  '/api/v1/auth/sso/saml/callback',
+]);
+
+export function hasAmbientAuthCookie(cookieHeader = '') {
+  return String(cookieHeader)
+    .split(';')
+    .map((part) => part.trim().split('=', 1)[0])
+    .some((name) => AMBIENT_AUTH_COOKIE_NAMES.has(name));
+}
+
+export function isCsrfExemptPath(originalUrl = '') {
+  const pathname = String(originalUrl).split('?', 1)[0];
+  return CROSS_SITE_CALLBACK_PATHS.has(pathname);
+}
 
 /**
  * CSRF protection for cookie-authenticated requests.
@@ -18,10 +44,26 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * Forged requests from malicious pages either lack these headers or carry the
  * attacker's origin, which will be rejected here.
  *
- * Apply to any route that changes state and relies on cookie auth.
+ * This middleware is mounted once at the API-router boundary. It protects only
+ * requests carrying ambient auth cookies; Bearer/API-key and unauthenticated
+ * webhook/mobile traffic do not need a browser-origin check.
  */
 export function csrfProtect(req, res, next) {
   if (SAFE_METHODS.has(req.method)) {
+    return next();
+  }
+
+  if (isCsrfExemptPath(req.originalUrl || req.url)) {
+    return next();
+  }
+
+  // Explicit credentials are not ambient browser authority. They also force a
+  // CORS preflight, so a malicious page cannot attach them cross-origin.
+  if (req.headers.authorization || req.headers['x-api-key']) {
+    return next();
+  }
+
+  if (!hasAmbientAuthCookie(req.headers.cookie)) {
     return next();
   }
 
@@ -37,8 +79,8 @@ export function csrfProtect(req, res, next) {
   }
 
   if (!requestOrigin) {
-    // Server-to-server calls (no browser) have no Origin. Allow in development;
-    // reject in production where all browser requests MUST carry an Origin.
+    // Local test/dev clients often omit Origin. In production, every browser
+    // mutation that carries an auth cookie must identify its source.
     if (config.isDevelopment) {
       return next();
     }
@@ -50,9 +92,7 @@ export function csrfProtect(req, res, next) {
 
   const isAllowed = allowedOrigins.some((allowed) => {
     if (!allowed.includes('*')) return allowed === requestOrigin;
-    const escaped = allowed
-      .replace(/[-[\]{}()+?.,\\^$|#\s]/g, '\\$&')
-      .replace(/\*/g, '.*');
+    const escaped = allowed.replace(/[-[\]{}()+?.,\\^$|#\s]/g, '\\$&').replace(/\*/g, '.*');
     return new RegExp(`^${escaped}$`).test(requestOrigin);
   });
 
