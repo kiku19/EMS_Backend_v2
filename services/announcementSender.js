@@ -149,7 +149,7 @@ export async function resolveRecipients(recipients, schoolId) {
 // many resend passes have run.
 async function recomputeAnalytics(announcementId) {
   const [agg] = await AnnouncementRecipient.aggregate([
-    { $match: { announcementId: mongoose.Types.ObjectId(announcementId) } },
+    { $match: { announcementId: new mongoose.Types.ObjectId(announcementId) } },
     {
       $facet: {
         totals: [
