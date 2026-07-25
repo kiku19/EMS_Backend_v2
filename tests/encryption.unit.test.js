@@ -6,7 +6,15 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { encrypt, decrypt, hmac, isEncrypted, piiMatch, _resetKeys } from '../utils/encryption.js';
+import {
+  encrypt,
+  decrypt,
+  hmac,
+  isEncrypted,
+  piiMatch,
+  createCipher,
+  _resetKeys,
+} from '../utils/encryption.js';
 
 beforeEach(() => {
   _resetKeys();
@@ -95,6 +103,71 @@ describe('encrypt + decrypt', () => {
     expect(a).not.toBe(b);
     expect(decrypt(a)).toBe('same');
     expect(decrypt(b)).toBe('same');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createCipher (explicit-key instances — used by the re-encryption pass)
+// ---------------------------------------------------------------------------
+
+describe('createCipher', () => {
+  const KEY_A = 'a'.repeat(48);
+  const KEY_B = 'b'.repeat(48);
+
+  it('throws on an empty or non-string secret', () => {
+    expect(() => createCipher('')).toThrow();
+    expect(() => createCipher(null)).toThrow();
+    expect(() => createCipher(42)).toThrow();
+  });
+
+  it('round-trips with its own key', () => {
+    const c = createCipher(KEY_A);
+    const enc = c.encrypt('9998887777');
+    expect(isEncrypted(enc)).toBe(true);
+    expect(c.decryptStrict(enc)).toBe('9998887777');
+    expect(c.decrypt(enc)).toBe('9998887777');
+  });
+
+  it('decryptStrict THROWS when decrypting a value from a different key', () => {
+    const a = createCipher(KEY_A);
+    const b = createCipher(KEY_B);
+    const enc = a.encrypt('secret@example.com');
+    expect(() => b.decryptStrict(enc)).toThrow();
+  });
+
+  it('migration-safe decrypt returns the raw value on a wrong-key auth failure', () => {
+    const a = createCipher(KEY_A);
+    const b = createCipher(KEY_B);
+    const enc = a.encrypt('secret@example.com');
+    expect(b.decrypt(enc)).toBe(enc); // unchanged, not throwing
+  });
+
+  it('produces different HMAC hashes under different keys', () => {
+    const a = createCipher(KEY_A);
+    const b = createCipher(KEY_B);
+    expect(a.hmac('foo@bar.com')).not.toBe(b.hmac('foo@bar.com'));
+  });
+
+  it('re-encryption round-trips old-key data to new-key data', () => {
+    const oldC = createCipher(KEY_A);
+    const newC = createCipher(KEY_B);
+    const plain = '+911234567890';
+    const stored = oldC.encrypt(plain);
+
+    // Decrypt with old, re-encrypt with new — the re-keying primitive.
+    const rekeyed = newC.encrypt(oldC.decryptStrict(stored));
+
+    expect(rekeyed).not.toBe(stored);
+    expect(newC.decryptStrict(rekeyed)).toBe(plain);
+    expect(() => oldC.decryptStrict(rekeyed)).toThrow(); // old key no longer opens it
+  });
+
+  it('is independent of the env-derived default instance', () => {
+    _resetKeys();
+    const c = createCipher(KEY_A);
+    const enc = c.encrypt('isolated');
+    // The default decrypt (JWT_SECRET-derived) must NOT be able to read it.
+    expect(decrypt(enc)).toBe(enc);
   });
 });
 
