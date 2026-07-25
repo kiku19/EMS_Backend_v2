@@ -1,5 +1,14 @@
 import express from 'express';
 import { Staff, Student } from '../../database.js';
+
+// Self-serve signup flow (PR1/PR2 of the Self-Serve School Onboarding
+// Flow epic). Tests for verify-email, resend-verification, and the
+// signup endpoint itself need this enabled to exercise the routes —
+// when ENABLE_SELF_SIGNUP is unset the route handlers short-circuit to
+// 404 to match the production-by-default posture.
+if (!process.env.ENABLE_SELF_SIGNUP) {
+  process.env.ENABLE_SELF_SIGNUP = 'true';
+}
 import { authenticate } from '../../middleware/auth.js';
 import { i18nMiddleware } from '../../middleware/i18n.js';
 import { addApiVersionHeader, deprecationWarning } from '../../middleware/apiVersion.js';
